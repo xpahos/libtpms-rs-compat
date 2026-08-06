@@ -1,3 +1,6 @@
 [submodule "swtpm"]
 	path = swtpm
 	url = https://github.com/stefanberger/swtpm.git
+[submodule "libtpms"]
+	path = libtpms
+	url = https://github.com/stefanberger/libtpms.git
