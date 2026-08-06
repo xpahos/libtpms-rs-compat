@@ -1,0 +1,3 @@
+[submodule "swtpm"]
+	path = swtpm
+	url = https://github.com/stefanberger/swtpm.git
