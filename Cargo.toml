@@ -1,0 +1,13 @@
+[package]
+name = "libtpms-rs-compat"
+version = "0.1.0"
+edition = "2024"
+description = "Rust reimplementation of the libtpms ABI (work in progress)"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+# The cdylib artifact is named libtpms.dylib / libtpms.so to match the
+# C library this crate is intended to replace.
+name = "tpms"
+crate-type = ["cdylib", "rlib"]
