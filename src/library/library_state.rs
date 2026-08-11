@@ -85,7 +85,7 @@ impl Library {
         }
     }
 
-    pub fn global() -> &'static Library {
+    pub fn global() -> &'static Self {
         &LIBRARY
     }
 
