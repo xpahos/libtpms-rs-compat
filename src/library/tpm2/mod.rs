@@ -23,10 +23,11 @@ use core::ffi::c_int;
 
 use crate::ffi_types::{LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty};
 
-use super::cached_state::{CachedBlob, StateKind};
 use super::constants::{
     TPM_FAIL, TPM_RC_FAILURE, TPM_SUCCESS, TPMPROP_TPM_KEY_HANDLES, TPMPROP_TPM_RSA_KEY_LENGTH_MAX,
 };
+use super::preloaded_state::PreloadedBlob;
+use super::state_blob::StateBlobKind;
 use marshal::{BlobReader, BlockSkipError, skip_optional_block};
 use nv::{HostNvram, NvramLoad, PermanentStateProbe};
 use pcr::PcrSelection;
@@ -64,8 +65,8 @@ pub fn get_tpm_property(prop: TpmlibTpmProperty) -> Option<c_int> {
 
 pub(super) struct Tpm2InitContext<'a> {
     pub(super) callbacks: LibtpmsCallbacks,
-    pub(super) cached_permanent: CachedBlob,
-    pub(super) cached_volatile: CachedBlob,
+    pub(super) preloaded_permanent: PreloadedBlob,
+    pub(super) preloaded_volatile: PreloadedBlob,
     pub(super) configured_profile: Option<Vec<u8>>,
     pub(super) entropy: EntropySource,
     pub(super) clock: &'a dyn HostClock,
@@ -74,20 +75,20 @@ pub(super) struct Tpm2InitContext<'a> {
 #[derive(Debug, Eq, PartialEq)]
 enum PermanentStateSource {
     Manufacture,
-    CachedEmpty,
-    CachedData(Vec<u8>),
+    PreloadedEmpty,
+    PreloadedData(Vec<u8>),
     Backend,
 }
 
 fn select_permanent_state_source(
-    cached: CachedBlob,
+    preloaded: PreloadedBlob,
     probe: PermanentStateProbe,
 ) -> PermanentStateSource {
-    match cached {
-        CachedBlob::Empty => PermanentStateSource::CachedEmpty,
-        CachedBlob::Data(blob) => PermanentStateSource::CachedData(blob),
-        CachedBlob::Missing if probe.exists => PermanentStateSource::Backend,
-        CachedBlob::Missing => PermanentStateSource::Manufacture,
+    match preloaded {
+        PreloadedBlob::Empty => PermanentStateSource::PreloadedEmpty,
+        PreloadedBlob::Data(blob) => PermanentStateSource::PreloadedData(blob),
+        PreloadedBlob::Missing if probe.exists => PermanentStateSource::Backend,
+        PreloadedBlob::Missing => PermanentStateSource::Manufacture,
     }
 }
 
@@ -98,12 +99,12 @@ enum VolatileResolution {
 
 fn resolve_volatile_state(
     host_nvram: &HostNvram,
-    cached_volatile: CachedBlob,
+    preloaded_volatile: PreloadedBlob,
 ) -> VolatileResolution {
-    match cached_volatile {
-        CachedBlob::Empty => VolatileResolution::NotPresent,
-        CachedBlob::Data(blob) => VolatileResolution::Nonempty(blob),
-        CachedBlob::Missing => match host_nvram.load(StateKind::Volatile) {
+    match preloaded_volatile {
+        PreloadedBlob::Empty => VolatileResolution::NotPresent,
+        PreloadedBlob::Data(blob) => VolatileResolution::Nonempty(blob),
+        PreloadedBlob::Missing => match host_nvram.load(StateBlobKind::Volatile) {
             Ok(NvramLoad::Data(blob)) => VolatileResolution::Nonempty(blob),
             Ok(NvramLoad::NotRegistered | NvramLoad::Missing | NvramLoad::SuccessWithoutData)
             | Err(_) => VolatileResolution::NotPresent,
@@ -113,11 +114,11 @@ fn resolve_volatile_state(
 
 fn volatile_phase(
     host_nvram: &HostNvram,
-    cached_volatile: CachedBlob,
+    preloaded_volatile: PreloadedBlob,
     clock: &dyn HostClock,
     runtime: &mut Tpm2Runtime,
 ) -> Result<(), TpmResult> {
-    let blob = match resolve_volatile_state(host_nvram, cached_volatile) {
+    let blob = match resolve_volatile_state(host_nvram, preloaded_volatile) {
         VolatileResolution::NotPresent => return Ok(()),
         VolatileResolution::Nonempty(blob) => blob,
     };
@@ -165,7 +166,7 @@ fn nv_commit(host_nvram: &HostNvram, runtime: &Tpm2Runtime) {
     let Ok(blob) = persistent::persistent_all_store(state) else {
         return;
     };
-    let _ = host_nvram.store(StateKind::Permanent, &blob);
+    let _ = host_nvram.store(StateBlobKind::Permanent, &blob);
 }
 
 pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>, TpmResult> {
@@ -187,12 +188,12 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
     let probe = host_nvram.probe_permanent();
     let has_load_callback = probe.has_load_callback;
 
-    match select_permanent_state_source(context.cached_permanent, probe) {
+    match select_permanent_state_source(context.preloaded_permanent, probe) {
         PermanentStateSource::Manufacture => {
             if !has_load_callback {
                 return Err(TPM_FAIL);
             }
-            match host_nvram.load(StateKind::Permanent)? {
+            match host_nvram.load(StateBlobKind::Permanent)? {
                 NvramLoad::Missing => {
                     if !host_nvram.can_store() {
                         return Err(TPM_FAIL);
@@ -208,7 +209,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
             let manufactured = runtime::commit_manufactured_state(candidate)?;
             nv_commit(&host_nvram, &manufactured);
             let mut runtime = match host_nvram
-                .load(StateKind::Permanent)
+                .load(StateBlobKind::Permanent)
                 .map_err(|_| TPM_RC_FAILURE)?
             {
                 NvramLoad::Data(blob) => {
@@ -230,40 +231,40 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
             };
             volatile_phase(
                 &host_nvram,
-                context.cached_volatile,
+                context.preloaded_volatile,
                 context.clock,
                 &mut runtime,
             )?;
             Ok(runtime)
         }
-        PermanentStateSource::CachedEmpty => {
+        PermanentStateSource::PreloadedEmpty => {
             let mut runtime = runtime::empty_state_runtime();
             volatile_phase(
                 &host_nvram,
-                context.cached_volatile,
+                context.preloaded_volatile,
                 context.clock,
                 &mut runtime,
             )?;
             nv_commit(&host_nvram, &runtime);
             Ok(runtime)
         }
-        PermanentStateSource::CachedData(blob) => {
+        PermanentStateSource::PreloadedData(blob) => {
             let mut runtime = initialize_from_permanent_blob(blob, PermanentCommit::Restore)?;
             volatile_phase(
                 &host_nvram,
-                context.cached_volatile,
+                context.preloaded_volatile,
                 context.clock,
                 &mut runtime,
             )?;
             nv_commit(&host_nvram, &runtime);
             Ok(runtime)
         }
-        PermanentStateSource::Backend => match host_nvram.load(StateKind::Permanent)? {
+        PermanentStateSource::Backend => match host_nvram.load(StateBlobKind::Permanent)? {
             NvramLoad::Data(blob) => {
                 let mut runtime = initialize_from_permanent_blob(blob, PermanentCommit::Restore)?;
                 volatile_phase(
                     &host_nvram,
-                    context.cached_volatile,
+                    context.preloaded_volatile,
                     context.clock,
                     &mut runtime,
                 )?;
@@ -684,29 +685,29 @@ mod tests {
 
     fn context(
         callbacks: LibtpmsCallbacks,
-        cached_permanent: CachedBlob,
+        preloaded_permanent: PreloadedBlob,
     ) -> Tpm2InitContext<'static> {
-        context_with_volatile(callbacks, cached_permanent, CachedBlob::Missing)
+        context_with_volatile(callbacks, preloaded_permanent, PreloadedBlob::Missing)
     }
 
     fn context_with_volatile(
         callbacks: LibtpmsCallbacks,
-        cached_permanent: CachedBlob,
-        cached_volatile: CachedBlob,
+        preloaded_permanent: PreloadedBlob,
+        preloaded_volatile: PreloadedBlob,
     ) -> Tpm2InitContext<'static> {
-        context_with_profile(callbacks, cached_permanent, cached_volatile, None)
+        context_with_profile(callbacks, preloaded_permanent, preloaded_volatile, None)
     }
 
     fn context_with_profile(
         callbacks: LibtpmsCallbacks,
-        cached_permanent: CachedBlob,
-        cached_volatile: CachedBlob,
+        preloaded_permanent: PreloadedBlob,
+        preloaded_volatile: PreloadedBlob,
         configured_profile: Option<&[u8]>,
     ) -> Tpm2InitContext<'static> {
         Tpm2InitContext {
             callbacks,
-            cached_permanent,
-            cached_volatile,
+            preloaded_permanent,
+            preloaded_volatile,
             configured_profile: configured_profile.map(<[u8]>::to_vec),
             entropy: deterministic_entropy,
             clock: &TEST_HOST_CLOCK,
@@ -942,46 +943,49 @@ mod tests {
     }
 
     #[test]
-    fn selects_manufacture_for_missing_cache_and_absent_backend() {
+    fn selects_manufacture_for_missing_preloaded_state_and_absent_backend() {
         assert_eq!(
-            select_permanent_state_source(CachedBlob::Missing, probe(false, true)),
+            select_permanent_state_source(PreloadedBlob::Missing, probe(false, true)),
             PermanentStateSource::Manufacture
         );
         assert_eq!(
-            select_permanent_state_source(CachedBlob::Missing, probe(false, false)),
+            select_permanent_state_source(PreloadedBlob::Missing, probe(false, false)),
             PermanentStateSource::Manufacture
         );
     }
 
     #[test]
-    fn selects_backend_for_missing_cache_and_existing_backend() {
+    fn selects_backend_for_missing_preloaded_state_and_existing_backend() {
         assert_eq!(
-            select_permanent_state_source(CachedBlob::Missing, probe(true, true)),
+            select_permanent_state_source(PreloadedBlob::Missing, probe(true, true)),
             PermanentStateSource::Backend
         );
         assert_eq!(
-            select_permanent_state_source(CachedBlob::Missing, probe(true, false)),
+            select_permanent_state_source(PreloadedBlob::Missing, probe(true, false)),
             PermanentStateSource::Backend
         );
     }
 
     #[test]
-    fn selects_cached_empty_regardless_of_backend() {
+    fn selects_preloaded_empty_regardless_of_backend() {
         for exists in [false, true] {
             assert_eq!(
-                select_permanent_state_source(CachedBlob::Empty, probe(exists, true)),
-                PermanentStateSource::CachedEmpty,
+                select_permanent_state_source(PreloadedBlob::Empty, probe(exists, true)),
+                PermanentStateSource::PreloadedEmpty,
                 "backend exists = {exists}"
             );
         }
     }
 
     #[test]
-    fn selects_cached_data_and_preserves_blob_regardless_of_backend() {
+    fn selects_preloaded_data_and_preserves_blob_regardless_of_backend() {
         for exists in [false, true] {
             assert_eq!(
-                select_permanent_state_source(CachedBlob::Data(vec![7, 8, 9]), probe(exists, true)),
-                PermanentStateSource::CachedData(vec![7, 8, 9]),
+                select_permanent_state_source(
+                    PreloadedBlob::Data(vec![7, 8, 9]),
+                    probe(exists, true)
+                ),
+                PermanentStateSource::PreloadedData(vec![7, 8, 9]),
                 "backend exists = {exists}"
             );
         }
@@ -999,7 +1003,7 @@ mod tests {
                 tpm_nvram_init: Some(nvram_init),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_FAIL, "no permanent-state backend is available");
@@ -1019,7 +1023,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, 42);
@@ -1039,7 +1043,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, 43);
@@ -1057,7 +1061,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_FAIL, "no storedata: NV cannot be enabled");
@@ -1075,7 +1079,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_found),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .expect("a valid backend blob restores");
         assert_eq!(
@@ -1094,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_and_cached_data_share_the_restore_path() {
+    fn backend_and_preloaded_data_share_the_restore_path() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1103,21 +1107,21 @@ mod tests {
             tpm_nvram_loaddata: Some(loaddata_found),
             ..LibtpmsCallbacks::empty()
         };
-        let cached = main_init(context(
+        let preloaded = main_init(context(
             callbacks,
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
-        .expect("cached data restores");
+        .expect("preloaded data restores");
         assert_eq!(
             events(),
             ["load:permall:0", "load:volatilestate:0"],
-            "cached data skips the backend permanent load but not the \
+            "preloaded data skips the backend permanent load but not the \
              probe or the volatile load"
         );
         let backend =
-            main_init(context(callbacks, CachedBlob::Missing)).expect("backend data restores");
-        assert_eq!(cached.nv_memory, backend.nv_memory);
-        assert_eq!(cached.active_profile_json, backend.active_profile_json);
+            main_init(context(callbacks, PreloadedBlob::Missing)).expect("backend data restores");
+        assert_eq!(preloaded.nv_memory, backend.nv_memory);
+        assert_eq!(preloaded.active_profile_json, backend.active_profile_json);
     }
 
     #[test]
@@ -1130,7 +1134,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_error),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, 77);
@@ -1146,7 +1150,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_success_null),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_FAIL, "a success without a buffer has no blob");
@@ -1163,7 +1167,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_found_then_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_FAIL, "TPM_RETRY on the real load has no blob");
@@ -1171,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_probe_still_runs_with_cached_empty_state() {
+    fn backend_probe_still_runs_with_preloaded_empty_state() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1181,13 +1185,13 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Empty,
+            PreloadedBlob::Empty,
         ))
-        .expect("cached-empty powers on over a zeroed NV image");
+        .expect("preloaded-empty powers on over a zeroed NV image");
         assert_eq!(
             events(),
             ["load-retry:permall", "load-retry:volatilestate"],
-            "upstream probes the backend even with cached state, and \
+            "upstream probes the backend even with preloaded state, and \
              the volatile load still runs at its normal point"
         );
         assert!(!runtime.manufactured, "no Manufacture ran");
@@ -1195,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_probe_still_runs_with_cached_data_state() {
+    fn backend_probe_still_runs_with_preloaded_data_state() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1205,29 +1209,29 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
-        .expect("cached data restores");
+        .expect("preloaded data restores");
         assert_eq!(
             events(),
             ["load-retry:permall", "load-retry:volatilestate"],
-            "upstream probes the backend even with cached state, and \
+            "upstream probes the backend even with preloaded state, and \
              still asks for the volatile state afterwards"
         );
     }
 
     #[test]
-    fn malformed_cached_header_returns_the_upstream_code() {
+    fn malformed_preloaded_header_returns_the_upstream_code() {
         let truncated = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(vec![0x00, 0x03]),
+            PreloadedBlob::Data(vec![0x00, 0x03]),
         ))
         .unwrap_err();
         assert_eq!(truncated, TPM_RC_INSUFFICIENT);
 
         let bad_magic = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(vec![0x00, 0x03, 0xde, 0xad, 0xbe, 0xef]),
+            PreloadedBlob::Data(vec![0x00, 0x03, 0xde, 0xad, 0xbe, 0xef]),
         ))
         .unwrap_err();
         assert_eq!(bad_magic, TPM_RC_BAD_TAG);
@@ -1243,7 +1247,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_found_truncated),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1265,7 +1269,7 @@ mod tests {
         );
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("the upstream fixture section restores");
         assert!(runtime.manufactured);
@@ -1275,7 +1279,7 @@ mod tests {
     fn missing_compile_constants_section_no_longer_reaches_the_boundary() {
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&[])),
+            PreloadedBlob::Data(envelope_with_payload(&[])),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1287,7 +1291,7 @@ mod tests {
         section[2] = 0xde;
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&section)),
+            PreloadedBlob::Data(envelope_with_payload(&section)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -1299,7 +1303,7 @@ mod tests {
         section[0..2].copy_from_slice(&4u16.to_be_bytes());
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&section)),
+            PreloadedBlob::Data(envelope_with_payload(&section)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_VERSION);
@@ -1311,7 +1315,7 @@ mod tests {
         section[12..16].copy_from_slice(&0u32.to_be_bytes());
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&section)),
+            PreloadedBlob::Data(envelope_with_payload(&section)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_PARAMETER);
@@ -1323,7 +1327,7 @@ mod tests {
         section.truncate(section.len() / 2);
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&section)),
+            PreloadedBlob::Data(envelope_with_payload(&section)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1337,7 +1341,7 @@ mod tests {
         payload.extend_from_slice(&prefix);
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -1353,7 +1357,7 @@ mod tests {
             payload.extend_from_slice(&fixture.bytes());
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload)),
+                PreloadedBlob::Data(envelope_with_payload(&payload)),
             ))
             .unwrap_err();
             assert_eq!(error, TPM_RC_SIZE, "tpm2b index {index}");
@@ -1367,7 +1371,7 @@ mod tests {
         payload.extend_from_slice(&prefix[..prefix.len() - 8]);
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1378,7 +1382,7 @@ mod tests {
         let payload = payload_with_pcr_policies(vec![0x00, 0x00, 0x00]);
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_PARAMETER);
@@ -1390,7 +1394,7 @@ mod tests {
         block[6] = 0xff;
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -1407,7 +1411,7 @@ mod tests {
         .bytes();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_SIZE);
@@ -1431,7 +1435,7 @@ mod tests {
                     tpm_nvram_loaddata: Some(loaddata_retry),
                     ..LibtpmsCallbacks::empty()
                 },
-                CachedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
+                PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
             ))
             .unwrap_or_else(|error| panic!("alg {hash_alg:#06x}: {error:#x}"));
             assert_eq!(
@@ -1452,7 +1456,7 @@ mod tests {
         .bytes();
         main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
                 allocation,
             ))),
         ))
@@ -1471,7 +1475,7 @@ mod tests {
             .bytes();
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
+                PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
                     allocation,
                 ))),
             ))
@@ -1492,7 +1496,7 @@ mod tests {
             .bytes();
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
+                PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
                     allocation,
                 ))),
             ))
@@ -1512,7 +1516,7 @@ mod tests {
         .bytes();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
                 allocation,
             ))),
         ))
@@ -1529,7 +1533,7 @@ mod tests {
         .bytes();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
                 allocation,
             ))),
         ))
@@ -1553,7 +1557,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_allocated(
                 allocation,
             ))),
         ))
@@ -1578,7 +1582,7 @@ mod tests {
             .bytes();
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload_with_pp_list(pp_list))),
+                PreloadedBlob::Data(envelope_with_payload(&payload_with_pp_list(pp_list))),
             ))
             .unwrap_err();
             assert_eq!(error, TPM_RC_SIZE, "size {size}");
@@ -1595,7 +1599,7 @@ mod tests {
         .bytes();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pp_list(pp_list))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pp_list(pp_list))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1632,7 +1636,7 @@ mod tests {
                 );
                 main_init(context(
                     LibtpmsCallbacks::empty(),
-                    CachedBlob::Data(envelope_with_payload(&payload)),
+                    PreloadedBlob::Data(envelope_with_payload(&payload)),
                 ))
             })
             .collect();
@@ -1663,7 +1667,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(envelope_with_payload(&payload_with_pp_list(pp_list))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pp_list(pp_list))),
         ))
         .unwrap_err();
         assert_eq!(error, crate::library::constants::TPM_RC_SIZE);
@@ -1707,7 +1711,7 @@ mod tests {
         let lockout_bytes = lockout::LockoutFixture::default().bytes()[..10].to_vec();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_lockout(lockout_bytes))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_lockout(lockout_bytes))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1724,7 +1728,7 @@ mod tests {
         .bytes();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_audit(audit_bytes))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_audit(audit_bytes))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_SIZE);
@@ -1739,7 +1743,7 @@ mod tests {
         .bytes();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_audit(audit_bytes))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_audit(audit_bytes))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_PARAMETER);
@@ -1759,7 +1763,7 @@ mod tests {
         ] {
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
+                PreloadedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
                     compat.bytes(),
                 ))),
             ))
@@ -1782,7 +1786,7 @@ mod tests {
         };
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
                 compat.bytes(),
             ))),
         ))
@@ -1799,7 +1803,7 @@ mod tests {
         };
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
                 compat.bytes(),
             ))),
         ))
@@ -1824,7 +1828,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
                 compat.bytes(),
             ))),
         ))
@@ -1848,7 +1852,7 @@ mod tests {
         .bytes();
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_SIZE);
@@ -1860,7 +1864,7 @@ mod tests {
         block.truncate(block.len() - 2);
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1878,7 +1882,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_PARAMETER);
@@ -1904,7 +1908,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -1928,7 +1932,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(envelope_with_payload(&section)),
+            PreloadedBlob::Data(envelope_with_payload(&section)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -1940,7 +1944,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_failure_invokes_no_further_callbacks_and_keeps_cached_priority() {
+    fn parse_failure_invokes_no_further_callbacks_and_keeps_preloaded_priority() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1950,7 +1954,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(vec![0x00]),
+            PreloadedBlob::Data(vec![0x00]),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -1962,9 +1966,9 @@ mod tests {
     }
 
     #[test]
-    fn cached_empty_without_load_callback_powers_on_an_empty_image() {
-        let runtime = main_init(context(LibtpmsCallbacks::empty(), CachedBlob::Empty))
-            .expect("cached-empty powers on without any callback");
+    fn preloaded_empty_without_load_callback_powers_on_an_empty_image() {
+        let runtime = main_init(context(LibtpmsCallbacks::empty(), PreloadedBlob::Empty))
+            .expect("preloaded-empty powers on without any callback");
         assert!(!runtime.manufactured);
         assert!(!runtime.was_manufactured);
         assert!(runtime.power_on && runtime.nv_available);
@@ -2030,7 +2034,7 @@ mod tests {
                 payload_with_orderly_state(orderly_state, remaining_sections_with_su_state());
             let runtime = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload)),
+                PreloadedBlob::Data(envelope_with_payload(&payload)),
             ))
             .unwrap_or_else(|error| panic!("orderlyState {orderly_state:#06x}: {error:#x}"));
             assert!(
@@ -2046,7 +2050,7 @@ mod tests {
             let payload = payload_with_orderly_state(orderly_state, remaining_sections());
             let runtime = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload)),
+                PreloadedBlob::Data(envelope_with_payload(&payload)),
             ))
             .unwrap_or_else(|error| panic!("orderlyState {orderly_state:#06x}: {error:#x}"));
             assert!(
@@ -2061,7 +2065,7 @@ mod tests {
         let payload = payload_with_orderly_state(0x0001, remaining_sections());
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -2072,7 +2076,7 @@ mod tests {
         let payload = payload_with_orderly_state(0x0000, remaining_sections_with_su_state());
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -2083,14 +2087,14 @@ mod tests {
         let payload = payload_with_orderly_state(0x0000, remaining_sections_with_su_state());
         main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_v2_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_v2_with_payload(&payload)),
         ))
         .expect("version 2 always carries the sections");
 
         let payload = payload_with_orderly_state(0x0000, remaining_sections());
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_v2_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_v2_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -2102,7 +2106,7 @@ mod tests {
         payload.push(0xee);
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_TAG);
@@ -2114,7 +2118,7 @@ mod tests {
         payload.truncate(payload.len() - 3);
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_INSUFFICIENT);
@@ -2127,7 +2131,7 @@ mod tests {
         payload.extend_from_slice(&[0x01, 0x00, 0x04, 0xf1, 0xf2, 0xf3, 0xf4]);
         main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("a nonempty final future block restores");
     }
@@ -2139,7 +2143,7 @@ mod tests {
             let payload = payload_with_orderly_state(0, sections[..len].to_vec());
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload)),
+                PreloadedBlob::Data(envelope_with_payload(&payload)),
             ))
             .unwrap_err();
             assert_eq!(
@@ -2166,7 +2170,7 @@ mod tests {
             let payload = payload_with_orderly_state(0x0001, sections[..len].to_vec());
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_with_payload(&payload)),
+                PreloadedBlob::Data(envelope_with_payload(&payload)),
             ))
             .unwrap_err();
             assert_eq!(error, TPM_RC_INSUFFICIENT, "truncated at {len}");
@@ -2198,7 +2202,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, crate::library::constants::TPM_RC_HANDLE);
@@ -2219,7 +2223,7 @@ mod tests {
         let payload = payload_with_orderly_state(0, sections);
         main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_v1_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_v1_with_payload(&payload)),
         ))
         .expect("a version-1 envelope restores");
     }
@@ -2229,7 +2233,7 @@ mod tests {
         for (profile, level) in [(NULL_PROFILE_LEVEL_1, 1), (DEFAULT_PROFILE_LEVEL_7, 7)] {
             let runtime = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_v4_with_profile(profile, &valid_payload())),
+                PreloadedBlob::Data(envelope_v4_with_profile(profile, &valid_payload())),
             ))
             .unwrap_or_else(|error| {
                 panic!("profile {:?}: {error:#x}", String::from_utf8_lossy(profile))
@@ -2251,7 +2255,7 @@ mod tests {
         ] {
             let error = main_init(context(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(envelope_v4_with_profile(profile, &valid_payload())),
+                PreloadedBlob::Data(envelope_v4_with_profile(profile, &valid_payload())),
             ))
             .unwrap_err();
             assert_eq!(
@@ -2269,7 +2273,7 @@ mod tests {
         payload[2] = 0xde;
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_v4_with_profile(b"garbage", &payload)),
+            PreloadedBlob::Data(envelope_v4_with_profile(b"garbage", &payload)),
         ))
         .unwrap_err();
         assert_eq!(error, crate::library::constants::TPM_RC_NO_RESULT);
@@ -2299,7 +2303,7 @@ mod tests {
 
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_v4_with_profile(NULL_PROFILE_LEVEL_1, &payload)),
+            PreloadedBlob::Data(envelope_v4_with_profile(NULL_PROFILE_LEVEL_1, &payload)),
         ))
         .unwrap_err();
         assert_eq!(
@@ -2310,7 +2314,7 @@ mod tests {
 
         main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_v4_with_profile(DEFAULT_PROFILE_LEVEL_7, &payload)),
+            PreloadedBlob::Data(envelope_v4_with_profile(DEFAULT_PROFILE_LEVEL_7, &payload)),
         ))
         .expect("level 7 charges the re-marshalled size and fits");
     }
@@ -2320,7 +2324,7 @@ mod tests {
         let payload = payload_with_persistent_objects(65);
         main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_v4_with_profile(NULL_PROFILE_LEVEL_1, &payload)),
+            PreloadedBlob::Data(envelope_v4_with_profile(NULL_PROFILE_LEVEL_1, &payload)),
         ))
         .expect("65 legacy objects fit exactly");
     }
@@ -2337,7 +2341,7 @@ mod tests {
                     tpm_nvram_loaddata: Some(loaddata_retry),
                     ..LibtpmsCallbacks::empty()
                 },
-                CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+                PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             ))
             .unwrap_or_else(|error| panic!("attempt {attempt}: {error:#x}"));
             assert!(runtime.manufactured, "attempt {attempt}");
@@ -2357,7 +2361,7 @@ mod tests {
                     tpm_nvram_loaddata: Some(loaddata_retry),
                     ..LibtpmsCallbacks::empty()
                 },
-                CachedBlob::Data(blob.clone()),
+                PreloadedBlob::Data(blob.clone()),
             ))
             .unwrap_err();
             assert_eq!(error, TPM_RC_BAD_TAG, "attempt {attempt}");
@@ -2373,8 +2377,11 @@ mod tests {
     fn runtime_owns_all_state_after_the_blob_is_dropped() {
         let runtime = {
             let blob = VALID_ENVELOPE.to_vec();
-            main_init(context(LibtpmsCallbacks::empty(), CachedBlob::Data(blob)))
-                .expect("the valid envelope restores")
+            main_init(context(
+                LibtpmsCallbacks::empty(),
+                PreloadedBlob::Data(blob),
+            ))
+            .expect("the valid envelope restores")
         };
         assert_eq!(runtime.nv_memory.len(), runtime::NV_MEMORY_SIZE);
         assert_eq!(
@@ -2389,7 +2396,7 @@ mod tests {
         let payload = payload_with_orderly_state(0x0001, remaining_sections_with_su_state());
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("the SU-state blob restores");
         assert_eq!(runtime.context_slot_mask, Some(0xffff));
@@ -2398,7 +2405,7 @@ mod tests {
         let payload = payload_with_orderly_state(0, remaining_sections());
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("the non-SU blob restores");
         assert_eq!(runtime.context_slot_mask, None);
@@ -2418,7 +2425,7 @@ mod tests {
         };
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
+            PreloadedBlob::Data(envelope_with_payload(&payload_with_compat_tail(
                 compat.bytes(),
             ))),
         ))
@@ -2454,7 +2461,7 @@ mod tests {
         payload.extend_from_slice(&prefix.bytes());
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("the marked blob restores");
         let formatted = format!("{runtime:?} {:?}", runtime.state());
@@ -2525,7 +2532,7 @@ mod tests {
             tailless_v2_payload_with_active_sha256(state::PcrSaveFixture::default().bytes());
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("all banks present restores");
         assert!(runtime.state().persistent.shadow_pcr_allocated.is_none());
@@ -2540,14 +2547,14 @@ mod tests {
         let payload = tailless_v2_payload_with_active_sha256(pcr_save.bytes());
         let error = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(envelope_with_payload(&payload)),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_BAD_PARAMETER);
     }
 
     #[test]
-    fn cached_permanent_missing_volatile_runs_the_upstream_callback_sequence() {
+    fn preloaded_permanent_missing_volatile_runs_the_upstream_callback_sequence() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2561,9 +2568,9 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
-        .expect("cached permanent state with no volatile state restores");
+        .expect("preloaded permanent state with no volatile state restores");
         assert_eq!(
             events(),
             [
@@ -2586,7 +2593,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_permanent_performs_no_cached_state_commit() {
+    fn backend_permanent_performs_no_preloaded_state_commit() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2600,7 +2607,7 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .expect("backend permanent state restores");
         assert_eq!(
@@ -2615,12 +2622,12 @@ mod tests {
         );
         assert!(
             STORED_BLOBS.lock().unwrap().is_empty(),
-            "no cached-state NvCommit for backend-loaded permanent state"
+            "no preloaded-state NvCommit for backend-loaded permanent state"
         );
     }
 
     #[test]
-    fn cached_empty_volatile_skips_the_backend_volatile_load() {
+    fn preloaded_empty_volatile_skips_the_backend_volatile_load() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2630,14 +2637,14 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            CachedBlob::Empty,
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Empty,
         ))
-        .expect("cached-empty volatile state restores permanent-only");
+        .expect("preloaded-empty volatile state restores permanent-only");
         assert_eq!(
             events(),
             ["load-retry:permall"],
-            "an explicitly empty cached volatile entry suppresses the \
+            "an explicitly empty preloaded volatile entry suppresses the \
              backend volatile load"
         );
     }
@@ -2653,7 +2660,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_retry),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
         .expect("TPM_RETRY for volatilestate restores permanent-only");
         assert_eq!(events(), ["load-retry:permall", "load-retry:volatilestate"]);
@@ -2661,7 +2668,7 @@ mod tests {
     }
 
     #[test]
-    fn undecodable_cached_volatile_blob_fails_with_the_failure_mode_result() {
+    fn undecodable_preloaded_volatile_blob_fails_with_the_failure_mode_result() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2673,8 +2680,8 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            CachedBlob::Data(vec![0xd0, 0x0d]),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(vec![0xd0, 0x0d]),
         ))
         .unwrap_err();
         assert_eq!(
@@ -2684,8 +2691,8 @@ mod tests {
         assert_eq!(
             events(),
             ["load-retry:permall"],
-            "cached volatile data needs no backend load, and the failed \
-             volatile phase suppresses the cached-state commit"
+            "preloaded volatile data needs no backend load, and the failed \
+             volatile phase suppresses the preloaded-state commit"
         );
         assert!(STORED_BLOBS.lock().unwrap().is_empty());
     }
@@ -2702,7 +2709,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_volatile_only),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_FAILURE);
@@ -2714,7 +2721,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_found_with_volatile),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_FAILURE);
@@ -2739,7 +2746,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_volatile_error),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
         .expect("a volatile load error restores permanent-only, like upstream");
         assert_eq!(events(), ["load:permall", "load:volatilestate"]);
@@ -2756,7 +2763,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_volatile_success_null),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
         .expect("a bufferless volatile success restores permanent-only");
         assert_eq!(events(), ["load:permall", "load:volatilestate"]);
@@ -2774,9 +2781,9 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_error),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
-        .expect("a failed cached-state commit is ignored, like upstream");
+        .expect("a failed preloaded-state commit is ignored, like upstream");
         assert_eq!(
             events(),
             [
@@ -2800,11 +2807,11 @@ mod tests {
         };
         let blob = envelope_with_payload(&payload_with_compat_tail(shadow_tail.bytes()));
 
-        for cached_volatile in [CachedBlob::Missing, CachedBlob::Empty] {
+        for preloaded_volatile in [PreloadedBlob::Missing, PreloadedBlob::Empty] {
             let runtime = main_init(context_with_volatile(
                 LibtpmsCallbacks::empty(),
-                CachedBlob::Data(blob.clone()),
-                cached_volatile,
+                PreloadedBlob::Data(blob.clone()),
+                preloaded_volatile,
             ))
             .expect("permanent-only initialization succeeds");
             let expected_shadow = persistent::OwnedPcrAllocation {
@@ -2856,7 +2863,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_cached_volatile_blob_restores_merges_and_commits() {
+    fn valid_preloaded_volatile_blob_restores_merges_and_commits() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2868,15 +2875,15 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            CachedBlob::Data(valid_volatile_state_fixture()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(valid_volatile_state_fixture()),
         ))
         .expect("a valid volatile blob restores");
         assert_eq!(
             events(),
             ["load-retry:permall", "store:permall:0"],
-            "cached volatile data needs no backend load and the \
-             cached-state commit still runs"
+            "preloaded volatile data needs no backend load and the \
+             preloaded-state commit still runs"
         );
 
         let volatile_state = runtime.volatile.as_ref().expect("volatile state merged");
@@ -2915,8 +2922,8 @@ mod tests {
         let blob = include_bytes!("testdata/volatile_state_v4.bin").to_vec();
         let runtime = main_init(context_with_volatile(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            CachedBlob::Data(blob),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(blob),
         ))
         .expect("the C-generated volatile fixture restores");
         let volatile_state = runtime.volatile.as_ref().expect("volatile state merged");
@@ -2935,8 +2942,8 @@ mod tests {
         let host = recording_clock();
         let runtime = main_init(Tpm2InitContext {
             callbacks: LibtpmsCallbacks::empty(),
-            cached_permanent: CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            cached_volatile: CachedBlob::Data(valid_volatile_state_fixture()),
+            preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            preloaded_volatile: PreloadedBlob::Data(valid_volatile_state_fixture()),
             configured_profile: None,
             entropy: deterministic_entropy,
             clock: &host,
@@ -2973,8 +2980,8 @@ mod tests {
         let host = recording_clock();
         let runtime = main_init(Tpm2InitContext {
             callbacks: LibtpmsCallbacks::empty(),
-            cached_permanent: CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            cached_volatile: CachedBlob::Data(blob),
+            preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            preloaded_volatile: PreloadedBlob::Data(blob),
             configured_profile: None,
             entropy: deterministic_entropy,
             clock: &host,
@@ -3002,7 +3009,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let runtime = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
         .expect("the permanent fixture restores without volatile state");
         assert_eq!(runtime.clock, clock::RuntimeClock::POWER_ON_RESET);
@@ -3016,7 +3023,7 @@ mod tests {
             let host = recording_clock();
             let result = volatile_phase(
                 &host_nvram,
-                CachedBlob::Data(vec![0xd0, 0x0d]),
+                PreloadedBlob::Data(vec![0xd0, 0x0d]),
                 &host,
                 &mut candidate,
             );
@@ -3051,7 +3058,7 @@ mod tests {
             let host = recording_clock();
             let result = volatile_phase(
                 &host_nvram,
-                CachedBlob::Data(payload[..cut].to_vec()),
+                PreloadedBlob::Data(payload[..cut].to_vec()),
                 &host,
                 &mut candidate,
             );
@@ -3082,7 +3089,7 @@ mod tests {
             let host = recording_clock();
             let result = volatile_phase(
                 &host_nvram,
-                CachedBlob::Data(blob.clone()),
+                PreloadedBlob::Data(blob.clone()),
                 &host,
                 &mut candidate,
             );
@@ -3110,8 +3117,8 @@ mod tests {
         let run = |host: &clock::RecordingClock| {
             main_init(Tpm2InitContext {
                 callbacks: LibtpmsCallbacks::empty(),
-                cached_permanent: CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-                cached_volatile: CachedBlob::Data(valid_volatile_state_fixture()),
+                preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+                preloaded_volatile: PreloadedBlob::Data(valid_volatile_state_fixture()),
                 configured_profile: None,
                 entropy: deterministic_entropy,
                 clock: host,
@@ -3142,7 +3149,7 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_found_with_valid_volatile),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .expect("backend permanent and volatile state restore");
         assert_eq!(
@@ -3158,7 +3165,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_volatile_data_wins_over_backend_volatile() {
+    fn preloaded_volatile_data_wins_over_backend_volatile() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3168,14 +3175,14 @@ mod tests {
                 tpm_nvram_loaddata: Some(loaddata_found_with_volatile),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
-            CachedBlob::Data(valid_volatile_state_fixture()),
+            PreloadedBlob::Missing,
+            PreloadedBlob::Data(valid_volatile_state_fixture()),
         ))
-        .expect("the cached volatile blob wins over the backend's junk");
+        .expect("the preloaded volatile blob wins over the backend's junk");
         assert_eq!(
             events(),
             ["load-found:permall", "load-found:permall"],
-            "no volatilestate load for cached volatile data"
+            "no volatilestate load for preloaded volatile data"
         );
         assert!(runtime.volatile.is_some());
     }
@@ -3198,8 +3205,8 @@ mod tests {
 
         let runtime = main_init(context_with_volatile(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(blob),
-            CachedBlob::Data(valid_volatile_state_fixture()),
+            PreloadedBlob::Data(blob),
+            PreloadedBlob::Data(valid_volatile_state_fixture()),
         ))
         .expect("the volatile restore succeeds under the shadow allocation");
         let expected_shadow = persistent::OwnedPcrAllocation {
@@ -3261,8 +3268,8 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            CachedBlob::Data(blob),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(blob),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_FAILURE);
@@ -3297,8 +3304,8 @@ mod tests {
                     tpm_nvram_storedata: Some(storedata_recording),
                     ..LibtpmsCallbacks::empty()
                 },
-                CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-                CachedBlob::Data(blob),
+                PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+                PreloadedBlob::Data(blob),
             ))
             .unwrap_err();
             assert_eq!(error, TPM_RC_FAILURE);
@@ -3348,8 +3355,8 @@ mod tests {
 
         let runtime = main_init(context_with_volatile(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(permanent),
-            CachedBlob::Data(volatile_blob),
+            PreloadedBlob::Data(permanent),
+            PreloadedBlob::Data(volatile_blob),
         ))
         .expect("the profile-disabled Camellia session still decodes");
         assert!(
@@ -3371,8 +3378,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let error = main_init(context_with_volatile(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(VALID_ENVELOPE.to_vec()),
-            CachedBlob::Data(volatile::VolatileFixture::default().bytes()),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(volatile::VolatileFixture::default().bytes()),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_FAILURE);
@@ -3476,7 +3483,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_manufacture_backend();
-        let runtime = main_init(context(manufacture_callbacks(), CachedBlob::Missing))
+        let runtime = main_init(context(manufacture_callbacks(), PreloadedBlob::Missing))
             .expect("first boot manufactures");
         assert_eq!(
             events(),
@@ -3512,7 +3519,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_manufacture_backend();
-        let runtime = main_init(context(manufacture_callbacks(), CachedBlob::Missing))
+        let runtime = main_init(context(manufacture_callbacks(), PreloadedBlob::Missing))
             .expect("first boot manufactures");
         let state = runtime.state();
         let persistent = &state.persistent;
@@ -3635,7 +3642,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_manufacture_backend();
         let record = oracle_record();
-        let runtime = main_init(context(manufacture_callbacks(), CachedBlob::Missing))
+        let runtime = main_init(context(manufacture_callbacks(), PreloadedBlob::Missing))
             .expect("first boot manufactures");
         let nv = &runtime.nv_memory;
         assert_eq!(nv.len(), nv::NV_MEMORY_SIZE);
@@ -3688,8 +3695,8 @@ mod tests {
         reset_manufacture_backend();
         let runtime = main_init(context_with_profile(
             manufacture_callbacks(),
-            CachedBlob::Missing,
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
+            PreloadedBlob::Missing,
             Some(br#"{"Name":"default-v1"}"#),
         ))
         .expect("first boot manufactures with the configured profile");
@@ -3714,7 +3721,7 @@ mod tests {
         let mut blobs = Vec::new();
         for _ in 0..2 {
             reset_manufacture_backend();
-            let runtime = main_init(context(manufacture_callbacks(), CachedBlob::Missing))
+            let runtime = main_init(context(manufacture_callbacks(), PreloadedBlob::Missing))
                 .expect("first boot manufactures");
             images.push(runtime.nv_memory.clone());
             blobs.push(STORED_BLOBS.lock().unwrap()[0].1.clone());
@@ -3732,8 +3739,8 @@ mod tests {
             reset_manufacture_backend();
             let error = main_init(Tpm2InitContext {
                 callbacks: manufacture_callbacks(),
-                cached_permanent: CachedBlob::Missing,
-                cached_volatile: CachedBlob::Missing,
+                preloaded_permanent: PreloadedBlob::Missing,
+                preloaded_volatile: PreloadedBlob::Missing,
                 configured_profile: None,
                 entropy: failing_entropy,
                 clock: &TEST_HOST_CLOCK,
@@ -3757,13 +3764,13 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_manufacture_backend();
-        let manufactured = main_init(context(manufacture_callbacks(), CachedBlob::Missing))
+        let manufactured = main_init(context(manufacture_callbacks(), PreloadedBlob::Missing))
             .expect("first boot manufactures");
         let blob = STORED_BLOBS.lock().unwrap()[0].1.clone();
 
         let restored = main_init(context(
             LibtpmsCallbacks::empty(),
-            CachedBlob::Data(blob.clone()),
+            PreloadedBlob::Data(blob.clone()),
         ))
         .expect("the stored blob restores");
         assert!(restored.manufactured);
@@ -3794,7 +3801,7 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_error),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .expect("a failed manufacture commit is ignored, like upstream");
         assert_eq!(
@@ -3839,8 +3846,8 @@ mod tests {
         reset_manufacture_backend();
         let error = main_init(context_with_volatile(
             manufacture_callbacks(),
-            CachedBlob::Missing,
-            CachedBlob::Data(vec![0xd0, 0x0d]),
+            PreloadedBlob::Missing,
+            PreloadedBlob::Data(vec![0xd0, 0x0d]),
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_FAILURE);
@@ -3848,7 +3855,7 @@ mod tests {
             events(),
             &FIRST_BOOT_EVENTS[..6],
             "the manufacture NvCommit and the permanent reload precede \
-             the volatile phase, exactly like upstream; the cached \
+             the volatile phase, exactly like upstream; the preloaded \
              volatile blob needs no backend load"
         );
     }
@@ -3862,8 +3869,8 @@ mod tests {
 
         let first = main_init(context_with_volatile(
             manufacture_callbacks(),
-            CachedBlob::Missing,
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .expect("first boot manufactures");
         assert!(first.was_manufactured);
@@ -3881,8 +3888,8 @@ mod tests {
 
         let runtime = main_init(context_with_volatile(
             manufacture_callbacks(),
-            CachedBlob::Missing,
-            CachedBlob::Data(volatile_blob),
+            PreloadedBlob::Missing,
+            PreloadedBlob::Data(volatile_blob),
         ))
         .expect("the later boot restores permanent and volatile state");
         assert!(!runtime.was_manufactured, "no re-manufacture");
@@ -3962,7 +3969,7 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .expect("the swapped reload blob restores");
         assert_eq!(
@@ -4004,7 +4011,7 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_FAILURE);
@@ -4034,7 +4041,7 @@ mod tests {
                 tpm_nvram_storedata: Some(storedata_recording),
                 ..LibtpmsCallbacks::empty()
             },
-            CachedBlob::Missing,
+            PreloadedBlob::Missing,
         ))
         .unwrap_err();
         assert_eq!(error, TPM_RC_FAILURE);
@@ -4051,18 +4058,18 @@ mod tests {
     }
 
     #[test]
-    fn cached_empty_stores_nothing_even_with_a_storedata_callback() {
+    fn preloaded_empty_stores_nothing_even_with_a_storedata_callback() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_manufacture_backend();
-        let runtime = main_init(context(manufacture_callbacks(), CachedBlob::Empty))
-            .expect("cached-empty powers on");
+        let runtime = main_init(context(manufacture_callbacks(), PreloadedBlob::Empty))
+            .expect("preloaded-empty powers on");
         assert!(!runtime.manufactured && !runtime.was_manufactured);
         assert_eq!(
             events(),
             ["io", "nvram", "load:permall:0", "load:volatilestate:0"],
-            "no NVEnable permall ask, no store: the empty cached state \
+            "no NVEnable permall ask, no store: the empty preloaded state \
              wins before the backend is consulted again"
         );
         assert!(STORED_BLOBS.lock().unwrap().is_empty());
@@ -4075,7 +4082,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_manufacture_backend();
         let record = oracle_record();
-        let runtime = main_init(context(manufacture_callbacks(), CachedBlob::Missing))
+        let runtime = main_init(context(manufacture_callbacks(), PreloadedBlob::Missing))
             .expect("first boot manufactures");
         let formatted = format!("{runtime:?} {:?}", runtime.state());
         for (label, secret) in [

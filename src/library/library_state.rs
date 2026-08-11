@@ -5,15 +5,15 @@ use crate::ffi_types::{
     LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion,
 };
 
-use super::cached_state::CachedState;
-#[cfg(feature = "tpm2")]
-use super::cached_state::StateKind;
 #[cfg(feature = "tpm2")]
 use super::constants::TPM_INVALID_POSTINIT;
 use super::constants::{
     TPM_BUFFER_MAX, TPM_FAIL, TPM_SUCCESS, TPMLIB_TPM_VERSION_1_2, TPMLIB_TPM_VERSION_2,
     TPMPROP_TPM_BUFFER_MAX,
 };
+use super::preloaded_state::PreloadedState;
+#[cfg(feature = "tpm2")]
+use super::state_blob::StateBlobKind;
 
 #[cfg(feature = "tpm2")]
 use super::tpm2;
@@ -27,7 +27,7 @@ pub enum TpmVersion {
 struct LibraryState {
     selected: TpmVersion,
     version_locked: bool,
-    cached_state: CachedState,
+    preloaded_state: PreloadedState,
     callbacks: LibtpmsCallbacks,
     #[cfg(feature = "tpm2")]
     configured_profile: Option<Vec<u8>>,
@@ -42,7 +42,7 @@ impl LibraryState {
         Self {
             selected: TpmVersion::V1_2,
             version_locked: false,
-            cached_state: CachedState::new(),
+            preloaded_state: PreloadedState::new(),
             callbacks: LibtpmsCallbacks::empty(),
             #[cfg(feature = "tpm2")]
             configured_profile: None,
@@ -63,14 +63,14 @@ impl LibraryState {
             _ => return TPM_FAIL,
         };
         if self.selected != requested {
-            self.clear_cached_state();
+            self.clear_preloaded_state();
         }
         self.selected = requested;
         TPM_SUCCESS
     }
 
-    fn clear_cached_state(&mut self) {
-        self.cached_state.clear_all();
+    fn clear_preloaded_state(&mut self) {
+        self.preloaded_state.clear_all();
     }
 }
 
@@ -104,8 +104,8 @@ impl Library {
         #[cfg(feature = "tpm2")]
         let context = tpm2::Tpm2InitContext {
             callbacks: state.callbacks,
-            cached_permanent: state.cached_state.get(StateKind::Permanent).clone(),
-            cached_volatile: state.cached_state.get(StateKind::Volatile).clone(),
+            preloaded_permanent: state.preloaded_state.get(StateBlobKind::Permanent).clone(),
+            preloaded_volatile: state.preloaded_state.get(StateBlobKind::Volatile).clone(),
             configured_profile: state.configured_profile.clone(),
             #[cfg(not(test))]
             entropy: tpm2::os_entropy,
@@ -120,8 +120,8 @@ impl Library {
             TpmVersion::V2_0 => match tpm2::main_init(context) {
                 Ok(runtime) => {
                     let mut state = self.lock_state();
-                    state.cached_state.take(StateKind::Permanent);
-                    state.cached_state.take(StateKind::Volatile);
+                    state.preloaded_state.take(StateBlobKind::Permanent);
+                    state.preloaded_state.take(StateBlobKind::Volatile);
                     state.tpm2_runtime = Some(runtime);
                     TPM_SUCCESS
                 }
@@ -232,8 +232,8 @@ static LIBRARY: Library = Library::new();
 mod tests {
     use super::*;
     #[cfg(feature = "tpm2")]
-    use crate::library::cached_state::CachedBlob;
-    use crate::library::cached_state::StateKind;
+    use crate::library::preloaded_state::PreloadedBlob;
+    use crate::library::state_blob::StateBlobKind;
 
     #[test]
     fn unknown_version_fails() {
@@ -264,7 +264,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn reselecting_same_version_keeps_cached_state() {
+    fn reselecting_same_version_keeps_preloaded_state() {
         let library = Library::new();
         assert_eq!(
             library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
@@ -272,8 +272,8 @@ mod tests {
         );
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, vec![1, 2, 3]);
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, vec![1, 2, 3]);
         assert_eq!(
             library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
             TPM_SUCCESS
@@ -281,8 +281,8 @@ mod tests {
         assert!(
             library
                 .lock_state()
-                .cached_state
-                .is_present(StateKind::Permanent)
+                .preloaded_state
+                .is_present(StateBlobKind::Permanent)
         );
     }
 
@@ -311,19 +311,19 @@ mod tests {
     }
 
     #[test]
-    fn terminate_without_init_is_harmless_and_keeps_cached_state() {
+    fn terminate_without_init_is_harmless_and_keeps_preloaded_state() {
         let library = Library::new();
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, vec![1, 2, 3]);
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, vec![1, 2, 3]);
         library.terminate();
         assert!(!library.lock_state().version_locked);
         assert!(
             library
                 .lock_state()
-                .cached_state
-                .is_present(StateKind::Permanent),
+                .preloaded_state
+                .is_present(StateBlobKind::Permanent),
             "C does not clear blobs"
         );
     }
@@ -407,7 +407,7 @@ mod tests {
 
     #[cfg(all(feature = "tpm1", feature = "tpm2"))]
     #[test]
-    fn switching_versions_clears_cached_state() {
+    fn switching_versions_clears_preloaded_state() {
         let library = Library::new();
         assert_eq!(
             library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
@@ -415,25 +415,25 @@ mod tests {
         );
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, vec![1, 2, 3]);
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, vec![1, 2, 3]);
         library
             .lock_state()
-            .cached_state
-            .set_empty(StateKind::Volatile);
+            .preloaded_state
+            .set_empty(StateBlobKind::Volatile);
         assert_eq!(
             library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
             TPM_SUCCESS
         );
         let state = library.lock_state();
-        assert!(!state.cached_state.is_present(StateKind::Permanent));
-        assert!(!state.cached_state.is_present(StateKind::Volatile));
-        assert!(!state.cached_state.is_present(StateKind::SaveState));
+        assert!(!state.preloaded_state.is_present(StateBlobKind::Permanent));
+        assert!(!state.preloaded_state.is_present(StateBlobKind::Volatile));
+        assert!(!state.preloaded_state.is_present(StateBlobKind::SaveState));
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn cached_empty_initializes_without_manufacture_and_is_consumed() {
+    fn preloaded_empty_initializes_without_manufacture_and_is_consumed() {
         let library = Library::new();
         assert_eq!(
             library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
@@ -441,12 +441,15 @@ mod tests {
         );
         library
             .lock_state()
-            .cached_state
-            .set_empty(StateKind::Permanent);
+            .preloaded_state
+            .set_empty(StateBlobKind::Permanent);
         assert_eq!(library.main_init(), TPM_SUCCESS);
         assert_eq!(
-            *library.lock_state().cached_state.get(StateKind::Permanent),
-            CachedBlob::Missing,
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Permanent),
+            PreloadedBlob::Missing,
             "the staged entry is consumed on success"
         );
         assert!(library.lock_state().tpm2_runtime.is_some());
@@ -456,7 +459,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn failed_cached_empty_init_preserves_the_staged_entry() {
+    fn failed_preloaded_empty_init_preserves_the_staged_entry() {
         let library = Library::new();
         assert_eq!(
             library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
@@ -464,24 +467,30 @@ mod tests {
         );
         library
             .lock_state()
-            .cached_state
-            .set_empty(StateKind::Permanent);
+            .preloaded_state
+            .set_empty(StateBlobKind::Permanent);
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Volatile, vec![0xd0, 0x0d]);
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, vec![0xd0, 0x0d]);
         assert_eq!(
             library.main_init(),
             crate::library::constants::TPM_RC_FAILURE
         );
         assert_eq!(
-            *library.lock_state().cached_state.get(StateKind::Permanent),
-            CachedBlob::Empty,
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Permanent),
+            PreloadedBlob::Empty,
             "the staged entry must survive a failed MainInit"
         );
         assert_eq!(
-            *library.lock_state().cached_state.get(StateKind::Volatile),
-            CachedBlob::Data(vec![0xd0, 0x0d])
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Volatile),
+            PreloadedBlob::Data(vec![0xd0, 0x0d])
         );
         assert!(library.lock_state().tpm2_runtime.is_none());
     }
@@ -499,8 +508,8 @@ mod tests {
         let blob = crate::library::tpm2::valid_permanent_state_fixture();
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, blob.clone());
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, blob.clone());
         assert_eq!(
             library.get_info(INFO_ACTIVE_PROFILE).as_deref(),
             Some("{}"),
@@ -508,8 +517,11 @@ mod tests {
         );
         assert_eq!(library.main_init(), TPM_SUCCESS);
         assert_eq!(
-            *library.lock_state().cached_state.get(StateKind::Permanent),
-            CachedBlob::Missing,
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Permanent),
+            PreloadedBlob::Missing,
             "the staged blob is consumed on success"
         );
         assert!(library.lock_state().tpm2_runtime.is_some());
@@ -569,7 +581,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn commit_phase_failure_preserves_cached_state_and_publishes_nothing() {
+    fn commit_phase_failure_preserves_preloaded_state_and_publishes_nothing() {
         let library = Library::new();
         assert_eq!(
             library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
@@ -578,13 +590,16 @@ mod tests {
         let blob = crate::library::tpm2::commit_failing_permanent_state_fixture();
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, blob.clone());
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, blob.clone());
         for attempt in 0..2 {
             assert_eq!(library.main_init(), TPM_FAIL, "attempt {attempt}");
             assert_eq!(
-                *library.lock_state().cached_state.get(StateKind::Permanent),
-                CachedBlob::Data(blob.clone()),
+                *library
+                    .lock_state()
+                    .preloaded_state
+                    .get(StateBlobKind::Permanent),
+                PreloadedBlob::Data(blob.clone()),
                 "attempt {attempt}: the staged blob survives a commit failure"
             );
             assert!(library.lock_state().tpm2_runtime.is_none());
@@ -602,8 +617,8 @@ mod tests {
         let blob = crate::library::tpm2::valid_permanent_state_fixture();
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, blob);
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, blob);
         assert_eq!(library.main_init(), TPM_SUCCESS);
         assert!(library.lock_state().tpm2_runtime.is_some());
         assert_eq!(
@@ -628,22 +643,22 @@ mod tests {
         let blob = crate::library::tpm2::valid_permanent_state_fixture();
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, blob);
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, blob);
         library
             .lock_state()
-            .cached_state
-            .set_empty(StateKind::Volatile);
+            .preloaded_state
+            .set_empty(StateBlobKind::Volatile);
         assert_eq!(library.main_init(), TPM_SUCCESS);
         let state = library.lock_state();
         assert_eq!(
-            *state.cached_state.get(StateKind::Permanent),
-            CachedBlob::Missing
+            *state.preloaded_state.get(StateBlobKind::Permanent),
+            PreloadedBlob::Missing
         );
         assert_eq!(
-            *state.cached_state.get(StateKind::Volatile),
-            CachedBlob::Missing,
-            "the cached-empty volatile entry is consumed on success"
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Missing,
+            "the preloaded-empty volatile entry is consumed on success"
         );
     }
 
@@ -661,12 +676,12 @@ mod tests {
         let volatile = vec![0xd0, 0x0d];
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, permanent.clone());
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, permanent.clone());
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Volatile, volatile.clone());
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, volatile.clone());
         for attempt in 0..2 {
             assert_eq!(
                 library.main_init(),
@@ -675,13 +690,13 @@ mod tests {
             );
             let state = library.lock_state();
             assert_eq!(
-                *state.cached_state.get(StateKind::Permanent),
-                CachedBlob::Data(permanent.clone()),
+                *state.preloaded_state.get(StateBlobKind::Permanent),
+                PreloadedBlob::Data(permanent.clone()),
                 "attempt {attempt}: the staged permanent blob survives"
             );
             assert_eq!(
-                *state.cached_state.get(StateKind::Volatile),
-                CachedBlob::Data(volatile.clone()),
+                *state.preloaded_state.get(StateBlobKind::Volatile),
+                PreloadedBlob::Data(volatile.clone()),
                 "attempt {attempt}: the staged volatile blob survives"
             );
             assert!(state.tpm2_runtime.is_none());
@@ -708,12 +723,12 @@ mod tests {
         volatile[last] ^= 0xff;
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, permanent.clone());
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, permanent.clone());
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Volatile, volatile.clone());
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, volatile.clone());
         for attempt in 0..2 {
             assert_eq!(
                 library.main_init(),
@@ -722,13 +737,13 @@ mod tests {
             );
             let state = library.lock_state();
             assert_eq!(
-                *state.cached_state.get(StateKind::Permanent),
-                CachedBlob::Data(permanent.clone()),
+                *state.preloaded_state.get(StateBlobKind::Permanent),
+                PreloadedBlob::Data(permanent.clone()),
                 "attempt {attempt}: the staged permanent blob survives"
             );
             assert_eq!(
-                *state.cached_state.get(StateKind::Volatile),
-                CachedBlob::Data(volatile.clone()),
+                *state.preloaded_state.get(StateBlobKind::Volatile),
+                PreloadedBlob::Data(volatile.clone()),
                 "attempt {attempt}: the staged volatile blob survives"
             );
             assert!(state.tpm2_runtime.is_none());
@@ -748,22 +763,22 @@ mod tests {
         for round in 0..2 {
             library
                 .lock_state()
-                .cached_state
-                .set_data(StateKind::Permanent, permanent.clone());
+                .preloaded_state
+                .set_data(StateBlobKind::Permanent, permanent.clone());
             library
                 .lock_state()
-                .cached_state
-                .set_data(StateKind::Volatile, volatile.clone());
+                .preloaded_state
+                .set_data(StateBlobKind::Volatile, volatile.clone());
             assert_eq!(library.main_init(), TPM_SUCCESS, "round {round}");
             let state = library.lock_state();
             assert_eq!(
-                *state.cached_state.get(StateKind::Permanent),
-                CachedBlob::Missing,
+                *state.preloaded_state.get(StateBlobKind::Permanent),
+                PreloadedBlob::Missing,
                 "round {round}: the permanent entry is consumed"
             );
             assert_eq!(
-                *state.cached_state.get(StateKind::Volatile),
-                CachedBlob::Missing,
+                *state.preloaded_state.get(StateBlobKind::Volatile),
+                PreloadedBlob::Missing,
                 "round {round}: the volatile entry is consumed"
             );
             assert!(state.tpm2_runtime.is_some(), "round {round}");
@@ -1028,16 +1043,16 @@ mod tests {
         assert_eq!(library.set_profile(Some(profile)), TPM_SUCCESS);
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Volatile, vec![0xd0, 0x0d]);
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, vec![0xd0, 0x0d]);
 
         for attempt in 0..2 {
             assert_eq!(library.main_init(), TPM_FAIL, "attempt {attempt}");
             let state = library.lock_state();
             assert!(state.tpm2_runtime.is_none(), "attempt {attempt}");
             assert_eq!(
-                *state.cached_state.get(StateKind::Volatile),
-                CachedBlob::Data(vec![0xd0, 0x0d]),
+                *state.preloaded_state.get(StateBlobKind::Volatile),
+                PreloadedBlob::Data(vec![0xd0, 0x0d]),
                 "attempt {attempt}: the staged volatile entry survives"
             );
             assert_eq!(
@@ -1061,7 +1076,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn failed_main_init_does_not_consume_cached_data() {
+    fn failed_main_init_does_not_consume_preloaded_data() {
         use crate::library::constants::TPM_RC_INSUFFICIENT;
 
         let library = Library::new();
@@ -1071,12 +1086,15 @@ mod tests {
         );
         library
             .lock_state()
-            .cached_state
-            .set_data(StateKind::Permanent, vec![4, 5, 6]);
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, vec![4, 5, 6]);
         assert_eq!(library.main_init(), TPM_RC_INSUFFICIENT);
         assert_eq!(
-            *library.lock_state().cached_state.get(StateKind::Permanent),
-            CachedBlob::Data(vec![4, 5, 6]),
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Permanent),
+            PreloadedBlob::Data(vec![4, 5, 6]),
             "the staged bytes must survive a failed MainInit unmodified"
         );
         assert!(!library.was_manufactured());

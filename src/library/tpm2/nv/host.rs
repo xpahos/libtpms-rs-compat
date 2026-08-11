@@ -3,8 +3,8 @@ use core::ptr;
 
 use crate::ffi_support::MallocBuffer;
 use crate::ffi_types::{LibtpmsCallbacks, TpmBool, TpmResult};
-use crate::library::cached_state::StateKind;
 use crate::library::constants::{TPM_FAIL, TPM_RETRY, TPM_SUCCESS};
+use crate::library::state_blob::StateBlobKind;
 
 const TPM_NUMBER: u32 = 0;
 
@@ -23,11 +23,11 @@ unsafe fn adopt_loaddata_buffer(
     }
 }
 
-fn state_name(kind: StateKind) -> &'static CStr {
+fn state_name(kind: StateBlobKind) -> &'static CStr {
     match kind {
-        StateKind::Permanent => c"permall",
-        StateKind::Volatile => c"volatilestate",
-        StateKind::SaveState => c"savestate",
+        StateBlobKind::Permanent => c"permall",
+        StateBlobKind::Volatile => c"volatilestate",
+        StateBlobKind::SaveState => c"savestate",
     }
 }
 
@@ -74,7 +74,10 @@ impl HostNvram {
         }
     }
 
-    pub(in crate::library::tpm2) fn load(&self, kind: StateKind) -> Result<NvramLoad, TpmResult> {
+    pub(in crate::library::tpm2) fn load(
+        &self,
+        kind: StateBlobKind,
+    ) -> Result<NvramLoad, TpmResult> {
         let Some(loaddata) = self.callbacks.tpm_nvram_loaddata else {
             return Ok(NvramLoad::NotRegistered);
         };
@@ -111,7 +114,7 @@ impl HostNvram {
 
     pub(in crate::library::tpm2) fn store(
         &self,
-        kind: StateKind,
+        kind: StateBlobKind,
         data: &[u8],
     ) -> Result<NvramWrite, TpmResult> {
         let Some(storedata) = self.callbacks.tpm_nvram_storedata else {
@@ -132,7 +135,7 @@ impl HostNvram {
     #[allow(dead_code)]
     pub(in crate::library::tpm2) fn delete(
         &self,
-        kind: StateKind,
+        kind: StateBlobKind,
         must_exist: bool,
     ) -> Result<NvramWrite, TpmResult> {
         let Some(deletename) = self.callbacks.tpm_nvram_deletename else {
@@ -167,7 +170,7 @@ impl HostNvram {
                 &mut data,
                 &mut length,
                 TPM_NUMBER,
-                state_name(StateKind::Permanent).as_ptr(),
+                state_name(StateBlobKind::Permanent).as_ptr(),
             )
         };
         // SAFETY: same ownership-transfer contract as `load`; the guard
@@ -342,9 +345,15 @@ mod tests {
 
     #[test]
     fn state_names_match_upstream() {
-        assert_eq!(state_name(StateKind::Permanent).to_bytes(), b"permall");
-        assert_eq!(state_name(StateKind::Volatile).to_bytes(), b"volatilestate");
-        assert_eq!(state_name(StateKind::SaveState).to_bytes(), b"savestate");
+        assert_eq!(state_name(StateBlobKind::Permanent).to_bytes(), b"permall");
+        assert_eq!(
+            state_name(StateBlobKind::Volatile).to_bytes(),
+            b"volatilestate"
+        );
+        assert_eq!(
+            state_name(StateBlobKind::SaveState).to_bytes(),
+            b"savestate"
+        );
     }
 
     #[test]
@@ -375,7 +384,7 @@ mod tests {
     fn load_without_callback_is_not_registered() {
         let nvram = nvram_with(LibtpmsCallbacks::empty());
         assert_eq!(
-            nvram.load(StateKind::Permanent),
+            nvram.load(StateBlobKind::Permanent),
             Ok(NvramLoad::NotRegistered)
         );
     }
@@ -388,7 +397,7 @@ mod tests {
             tpm_nvram_loaddata: Some(loaddata_retry),
             ..LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.load(StateKind::Volatile), Ok(NvramLoad::Missing));
+        assert_eq!(nvram.load(StateBlobKind::Volatile), Ok(NvramLoad::Missing));
         assert_eq!(
             *LOAD_CALLS.lock().unwrap(),
             [(0, "volatilestate".to_owned())]
@@ -404,9 +413,9 @@ mod tests {
             ..LibtpmsCallbacks::empty()
         });
         for kind in [
-            StateKind::Permanent,
-            StateKind::Volatile,
-            StateKind::SaveState,
+            StateBlobKind::Permanent,
+            StateBlobKind::Volatile,
+            StateBlobKind::SaveState,
         ] {
             assert_eq!(nvram.load(kind), Ok(NvramLoad::Missing));
         }
@@ -428,7 +437,7 @@ mod tests {
             ..LibtpmsCallbacks::empty()
         });
         assert_eq!(
-            nvram.load(StateKind::Permanent),
+            nvram.load(StateBlobKind::Permanent),
             Ok(NvramLoad::Data(vec![1, 2, 3]))
         );
     }
@@ -440,7 +449,7 @@ mod tests {
             ..LibtpmsCallbacks::empty()
         });
         assert_eq!(
-            nvram.load(StateKind::SaveState),
+            nvram.load(StateBlobKind::SaveState),
             Ok(NvramLoad::SuccessWithoutData)
         );
     }
@@ -451,7 +460,7 @@ mod tests {
             tpm_nvram_loaddata: Some(loaddata_error_null),
             ..LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.load(StateKind::Permanent), Err(77));
+        assert_eq!(nvram.load(StateBlobKind::Permanent), Err(77));
     }
 
     #[test]
@@ -460,7 +469,7 @@ mod tests {
             tpm_nvram_loaddata: Some(loaddata_retry_with_buffer),
             ..LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.load(StateKind::Permanent), Ok(NvramLoad::Missing));
+        assert_eq!(nvram.load(StateBlobKind::Permanent), Ok(NvramLoad::Missing));
     }
 
     #[test]
@@ -469,14 +478,14 @@ mod tests {
             tpm_nvram_loaddata: Some(loaddata_error_with_buffer),
             ..LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.load(StateKind::Permanent), Err(77));
+        assert_eq!(nvram.load(StateBlobKind::Permanent), Err(77));
     }
 
     #[test]
     fn store_without_callback_is_not_registered() {
         let nvram = nvram_with(LibtpmsCallbacks::empty());
         assert_eq!(
-            nvram.store(StateKind::Permanent, &[1]),
+            nvram.store(StateBlobKind::Permanent, &[1]),
             Ok(NvramWrite::NotRegistered)
         );
     }
@@ -490,7 +499,7 @@ mod tests {
             ..LibtpmsCallbacks::empty()
         });
         assert_eq!(
-            nvram.store(StateKind::SaveState, &[9, 8, 7]),
+            nvram.store(StateBlobKind::SaveState, &[9, 8, 7]),
             Ok(NvramWrite::Done)
         );
         assert_eq!(
@@ -505,14 +514,14 @@ mod tests {
             tpm_nvram_storedata: Some(storedata_error),
             ..LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.store(StateKind::Permanent, &[1]), Err(88));
+        assert_eq!(nvram.store(StateBlobKind::Permanent, &[1]), Err(88));
     }
 
     #[test]
     fn delete_without_callback_is_not_registered() {
         let nvram = nvram_with(LibtpmsCallbacks::empty());
         assert_eq!(
-            nvram.delete(StateKind::Volatile, true),
+            nvram.delete(StateBlobKind::Volatile, true),
             Ok(NvramWrite::NotRegistered)
         );
     }
@@ -526,11 +535,11 @@ mod tests {
             ..LibtpmsCallbacks::empty()
         });
         assert_eq!(
-            nvram.delete(StateKind::Volatile, true),
+            nvram.delete(StateBlobKind::Volatile, true),
             Ok(NvramWrite::Done)
         );
         assert_eq!(
-            nvram.delete(StateKind::Permanent, false),
+            nvram.delete(StateBlobKind::Permanent, false),
             Ok(NvramWrite::Done)
         );
         assert_eq!(
@@ -548,7 +557,7 @@ mod tests {
             tpm_nvram_deletename: Some(deletename_error),
             ..LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.delete(StateKind::SaveState, false), Err(99));
+        assert_eq!(nvram.delete(StateBlobKind::SaveState, false), Err(99));
     }
 
     #[test]

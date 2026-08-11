@@ -1,6 +1,7 @@
-mod cached_state;
 mod constants;
-mod state;
+mod library_state;
+mod preloaded_state;
+mod state_blob;
 #[cfg(feature = "tpm2")]
 mod tpm2;
 
@@ -10,7 +11,7 @@ use crate::ffi_types::{
     LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion,
 };
 pub use constants::{TPM_FAIL, TPM_SUCCESS};
-use state::Library;
+use library_state::Library;
 
 pub fn get_version() -> u32 {
     crate::version::TPM_LIBRARY_VERSION
