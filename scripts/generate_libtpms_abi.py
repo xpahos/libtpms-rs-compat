@@ -330,7 +330,7 @@ _NAME_TOKEN_RE = re.compile(
 
 
 def rust_impl_name(c_name):
-    """Derive the snake_case name of the crate::library implementation.
+    """Derive the snake_case name of the crate::ffi_api adapter.
 
     ``TPMLIB_ChooseTPMVersion`` -> ``choose_tpm_version``,
     ``TPMLIB_VolatileAll_Store`` -> ``volatile_all_store``.
@@ -847,16 +847,29 @@ def _render_body(func):
     impl_name = rust_impl_name(func.name)
     if not func.params:
         # `ffi_guard(f)` instead of `ffi_guard(|| f())`: no redundant closure.
-        return ["    ffi_guard(crate::library::%s)" % impl_name]
+        return ["    ffi_guard(crate::ffi_api::%s)" % impl_name]
     args = ", ".join(name for name, _ in func.params)
-    call = "crate::library::%s(%s)" % (impl_name, args)
+    call = "crate::ffi_api::%s(%s)" % (impl_name, args)
+    has_raw_pointer = any(rust_type.startswith("*") for _, rust_type in func.params)
+    if has_raw_pointer:
+        single = "    ffi_guard(|| unsafe { %s })" % call
+        if len(single) <= RUST_MAX_WIDTH:
+            return [single]
+        inner = "        %s" % call
+        if len(inner) <= RUST_MAX_WIDTH:
+            return ["    ffi_guard(|| unsafe {", inner, "    })"]
+        lines = ["    ffi_guard(|| unsafe {", "        crate::ffi_api::%s(" % impl_name]
+        for name, _ in func.params:
+            lines.append("            %s," % name)
+        lines += ["        )", "    })"]
+        return lines
     single = "    ffi_guard(|| %s)" % call
     if len(single) <= RUST_MAX_WIDTH:
         return [single]
     inner = "        %s" % call
     if len(inner) <= RUST_MAX_WIDTH:
         return ["    ffi_guard(|| {", inner, "    })"]
-    lines = ["    ffi_guard(|| {", "        crate::library::%s(" % impl_name]
+    lines = ["    ffi_guard(|| {", "        crate::ffi_api::%s(" % impl_name]
     for name, _ in func.params:
         lines.append("            %s," % name)
     lines += ["        )", "    })"]
@@ -880,8 +893,8 @@ def render_rust(functions, header_display):
         "",
         "#![allow(non_snake_case)]",
         "#![allow(unused_imports)]",
-        "// Thin delegating wrappers only; the implementation lives in",
-        "// src/library/. The wrappers carry no per-function safety docs; the",
+        "// Thin delegating wrappers only; the C-to-Rust adaptation lives in",
+        "// src/ffi_api.rs. The wrappers carry no per-function safety docs; the",
         "// safety contract is the libtpms C API documented in tpm_library.h.",
         "#![allow(clippy::missing_safety_doc)]",
         "",

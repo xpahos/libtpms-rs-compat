@@ -265,9 +265,16 @@ class OutputTests(GeneratorTestCase):
         self.assertIn("#![allow(non_snake_case)]", rust)
         self.assertIn("#[unsafe(no_mangle)]", rust)
         self.assertIn('pub unsafe extern "C" fn Foo(x: u32) -> u32 {', rust)
-        self.assertIn("ffi_guard(|| crate::library::foo(x))", rust)
+        self.assertIn("ffi_guard(|| crate::ffi_api::foo(x))", rust)
         self.assertIn("use crate::ffi_support::ffi_guard;", rust)
         self.assertIn("#![allow(clippy::missing_safety_doc)]", rust)
+
+    def test_raw_pointer_call_is_explicitly_unsafe(self):
+        rust = self.render("uint32_t Foo(const char *name);\n")
+        self.assertIn(
+            "ffi_guard(|| unsafe { crate::ffi_api::foo(name) })",
+            rust,
+        )
 
     def test_short_signature_stays_on_one_line(self):
         rust = self.render("uint32_t Foo(uint32_t x);\n")
