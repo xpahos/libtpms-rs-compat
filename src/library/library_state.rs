@@ -220,12 +220,6 @@ impl Library {
     }
 }
 
-impl Default for Library {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 static LIBRARY: Library = Library::new();
 
 #[cfg(test)]
