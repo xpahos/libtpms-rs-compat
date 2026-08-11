@@ -10,6 +10,9 @@ pub trait FfiPanicFallback {
 
 impl FfiPanicFallback for u32 {
     fn panic_fallback() -> Self {
+        // In the event of a panic in TPMLIB_GetVersion, the return value
+        // will be TPM_FAIL == 0x9, which is not quite correct. For now,
+        // we assume that TPMLIB_GetVersion never panics.
         TPM_FAIL
     }
 }
@@ -112,6 +115,40 @@ impl Drop for MallocBuffer {
 mod tests {
     use super::*;
     use core::ffi::CStr;
+
+    #[test]
+    fn ffi_guard_returns_successful_value() {
+        assert_eq!(ffi_guard(|| 42u32), 42);
+    }
+
+    #[test]
+    fn ffi_guard_returns_tpm_fail_for_u32_panic() {
+        let result = ffi_guard::<u32>(|| panic!("test panic"));
+        assert_eq!(result, TPM_FAIL);
+    }
+
+    #[test]
+    fn ffi_guard_returns_false_for_u8_panic() {
+        let result = ffi_guard::<u8>(|| panic!("test panic"));
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn ffi_guard_handles_unit_panic() {
+        ffi_guard::<()>(|| panic!("test panic"));
+    }
+
+    #[test]
+    fn ffi_guard_returns_null_mut_for_mut_pointer_panic() {
+        let result = ffi_guard::<*mut u8>(|| panic!("test panic"));
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn ffi_guard_returns_null_for_const_pointer_panic() {
+        let result = ffi_guard::<*const u8>(|| panic!("test panic"));
+        assert!(result.is_null());
+    }
 
     #[test]
     fn malloc_c_string_round_trips_and_is_freeable() {
