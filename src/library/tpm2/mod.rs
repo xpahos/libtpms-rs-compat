@@ -190,6 +190,8 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
 
     match select_permanent_state_source(context.preloaded_permanent, probe) {
         PermanentStateSource::Manufacture => {
+            // TODO: Implement the legacy NVChip fallback after TPMLIB_Process
+            // and the command-time NVRAM mutation/commit path are complete.
             if !has_load_callback {
                 return Err(TPM_FAIL);
             }
