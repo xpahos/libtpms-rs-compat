@@ -37,6 +37,17 @@ ABI_GENERATOR   := scripts/generate_libtpms_abi.py
 ABI_OUTPUT      := src/generated/tpm_library_abi.rs
 FFI_TYPES       := src/ffi_types.rs
 
+PA_FIXTURE_GENERATOR := scripts/generate_pa_compile_constants_fixture.py
+NVMARSHAL_SOURCE     := libtpms/src/tpm2/NVMarshal.c
+
+NV_LAYOUT_FIXTURE_GENERATOR := scripts/generate_nv_layout_fixture.py
+TPM2_GLOBAL_HEADER          := libtpms/src/tpm2/Global.h
+
+DRBG_FIXTURE_GENERATOR := scripts/generate_drbg_manufacture_fixture.py
+CRYPTRAND_SOURCE       := libtpms/src/tpm2/crypto/openssl/CryptRand.c
+
+VOLATILE_FIXTURE_GENERATOR := scripts/generate_volatile_state_fixture.py
+
 # ---------------------------------------------------------------------------
 # Cargo target directory / profile selection
 # ---------------------------------------------------------------------------
@@ -76,7 +87,7 @@ SWTPM_CONFIGURE_STAMP := $(SWTPM_TARGET_DIR)/.configured
 
 JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
-.PHONY: all build build-release generate-abi check-generated-abi check-ffi-types test-abi cargo-check check clean \
+.PHONY: all build build-release generate-abi check-generated-inputs check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture test-abi cargo-check check clean \
 	prepare-swtpm build-swtpm test-swtpm clean-swtpm verify-swtpm-linkage
 
 all: check
@@ -84,12 +95,12 @@ all: check
 # Build the library (debug profile). Regenerates the ABI stubs first; the
 # generator only touches the file when its content changes, so cargo does
 # not rebuild needlessly.
-build: generate-abi
+build: generate-abi check-generated-inputs
 	$(CARGO) build
 	@echo "built: $(CARGO_TARGET_DIR)/debug/$(DYLIB_NAME)"
 
 # Build the library with optimizations (release profile).
-build-release: generate-abi
+build-release: generate-abi check-generated-inputs
 	$(CARGO) build --release
 	@echo "built: $(CARGO_TARGET_DIR)/release/$(DYLIB_NAME)"
 
@@ -103,6 +114,8 @@ generate-abi:
 	$(PYTHON) $(ABI_GENERATOR) \
 		--header $(LIBTPMS_HEADER) \
 		--output $(ABI_OUTPUT)
+
+check-generated-inputs: check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture
 
 # Verify that the committed generated file is current: regenerate into a
 # temporary directory and diff against $(ABI_OUTPUT).
@@ -133,13 +146,61 @@ check-ffi-types:
 		--header $(LIBTPMS_HEADER) \
 		--check-ffi-types $(FFI_TYPES)
 
+# Verify that the checked-in PA_COMPILE_CONSTANTS fixture still matches
+# what the vendored C implementation marshals: the generator recompiles
+# the upstream pa_compile_constants[] table against the vendored profile
+# headers and compares the result against the committed fixture.
+check-pa-fixture:
+	@test -f $(NVMARSHAL_SOURCE) || { \
+		echo "error: $(NVMARSHAL_SOURCE) not found; run 'git submodule update --init libtpms'" >&2; \
+		exit 1; \
+	}
+	$(PYTHON) $(PA_FIXTURE_GENERATOR) --check
+
+# Verify that the checked-in reserved-NV layout fixture still matches
+# what the vendored C headers describe: the generator recompiles a
+# sizeof/offsetof oracle against the vendored profile headers and
+# compares the result against the committed fixture.
+check-nv-layout-fixture:
+	@test -f $(TPM2_GLOBAL_HEADER) || { \
+		echo "error: $(TPM2_GLOBAL_HEADER) not found; run 'git submodule update --init libtpms'" >&2; \
+		exit 1; \
+	}
+	$(PYTHON) $(NV_LAYOUT_FIXTURE_GENERATOR) --check
+
+# Verify that the checked-in Manufacture DRBG vector fixture still
+# matches what the vendored C implementation computes: the generator
+# extracts the CTR_DRBG primitives verbatim from the vendored
+# CryptRand.c, replays the manufacture draw sequence against OpenSSL's
+# AES, and compares the result against the committed fixture.
+check-drbg-fixture:
+	@test -f $(CRYPTRAND_SOURCE) || { \
+		echo "error: $(CRYPTRAND_SOURCE) not found; run 'git submodule update --init libtpms'" >&2; \
+		exit 1; \
+	}
+	$(PYTHON) $(DRBG_FIXTURE_GENERATOR) --check --quiet
+
+# Verify that the checked-in VOLATILE_STATE fixtures still match what
+# the vendored C implementation marshals: the generator compiles the
+# real vendored VolatileState_Save/VolatileState_Marshal (NVMarshal.c,
+# Marshal.c, Volatile.c) under a deterministic harness for the
+# current-version fixtures, cross-validates a handwritten synthetic
+# oracle against that output, re-emits the synthetic downgraded v1..v3
+# layouts, and compares everything against the committed fixtures.
+check-volatile-fixture:
+	@test -f $(NVMARSHAL_SOURCE) || { \
+		echo "error: $(NVMARSHAL_SOURCE) not found; run 'git submodule update --init libtpms'" >&2; \
+		exit 1; \
+	}
+	$(PYTHON) $(VOLATILE_FIXTURE_GENERATOR) --check
+
 test-abi:
 	$(PYTHON) -m unittest discover -s scripts/tests
 
 cargo-check:
 	$(CARGO) check
 
-check: test-abi check-generated-abi check-ffi-types cargo-check
+check: test-abi check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture cargo-check
 
 clean:
 	$(CARGO) clean
@@ -278,10 +339,13 @@ verify-swtpm-linkage:
 # pointing at the local prefix (prepended, preserving any existing value).
 #
 # Upstream test scripts probe the built swtpm and SKIP (exit 77) when it does
-# not provide a TPM 1.2/2.0 -- which is exactly what happens while the Rust
-# library is incomplete.  Those capability skips are promoted to failures
-# here; environment skips (need root, Linux-only, SWTPM_TEST_EXPENSIVE,
-# missing optional tools) remain ordinary skips.
+# not provide a TPM 1.2/2.0.  For versions the Rust library is supposed to
+# provide (SWTPM_REQUIRED_TPM_VERSIONS, matching the crate's default Cargo
+# features) such skips mean missing functionality and are promoted to
+# failures.  Skips for versions intentionally not compiled in (e.g. 1.2) and
+# environment skips (need root, Linux-only, SWTPM_TEST_EXPENSIVE, missing
+# optional tools) remain ordinary skips.
+SWTPM_REQUIRED_TPM_VERSIONS ?= 2.0
 # On failure, dump every test-suite.log and propagate the original status.
 test-swtpm: build-swtpm
 	@status=0; \
@@ -292,12 +356,14 @@ test-swtpm: build-swtpm
 		for trs in $$(find $(SWTPM_BUILD_DIR) -name '*.trs'); do \
 			grep -q '^:test-result: SKIP' "$$trs" || continue; \
 			log="$${trs%.trs}.log"; \
-			if grep -q 'does not provide a TPM' "$$log" 2>/dev/null; then \
-				[ "$$bad" -eq 0 ] && echo "error: tests skipped because the Rust libtpms does not provide a TPM:" >&2; \
-				bad=$$((bad + 1)); \
-				name=$${trs##*/}; \
-				echo "  $${name%.trs}: $$(grep 'does not provide a TPM' "$$log" | head -1)" >&2; \
-			fi; \
+			for ver in $(SWTPM_REQUIRED_TPM_VERSIONS); do \
+				if grep -q "does not provide a TPM $$ver" "$$log" 2>/dev/null; then \
+					[ "$$bad" -eq 0 ] && echo "error: tests skipped because the Rust libtpms does not provide a required TPM version:" >&2; \
+					bad=$$((bad + 1)); \
+					name=$${trs##*/}; \
+					echo "  $${name%.trs}: $$(grep "does not provide a TPM $$ver" "$$log" | head -1)" >&2; \
+				fi; \
+			done; \
 		done; \
 		if [ "$$bad" -ne 0 ]; then \
 			echo "error: $$bad test(s) skipped due to missing TPM library functionality; treating as failure" >&2; \

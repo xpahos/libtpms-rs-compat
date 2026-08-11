@@ -3,32 +3,33 @@
 // Regenerate with: make generate-abi
 
 #![allow(non_snake_case)]
-#![allow(unused_variables)]
 #![allow(unused_imports)]
-// Generated stubs carry no per-function safety docs; the safety
-// contract is the libtpms C API documented in tpm_library.h.
+// Thin delegating wrappers only; the implementation lives in
+// src/library/. The wrappers carry no per-function safety docs; the
+// safety contract is the libtpms C API documented in tpm_library.h.
 #![allow(clippy::missing_safety_doc)]
 
+use crate::ffi_support::ffi_guard;
 use crate::ffi_types::*;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_GetVersion() -> u32 {
-    todo!("TPMLIB_GetVersion is not implemented")
+    ffi_guard(crate::library::get_version)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_ChooseTPMVersion(ver: TpmlibTpmVersion) -> TpmResult {
-    todo!("TPMLIB_ChooseTPMVersion is not implemented")
+    ffi_guard(|| crate::library::choose_tpm_version(ver))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_MainInit() -> TpmResult {
-    todo!("TPMLIB_MainInit is not implemented")
+    ffi_guard(crate::library::main_init)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_Terminate() {
-    todo!("TPMLIB_Terminate is not implemented")
+    ffi_guard(crate::library::terminate)
 }
 
 #[unsafe(no_mangle)]
@@ -39,7 +40,7 @@ pub unsafe extern "C" fn TPMLIB_Process(
     command: *mut core::ffi::c_uchar,
     command_size: u32,
 ) -> TpmResult {
-    todo!("TPMLIB_Process is not implemented")
+    ffi_guard(|| crate::library::process(respbuffer, resp_size, respbufsize, command, command_size))
 }
 
 #[unsafe(no_mangle)]
@@ -47,12 +48,12 @@ pub unsafe extern "C" fn TPMLIB_VolatileAll_Store(
     buffer: *mut *mut core::ffi::c_uchar,
     buflen: *mut u32,
 ) -> TpmResult {
-    todo!("TPMLIB_VolatileAll_Store is not implemented")
+    ffi_guard(|| crate::library::volatile_all_store(buffer, buflen))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_CancelCommand() -> TpmResult {
-    todo!("TPMLIB_CancelCommand is not implemented")
+    ffi_guard(crate::library::cancel_command)
 }
 
 #[unsafe(no_mangle)]
@@ -60,17 +61,17 @@ pub unsafe extern "C" fn TPMLIB_GetTPMProperty(
     prop: TpmlibTpmProperty,
     result: *mut core::ffi::c_int,
 ) -> TpmResult {
-    todo!("TPMLIB_GetTPMProperty is not implemented")
+    ffi_guard(|| crate::library::get_tpm_property(prop, result))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_GetInfo(flags: TpmlibInfoFlags) -> *mut core::ffi::c_char {
-    todo!("TPMLIB_GetInfo is not implemented")
+    ffi_guard(|| crate::library::get_info(flags))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_RegisterCallbacks(arg0: *mut LibtpmsCallbacks) -> TpmResult {
-    todo!("TPMLIB_RegisterCallbacks is not implemented")
+    ffi_guard(|| crate::library::register_callbacks(arg0))
 }
 
 #[unsafe(no_mangle)]
@@ -80,22 +81,22 @@ pub unsafe extern "C" fn TPMLIB_DecodeBlob(
     result: *mut *mut core::ffi::c_uchar,
     result_len: *mut usize,
 ) -> TpmResult {
-    todo!("TPMLIB_DecodeBlob is not implemented")
+    ffi_guard(|| crate::library::decode_blob(data, r#type, result, result_len))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetDebugFD(fd: core::ffi::c_int) {
-    todo!("TPMLIB_SetDebugFD is not implemented")
+    ffi_guard(|| crate::library::set_debug_fd(fd))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetDebugLevel(level: core::ffi::c_uint) {
-    todo!("TPMLIB_SetDebugLevel is not implemented")
+    ffi_guard(|| crate::library::set_debug_level(level))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetDebugPrefix(prefix: *const core::ffi::c_char) -> TpmResult {
-    todo!("TPMLIB_SetDebugPrefix is not implemented")
+    ffi_guard(|| crate::library::set_debug_prefix(prefix))
 }
 
 #[unsafe(no_mangle)]
@@ -104,7 +105,7 @@ pub unsafe extern "C" fn TPMLIB_SetBufferSize(
     min_size: *mut u32,
     max_size: *mut u32,
 ) -> u32 {
-    todo!("TPMLIB_SetBufferSize is not implemented")
+    ffi_guard(|| crate::library::set_buffer_size(wanted_size, min_size, max_size))
 }
 
 #[unsafe(no_mangle)]
@@ -112,7 +113,7 @@ pub unsafe extern "C" fn TPMLIB_ValidateState(
     st: TpmlibStateType,
     flags: core::ffi::c_uint,
 ) -> TpmResult {
-    todo!("TPMLIB_ValidateState is not implemented")
+    ffi_guard(|| crate::library::validate_state(st, flags))
 }
 
 #[unsafe(no_mangle)]
@@ -121,7 +122,7 @@ pub unsafe extern "C" fn TPMLIB_SetState(
     buffer: *const core::ffi::c_uchar,
     buflen: u32,
 ) -> TpmResult {
-    todo!("TPMLIB_SetState is not implemented")
+    ffi_guard(|| crate::library::set_state(st, buffer, buflen))
 }
 
 #[unsafe(no_mangle)]
@@ -130,15 +131,15 @@ pub unsafe extern "C" fn TPMLIB_GetState(
     buffer: *mut *mut core::ffi::c_uchar,
     buflen: *mut u32,
 ) -> TpmResult {
-    todo!("TPMLIB_GetState is not implemented")
+    ffi_guard(|| crate::library::get_state(st, buffer, buflen))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetProfile(profile: *const core::ffi::c_char) -> TpmResult {
-    todo!("TPMLIB_SetProfile is not implemented")
+    ffi_guard(|| crate::library::set_profile(profile))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_WasManufactured() -> TpmBool {
-    todo!("TPMLIB_WasManufactured is not implemented")
+    ffi_guard(crate::library::was_manufactured)
 }

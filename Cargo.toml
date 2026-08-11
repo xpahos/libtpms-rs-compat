@@ -7,7 +7,15 @@ license = "BSD-3-Clause"
 publish = false
 
 [lib]
-# The cdylib artifact is named libtpms.dylib / libtpms.so to match the
-# C library this crate is intended to replace.
 name = "tpms"
 crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+aes = { version = "0.8", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+
+[features]
+default = ["tpm2"]
+tpm1 = []
+tpm2 = []

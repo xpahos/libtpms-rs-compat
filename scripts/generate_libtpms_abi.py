@@ -33,6 +33,7 @@ actually changes.
 """
 
 import argparse
+import difflib
 import os
 import re
 import sys
@@ -208,8 +209,8 @@ ENUM_TAG_MAP = {
     "TPMLIB_StateType": "TpmlibStateType",
 }
 
-# Known struct tags, represented by opaque handwritten types; only valid
-# behind a pointer (their layout is not mirrored in Rust).
+# Known struct tags mirrored by handwritten #[repr(C)] Rust structures. Public
+# API functions currently use them only behind pointers.
 OPAQUE_STRUCT_MAP = {
     "libtpms_callbacks": "LibtpmsCallbacks",
 }
@@ -319,6 +320,40 @@ def map_c_type(node, func_name, behind_pointer=False):
     if isinstance(node, c_ast.FuncDecl):
         _fail(func_name, node, "bare function types are not supported")
     _fail(func_name, node, "unrecognized AST node %s" % type(node).__name__)
+
+
+# Splits a CamelCase/acronym segment: "ChooseTPMVersion" -> Choose, TPM,
+# Version; "SetDebugFD" -> Set, Debug, FD.
+_NAME_TOKEN_RE = re.compile(
+    r"[A-Z]+(?=[A-Z][a-z0-9])|[A-Z][a-z0-9]+|[A-Z]+|[0-9]+|[a-z0-9]+"
+)
+
+
+def rust_impl_name(c_name):
+    """Derive the snake_case name of the crate::library implementation.
+
+    ``TPMLIB_ChooseTPMVersion`` -> ``choose_tpm_version``,
+    ``TPMLIB_VolatileAll_Store`` -> ``volatile_all_store``.
+    """
+    base = c_name
+    if base.startswith("TPMLIB_"):
+        base = base[len("TPMLIB_"):]
+    tokens = []
+    for part in base.split("_"):
+        if not part:
+            continue
+        found = _NAME_TOKEN_RE.findall(part)
+        if "".join(found) != part:
+            raise AbiError(
+                "cannot derive a Rust implementation name for '%s': "
+                "unsupported characters in segment '%s'" % (c_name, part)
+            )
+        tokens.extend(found)
+    if not tokens:
+        raise AbiError(
+            "cannot derive a Rust implementation name for '%s'" % c_name
+        )
+    return "_".join(token.lower() for token in tokens)
 
 
 def _rust_param_name(name, index):
@@ -487,6 +522,303 @@ def check_ffi_types(header_types, ffi_path):
 
 
 # ---------------------------------------------------------------------------
+# FFI struct layout cross-check
+# ---------------------------------------------------------------------------
+
+class AbiStruct(object):
+    def __init__(self, c_name, rust_name, fields, coord):
+        self.c_name = c_name
+        self.rust_name = rust_name
+        self.fields = fields
+        self.coord = coord
+
+
+def _map_callback_type(node, struct_name, field_name):
+    """Map a C function pointer field to Option<unsafe extern "C" fn(...)>."""
+    if not isinstance(node, c_ast.PtrDecl) or \
+            not isinstance(node.type, c_ast.FuncDecl):
+        return map_c_type(node, "%s.%s" % (struct_name, field_name))
+
+    func = node.type
+    params = []
+    if func.args is not None:
+        raw_params = list(func.args.params)
+        if not (len(raw_params) == 1 and
+                isinstance(raw_params[0], (c_ast.Typename, c_ast.Decl)) and
+                raw_params[0].name is None and _is_void(raw_params[0].type)):
+            for param in raw_params:
+                if isinstance(param, c_ast.EllipsisParam):
+                    raise AbiError(
+                        "struct '%s' field '%s' is variadic; variadic callback "
+                        "types are unsupported" % (struct_name, field_name)
+                    )
+                params.append(map_c_type(
+                    param.type, "%s.%s" % (struct_name, field_name)
+                ))
+    ret = None if _is_void(func.type) else map_c_type(
+        func.type, "%s.%s" % (struct_name, field_name)
+    )
+    signature = "unsafe extern \"C\" fn(%s)" % ", ".join(params)
+    if ret is not None:
+        signature += " -> %s" % ret
+    return "Option<%s>" % signature
+
+
+def collect_header_structs(ast, header_realpath):
+    """Collect mapped, defined public C structs and their ordered fields."""
+    structs = []
+    seen = set()
+
+    class Visitor(c_ast.NodeVisitor):
+        def visit_Struct(self, node):
+            if node.name in OPAQUE_STRUCT_MAP and node.decls is not None and \
+                    node.name not in seen and node.coord is not None and \
+                    os.path.realpath(node.coord.file) == header_realpath:
+                fields = []
+                for field in node.decls:
+                    rust_field = rust_impl_name(field.name)
+                    rust_type = _map_callback_type(
+                        field.type, node.name, field.name
+                    )
+                    fields.append((rust_field, rust_type))
+                structs.append(AbiStruct(
+                    node.name, OPAQUE_STRUCT_MAP[node.name], fields, node.coord
+                ))
+                seen.add(node.name)
+            self.generic_visit(node)
+
+    Visitor().visit(ast)
+    return structs
+
+
+def _find_matching_delimiter(text, start, opening, closing):
+    """Find a closing Rust delimiter while ignoring strings and comments."""
+    depth = 0
+    index = start
+    state = "code"
+    block_depth = 0
+    while index < len(text):
+        ch = text[index]
+        nxt = text[index + 1] if index + 1 < len(text) else ""
+        if state == "line_comment":
+            if ch == "\n":
+                state = "code"
+        elif state == "block_comment":
+            if ch == "/" and nxt == "*":
+                block_depth += 1
+                index += 1
+            elif ch == "*" and nxt == "/":
+                block_depth -= 1
+                index += 1
+                if block_depth == 0:
+                    state = "code"
+        elif state == "string":
+            if ch == "\\":
+                index += 1
+            elif ch == '"':
+                state = "code"
+        else:
+            if ch == "/" and nxt == "/":
+                state = "line_comment"
+                index += 1
+            elif ch == "/" and nxt == "*":
+                state = "block_comment"
+                block_depth = 1
+                index += 1
+            elif ch == '"':
+                state = "string"
+            elif ch == opening:
+                depth += 1
+            elif ch == closing:
+                depth -= 1
+                if depth == 0:
+                    return index
+        index += 1
+    raise AbiError("unterminated '%s' delimiter in Rust FFI module" % opening)
+
+
+def _strip_rust_comments(text):
+    text = re.sub(r"//[^\n]*", "", text)
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+
+
+def _split_rust_fields(body):
+    """Split a Rust named-field body on top-level commas."""
+    fields = []
+    start = 0
+    depths = {"(": 0, "[": 0, "{": 0, "<": 0}
+    closing = {")": "(", "]": "[", "}": "{", ">": "<"}
+    in_string = False
+    escaped = False
+    for index, ch in enumerate(body):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in depths:
+            depths[ch] += 1
+        elif ch == ">" and index > 0 and body[index - 1] == "-":
+            # Return-type arrow, not a generic closing delimiter.
+            continue
+        elif ch in closing:
+            key = closing[ch]
+            depths[key] = max(0, depths[key] - 1)
+        elif ch == "," and not any(depths.values()):
+            fields.append(body[start:index])
+            start = index + 1
+    if body[start:].strip():
+        fields.append(body[start:])
+    return fields
+
+
+def _normalize_rust_type(rust_type):
+    rust_type = re.sub(r"\s+", " ", rust_type.strip())
+    rust_type = re.sub(r"\s*([<>,();\[\]])\s*", r"\1", rust_type)
+    # rustfmt permits trailing commas in multiline generic and function
+    # argument lists; they do not change the type.
+    rust_type = re.sub(r",([)>])", r"\1", rust_type)
+    return rust_type
+
+
+_RUST_TYPE_ALIAS_RE = re.compile(r"\bpub\s+type\s+(\w+)\s*=\s*([^;]+);")
+
+# Path prefixes under which the last segment names a C primitive; spelling
+# a type with or without them (e.g. via `use core::ffi::c_int`) does not
+# change the ABI.
+_RUST_PRIMITIVE_PATH_RE = re.compile(r"\b(?:core|std)::(?:ffi|os::raw)::(\w+)")
+
+
+def collect_rust_type_aliases(ffi_path):
+    """Map `pub type Name = Rhs;` aliases of the Rust FFI module."""
+    with open(ffi_path, "r", encoding="utf-8") as fh:
+        source = _strip_rust_comments(fh.read())
+    return {
+        name: _normalize_rust_type(rhs)
+        for name, rhs in _RUST_TYPE_ALIAS_RE.findall(source)
+    }
+
+
+def _canonicalize_rust_type(rust_type, aliases):
+    """Reduce a Rust type to its ABI-canonical spelling.
+
+    Strips primitive path prefixes and resolves ``pub type`` aliases
+    transitively, so ABI-equivalent spellings such as
+    ``*mut TpmModifierIndicator``, ``*mut core::ffi::c_uint`` and
+    ``*mut u32`` all compare equal.
+    """
+    current = _normalize_rust_type(rust_type)
+    for _ in range(16):
+        previous = current
+        current = _RUST_PRIMITIVE_PATH_RE.sub(r"\1", current)
+        current = re.sub(
+            r"\b\w+\b",
+            lambda m: aliases.get(m.group(0), m.group(0)),
+            current,
+        )
+        if current == previous:
+            return current
+    raise AbiError(
+        "type alias resolution did not converge for '%s' (alias cycle?)"
+        % rust_type
+    )
+
+
+def collect_rust_structs(ffi_path):
+    """Structurally parse named fields of public Rust FFI structs."""
+    with open(ffi_path, "r", encoding="utf-8") as fh:
+        source = fh.read()
+    structs = {}
+    pattern = re.compile(r"\bpub\s+struct\s+(\w+)\s*\{")
+    for match in pattern.finditer(source):
+        name = match.group(1)
+        opening = source.find("{", match.start())
+        closing = _find_matching_delimiter(source, opening, "{", "}")
+        before = source[:match.start()]
+        declaration_start = max(before.rfind("}"), before.rfind(";")) + 1
+        attributes = before[declaration_start:]
+        repr_c = bool(re.search(
+            r"#\s*\[\s*repr\s*\(\s*C\s*\)\s*\]", attributes
+        ))
+        body = _strip_rust_comments(source[opening + 1:closing])
+        fields = []
+        for raw_field in _split_rust_fields(body):
+            raw_field = re.sub(r"#\s*\[[^]]*\]", "", raw_field).strip()
+            if not raw_field:
+                continue
+            field_match = re.match(
+                r"(?:(?:pub)(?:\s*\([^)]*\))?\s+)?(\w+)\s*:\s*(.*)\Z",
+                raw_field, re.DOTALL
+            )
+            if field_match is None:
+                raise AbiError(
+                    "cannot parse field in Rust struct '%s': %s" %
+                    (name, raw_field.strip())
+                )
+            fields.append((field_match.group(1),
+                           _normalize_rust_type(field_match.group(2))))
+        structs[name] = (repr_c, fields)
+    return structs
+
+
+def _render_layout(name, fields, repr_c=True):
+    lines = ["#[repr(C)]" if repr_c else "#[missing repr(C)]",
+             "pub struct %s {" % name]
+    lines.extend("    %s: %s," % (field_name,
+                                  _normalize_rust_type(field_type))
+                 for field_name, field_type in fields)
+    lines.append("}")
+    return lines
+
+
+def check_ffi_structs(header_structs, ffi_path):
+    """Return unified layout diffs for mapped C/Rust structures.
+
+    Field types on both sides are canonicalized (primitive path prefixes
+    stripped, ``pub type`` aliases resolved) before comparison, so only
+    genuine ABI differences are reported; the diff shows the canonical
+    spellings.
+    """
+    errors = []
+    rust_structs = collect_rust_structs(ffi_path)
+    aliases = collect_rust_type_aliases(ffi_path)
+
+    def canonical(fields):
+        return [(name, _canonicalize_rust_type(rust_type, aliases))
+                for name, rust_type in fields]
+
+    for c_struct in header_structs:
+        actual = rust_structs.get(c_struct.rust_name)
+        if actual is None:
+            errors.append(
+                "Rust struct '%s' for C struct '%s' is missing from %s" %
+                (c_struct.rust_name, c_struct.c_name, ffi_path)
+            )
+            continue
+        repr_c, actual_fields = actual
+        expected_lines = _render_layout(c_struct.rust_name,
+                                        canonical(c_struct.fields))
+        actual_lines = _render_layout(c_struct.rust_name,
+                                      canonical(actual_fields), repr_c)
+        if expected_lines != actual_lines:
+            diff = "\n".join(difflib.unified_diff(
+                expected_lines, actual_lines,
+                fromfile="C struct %s (expected Rust ABI, canonicalized)"
+                         % c_struct.c_name,
+                tofile="%s struct %s (canonicalized)"
+                       % (ffi_path, c_struct.rust_name),
+                lineterm=""
+            ))
+            errors.append("FFI struct layout mismatch:\n%s" % diff)
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 
@@ -510,28 +842,57 @@ def _render_signature(func):
     return lines
 
 
+def _render_body(func):
+    """Render the delegating wrapper body, wrapped like rustfmt would."""
+    impl_name = rust_impl_name(func.name)
+    if not func.params:
+        # `ffi_guard(f)` instead of `ffi_guard(|| f())`: no redundant closure.
+        return ["    ffi_guard(crate::library::%s)" % impl_name]
+    args = ", ".join(name for name, _ in func.params)
+    call = "crate::library::%s(%s)" % (impl_name, args)
+    single = "    ffi_guard(|| %s)" % call
+    if len(single) <= RUST_MAX_WIDTH:
+        return [single]
+    inner = "        %s" % call
+    if len(inner) <= RUST_MAX_WIDTH:
+        return ["    ffi_guard(|| {", inner, "    })"]
+    lines = ["    ffi_guard(|| {", "        crate::library::%s(" % impl_name]
+    for name, _ in func.params:
+        lines.append("            %s," % name)
+    lines += ["        )", "    })"]
+    return lines
+
+
 def render_rust(functions, header_display):
+    impl_names = {}
+    for func in functions:
+        impl_name = rust_impl_name(func.name)
+        if impl_name in impl_names:
+            raise AbiError(
+                "functions '%s' and '%s' both map to Rust implementation "
+                "name '%s'" % (impl_names[impl_name], func.name, impl_name)
+            )
+        impl_names[impl_name] = func.name
     lines = [
         "// This file is automatically generated. Do not edit it manually.",
         "// Source: %s" % header_display,
         "// Regenerate with: make generate-abi",
         "",
         "#![allow(non_snake_case)]",
-        "#![allow(unused_variables)]",
         "#![allow(unused_imports)]",
-        "// Generated stubs carry no per-function safety docs; the safety",
-        "// contract is the libtpms C API documented in tpm_library.h.",
+        "// Thin delegating wrappers only; the implementation lives in",
+        "// src/library/. The wrappers carry no per-function safety docs; the",
+        "// safety contract is the libtpms C API documented in tpm_library.h.",
         "#![allow(clippy::missing_safety_doc)]",
         "",
+        "use crate::ffi_support::ffi_guard;",
         "use crate::ffi_types::*;",
     ]
     for func in functions:
         lines += ["", "#[unsafe(no_mangle)]"]
         lines += _render_signature(func)
-        lines += [
-            "    todo!(\"%s is not implemented\")" % func.name,
-            "}",
-        ]
+        lines += _render_body(func)
+        lines += ["}"]
     return "\n".join(lines) + "\n"
 
 
@@ -622,12 +983,16 @@ def main(argv=None):
     if args.check_ffi_types:
         header_types = collect_header_types(ast, real)
         errors = check_ffi_types(header_types, args.check_ffi_types)
+        header_structs = collect_header_structs(ast, real)
+        errors.extend(check_ffi_structs(header_structs,
+                                        args.check_ffi_types))
         if errors:
             for error in errors:
                 sys.stderr.write("error: %s\n" % error)
             return 1
-        print("check-ffi-types: OK (%d C types <-> %s)"
-              % (len(header_types), args.check_ffi_types))
+        print("check-ffi-types: OK (%d C types, %d struct layouts <-> %s)"
+              % (len(header_types), len(header_structs),
+                 args.check_ffi_types))
     return 0
 
 
