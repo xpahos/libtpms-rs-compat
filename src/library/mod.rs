@@ -12,10 +12,8 @@ use crate::ffi_types::{
 pub use constants::{TPM_FAIL, TPM_SUCCESS};
 use state::Library;
 
-const TPM_LIBRARY_VERSION: u32 = 10 << 8 | 1;
-
 pub fn get_version() -> u32 {
-    TPM_LIBRARY_VERSION
+    crate::version::TPM_LIBRARY_VERSION
 }
 
 pub fn choose_tpm_version(version: TpmlibTpmVersion) -> TpmResult {
