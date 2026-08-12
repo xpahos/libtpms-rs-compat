@@ -1,6 +1,6 @@
 use crate::ffi_types::TpmResult;
 
-use super::crypto::{Drbg, EntropySource};
+use super::crypto::{DRBG_MAGIC, Drbg, EntropySource};
 use super::nv::RAM_INDEX_SPACE;
 use super::persistent::{
     OwnedCommandBitmap, OwnedDrbgState, OwnedIndexOrderlyRam, OwnedOrderlyData, OwnedPcrAllocation,
@@ -17,8 +17,6 @@ const TPM_ALG_SHA512: u16 = 0x000d;
 
 const PRIMARY_SEED_SIZE: usize = 64;
 const PROOF_SIZE: usize = 64;
-
-const DRBG_MAGIC: u32 = 0x4742_5244;
 
 const COMMIT_NONCE_SIZE: usize = 64;
 

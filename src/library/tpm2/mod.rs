@@ -5,6 +5,7 @@ mod command_bitmap;
 mod compile_constants;
 mod crypto;
 mod info;
+mod live;
 mod lockout;
 mod manufacture;
 mod marshal;
@@ -31,7 +32,8 @@ use super::constants::{
 use super::preloaded_state::PreloadedBlob;
 use super::state_blob::StateBlobKind;
 use marshal::{BlobReader, BlockSkipError, skip_optional_block};
-use nv::{HostNvram, NvramLoad, PermanentStateProbe};
+pub(super) use nv::HostNvram;
+use nv::{NvramLoad, PermanentStateProbe};
 use pcr::PcrSelection;
 use persistent::{PersistentAllEnvelope, PersistentAllError, StateSection};
 
@@ -159,20 +161,30 @@ fn volatile_phase(
     Ok(())
 }
 
-fn nv_commit(host_nvram: &HostNvram, runtime: &Tpm2Runtime) {
+pub(super) fn host_nv_commit(
+    host_nvram: &HostNvram,
+    runtime: &Tpm2Runtime,
+) -> Result<(), TpmResult> {
+    // TODO: Implement the NVChip fallback after command processing and host
+    // persistence are complete.
     if !host_nvram.can_store() {
-        return;
+        return Ok(());
     }
     let Some(state) = runtime.state.as_ref() else {
-        return;
+        return Ok(());
     };
-    let Ok(blob) = persistent::persistent_all_store(state) else {
-        return;
-    };
-    let _ = host_nvram.store(StateBlobKind::Permanent, &blob);
+    let blob = persistent::persistent_all_store(state)?;
+    host_nvram
+        .store(StateBlobKind::Permanent, &blob)
+        .map(|_| ())
+}
+
+fn nv_commit(host_nvram: &HostNvram, runtime: &Tpm2Runtime) {
+    let _ = host_nv_commit(host_nvram, runtime);
 }
 
 pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>, TpmResult> {
+    let entropy = context.entropy;
     let callbacks = context.callbacks;
     let host_nvram = HostNvram::new(callbacks);
 
@@ -191,7 +203,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
     let probe = host_nvram.probe_permanent();
     let has_load_callback = probe.has_load_callback;
 
-    match select_permanent_state_source(context.preloaded_permanent, probe) {
+    let mut runtime = match select_permanent_state_source(context.preloaded_permanent, probe) {
         PermanentStateSource::Manufacture => {
             // TODO: Implement the legacy NVChip fallback after TPMLIB_Process
             // and the command-time NVRAM mutation/commit path are complete.
@@ -279,7 +291,9 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
                 Err(TPM_FAIL)
             }
         },
-    }
+    }?;
+    runtime.entropy = entropy;
+    Ok(runtime)
 }
 
 const TPM_SU_STATE: u16 = 0x0001;
@@ -2404,8 +2418,8 @@ mod tests {
             PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("the SU-state blob restores");
-        assert_eq!(runtime.context_slot_mask, Some(0xffff));
-        assert_eq!(runtime.null_seed_compat_level, Some(0));
+        assert_eq!(runtime.live.context_slot_mask, 0xffff);
+        assert_eq!(runtime.live.null_seed_compat_level, 0);
 
         let payload = payload_with_orderly_state(0, remaining_sections());
         let runtime = main_init(context(
@@ -2413,8 +2427,8 @@ mod tests {
             PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("the non-SU blob restores");
-        assert_eq!(runtime.context_slot_mask, None);
-        assert_eq!(runtime.null_seed_compat_level, None);
+        assert_eq!(runtime.live.context_slot_mask, 0xffff);
+        assert_eq!(runtime.live.null_seed_compat_level, 0);
     }
 
     #[test]
@@ -2891,15 +2905,18 @@ mod tests {
              preloaded-state commit still runs"
         );
 
-        let volatile_state = runtime.volatile.as_ref().expect("volatile state merged");
+        let volatile_state = runtime
+            .restored_volatile
+            .as_ref()
+            .expect("volatile state merged");
         assert_eq!(volatile_state.time, 987_654);
         assert_eq!(volatile_state.max_counter, 42);
         assert!(volatile_state.tpm_established);
         assert!(runtime.manufactured, "g_manufactured from the blob");
         assert!(runtime.startup_received, "g_initialized from the blob");
         assert!(!runtime.failure_mode);
-        assert_eq!(runtime.context_slot_mask, Some(0xffff));
-        assert_eq!(runtime.null_seed_compat_level, Some(0));
+        assert_eq!(runtime.live.context_slot_mask, 0xffff);
+        assert_eq!(runtime.live.null_seed_compat_level, 0);
 
         assert!(!runtime.shadow_pcr_pending);
         assert_eq!(
@@ -2931,7 +2948,10 @@ mod tests {
             PreloadedBlob::Data(blob),
         ))
         .expect("the C-generated volatile fixture restores");
-        let volatile_state = runtime.volatile.as_ref().expect("volatile state merged");
+        let volatile_state = runtime
+            .restored_volatile
+            .as_ref()
+            .expect("volatile state merged");
         assert_eq!(volatile_state.time, 0x123456);
         assert_eq!(volatile_state.fail_function, 0xa1);
         assert!(runtime.manufactured);
@@ -3042,7 +3062,7 @@ mod tests {
                 clock::RuntimeClock::POWER_ON_RESET,
                 "attempt {attempt}: no partial clock state"
             );
-            assert!(candidate.volatile.is_none(), "attempt {attempt}");
+            assert!(candidate.restored_volatile.is_none(), "attempt {attempt}");
             assert!(!candidate.failure_mode, "attempt {attempt}");
         }
     }
@@ -3078,7 +3098,7 @@ mod tests {
                 clock::RuntimeClock::POWER_ON_RESET,
                 "attempt {attempt}: no partial clock state"
             );
-            assert!(candidate.volatile.is_none(), "attempt {attempt}");
+            assert!(candidate.restored_volatile.is_none(), "attempt {attempt}");
             assert!(!candidate.failure_mode, "attempt {attempt}");
         }
     }
@@ -3109,7 +3129,7 @@ mod tests {
                 clock::RuntimeClock::POWER_ON_RESET,
                 "attempt {attempt}: no partial clock state"
             );
-            assert!(candidate.volatile.is_none(), "attempt {attempt}");
+            assert!(candidate.restored_volatile.is_none(), "attempt {attempt}");
             assert!(!candidate.failure_mode, "attempt {attempt}");
         }
     }
@@ -3165,7 +3185,7 @@ mod tests {
                 "load-valid:volatilestate:0",
             ]
         );
-        assert!(runtime.volatile.is_some());
+        assert!(runtime.restored_volatile.is_some());
         assert!(!runtime.shadow_pcr_pending);
     }
 
@@ -3189,7 +3209,7 @@ mod tests {
             ["load-found:permall", "load-found:permall"],
             "no volatilestate load for preloaded volatile data"
         );
-        assert!(runtime.volatile.is_some());
+        assert!(runtime.restored_volatile.is_some());
     }
 
     #[test]
@@ -3369,10 +3389,7 @@ mod tests {
             "the active profile survives unchanged: {}",
             runtime.active_profile_json
         );
-        let session = runtime.volatile.as_ref().unwrap().sessions[0]
-            .session
-            .as_ref()
-            .unwrap();
+        let session = runtime.live.sessions[0].session.as_ref().unwrap();
         assert_eq!(session.symmetric.algorithm, 0x0026);
     }
 
@@ -3504,10 +3521,10 @@ mod tests {
         assert!(!runtime.failure_mode && !runtime.reported_failure);
         assert!(runtime.power_on && runtime.nv_available);
         assert_eq!(runtime.nv_memory.len(), runtime::NV_MEMORY_SIZE);
-        assert_eq!(runtime.context_slot_mask, Some(0xffff));
+        assert_eq!(runtime.live.context_slot_mask, 0xffff);
         assert_eq!(
-            runtime.null_seed_compat_level, None,
-            "gr.nullSeed only exists after the first TPM2_Startup"
+            runtime.live.null_seed_compat_level, 0,
+            "gr.nullSeedCompatLevel keeps the power-on default until Startup"
         );
         let stored = STORED_BLOBS.lock().unwrap();
         assert_eq!(stored.len(), 1);
@@ -3830,8 +3847,7 @@ mod tests {
             "the NV image was zeroed by the failed reload"
         );
         assert_eq!(
-            runtime.context_slot_mask,
-            Some(0xffff),
+            runtime.live.context_slot_mask, 0xffff,
             "s_ContextSlotMask keeps the manufacture-time value"
         );
         assert!(
@@ -3879,7 +3895,7 @@ mod tests {
         ))
         .expect("first boot manufactures");
         assert!(first.was_manufactured);
-        assert!(first.volatile.is_none());
+        assert!(first.restored_volatile.is_none());
 
         let persistent = &first.state().persistent;
         let volatile_blob = volatile::VolatileFixture {
@@ -3898,7 +3914,10 @@ mod tests {
         ))
         .expect("the later boot restores permanent and volatile state");
         assert!(!runtime.was_manufactured, "no re-manufacture");
-        assert!(runtime.volatile.is_some(), "the volatile state merged");
+        assert!(
+            runtime.restored_volatile.is_some(),
+            "the volatile state merged"
+        );
         assert!(
             !runtime.shadow_pcr_pending,
             "NVShadowRestore consumed the pending shadow"
@@ -3998,8 +4017,8 @@ mod tests {
             STORED_BLOBS.lock().unwrap()[0].1,
             "the runtime no longer matches the stored bytes"
         );
-        assert_eq!(runtime.context_slot_mask, Some(0xffff));
-        assert_eq!(runtime.null_seed_compat_level, None);
+        assert_eq!(runtime.live.context_slot_mask, 0xffff);
+        assert_eq!(runtime.live.null_seed_compat_level, 0);
     }
 
     #[test]

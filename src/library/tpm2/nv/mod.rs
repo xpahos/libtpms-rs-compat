@@ -5,7 +5,8 @@ mod layout;
 mod orderly_ram;
 mod user;
 
-pub(super) use host::{HostNvram, NvramLoad, PermanentStateProbe};
+pub(in crate::library) use host::HostNvram;
+pub(super) use host::{NvramLoad, PermanentStateProbe};
 pub(super) use image::{WireWriter, any_object_image, build_nv_image, command_bitmap_image};
 pub(super) use index::{NV_INDEX_MAGIC, NvIndex};
 pub(super) use layout::{COMPRESSED_COMMAND_BITS, SIZEOF_NV_INDEX as NATIVE_SIZEOF_NV_INDEX};

@@ -11,7 +11,6 @@ pub(in crate::library::tpm2) const HEADER_SIZE: usize = 10;
 
 const MAX_COMMAND_SIZE: u32 = TPM_BUFFER_MAX as u32;
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(in crate::library::tpm2) struct Command<'a> {
     pub(in crate::library::tpm2) tag: u16,
@@ -90,7 +89,6 @@ impl Response {
         }
     }
 
-    #[allow(dead_code)]
     pub(in crate::library::tpm2) fn success(tag: u16, parameters: Vec<u8>) -> Self {
         Self {
             tag,

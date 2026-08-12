@@ -1,6 +1,8 @@
 mod attach;
 
-pub(super) use attach::{OwnedVolatileState, materialize_volatile_state};
+pub(super) use attach::{
+    OwnedPcr, OwnedSessionProcess, OwnedSessionSlot, OwnedVolatileState, materialize_volatile_state,
+};
 
 use sha1::{Digest, Sha1};
 

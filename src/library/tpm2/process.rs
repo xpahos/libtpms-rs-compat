@@ -9,6 +9,7 @@ pub(in crate::library) fn process(
     runtime: &mut Tpm2Runtime,
     locality: u8,
     command: &CommandInput,
+    commit_nv: impl FnOnce(&Tpm2Runtime) -> Result<(), TpmResult>,
 ) -> Result<Vec<u8>, TpmResult> {
     if !runtime.power_on {
         return Ok(Vec::new());
@@ -28,6 +29,14 @@ pub(in crate::library) fn process(
         Ok(parsed) => command::dispatch(runtime, &parsed),
         Err(error) => Response::error(error.response_code()),
     };
+
+    if runtime.nv_update_pending {
+        runtime.nv_update_pending = false;
+        if commit_nv(runtime).is_err() {
+            runtime.failure_mode = true;
+            return serialize(Response::error(TPM_RC_FAILURE));
+        }
+    }
     serialize(response)
 }
 
@@ -55,10 +64,22 @@ mod tests {
         CommandInput::new(received_size, buffer[..prefix_len].to_vec())
     }
 
+    fn run_process(
+        runtime: &mut Tpm2Runtime,
+        locality: u8,
+        command: &CommandInput,
+    ) -> Result<Vec<u8>, TpmResult> {
+        process(runtime, locality, command, |_| Ok(()))
+    }
+
     fn startup_command() -> CommandInput {
         input(&[
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
         ])
+    }
+
+    fn unknown_command() -> CommandInput {
+        input(&[0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x20, 0x00, 0x00, 0x00])
     }
 
     fn assert_runtime_is_pristine(runtime: &Tpm2Runtime) {
@@ -72,7 +93,7 @@ mod tests {
     #[test]
     fn unsupported_command_is_a_valid_tpm_error_response() {
         let mut runtime = empty_state_runtime();
-        let response = process(&mut runtime, 0, &startup_command()).expect(
+        let response = run_process(&mut runtime, 0, &unknown_command()).expect(
             "a TPM error is encoded in the response, not in the outer TPMLIB_Process result",
         );
         assert_eq!(response, UNSUPPORTED_RESPONSE);
@@ -80,14 +101,28 @@ mod tests {
     }
 
     #[test]
+    fn startup_without_decoded_state_answers_failure_without_mutation() {
+        let mut runtime = empty_state_runtime();
+        let nv_before = runtime.nv_memory.clone();
+        let response = run_process(&mut runtime, 0, &startup_command()).unwrap();
+        assert_eq!(
+            response,
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01],
+            "a runtime without decoded state cannot perform the transition"
+        );
+        assert_runtime_is_pristine(&runtime);
+        assert_eq!(runtime.nv_memory, nv_before);
+    }
+
+    #[test]
     fn malformed_command_is_a_valid_tpm_error_response() {
         let mut runtime = empty_state_runtime();
         assert_eq!(
-            process(&mut runtime, 0, &input(&[0x80, 0x01, 0x00])).unwrap(),
+            run_process(&mut runtime, 0, &input(&[0x80, 0x01, 0x00])).unwrap(),
             INSUFFICIENT_RESPONSE
         );
         assert_eq!(
-            process(
+            run_process(
                 &mut runtime,
                 0,
                 &input(&[0x12, 0x34, 0, 0, 0, 10, 0, 0, 1, 0x44])
@@ -104,12 +139,12 @@ mod tests {
         let mut runtime = empty_state_runtime();
         for round in 0..3 {
             assert_eq!(
-                process(&mut runtime, 0, &input(&[])).unwrap(),
+                run_process(&mut runtime, 0, &input(&[])).unwrap(),
                 INSUFFICIENT_RESPONSE,
                 "round {round}: empty command"
             );
             assert_eq!(
-                process(&mut runtime, 0, &startup_command()).unwrap(),
+                run_process(&mut runtime, 0, &unknown_command()).unwrap(),
                 UNSUPPORTED_RESPONSE,
                 "round {round}: unsupported command"
             );
@@ -121,8 +156,11 @@ mod tests {
     fn powered_off_runtime_answers_an_empty_response() {
         let mut runtime = empty_state_runtime();
         runtime.power_on = false;
-        assert_eq!(process(&mut runtime, 0, &startup_command()).unwrap(), []);
-        assert_eq!(process(&mut runtime, 0, &input(&[])).unwrap(), []);
+        assert_eq!(
+            run_process(&mut runtime, 0, &startup_command()).unwrap(),
+            []
+        );
+        assert_eq!(run_process(&mut runtime, 0, &input(&[])).unwrap(), []);
     }
 
     #[test]
@@ -130,11 +168,11 @@ mod tests {
         let mut runtime = empty_state_runtime();
         runtime.failure_mode = true;
         assert_eq!(
-            process(&mut runtime, 0, &startup_command()).unwrap(),
+            run_process(&mut runtime, 0, &startup_command()).unwrap(),
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01]
         );
         assert_eq!(
-            process(&mut runtime, 0, &input(&[])).unwrap(),
+            run_process(&mut runtime, 0, &input(&[])).unwrap(),
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01],
             "failure mode wins over header validation, like C"
         );
@@ -148,7 +186,7 @@ mod tests {
             prefix.extend_from_slice(&received_size.to_be_bytes());
             let oversized = CommandInput::new(received_size, prefix);
             assert_eq!(
-                process(&mut runtime, 0, &oversized).unwrap(),
+                run_process(&mut runtime, 0, &oversized).unwrap(),
                 COMMAND_SIZE_RESPONSE,
                 "received size {received_size}"
             );
@@ -160,7 +198,7 @@ mod tests {
     fn locality_is_recorded_in_locality_value_form() {
         let mut runtime = empty_state_runtime();
         for (given, recorded) in [(0, 0), (4, 4), (5, 0), (31, 0), (32, 32), (255, 255)] {
-            process(&mut runtime, given, &startup_command()).unwrap();
+            run_process(&mut runtime, given, &startup_command()).unwrap();
             assert_eq!(
                 runtime.locality, recorded,
                 "locality {given} records as {recorded}, like _plat__LocalitySet"
@@ -172,14 +210,14 @@ mod tests {
     fn locality_reaches_the_runtime_even_in_failure_mode_but_not_powered_off() {
         let mut runtime = empty_state_runtime();
         runtime.failure_mode = true;
-        process(&mut runtime, 2, &startup_command()).unwrap();
+        run_process(&mut runtime, 2, &startup_command()).unwrap();
         assert_eq!(
             runtime.locality, 2,
             "C sets the locality before ExecuteCommand checks failure mode"
         );
 
         runtime.power_on = false;
-        process(&mut runtime, 4, &startup_command()).unwrap();
+        run_process(&mut runtime, 4, &startup_command()).unwrap();
         assert_eq!(
             runtime.locality, 2,
             "a powered-off TPM rejects the command before the locality is set"
@@ -262,7 +300,7 @@ mod tests {
             Some(0),
             "the dropped context never touched the runtime"
         );
-        let response = prepared_tpm2(&library).execute(&startup_command()).unwrap();
+        let response = prepared_tpm2(&library).execute(&unknown_command()).unwrap();
         assert_eq!(response, UNSUPPORTED_RESPONSE);
         assert_eq!(library.tpm2_runtime_locality(), Some(4));
         library.terminate();
@@ -324,7 +362,7 @@ mod tests {
                 "exactly one callback query per preparation"
             );
             let response = context
-                .execute(&startup_command())
+                .execute(&unknown_command())
                 .expect("the callback's weird return code is not the outer result");
             assert_eq!(response, UNSUPPORTED_RESPONSE);
             assert_eq!(*EVENTS.lock().unwrap(), ["locality"]);
@@ -378,7 +416,7 @@ mod tests {
         assert_eq!(library.main_init(), TPM_SUCCESS);
         for round in 0..3 {
             let response = prepared_tpm2(&library)
-                .execute(&startup_command())
+                .execute(&unknown_command())
                 .expect("an unsupported command is still an outer success");
             assert_eq!(response, UNSUPPORTED_RESPONSE, "round {round}");
             let malformed = prepared_tpm2(&library).execute(&input(&[0xff])).unwrap();
@@ -392,5 +430,228 @@ mod tests {
             "processing mutated no lifecycle state"
         );
         library.terminate();
+    }
+    mod persistence {
+        use super::*;
+        use crate::library::constants::TPM_FAIL;
+        use crate::library::tpm2::manufacture::manufacture_state;
+        use crate::library::tpm2::persistent::{
+            PersistentAllEnvelope, materialize_persistent_state, persistent_all_store,
+        };
+        use crate::library::tpm2::profile::validate_user_profile;
+        use crate::library::tpm2::runtime::commit_manufactured_state;
+
+        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
+            let len = buffer.len() as u8;
+            for (index, byte) in buffer.iter_mut().enumerate() {
+                *byte = (index as u8).wrapping_add(len) ^ 0x27;
+            }
+            Ok(())
+        }
+
+        fn manufactured_runtime() -> Box<Tpm2Runtime> {
+            let profile = validate_user_profile(None).unwrap();
+            let state = manufacture_state(profile, deterministic_entropy).unwrap();
+            let mut runtime = commit_manufactured_state(state).unwrap();
+            runtime.entropy = deterministic_entropy;
+            runtime
+        }
+
+        const SUCCESS_RESPONSE: [u8; 10] =
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
+        const FAILURE_RESPONSE: [u8; 10] =
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
+
+        #[test]
+        fn successful_startup_commits_the_updated_permanent_state_once() {
+            let mut runtime = manufactured_runtime();
+            let mut stored: Vec<Vec<u8>> = Vec::new();
+            let response = process(&mut runtime, 0, &startup_command(), |runtime| {
+                stored.push(persistent_all_store(runtime.state.as_ref().unwrap()).unwrap());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(response, SUCCESS_RESPONSE);
+            assert!(!runtime.nv_update_pending, "the pending flag is consumed");
+
+            assert_eq!(stored.len(), 1, "exactly one commit per startup");
+            assert_eq!(
+                stored[0],
+                persistent_all_store(runtime.state.as_ref().unwrap()).unwrap(),
+                "the committed blob is the current permanent state"
+            );
+
+            let envelope = PersistentAllEnvelope::parse(&stored[0]).unwrap();
+            let decoded = crate::library::tpm2::parse_persistent_all_payload(&envelope).unwrap();
+            let state = materialize_persistent_state(decoded).unwrap();
+            assert_eq!(state.persistent.reset_count, 1);
+            assert_eq!(state.persistent.total_reset_count, 1);
+            assert_eq!(state.persistent.orderly_state, 0xffff);
+            assert!(
+                state.state_reset.is_none() && state.state_clear.is_none(),
+                "a non-orderly blob carries no SU sections"
+            );
+            let runtime_state = runtime.state.as_ref().unwrap();
+            assert_eq!(
+                state.orderly.drbg_state.seed.expose(),
+                runtime_state.orderly.drbg_state.seed.expose()
+            );
+            assert_eq!(
+                state.orderly.drbg_state.reseed_counter, 8,
+                "the manufacture-time DRBG state is still the persisted one"
+            );
+            assert_ne!(
+                state.orderly.drbg_state.seed.expose(),
+                runtime.live.orderly.drbg_state.seed.expose(),
+                "the live reseeded go is not persisted by Startup"
+            );
+            assert_eq!(runtime.live.orderly.drbg_state.reseed_counter, 4);
+        }
+
+        #[test]
+        fn rejected_and_malformed_commands_do_not_commit() {
+            let commits = core::cell::Cell::new(0u32);
+            let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
+                commits.set(commits.get() + 1);
+                Ok(())
+            };
+
+            let mut runtime = manufactured_runtime();
+            let response = process(&mut runtime, 2, &startup_command(), count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x09, 0x07]);
+
+            let mut runtime = manufactured_runtime();
+            let truncated = input(&[0x80, 0x01, 0, 0, 0, 0x0a, 0, 0, 0x01, 0x44]);
+            let response = process(&mut runtime, 0, &truncated, count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x01, 0xda]);
+
+            let mut runtime = manufactured_runtime();
+            let invalid = input(&[0x80, 0x01, 0, 0, 0, 0x0c, 0, 0, 0x01, 0x44, 0, 2]);
+            let response = process(&mut runtime, 0, &invalid, count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x01, 0xc4]);
+
+            let mut runtime = manufactured_runtime();
+            runtime.nv_available = false;
+            let response = process(&mut runtime, 0, &startup_command(), count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x09, 0x23]);
+
+            let mut runtime = manufactured_runtime();
+            let response = process(&mut runtime, 0, &unknown_command(), count).unwrap();
+            assert_eq!(response, UNSUPPORTED_RESPONSE);
+
+            assert_eq!(commits.get(), 0, "no commit for non-mutating commands");
+        }
+
+        #[test]
+        fn a_repeated_startup_does_not_commit_again() {
+            let commits = core::cell::Cell::new(0u32);
+            let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
+                commits.set(commits.get() + 1);
+                Ok(())
+            };
+            let mut runtime = manufactured_runtime();
+            assert_eq!(
+                process(&mut runtime, 0, &startup_command(), count).unwrap(),
+                SUCCESS_RESPONSE
+            );
+            assert_eq!(commits.get(), 1);
+            let response = process(&mut runtime, 0, &startup_command(), count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x01, 0x00]);
+            assert_eq!(commits.get(), 1, "TPM_RC_INITIALIZE performs no commit");
+        }
+
+        #[test]
+        fn nv_uninitialized_resume_does_not_commit() {
+            use crate::library::tpm2::persistent::{
+                OwnedSecret, OwnedStateClearData, OwnedStateResetData,
+            };
+            use crate::library::tpm2::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
+
+            let mut runtime = manufactured_runtime();
+            {
+                let state = runtime.state.as_mut().unwrap();
+                state.persistent.orderly_state = 0x0001;
+                state.state_reset = Some(OwnedStateResetData {
+                    null_proof: OwnedSecret::from_vec(vec![0x0f; 8]),
+                    null_seed: OwnedSecret::from_vec(vec![0x5e; 8]),
+                    clear_count: 0,
+                    object_context_id: 0,
+                    context_array: Box::new([0; MAX_ACTIVE_SESSIONS]),
+                    context_slot_mask: 0xffff,
+                    context_counter: 4,
+                    command_audit_digest: Vec::new(),
+                    restart_count: 0,
+                    pcr_counter: 0,
+                    commit_counter: 0,
+                    commit_nonce: OwnedSecret::from_vec(vec![0; 64]),
+                    commit_array: [0; COMMIT_ARRAY_SIZE],
+                    null_seed_compat_level: 1,
+                });
+                state.state_clear = Some(OwnedStateClearData {
+                    sh_enable: true,
+                    eh_enable: true,
+                    ph_enable_nv: true,
+                    platform_alg: 0x0010,
+                    platform_policy: Vec::new(),
+                    platform_auth: OwnedSecret::from_vec(Vec::new()),
+                    pcr_save: core::array::from_fn(|_| None),
+                    pcr_auth_values: core::array::from_fn(|_| OwnedSecret::from_vec(Vec::new())),
+                });
+            }
+            runtime.live.nv_ok = false;
+
+            let mut commits = 0u32;
+            let resume = input(&[0x80, 0x01, 0, 0, 0, 0x0c, 0, 0, 0x01, 0x44, 0, 1]);
+            let response = process(&mut runtime, 0, &resume, |_: &Tpm2Runtime| {
+                commits += 1;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x01, 0x4a]);
+            assert!(!runtime.startup_received);
+            assert!(!runtime.nv_update_pending);
+            assert_eq!(commits, 0, "TPM_RC_NV_UNINITIALIZED performs no commit");
+        }
+
+        #[test]
+        fn missing_storage_backend_falls_through_successfully() {
+            use crate::ffi_types::LibtpmsCallbacks;
+            use crate::library::tpm2::{HostNvram, host_nv_commit};
+
+            let host_nvram = HostNvram::new(LibtpmsCallbacks::empty());
+            let mut runtime = manufactured_runtime();
+            let response = process(&mut runtime, 0, &startup_command(), |runtime| {
+                host_nv_commit(&host_nvram, runtime)
+            })
+            .unwrap();
+            assert_eq!(response, SUCCESS_RESPONSE);
+            assert!(runtime.startup_received);
+            assert!(!runtime.nv_update_pending);
+        }
+
+        #[test]
+        fn a_commit_failure_puts_the_tpm_into_failure_mode() {
+            let mut runtime = manufactured_runtime();
+            let response = process(&mut runtime, 0, &startup_command(), |_| Err(TPM_FAIL)).unwrap();
+            assert_eq!(
+                response, FAILURE_RESPONSE,
+                "NvCommit failure is FAIL(FATAL_ERROR_INTERNAL): the reply \
+                 becomes the failure-mode response"
+            );
+            assert!(runtime.failure_mode);
+            assert!(
+                runtime.startup_received,
+                "like the C g_initialized, the RAM transition stays applied"
+            );
+
+            let mut commits = 0u32;
+            let response = process(&mut runtime, 0, &unknown_command(), |_: &Tpm2Runtime| {
+                commits += 1;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(response, FAILURE_RESPONSE);
+            assert_eq!(commits, 0, "failure mode never reaches the commit");
+        }
     }
 }

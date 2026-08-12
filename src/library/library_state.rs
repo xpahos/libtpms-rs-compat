@@ -276,8 +276,11 @@ pub(crate) struct Tpm2ProcessContext<'a> {
 impl Tpm2ProcessContext<'_> {
     pub(crate) fn execute(self, command: &super::CommandInput) -> Result<Vec<u8>, TpmResult> {
         let mut state = self.library.lock_state();
+        let host_nvram = tpm2::HostNvram::new(state.callbacks);
         match state.tpm2_runtime.as_deref_mut() {
-            Some(runtime) => tpm2::process(runtime, self.locality, command),
+            Some(runtime) => tpm2::process(runtime, self.locality, command, |runtime| {
+                tpm2::host_nv_commit(&host_nvram, runtime)
+            }),
             None => Ok(Vec::new()),
         }
     }
@@ -992,6 +995,57 @@ mod tests {
             *BACKEND_PERMALL.lock().unwrap(),
             Some(stored),
             "the stored blob is untouched by the restart"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn manufactured_tpm_accepts_exactly_one_startup_clear() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_STORES.lock().unwrap() = 0;
+        let library = manufacture_library();
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+
+        let startup = crate::library::CommandInput::new(
+            12,
+            vec![
+                0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
+            ],
+        );
+        let stores_before = *BACKEND_STORES.lock().unwrap();
+        let ProcessPreparation::Tpm2(context) = library.prepare_process() else {
+            panic!("TPM 2 must be selected");
+        };
+        let response = context.execute(&startup).unwrap();
+        assert_eq!(
+            response,
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00],
+            "TPM2_Startup(TPM_SU_CLEAR) succeeds after a first-boot manufacture"
+        );
+        assert_eq!(
+            *BACKEND_STORES.lock().unwrap(),
+            stores_before + 1,
+            "the abstract commit reaches tpm_nvram_storedata"
+        );
+        assert!(BACKEND_PERMALL.lock().unwrap().is_some());
+
+        let ProcessPreparation::Tpm2(context) = library.prepare_process() else {
+            panic!("TPM 2 must be selected");
+        };
+        let response = context.execute(&startup).unwrap();
+        assert_eq!(
+            response,
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x00],
+            "a repeated startup answers TPM_RC_INITIALIZE"
+        );
+        assert_eq!(
+            *BACKEND_STORES.lock().unwrap(),
+            stores_before + 1,
+            "TPM_RC_INITIALIZE performs no host commit"
         );
         library.terminate();
     }

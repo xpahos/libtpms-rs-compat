@@ -5,6 +5,8 @@ use crate::library::constants::TPM_FAIL;
 
 use super::entropy::EntropySource;
 
+pub(in crate::library::tpm2) const DRBG_MAGIC: u32 = 0x4742_5244;
+
 pub(in crate::library::tpm2) const DRBG_KEY_SIZE: usize = 32;
 pub(in crate::library::tpm2) const DRBG_IV_SIZE: usize = 16;
 pub(in crate::library::tpm2) const DRBG_SEED_SIZE: usize = DRBG_KEY_SIZE + DRBG_IV_SIZE;
@@ -52,6 +54,30 @@ impl Drbg {
         };
         drbg.reseed(&seed_material)?;
         Ok(drbg)
+    }
+
+    pub(in crate::library::tpm2) fn restore(
+        seed: &[u8],
+        reseed_counter: u64,
+        last_value: [u32; 4],
+        continuous_test: bool,
+    ) -> Result<Self, TpmResult> {
+        let seed: [u8; DRBG_SEED_SIZE] = seed.try_into().map_err(|_| TPM_FAIL)?;
+        Ok(Self {
+            reseed_counter,
+            seed,
+            last_value,
+            continuous_test,
+        })
+    }
+
+    pub(in crate::library::tpm2) fn reseed_from_entropy(
+        &mut self,
+        entropy: EntropySource,
+    ) -> Result<(), TpmResult> {
+        let mut seed_material = [0u8; DRBG_SEED_SIZE];
+        entropy(&mut seed_material)?;
+        self.reseed(&seed_material)
     }
 
     fn reseed(&mut self, provided_entropy: &[u8; DRBG_SEED_SIZE]) -> Result<(), TpmResult> {

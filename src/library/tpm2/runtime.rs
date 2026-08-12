@@ -1,6 +1,8 @@
 use crate::ffi_types::TpmResult;
 
 use super::clock::RuntimeClock;
+use super::crypto::{EntropySource, os_entropy};
+use super::live::{LiveState, RestoredVolatile, split_restored_volatile};
 use super::nv::build_nv_image;
 use super::persistent::{OwnedPcrAllocation, OwnedPersistentState};
 use super::profile::ValidatedProfile;
@@ -17,15 +19,16 @@ pub struct Tpm2Runtime {
 
     pub(super) live_pcr_allocated: Option<OwnedPcrAllocation>,
 
-    pub(super) volatile: Option<OwnedVolatileState>,
+    pub(super) live: LiveState,
+
+    pub(super) restored_volatile: Option<RestoredVolatile>,
+
+    pub(super) entropy: EntropySource,
+
+    pub(super) nv_update_pending: bool,
 
     #[allow(dead_code)]
     pub(super) clock: RuntimeClock,
-
-    #[allow(dead_code)]
-    pub(super) context_slot_mask: Option<u16>,
-    #[allow(dead_code)]
-    pub(super) null_seed_compat_level: Option<u8>,
 
     pub(super) active_profile_json: String,
 
@@ -39,7 +42,6 @@ pub struct Tpm2Runtime {
     pub power_on: bool,
     pub nv_available: bool,
     pub locality: u8,
-    #[allow(dead_code)]
     pub nv_memory: Box<[u8]>,
 }
 
@@ -51,7 +53,6 @@ impl Tpm2Runtime {
             .expect("this runtime carries decoded state")
     }
 
-    #[cfg(test)]
     pub(super) fn effective_pcr_allocated(&self) -> Option<&OwnedPcrAllocation> {
         self.live_pcr_allocated.as_ref().or_else(|| {
             self.state
@@ -62,13 +63,13 @@ impl Tpm2Runtime {
 }
 
 pub(super) fn merge_volatile_state(runtime: &mut Tpm2Runtime, volatile: OwnedVolatileState) {
-    runtime.manufactured = volatile.manufactured;
-    runtime.startup_received = volatile.initialized;
-    runtime.failure_mode = volatile.in_failure_mode;
-    runtime.context_slot_mask = Some(volatile.state_reset.context_slot_mask);
-    runtime.null_seed_compat_level = Some(volatile.state_reset.null_seed_compat_level);
-    runtime.clock = volatile.resume_clock;
-    runtime.volatile = Some(volatile);
+    let (live, flags, carry) = split_restored_volatile(volatile);
+    runtime.manufactured = flags.manufactured;
+    runtime.startup_received = flags.initialized;
+    runtime.failure_mode = flags.in_failure_mode;
+    runtime.clock = flags.resume_clock;
+    runtime.live = live;
+    runtime.restored_volatile = Some(carry);
 }
 
 pub(super) fn nv_shadow_restore(runtime: &mut Tpm2Runtime) {
@@ -122,57 +123,32 @@ pub(super) fn format_active_profile(profile: &ValidatedProfile) -> String {
 pub(super) fn commit_restored_state(
     candidate: OwnedPersistentState,
 ) -> Result<Box<Tpm2Runtime>, TpmResult> {
-    let context_slot_mask = candidate
-        .state_reset
-        .as_ref()
-        .map(|reset| reset.context_slot_mask);
-    let null_seed_compat_level = candidate
-        .state_reset
-        .as_ref()
-        .map(|reset| reset.null_seed_compat_level);
-    commit_state(
-        candidate,
-        false,
-        context_slot_mask,
-        null_seed_compat_level,
-        true,
-    )
+    let live = LiveState::power_on_with_state_reset(candidate.state_reset.as_ref());
+    commit_state(candidate, false, live, true)
 }
 
 pub(super) fn commit_manufactured_state(
     candidate: OwnedPersistentState,
 ) -> Result<Box<Tpm2Runtime>, TpmResult> {
-    commit_state(candidate, true, Some(0xffff), None, false)
+    commit_state(candidate, true, LiveState::power_on(), false)
 }
 
 pub(super) fn commit_first_boot_reloaded_state(
     candidate: OwnedPersistentState,
 ) -> Result<Box<Tpm2Runtime>, TpmResult> {
-    let context_slot_mask = candidate
-        .state_reset
-        .as_ref()
-        .map_or(0xffff, |reset| reset.context_slot_mask);
-    let null_seed_compat_level = candidate
-        .state_reset
-        .as_ref()
-        .map(|reset| reset.null_seed_compat_level);
-    commit_state(
-        candidate,
-        true,
-        Some(context_slot_mask),
-        null_seed_compat_level,
-        true,
-    )
+    let live = LiveState::power_on_with_state_reset(candidate.state_reset.as_ref());
+    commit_state(candidate, true, live, true)
 }
 
 fn commit_state(
     candidate: OwnedPersistentState,
     was_manufactured: bool,
-    context_slot_mask: Option<u16>,
-    null_seed_compat_level: Option<u8>,
+    mut live: LiveState,
     shadow_pcr_pending: bool,
 ) -> Result<Box<Tpm2Runtime>, TpmResult> {
     let nv_memory = build_nv_image(&candidate)?;
+
+    live.orderly = candidate.orderly.clone();
 
     let shadow_pcr_allocated = candidate
         .persistent
@@ -187,10 +163,11 @@ fn commit_state(
         shadow_pcr_allocated,
         shadow_pcr_pending,
         live_pcr_allocated: None,
-        volatile: None,
+        live,
+        restored_volatile: None,
+        entropy: os_entropy,
+        nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
-        context_slot_mask,
-        null_seed_compat_level,
         active_profile_json,
         manufactured: true,
         was_manufactured,
@@ -212,10 +189,11 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         },
         shadow_pcr_pending: false,
         live_pcr_allocated: None,
-        volatile: None,
+        live: LiveState::power_on(),
+        restored_volatile: None,
+        entropy: os_entropy,
+        nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
-        context_slot_mask: None,
-        null_seed_compat_level: None,
         active_profile_json: String::new(),
         manufactured: false,
         was_manufactured: false,
@@ -233,7 +211,6 @@ pub(super) fn manufactured_zeroed_nv_runtime(active_profile_json: String) -> Box
     let mut runtime = empty_state_runtime();
     runtime.manufactured = true;
     runtime.was_manufactured = true;
-    runtime.context_slot_mask = Some(0xffff);
     runtime.active_profile_json = active_profile_json;
     runtime
 }

@@ -33,7 +33,7 @@ pub(super) use compat_tail::CompatTailFixture;
 #[cfg(test)]
 pub(super) use data::PrefixFixture;
 #[cfg(test)]
-pub(super) use orderly::OrderlyFixture;
+pub(super) use orderly::{DrbgFixture, OrderlyFixture};
 
 use super::compile_constants::ConstantMismatch;
 use super::marshal::BlobReader;

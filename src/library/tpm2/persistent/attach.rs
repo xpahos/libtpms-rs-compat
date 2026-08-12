@@ -23,6 +23,7 @@ use crate::library::tpm2::state::{
 };
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub(in crate::library::tpm2) struct OwnedSecret(Vec<u8>);
 
 impl OwnedSecret {
@@ -209,7 +210,7 @@ fn own_persistent_data(
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedDrbgState {
     pub(in crate::library::tpm2) reseed_counter: u64,
@@ -218,7 +219,7 @@ pub(in crate::library::tpm2) struct OwnedDrbgState {
     pub(in crate::library::tpm2) last_value: [u32; super::orderly::DRBG_LAST_VALUE_COUNT],
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedOrderlyData {
     pub(in crate::library::tpm2) clock: u64,
@@ -286,14 +287,14 @@ pub(in crate::library::tpm2) fn own_state_reset(reset: &StateResetData<'_>) -> O
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedPcrBank {
     pub(in crate::library::tpm2) hash_alg: u16,
     pub(in crate::library::tpm2) pcrs: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedStateClearData {
     pub(in crate::library::tpm2) sh_enable: bool,
@@ -334,7 +335,7 @@ pub(in crate::library::tpm2) struct OwnedOrderlyRamEntry {
     pub(in crate::library::tpm2) data: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedIndexOrderlyRam {
     pub(in crate::library::tpm2) sourceside_size: u32,

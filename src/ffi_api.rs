@@ -436,6 +436,8 @@ mod tests {
         0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
     ];
     #[cfg(feature = "tpm2")]
+    const UNKNOWN_COMMAND: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x20, 0x00, 0x00, 0x00];
+    #[cfg(feature = "tpm2")]
     const UNSUPPORTED_RESPONSE: [u8; 10] =
         [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x43];
     #[cfg(feature = "tpm2")]
@@ -534,7 +536,7 @@ mod tests {
         crate::library::stage_empty_permanent_state_for_tests();
         assert_eq!(main_init(), TPM_SUCCESS);
 
-        assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert_eq!(outputs.call(&UNKNOWN_COMMAND), TPM_SUCCESS);
         assert_eq!(
             outputs.respbuffer, grown_buffer,
             "a TPM_BUFFER_MAX-sized buffer is not reallocated"
@@ -562,7 +564,7 @@ mod tests {
         let mut small = ProcessOutputs::new();
         small.respbuffer = crate::ffi_support::malloc_bytes(&[0u8; 16]);
         small.respbufsize = 16;
-        assert_eq!(small.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert_eq!(small.call(&UNKNOWN_COMMAND), TPM_SUCCESS);
         assert_eq!(small.respbufsize, TPM_BUFFER_MAX);
         assert_eq!(small.response(), UNSUPPORTED_RESPONSE);
         drop(small);
@@ -571,15 +573,15 @@ mod tests {
         large.respbuffer = crate::ffi_support::malloc_bytes(&[0u8; 2 * RESPONSE_BUFFER_SIZE]);
         large.respbufsize = 2 * TPM_BUFFER_MAX;
         let large_buffer = large.respbuffer;
-        assert_eq!(large.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert_eq!(large.call(&UNKNOWN_COMMAND), TPM_SUCCESS);
         assert_eq!(large.respbuffer, large_buffer);
         assert_eq!(large.respbufsize, 2 * TPM_BUFFER_MAX);
         assert_eq!(large.response(), UNSUPPORTED_RESPONSE);
         drop(large);
 
         let mut shared = ProcessOutputs::new();
-        shared.respbuffer = crate::ffi_support::malloc_bytes(&STARTUP_COMMAND);
-        shared.respbufsize = STARTUP_COMMAND.len() as u32;
+        shared.respbuffer = crate::ffi_support::malloc_bytes(&UNKNOWN_COMMAND);
+        shared.respbufsize = UNKNOWN_COMMAND.len() as u32;
         let shared_command = shared.respbuffer;
         // SAFETY: the command and response share one live allocation; the
         // implementation owns the command bytes before reallocating it.
@@ -589,7 +591,7 @@ mod tests {
                 &mut shared.resp_size,
                 &mut shared.respbufsize,
                 shared_command,
-                STARTUP_COMMAND.len() as u32,
+                UNKNOWN_COMMAND.len() as u32,
             )
         };
         assert_eq!(result, TPM_SUCCESS);
@@ -599,7 +601,7 @@ mod tests {
 
         let mut shared = ProcessOutputs::new();
         let mut contents = [0u8; RESPONSE_BUFFER_SIZE];
-        contents[..STARTUP_COMMAND.len()].copy_from_slice(&STARTUP_COMMAND);
+        contents[..UNKNOWN_COMMAND.len()].copy_from_slice(&UNKNOWN_COMMAND);
         shared.respbuffer = crate::ffi_support::malloc_bytes(&contents);
         shared.respbufsize = TPM_BUFFER_MAX;
         let shared_command = shared.respbuffer;
@@ -611,7 +613,7 @@ mod tests {
                 &mut shared.resp_size,
                 &mut shared.respbufsize,
                 shared_command,
-                STARTUP_COMMAND.len() as u32,
+                UNKNOWN_COMMAND.len() as u32,
             )
         };
         assert_eq!(result, TPM_SUCCESS);
@@ -682,14 +684,14 @@ mod tests {
         let mut max_command = vec![0u8; RESPONSE_BUFFER_SIZE];
         max_command[..2].copy_from_slice(&[0x80, 0x01]);
         max_command[2..6].copy_from_slice(&(RESPONSE_BUFFER_SIZE as u32).to_be_bytes());
-        max_command[6..10].copy_from_slice(&[0x00, 0x00, 0x01, 0x44]);
+        max_command[6..10].copy_from_slice(&[0x20, 0x00, 0x00, 0x00]);
         assert_eq!(outputs2.call(&max_command), TPM_SUCCESS);
         assert_eq!(outputs2.response(), UNSUPPORTED_RESPONSE);
 
         let mut over_command = vec![0u8; RESPONSE_BUFFER_SIZE + 1];
         over_command[..2].copy_from_slice(&[0x80, 0x01]);
         over_command[2..6].copy_from_slice(&(RESPONSE_BUFFER_SIZE as u32 + 1).to_be_bytes());
-        over_command[6..10].copy_from_slice(&[0x00, 0x00, 0x01, 0x44]);
+        over_command[6..10].copy_from_slice(&[0x20, 0x00, 0x00, 0x00]);
         assert_eq!(outputs2.call(&over_command), TPM_SUCCESS);
         assert_eq!(outputs2.response(), COMMAND_SIZE_RESPONSE);
         drop(outputs2);

@@ -52,12 +52,12 @@ pub(in crate::library::tpm2) struct PermanentStateProbe {
     pub(in crate::library::tpm2) has_load_callback: bool,
 }
 
-pub(in crate::library::tpm2) struct HostNvram {
+pub(in crate::library) struct HostNvram {
     callbacks: LibtpmsCallbacks,
 }
 
 impl HostNvram {
-    pub(in crate::library::tpm2) fn new(callbacks: LibtpmsCallbacks) -> Self {
+    pub(in crate::library) fn new(callbacks: LibtpmsCallbacks) -> Self {
         Self { callbacks }
     }
 

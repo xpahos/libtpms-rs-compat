@@ -1,16 +1,24 @@
-use crate::library::constants::TPM_RC_COMMAND_CODE;
+use crate::library::constants::{TPM_RC_COMMAND_CODE, TPM_RC_INITIALIZE};
 
 use super::super::runtime::Tpm2Runtime;
 use super::header::{Command, Response};
+use super::startup;
 
-#[cfg(test)]
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 
 pub(in crate::library::tpm2) fn dispatch(
-    _runtime: &mut Tpm2Runtime,
-    _command: &Command<'_>,
+    runtime: &mut Tpm2Runtime,
+    command: &Command<'_>,
 ) -> Response {
-    Response::error(TPM_RC_COMMAND_CODE)
+    match command.command_code {
+        TPM_CC_STARTUP => {
+            if runtime.startup_received {
+                return Response::error(TPM_RC_INITIALIZE);
+            }
+            startup::execute(runtime, command)
+        }
+        _ => Response::error(TPM_RC_COMMAND_CODE),
+    }
 }
 
 #[cfg(test)]
@@ -45,13 +53,30 @@ mod tests {
     }
 
     #[test]
-    fn startup_is_still_unimplemented() {
-        assert_eq!(dispatch_code(TPM_CC_STARTUP).code(), TPM_RC_COMMAND_CODE);
+    fn startup_routes_to_the_startup_handler() {
+        use crate::library::constants::TPM_RC_FAILURE;
+        let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0c];
+        out.extend_from_slice(&TPM_CC_STARTUP.to_be_bytes());
+        out.extend_from_slice(&[0x00, 0x00]);
+        let input = CommandInput::new(out.len() as u32, out);
+        let parsed = parse_command(&input).unwrap();
+        let mut runtime = empty_state_runtime();
+        assert_eq!(dispatch(&mut runtime, &parsed).code(), TPM_RC_FAILURE);
+    }
+
+    #[test]
+    fn started_tpm_rejects_startup_before_parsing_its_payload() {
+        use crate::library::constants::TPM_RC_INITIALIZE;
+        let mut runtime = empty_state_runtime();
+        runtime.startup_received = true;
+        let input = command(TPM_CC_STARTUP);
+        let parsed = parse_command(&input).unwrap();
+        assert_eq!(dispatch(&mut runtime, &parsed).code(), TPM_RC_INITIALIZE);
     }
 
     #[test]
     fn unsupported_response_serializes_like_c() {
-        let response = dispatch_code(TPM_CC_STARTUP);
+        let response = dispatch_code(0x0000_0145);
         assert_eq!(
             serialize_response(&response).unwrap(),
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x43]
@@ -62,7 +87,7 @@ mod tests {
     fn unsupported_commands_do_not_mutate_the_runtime() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
-        for code in [0x0000_0144, 0x0000_017b, 0xffff_ffff, 0x0000_0000] {
+        for code in [0x0000_0145, 0x0000_017b, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
             let response = dispatch(&mut runtime, &parsed);
