@@ -191,16 +191,21 @@ pub(crate) unsafe fn decode_blob(
     todo!("TPMLIB_DecodeBlob is not implemented")
 }
 
-pub(crate) fn set_debug_fd(_fd: c_int) {
-    todo!("TPMLIB_SetDebugFD is not implemented")
+pub(crate) fn set_debug_fd(fd: c_int) {
+    crate::debug_logging::set_fd(fd);
 }
 
-pub(crate) fn set_debug_level(_level: c_uint) {
-    todo!("TPMLIB_SetDebugLevel is not implemented")
+pub(crate) fn set_debug_level(level: c_uint) {
+    crate::debug_logging::set_level(level);
 }
 
-pub(crate) unsafe fn set_debug_prefix(_prefix: *const c_char) -> TpmResult {
-    todo!("TPMLIB_SetDebugPrefix is not implemented")
+pub(crate) unsafe fn set_debug_prefix(prefix: *const c_char) -> TpmResult {
+    if prefix.is_null() {
+        return crate::debug_logging::set_prefix(None);
+    }
+    // SAFETY: the C API contract requires a non-null, NUL-terminated string
+    // that remains valid for this call; the null case was handled above.
+    crate::debug_logging::set_prefix(Some(unsafe { core::ffi::CStr::from_ptr(prefix) }))
 }
 
 pub(crate) unsafe fn set_buffer_size(
@@ -332,6 +337,51 @@ mod tests {
             unsafe { get_tpm_property(BUFFER_MAX_PROPERTY, core::ptr::null_mut()) },
             TPM_FAIL
         );
+    }
+
+    #[test]
+    fn debug_fd_and_level_reach_the_debug_configuration() {
+        let _state = crate::debug_logging::test_support::DebugStateGuard::hold();
+        set_debug_fd(21);
+        set_debug_level(4);
+        assert_eq!(crate::debug_logging::fd_and_level(), (21, 4));
+    }
+
+    #[test]
+    fn debug_prefix_is_owned_replaced_and_cleared() {
+        let _state = crate::debug_logging::test_support::DebugStateGuard::hold();
+        let mut caller = b"first\0".to_vec();
+        // SAFETY: `caller` is NUL-terminated and remains live for the call.
+        assert_eq!(
+            unsafe { set_debug_prefix(caller.as_ptr().cast()) },
+            TPM_SUCCESS
+        );
+        caller[0] = b'X';
+        assert_eq!(
+            crate::debug_logging::prefix().as_deref(),
+            Some(b"first".as_slice())
+        );
+
+        // SAFETY: the byte string is statically live and NUL-terminated.
+        assert_eq!(unsafe { set_debug_prefix(c"second".as_ptr()) }, TPM_SUCCESS);
+        assert_eq!(
+            crate::debug_logging::prefix().as_deref(),
+            Some(b"second".as_slice())
+        );
+
+        // SAFETY: NULL clears the prefix without being dereferenced.
+        assert_eq!(unsafe { set_debug_prefix(core::ptr::null()) }, TPM_SUCCESS);
+        assert_eq!(crate::debug_logging::prefix(), None);
+
+        // SAFETY: the byte string is statically live and NUL-terminated.
+        assert_eq!(unsafe { set_debug_prefix(c"".as_ptr()) }, TPM_SUCCESS);
+        assert_eq!(
+            crate::debug_logging::prefix().as_deref(),
+            Some(b"".as_slice())
+        );
+
+        // SAFETY: restore the process-global setting for other tests.
+        assert_eq!(unsafe { set_debug_prefix(core::ptr::null()) }, TPM_SUCCESS);
     }
 
     struct ProcessOutputs {

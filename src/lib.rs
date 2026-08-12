@@ -1,3 +1,4 @@
+mod debug_logging;
 mod ffi_api;
 pub mod ffi_support;
 pub mod ffi_types;
