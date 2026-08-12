@@ -1,3 +1,5 @@
+#[cfg(feature = "tpm2")]
+mod command_input;
 mod constants;
 mod library_state;
 mod preloaded_state;
@@ -10,8 +12,11 @@ use core::ffi::c_int;
 use crate::ffi_types::{
     LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion,
 };
-pub use constants::{TPM_FAIL, TPM_SUCCESS};
+#[cfg(feature = "tpm2")]
+pub(crate) use command_input::CommandInput;
+pub use constants::{TPM_BUFFER_MAX, TPM_FAIL, TPM_SIZE, TPM_SUCCESS};
 use library_state::Library;
+pub(crate) use library_state::ProcessPreparation;
 
 pub fn get_version() -> u32 {
     crate::version::TPM_LIBRARY_VERSION
@@ -27,6 +32,16 @@ pub fn main_init() -> TpmResult {
 
 pub fn terminate() {
     Library::global().terminate();
+}
+
+#[cfg(feature = "tpm2")]
+pub(crate) fn prepare_process() -> ProcessPreparation<'static> {
+    Library::global().prepare_process()
+}
+
+#[cfg(not(feature = "tpm2"))]
+pub(crate) fn prepare_process() -> ProcessPreparation {
+    Library::global().prepare_process()
 }
 
 pub fn get_tpm_property(prop: TpmlibTpmProperty) -> Option<c_int> {
@@ -47,4 +62,9 @@ pub fn set_profile(profile: Option<&[u8]>) -> TpmResult {
 
 pub fn was_manufactured() -> bool {
     Library::global().was_manufactured()
+}
+
+#[cfg(all(test, feature = "tpm2"))]
+pub(crate) fn stage_empty_permanent_state_for_tests() {
+    Library::global().stage_empty_state(state_blob::StateBlobKind::Permanent);
 }

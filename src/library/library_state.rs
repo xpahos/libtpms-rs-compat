@@ -134,6 +134,41 @@ impl Library {
         }
     }
 
+    #[cfg(feature = "tpm2")]
+    pub(crate) fn prepare_process(&self) -> ProcessPreparation<'_> {
+        let state = self.lock_state();
+        match state.selected {
+            TpmVersion::V2_0 => {
+                let callbacks = state.callbacks;
+                drop(state);
+                ProcessPreparation::Tpm2(Tpm2ProcessContext {
+                    library: self,
+                    locality: host_locality(&callbacks),
+                })
+            }
+            _ => ProcessPreparation::Disabled,
+        }
+    }
+
+    #[cfg(not(feature = "tpm2"))]
+    pub(crate) fn prepare_process(&self) -> ProcessPreparation {
+        let _ = self.lock_state().selected;
+        ProcessPreparation::Disabled
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn tpm2_runtime_locality(&self) -> Option<u8> {
+        self.lock_state()
+            .tpm2_runtime
+            .as_ref()
+            .map(|runtime| runtime.locality)
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn stage_empty_state(&self, kind: StateBlobKind) {
+        self.lock_state().preloaded_state.set_empty(kind);
+    }
+
     pub fn terminate(&self) {
         let selected = self.lock_state().selected;
         match selected {
@@ -218,6 +253,46 @@ impl Library {
             _ => None,
         }
     }
+}
+
+#[cfg(feature = "tpm2")]
+pub(crate) enum ProcessPreparation<'a> {
+    Disabled,
+    Tpm2(Tpm2ProcessContext<'a>),
+}
+
+#[cfg(not(feature = "tpm2"))]
+pub(crate) enum ProcessPreparation {
+    Disabled,
+}
+
+#[cfg(feature = "tpm2")]
+pub(crate) struct Tpm2ProcessContext<'a> {
+    library: &'a Library,
+    locality: u8,
+}
+
+#[cfg(feature = "tpm2")]
+impl Tpm2ProcessContext<'_> {
+    pub(crate) fn execute(self, command: &super::CommandInput) -> Result<Vec<u8>, TpmResult> {
+        let mut state = self.library.lock_state();
+        match state.tpm2_runtime.as_deref_mut() {
+            Some(runtime) => tpm2::process(runtime, self.locality, command),
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+#[cfg(feature = "tpm2")]
+fn host_locality(callbacks: &LibtpmsCallbacks) -> u8 {
+    let Some(callback) = callbacks.tpm_io_getlocality else {
+        return 0;
+    };
+    let mut locality: crate::ffi_types::TpmModifierIndicator = 0;
+    // SAFETY: the copied callback has the exact C ABI signature, and the
+    // out-pointer references a live local for the duration of the call.
+    let _ = unsafe { callback(&mut locality, 0) };
+    locality as u8
 }
 
 static LIBRARY: Library = Library::new();

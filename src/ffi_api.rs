@@ -4,7 +4,12 @@ use crate::ffi_types::{
     LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
     TpmlibTpmProperty, TpmlibTpmVersion,
 };
+#[cfg(feature = "tpm2")]
+use crate::library::TPM_SIZE;
 use crate::library::{self, TPM_FAIL, TPM_SUCCESS};
+
+#[cfg(feature = "tpm2")]
+const RESPONSE_BUFFER_SIZE: usize = library::TPM_BUFFER_MAX as usize;
 
 pub(crate) fn get_version() -> u32 {
     library::get_version()
@@ -23,13 +28,96 @@ pub(crate) fn terminate() {
 }
 
 pub(crate) unsafe fn process(
-    _respbuffer: *mut *mut c_uchar,
-    _resp_size: *mut u32,
-    _respbufsize: *mut u32,
-    _command: *mut c_uchar,
-    _command_size: u32,
+    respbuffer: *mut *mut c_uchar,
+    resp_size: *mut u32,
+    respbufsize: *mut u32,
+    command: *mut c_uchar,
+    command_size: u32,
 ) -> TpmResult {
-    todo!("TPMLIB_Process is not implemented")
+    if respbuffer.is_null() || resp_size.is_null() || respbufsize.is_null() {
+        return TPM_FAIL;
+    }
+    if command.is_null() && command_size != 0 {
+        return TPM_FAIL;
+    }
+    match library::prepare_process() {
+        library::ProcessPreparation::Disabled => TPM_FAIL,
+        #[cfg(feature = "tpm2")]
+        library::ProcessPreparation::Tpm2(context) => {
+            let prefix_len = library::CommandInput::required_prefix_len(command_size);
+            let command_input = library::CommandInput::new(
+                command_size,
+                if prefix_len == 0 {
+                    Vec::new()
+                } else {
+                    // SAFETY: `command` is non-null and points to at least
+                    // `prefix_len <= command_size` readable bytes by the
+                    // FFI contract.
+                    unsafe { core::slice::from_raw_parts(command, prefix_len) }.to_vec()
+                },
+            );
+            // SAFETY: the output pointers were null-checked above and
+            // `*respbuffer` is null or caller-owned by the FFI contract.
+            if let Err(code) = unsafe { ensure_response_buffer(respbuffer, respbufsize) } {
+                return code;
+            }
+            match context.execute(&command_input) {
+                // SAFETY: null-checked above; `ensure_response_buffer`
+                // left `*respbuffer` with `*respbufsize` writable bytes.
+                Ok(response) => unsafe {
+                    copy_response(respbuffer, resp_size, respbufsize, &response)
+                },
+                Err(code) => code,
+            }
+        }
+    }
+}
+
+/// # Safety
+///
+/// `respbuffer` and `respbufsize` must be non-null and writable, and
+/// `*respbuffer` must be null or a caller-owned C-allocator allocation.
+#[cfg(feature = "tpm2")]
+unsafe fn ensure_response_buffer(
+    respbuffer: *mut *mut c_uchar,
+    respbufsize: *mut u32,
+) -> Result<(), TpmResult> {
+    // SAFETY: the pointers are valid per this function's contract, and
+    // `*respbuffer` may be passed to realloc.
+    unsafe {
+        if (*respbufsize as usize) < RESPONSE_BUFFER_SIZE || (*respbuffer).is_null() {
+            let grown = libc::realloc((*respbuffer).cast(), RESPONSE_BUFFER_SIZE);
+            if grown.is_null() {
+                return Err(TPM_SIZE);
+            }
+            *respbuffer = grown.cast();
+            *respbufsize = RESPONSE_BUFFER_SIZE as u32;
+        }
+    }
+    Ok(())
+}
+
+/// # Safety
+///
+/// All three pointers must be non-null and writable, and `*respbuffer`
+/// must hold at least `*respbufsize` writable bytes.
+#[cfg(feature = "tpm2")]
+unsafe fn copy_response(
+    respbuffer: *mut *mut c_uchar,
+    resp_size: *mut u32,
+    respbufsize: *mut u32,
+    response: &[u8],
+) -> TpmResult {
+    // SAFETY: the pointers are valid per this function's contract and the
+    // capacity check keeps the copy within `*respbuffer`.
+    unsafe {
+        if response.len() > *respbufsize as usize {
+            return TPM_FAIL;
+        }
+        core::ptr::copy_nonoverlapping(response.as_ptr(), *respbuffer, response.len());
+        *resp_size = response.len() as u32;
+    }
+    TPM_SUCCESS
 }
 
 pub(crate) unsafe fn volatile_all_store(
@@ -244,5 +332,320 @@ mod tests {
             unsafe { get_tpm_property(BUFFER_MAX_PROPERTY, core::ptr::null_mut()) },
             TPM_FAIL
         );
+    }
+
+    struct ProcessOutputs {
+        respbuffer: *mut c_uchar,
+        resp_size: u32,
+        respbufsize: u32,
+    }
+
+    impl ProcessOutputs {
+        fn new() -> Self {
+            Self {
+                respbuffer: core::ptr::null_mut(),
+                resp_size: 0xdead_beef,
+                respbufsize: 0,
+            }
+        }
+
+        #[cfg(feature = "tpm2")]
+        fn call(&mut self, command: &[u8]) -> TpmResult {
+            // SAFETY: output pointers reference live fields and `command`
+            // remains readable for the duration of the call.
+            unsafe {
+                process(
+                    &mut self.respbuffer,
+                    &mut self.resp_size,
+                    &mut self.respbufsize,
+                    command.as_ptr().cast_mut(),
+                    command.len() as u32,
+                )
+            }
+        }
+
+        #[cfg(feature = "tpm2")]
+        fn response(&self) -> &[u8] {
+            assert!(!self.respbuffer.is_null());
+            assert!(self.resp_size <= self.respbufsize);
+            // SAFETY: `respbuffer` owns at least `respbufsize` bytes and the
+            // assertions bound the returned slice to initialized response bytes.
+            unsafe { core::slice::from_raw_parts(self.respbuffer, self.resp_size as usize) }
+        }
+    }
+
+    impl Drop for ProcessOutputs {
+        fn drop(&mut self) {
+            // SAFETY: the pointer is null or was allocated through the C
+            // allocator used by `process`.
+            unsafe { libc::free(self.respbuffer.cast()) };
+        }
+    }
+
+    const STARTUP_COMMAND: [u8; 12] = [
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
+    ];
+    #[cfg(feature = "tpm2")]
+    const UNSUPPORTED_RESPONSE: [u8; 10] =
+        [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x43];
+    #[cfg(feature = "tpm2")]
+    const INSUFFICIENT_RESPONSE: [u8; 10] =
+        [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x9a];
+    #[cfg(feature = "tpm2")]
+    const COMMAND_SIZE_RESPONSE: [u8; 10] =
+        [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x42];
+    #[cfg(feature = "tpm2")]
+    const BAD_TAG_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x1e];
+
+    #[test]
+    fn process_rejects_null_output_pointers_without_touching_the_rest() {
+        let mut command = STARTUP_COMMAND;
+        let mut buffer: *mut c_uchar = core::ptr::null_mut();
+        let mut resp_size: u32 = 0xdead_beef;
+        let mut respbufsize: u32 = 0xfeed_face;
+        // SAFETY: every non-null argument points to a live local; each call
+        // intentionally tests one null output pointer.
+        unsafe {
+            assert_eq!(
+                process(
+                    core::ptr::null_mut(),
+                    &mut resp_size,
+                    &mut respbufsize,
+                    command.as_mut_ptr(),
+                    command.len() as u32,
+                ),
+                TPM_FAIL
+            );
+            assert_eq!(
+                process(
+                    &mut buffer,
+                    core::ptr::null_mut(),
+                    &mut respbufsize,
+                    command.as_mut_ptr(),
+                    command.len() as u32,
+                ),
+                TPM_FAIL
+            );
+            assert_eq!(
+                process(
+                    &mut buffer,
+                    &mut resp_size,
+                    core::ptr::null_mut(),
+                    command.as_mut_ptr(),
+                    command.len() as u32,
+                ),
+                TPM_FAIL
+            );
+        }
+        assert!(buffer.is_null());
+        assert_eq!(resp_size, 0xdead_beef);
+        assert_eq!(respbufsize, 0xfeed_face);
+    }
+
+    #[test]
+    fn process_rejects_a_null_command_with_nonzero_size_without_output_updates() {
+        let mut outputs = ProcessOutputs::new();
+        // SAFETY: output pointers reference live fields; the null command is
+        // rejected before it can be dereferenced.
+        let result = unsafe {
+            process(
+                &mut outputs.respbuffer,
+                &mut outputs.resp_size,
+                &mut outputs.respbufsize,
+                core::ptr::null_mut(),
+                STARTUP_COMMAND.len() as u32,
+            )
+        };
+        assert_eq!(result, TPM_FAIL);
+        assert!(outputs.respbuffer.is_null());
+        assert_eq!(outputs.resp_size, 0xdead_beef);
+        assert_eq!(outputs.respbufsize, 0);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn process_end_to_end_follows_the_c_buffer_and_response_contract() {
+        const TPMLIB_TPM_VERSION_2: crate::ffi_types::TpmlibTpmVersion = 1;
+        const TPM_BUFFER_MAX: u32 = RESPONSE_BUFFER_SIZE as u32;
+
+        let mut outputs = ProcessOutputs::new();
+        assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_FAIL);
+        assert!(outputs.respbuffer.is_null());
+        assert_eq!(outputs.resp_size, 0xdead_beef);
+        assert_eq!(outputs.respbufsize, 0);
+
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
+        assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert!(!outputs.respbuffer.is_null());
+        assert_eq!(outputs.respbufsize, TPM_BUFFER_MAX);
+        assert_eq!(outputs.resp_size, 0);
+        let grown_buffer = outputs.respbuffer;
+
+        crate::library::stage_empty_permanent_state_for_tests();
+        assert_eq!(main_init(), TPM_SUCCESS);
+
+        assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert_eq!(
+            outputs.respbuffer, grown_buffer,
+            "a TPM_BUFFER_MAX-sized buffer is not reallocated"
+        );
+        assert_eq!(outputs.respbufsize, TPM_BUFFER_MAX);
+        assert_eq!(outputs.response(), UNSUPPORTED_RESPONSE);
+
+        assert_eq!(outputs.call(&[0x80, 0x01, 0x00]), TPM_SUCCESS);
+        assert_eq!(outputs.response(), INSUFFICIENT_RESPONSE);
+
+        // SAFETY: output pointers reference live fields and a null command is
+        // valid when its size is zero.
+        let result = unsafe {
+            process(
+                &mut outputs.respbuffer,
+                &mut outputs.resp_size,
+                &mut outputs.respbufsize,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(result, TPM_SUCCESS);
+        assert_eq!(outputs.response(), INSUFFICIENT_RESPONSE);
+
+        let mut small = ProcessOutputs::new();
+        small.respbuffer = crate::ffi_support::malloc_bytes(&[0u8; 16]);
+        small.respbufsize = 16;
+        assert_eq!(small.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert_eq!(small.respbufsize, TPM_BUFFER_MAX);
+        assert_eq!(small.response(), UNSUPPORTED_RESPONSE);
+        drop(small);
+
+        let mut large = ProcessOutputs::new();
+        large.respbuffer = crate::ffi_support::malloc_bytes(&[0u8; 2 * RESPONSE_BUFFER_SIZE]);
+        large.respbufsize = 2 * TPM_BUFFER_MAX;
+        let large_buffer = large.respbuffer;
+        assert_eq!(large.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert_eq!(large.respbuffer, large_buffer);
+        assert_eq!(large.respbufsize, 2 * TPM_BUFFER_MAX);
+        assert_eq!(large.response(), UNSUPPORTED_RESPONSE);
+        drop(large);
+
+        let mut shared = ProcessOutputs::new();
+        shared.respbuffer = crate::ffi_support::malloc_bytes(&STARTUP_COMMAND);
+        shared.respbufsize = STARTUP_COMMAND.len() as u32;
+        let shared_command = shared.respbuffer;
+        // SAFETY: the command and response share one live allocation; the
+        // implementation owns the command bytes before reallocating it.
+        let result = unsafe {
+            process(
+                &mut shared.respbuffer,
+                &mut shared.resp_size,
+                &mut shared.respbufsize,
+                shared_command,
+                STARTUP_COMMAND.len() as u32,
+            )
+        };
+        assert_eq!(result, TPM_SUCCESS);
+        assert_eq!(shared.respbufsize, TPM_BUFFER_MAX);
+        assert_eq!(shared.response(), UNSUPPORTED_RESPONSE);
+        drop(shared);
+
+        let mut shared = ProcessOutputs::new();
+        let mut contents = [0u8; RESPONSE_BUFFER_SIZE];
+        contents[..STARTUP_COMMAND.len()].copy_from_slice(&STARTUP_COMMAND);
+        shared.respbuffer = crate::ffi_support::malloc_bytes(&contents);
+        shared.respbufsize = TPM_BUFFER_MAX;
+        let shared_command = shared.respbuffer;
+        // SAFETY: the shared allocation contains the complete command and is
+        // large enough for both request and response.
+        let result = unsafe {
+            process(
+                &mut shared.respbuffer,
+                &mut shared.resp_size,
+                &mut shared.respbufsize,
+                shared_command,
+                STARTUP_COMMAND.len() as u32,
+            )
+        };
+        assert_eq!(result, TPM_SUCCESS);
+        assert_eq!(shared.respbuffer, shared_command, "reused in place");
+        assert_eq!(shared.response(), UNSUPPORTED_RESPONSE);
+
+        shared.respbufsize = 3;
+        let shared_command = shared.respbuffer;
+        // SAFETY: the first three bytes of the shared allocation are readable;
+        // the call owns them before any possible reallocation.
+        let result = unsafe {
+            process(
+                &mut shared.respbuffer,
+                &mut shared.resp_size,
+                &mut shared.respbufsize,
+                shared_command,
+                3,
+            )
+        };
+        assert_eq!(result, TPM_SUCCESS);
+        assert_eq!(shared.respbufsize, TPM_BUFFER_MAX);
+        assert_eq!(shared.response(), INSUFFICIENT_RESPONSE);
+        drop(shared);
+
+        let mut outputs2 = ProcessOutputs::new();
+        for (prefix, expected) in [
+            (
+                [0x80u8, 0x01, 0xff, 0xff, 0xff, 0xff],
+                COMMAND_SIZE_RESPONSE,
+            ),
+            ([0x12u8, 0x34, 0xff, 0xff, 0xff, 0xff], BAD_TAG_RESPONSE),
+        ] {
+            // SAFETY: oversized requests inspect only the six-byte prefix,
+            // which is fully backed by `prefix` for this call.
+            let result = unsafe {
+                process(
+                    &mut outputs2.respbuffer,
+                    &mut outputs2.resp_size,
+                    &mut outputs2.respbufsize,
+                    prefix.as_ptr().cast_mut(),
+                    u32::MAX,
+                )
+            };
+            assert_eq!(result, TPM_SUCCESS);
+            assert_eq!(outputs2.response(), expected);
+        }
+
+        let mut shared = ProcessOutputs::new();
+        shared.respbuffer = crate::ffi_support::malloc_bytes(&[0x80, 0x01, 0x00, 0x01, 0x00, 0x00]);
+        shared.respbufsize = 6;
+        let shared_command = shared.respbuffer;
+        // SAFETY: oversized input requires only the six-byte prefix stored in
+        // the live shared allocation before it may be reallocated.
+        let result = unsafe {
+            process(
+                &mut shared.respbuffer,
+                &mut shared.resp_size,
+                &mut shared.respbufsize,
+                shared_command,
+                0x0001_0000,
+            )
+        };
+        assert_eq!(result, TPM_SUCCESS);
+        assert_eq!(shared.respbufsize, TPM_BUFFER_MAX);
+        assert_eq!(shared.response(), COMMAND_SIZE_RESPONSE);
+        drop(shared);
+
+        let mut max_command = vec![0u8; RESPONSE_BUFFER_SIZE];
+        max_command[..2].copy_from_slice(&[0x80, 0x01]);
+        max_command[2..6].copy_from_slice(&(RESPONSE_BUFFER_SIZE as u32).to_be_bytes());
+        max_command[6..10].copy_from_slice(&[0x00, 0x00, 0x01, 0x44]);
+        assert_eq!(outputs2.call(&max_command), TPM_SUCCESS);
+        assert_eq!(outputs2.response(), UNSUPPORTED_RESPONSE);
+
+        let mut over_command = vec![0u8; RESPONSE_BUFFER_SIZE + 1];
+        over_command[..2].copy_from_slice(&[0x80, 0x01]);
+        over_command[2..6].copy_from_slice(&(RESPONSE_BUFFER_SIZE as u32 + 1).to_be_bytes());
+        over_command[6..10].copy_from_slice(&[0x00, 0x00, 0x01, 0x44]);
+        assert_eq!(outputs2.call(&over_command), TPM_SUCCESS);
+        assert_eq!(outputs2.response(), COMMAND_SIZE_RESPONSE);
+        drop(outputs2);
+
+        terminate();
+        assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SUCCESS);
+        assert_eq!(outputs.resp_size, 0);
     }
 }

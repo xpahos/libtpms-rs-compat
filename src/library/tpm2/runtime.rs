@@ -38,6 +38,7 @@ pub struct Tpm2Runtime {
 
     pub power_on: bool,
     pub nv_available: bool,
+    pub locality: u8,
     #[allow(dead_code)]
     pub nv_memory: Box<[u8]>,
 }
@@ -198,6 +199,7 @@ fn commit_state(
         reported_failure: false,
         power_on: true,
         nv_available: true,
+        locality: 0,
         nv_memory,
     }))
 }
@@ -222,6 +224,7 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         reported_failure: false,
         power_on: true,
         nv_available: true,
+        locality: 0,
         nv_memory: vec![0u8; NV_MEMORY_SIZE].into_boxed_slice(),
     })
 }

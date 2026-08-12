@@ -1,5 +1,6 @@
 mod audit;
 mod clock;
+mod command;
 mod command_bitmap;
 mod compile_constants;
 mod crypto;
@@ -12,6 +13,7 @@ mod object;
 mod pcr;
 mod persistent;
 mod pp_list;
+mod process;
 mod profile;
 mod public;
 mod runtime;
@@ -35,6 +37,7 @@ use persistent::{PersistentAllEnvelope, PersistentAllError, StateSection};
 
 pub(super) use clock::{HostClock, OsClock};
 pub(super) use crypto::{EntropySource, os_entropy};
+pub(super) use process::process;
 pub use runtime::Tpm2Runtime;
 
 pub fn get_info(flags: TpmlibInfoFlags, runtime: Option<&Tpm2Runtime>) -> String {

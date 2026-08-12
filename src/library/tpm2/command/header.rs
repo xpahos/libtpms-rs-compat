@@ -1,0 +1,491 @@
+use crate::ffi_types::TpmResult;
+use crate::library::CommandInput;
+use crate::library::constants::{
+    TPM_BUFFER_MAX, TPM_RC_BAD_TAG, TPM_RC_COMMAND_SIZE, TPM_RC_INSUFFICIENT, TPM_SUCCESS,
+};
+
+pub(in crate::library::tpm2) const TPM_ST_NO_SESSIONS: u16 = 0x8001;
+pub(in crate::library::tpm2) const TPM_ST_SESSIONS: u16 = 0x8002;
+
+pub(in crate::library::tpm2) const HEADER_SIZE: usize = 10;
+
+const MAX_COMMAND_SIZE: u32 = TPM_BUFFER_MAX as u32;
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(in crate::library::tpm2) struct Command<'a> {
+    pub(in crate::library::tpm2) tag: u16,
+    pub(in crate::library::tpm2) command_code: u32,
+    pub(in crate::library::tpm2) payload: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::library::tpm2) enum CommandParseError {
+    Insufficient,
+    BadTag,
+    CommandSize,
+}
+
+impl CommandParseError {
+    pub(in crate::library::tpm2) fn response_code(self) -> TpmResult {
+        match self {
+            Self::Insufficient => TPM_RC_INSUFFICIENT,
+            Self::BadTag => TPM_RC_BAD_TAG,
+            Self::CommandSize => TPM_RC_COMMAND_SIZE,
+        }
+    }
+}
+
+pub(in crate::library::tpm2) fn parse_command(
+    input: &CommandInput,
+) -> Result<Command<'_>, CommandParseError> {
+    let (tag_bytes, rest) = input
+        .bytes()
+        .split_first_chunk::<2>()
+        .ok_or(CommandParseError::Insufficient)?;
+    let tag = u16::from_be_bytes(*tag_bytes);
+    if tag != TPM_ST_NO_SESSIONS && tag != TPM_ST_SESSIONS {
+        return Err(CommandParseError::BadTag);
+    }
+
+    let (size_bytes, rest) = rest
+        .split_first_chunk::<4>()
+        .ok_or(CommandParseError::Insufficient)?;
+    let declared_size = u32::from_be_bytes(*size_bytes);
+    if declared_size != input.received_size() || declared_size > MAX_COMMAND_SIZE {
+        return Err(CommandParseError::CommandSize);
+    }
+
+    let (code_bytes, payload) = rest
+        .split_first_chunk::<4>()
+        .ok_or(CommandParseError::Insufficient)?;
+    let command_code = u32::from_be_bytes(*code_bytes);
+
+    Ok(Command {
+        tag,
+        command_code,
+        payload,
+    })
+}
+
+const MAX_RESPONSE_SIZE: usize = TPM_BUFFER_MAX as usize;
+
+const PARAMETER_SIZE_FIELD: usize = 4;
+
+pub(in crate::library::tpm2) struct Response {
+    tag: u16,
+    code: TpmResult,
+    parameters: Vec<u8>,
+    auth_sessions: Vec<u8>,
+}
+
+impl Response {
+    pub(in crate::library::tpm2) fn error(code: TpmResult) -> Self {
+        debug_assert_ne!(code, TPM_SUCCESS, "error responses carry an error code");
+        Self {
+            tag: TPM_ST_NO_SESSIONS,
+            code,
+            parameters: Vec::new(),
+            auth_sessions: Vec::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(in crate::library::tpm2) fn success(tag: u16, parameters: Vec<u8>) -> Self {
+        Self {
+            tag,
+            code: TPM_SUCCESS,
+            parameters,
+            auth_sessions: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::library::tpm2) fn code(&self) -> TpmResult {
+        self.code
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::library::tpm2) struct ResponseTooLarge;
+
+fn checked_response_size(
+    parameter_size_field: usize,
+    parameters: usize,
+    auth_sessions: usize,
+) -> Result<u32, ResponseTooLarge> {
+    HEADER_SIZE
+        .checked_add(parameter_size_field)
+        .and_then(|total| total.checked_add(parameters))
+        .and_then(|total| total.checked_add(auth_sessions))
+        .filter(|total| *total <= MAX_RESPONSE_SIZE)
+        .and_then(|total| u32::try_from(total).ok())
+        .ok_or(ResponseTooLarge)
+}
+
+pub(in crate::library::tpm2) fn serialize_response(
+    response: &Response,
+) -> Result<Vec<u8>, ResponseTooLarge> {
+    let (tag, parameters, auth_sessions) = if response.code == TPM_SUCCESS {
+        (
+            response.tag,
+            response.parameters.as_slice(),
+            response.auth_sessions.as_slice(),
+        )
+    } else {
+        (TPM_ST_NO_SESSIONS, &[][..], &[][..])
+    };
+    debug_assert!(
+        tag == TPM_ST_SESSIONS || auth_sessions.is_empty(),
+        "only a TPM_ST_SESSIONS response carries an authorization area"
+    );
+    let parameter_size_field = if tag == TPM_ST_SESSIONS {
+        PARAMETER_SIZE_FIELD
+    } else {
+        0
+    };
+    let size = checked_response_size(parameter_size_field, parameters.len(), auth_sessions.len())?;
+    let mut out = Vec::with_capacity(size as usize);
+    out.extend_from_slice(&tag.to_be_bytes());
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(&response.code.to_be_bytes());
+    if parameter_size_field != 0 {
+        out.extend_from_slice(&(parameters.len() as u32).to_be_bytes());
+    }
+    out.extend_from_slice(parameters);
+    out.extend_from_slice(auth_sessions);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::constants::TPM_RC_COMMAND_CODE;
+
+    fn command_bytes(tag: u16, size: u32, code: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&tag.to_be_bytes());
+        out.extend_from_slice(&size.to_be_bytes());
+        out.extend_from_slice(&code.to_be_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn received(buffer: &[u8]) -> CommandInput {
+        let received_size = buffer.len() as u32;
+        let prefix_len = CommandInput::required_prefix_len(received_size);
+        CommandInput::new(received_size, buffer[..prefix_len].to_vec())
+    }
+
+    fn oversized_received(received_size: u32, prefix: &[u8; 6]) -> CommandInput {
+        assert!(CommandInput::required_prefix_len(received_size) == 6);
+        CommandInput::new(received_size, prefix.to_vec())
+    }
+
+    fn tag_and_size_prefix(tag: u16, size: u32) -> [u8; 6] {
+        let mut out = [0u8; 6];
+        out[..2].copy_from_slice(&tag.to_be_bytes());
+        out[2..].copy_from_slice(&size.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn valid_header_only_command_parses() {
+        let input = received(&command_bytes(TPM_ST_NO_SESSIONS, 10, 0x0000_0144, &[]));
+        let command = parse_command(&input).expect("a bare header is a valid command");
+        assert_eq!(command.tag, 0x8001);
+        assert_eq!(command.command_code, 0x144);
+        assert!(command.payload.is_empty());
+    }
+
+    #[test]
+    fn valid_command_with_payload_parses_and_borrows() {
+        let input = received(&command_bytes(
+            TPM_ST_SESSIONS,
+            14,
+            0x0000_017b,
+            &[0xde, 0xad, 0xbe, 0xef],
+        ));
+        let command = parse_command(&input).unwrap();
+        assert_eq!(command.tag, 0x8002);
+        assert_eq!(command.command_code, 0x17b);
+        assert_eq!(command.payload, &[0xde, 0xad, 0xbe, 0xef]);
+        assert!(
+            core::ptr::eq(command.payload.as_ptr(), input.bytes()[10..].as_ptr()),
+            "the payload borrows from the owned command input without copying"
+        );
+    }
+
+    #[test]
+    fn integers_decode_big_endian() {
+        let input = received(&[0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x12, 0x34, 0x56, 0x78]);
+        let command = parse_command(&input).unwrap();
+        assert_eq!(command.tag, 0x8001);
+        assert_eq!(command.command_code, 0x1234_5678);
+    }
+
+    #[test]
+    fn every_strict_prefix_of_a_valid_header_is_rejected() {
+        let buffer = command_bytes(TPM_ST_NO_SESSIONS, 10, 0x0000_0144, &[]);
+        for len in 0..buffer.len() {
+            let error = parse_command(&received(&buffer[..len])).unwrap_err();
+            let expected = if len < 6 {
+                CommandParseError::Insufficient
+            } else {
+                CommandParseError::CommandSize
+            };
+            assert_eq!(error, expected, "prefix of {len} bytes");
+        }
+    }
+
+    #[test]
+    fn declared_size_smaller_than_the_header_is_rejected() {
+        for size in 6..10u32 {
+            let mut buffer = command_bytes(TPM_ST_NO_SESSIONS, size, 0, &[]);
+            buffer.truncate(size as usize);
+            assert_eq!(
+                parse_command(&received(&buffer)).unwrap_err(),
+                CommandParseError::Insufficient,
+                "declared size {size} with matching length"
+            );
+        }
+        for size in 0..6u32 {
+            let buffer = &command_bytes(TPM_ST_NO_SESSIONS, size, 0, &[])[..6];
+            assert_eq!(
+                parse_command(&received(buffer)).unwrap_err(),
+                CommandParseError::CommandSize,
+                "declared size {size} with 6 received bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_size_larger_than_the_input_is_rejected() {
+        let input = received(&command_bytes(TPM_ST_NO_SESSIONS, 11, 0x144, &[]));
+        assert_eq!(
+            parse_command(&input).unwrap_err(),
+            CommandParseError::CommandSize
+        );
+    }
+
+    #[test]
+    fn trailing_bytes_are_rejected_like_c() {
+        let input = received(&command_bytes(TPM_ST_NO_SESSIONS, 10, 0x144, &[0x00, 0x00]));
+        assert_eq!(
+            parse_command(&input).unwrap_err(),
+            CommandParseError::CommandSize
+        );
+    }
+
+    #[test]
+    fn invalid_tags_are_rejected() {
+        for tag in [0x0000, 0x0001, 0x8000, 0x8003, 0xffff] {
+            let input = received(&command_bytes(tag, 10, 0x144, &[]));
+            assert_eq!(
+                parse_command(&input).unwrap_err(),
+                CommandParseError::BadTag,
+                "tag {tag:#06x}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_tag_wins_over_an_oversized_received_size() {
+        for received_size in [4097u32, 100_000, u32::MAX] {
+            let input = oversized_received(received_size, &tag_and_size_prefix(0x1234, 10));
+            assert_eq!(
+                parse_command(&input).unwrap_err(),
+                CommandParseError::BadTag,
+                "received size {received_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_received_size_with_a_valid_tag_is_a_command_size_error() {
+        for received_size in [4097u32, 100_000, i32::MAX as u32 + 1, u32::MAX] {
+            for declared in [received_size, 10] {
+                let input = oversized_received(
+                    received_size,
+                    &tag_and_size_prefix(TPM_ST_NO_SESSIONS, declared),
+                );
+                assert_eq!(
+                    parse_command(&input).unwrap_err(),
+                    CommandParseError::CommandSize,
+                    "received {received_size}, declared {declared}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_declared_sizes_are_rejected() {
+        for size in [u32::MAX, i32::MAX as u32 + 1, 0x0001_0000] {
+            let input = received(&command_bytes(TPM_ST_NO_SESSIONS, size, 0x144, &[]));
+            assert_eq!(
+                parse_command(&input).unwrap_err(),
+                CommandParseError::CommandSize,
+                "declared size {size:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_buffer_limit_is_exact() {
+        let max = command_bytes(TPM_ST_NO_SESSIONS, 4096, 0x144, &[0u8; 4086]);
+        let input = received(&max);
+        let command = parse_command(&input).expect("TPM_BUFFER_MAX bytes are accepted");
+        assert_eq!(command.payload.len(), 4086);
+
+        let over = command_bytes(TPM_ST_NO_SESSIONS, 4097, 0x144, &[0u8; 4087]);
+        assert_eq!(
+            parse_command(&received(&over)).unwrap_err(),
+            CommandParseError::CommandSize
+        );
+    }
+
+    #[test]
+    fn malformed_input_never_panics() {
+        let valid = command_bytes(TPM_ST_SESSIONS, 14, 0x144, &[1, 2, 3, 4]);
+        for len in 0..=valid.len() {
+            for index in 0..len {
+                for flip in [0x01u8, 0x80, 0xff] {
+                    let mut mutated = valid[..len].to_vec();
+                    mutated[index] ^= flip;
+                    let _ = parse_command(&received(&mutated));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn error_codes_map_to_the_c_response_codes() {
+        assert_eq!(CommandParseError::Insufficient.response_code(), 0x9a);
+        assert_eq!(CommandParseError::BadTag.response_code(), 0x1e);
+        assert_eq!(CommandParseError::CommandSize.response_code(), 0x142);
+    }
+
+    #[test]
+    fn success_response_without_payload_is_exactly_ten_bytes() {
+        let bytes = serialize_response(&Response::success(TPM_ST_NO_SESSIONS, Vec::new())).unwrap();
+        assert_eq!(
+            bytes,
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn unsupported_command_response_matches_c() {
+        let bytes = serialize_response(&Response::error(TPM_RC_COMMAND_CODE)).unwrap();
+        assert_eq!(
+            bytes,
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x43]
+        );
+    }
+
+    #[test]
+    fn response_fields_encode_big_endian() {
+        let bytes = serialize_response(&Response::error(0x0102_0304)).unwrap();
+        assert_eq!(&bytes[..2], &[0x80, 0x01]);
+        assert_eq!(&bytes[2..6], &[0x00, 0x00, 0x00, 0x0a]);
+        assert_eq!(&bytes[6..], &[0x01, 0x02, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn no_sessions_success_response_has_no_parameter_size_field() {
+        let bytes = serialize_response(&Response::success(
+            TPM_ST_NO_SESSIONS,
+            vec![0xaa, 0xbb, 0xcc],
+        ))
+        .unwrap();
+        assert_eq!(bytes.len(), 13);
+        assert_eq!(&bytes[..2], &[0x80, 0x01]);
+        assert_eq!(&bytes[2..6], &[0x00, 0x00, 0x00, 0x0d]);
+        assert_eq!(&bytes[6..10], &[0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(&bytes[10..], &[0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn sessions_success_response_with_empty_parameters_is_well_formed() {
+        let bytes = serialize_response(&Response::success(TPM_ST_SESSIONS, Vec::new())).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                0x80, 0x02, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ],
+            "tag | size(14) | code | parameterSize(0), empty auth area"
+        );
+    }
+
+    #[test]
+    fn sessions_success_response_counts_and_places_the_parameter_size() {
+        let bytes = serialize_response(&Response::success(TPM_ST_SESSIONS, vec![0xaa, 0xbb, 0xcc]))
+            .unwrap();
+        assert_eq!(bytes.len(), 17);
+        assert_eq!(&bytes[..2], &[0x80, 0x02], "the command tag is echoed");
+        assert_eq!(
+            &bytes[2..6],
+            &[0x00, 0x00, 0x00, 0x11],
+            "responseSize covers header, parameterSize and parameters"
+        );
+        assert_eq!(&bytes[6..10], &[0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(
+            &bytes[10..14],
+            &[0x00, 0x00, 0x00, 0x03],
+            "big-endian parameterSize between the code and the parameters"
+        );
+        assert_eq!(&bytes[14..], &[0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn responses_at_the_buffer_limit_serialize_and_one_byte_more_is_rejected() {
+        let max = MAX_RESPONSE_SIZE - HEADER_SIZE;
+        let bytes =
+            serialize_response(&Response::success(TPM_ST_NO_SESSIONS, vec![0u8; max])).unwrap();
+        assert_eq!(bytes.len(), MAX_RESPONSE_SIZE);
+        assert_eq!(
+            serialize_response(&Response::success(TPM_ST_NO_SESSIONS, vec![0u8; max + 1])),
+            Err(ResponseTooLarge)
+        );
+
+        let max = MAX_RESPONSE_SIZE - HEADER_SIZE - PARAMETER_SIZE_FIELD;
+        let bytes =
+            serialize_response(&Response::success(TPM_ST_SESSIONS, vec![0u8; max])).unwrap();
+        assert_eq!(bytes.len(), MAX_RESPONSE_SIZE);
+        assert_eq!(
+            serialize_response(&Response::success(TPM_ST_SESSIONS, vec![0u8; max + 1])),
+            Err(ResponseTooLarge)
+        );
+    }
+
+    #[test]
+    fn oversized_response_computations_never_overflow() {
+        assert_eq!(
+            checked_response_size(0, usize::MAX, 0),
+            Err(ResponseTooLarge)
+        );
+        assert_eq!(
+            checked_response_size(PARAMETER_SIZE_FIELD, usize::MAX - 4, usize::MAX),
+            Err(ResponseTooLarge)
+        );
+        assert_eq!(
+            checked_response_size(0, MAX_RESPONSE_SIZE - HEADER_SIZE, 0),
+            Ok(MAX_RESPONSE_SIZE as u32)
+        );
+    }
+
+    #[test]
+    fn error_responses_force_the_no_sessions_tag() {
+        let smuggled = Response {
+            tag: TPM_ST_SESSIONS,
+            code: TPM_RC_COMMAND_CODE,
+            parameters: vec![0xff; 4],
+            auth_sessions: Vec::new(),
+        };
+        let bytes = serialize_response(&smuggled).unwrap();
+        assert_eq!(
+            bytes,
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x43]
+        );
+    }
+}

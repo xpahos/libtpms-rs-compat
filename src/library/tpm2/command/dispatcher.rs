@@ -1,0 +1,92 @@
+use crate::library::constants::TPM_RC_COMMAND_CODE;
+
+use super::super::runtime::Tpm2Runtime;
+use super::header::{Command, Response};
+
+#[cfg(test)]
+pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
+
+pub(in crate::library::tpm2) fn dispatch(
+    _runtime: &mut Tpm2Runtime,
+    _command: &Command<'_>,
+) -> Response {
+    Response::error(TPM_RC_COMMAND_CODE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::header::{TPM_ST_NO_SESSIONS, parse_command, serialize_response};
+    use super::*;
+    use crate::library::CommandInput;
+    use crate::library::tpm2::runtime::empty_state_runtime;
+
+    fn command(code: u32) -> CommandInput {
+        let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0a];
+        out.extend_from_slice(&code.to_be_bytes());
+        CommandInput::new(out.len() as u32, out)
+    }
+
+    #[track_caller]
+    fn dispatch_code(code: u32) -> Response {
+        let mut runtime = empty_state_runtime();
+        let input = command(code);
+        let parsed = parse_command(&input).expect("a valid header");
+        dispatch(&mut runtime, &parsed)
+    }
+
+    #[test]
+    fn unknown_command_code_answers_command_code() {
+        assert_eq!(dispatch_code(0x2000_0000).code(), TPM_RC_COMMAND_CODE);
+    }
+
+    #[test]
+    fn known_but_unimplemented_command_answers_command_code() {
+        assert_eq!(dispatch_code(0x0000_017b).code(), TPM_RC_COMMAND_CODE);
+    }
+
+    #[test]
+    fn startup_is_still_unimplemented() {
+        assert_eq!(dispatch_code(TPM_CC_STARTUP).code(), TPM_RC_COMMAND_CODE);
+    }
+
+    #[test]
+    fn unsupported_response_serializes_like_c() {
+        let response = dispatch_code(TPM_CC_STARTUP);
+        assert_eq!(
+            serialize_response(&response).unwrap(),
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x43]
+        );
+    }
+
+    #[test]
+    fn unsupported_commands_do_not_mutate_the_runtime() {
+        let mut runtime = empty_state_runtime();
+        let nv_before = runtime.nv_memory.clone();
+        for code in [0x0000_0144, 0x0000_017b, 0xffff_ffff, 0x0000_0000] {
+            let input = command(code);
+            let parsed = parse_command(&input).unwrap();
+            let response = dispatch(&mut runtime, &parsed);
+            assert_eq!(response.code(), TPM_RC_COMMAND_CODE, "code {code:#x}");
+            assert!(!runtime.manufactured);
+            assert!(!runtime.was_manufactured);
+            assert!(!runtime.startup_received);
+            assert!(!runtime.failure_mode);
+            assert!(runtime.power_on && runtime.nv_available);
+            assert_eq!(runtime.nv_memory, nv_before);
+        }
+    }
+
+    #[test]
+    fn session_tagged_commands_take_the_same_path() {
+        let mut buffer = vec![0x80, 0x02, 0x00, 0x00, 0x00, 0x0e];
+        buffer.extend_from_slice(&0x0000_017bu32.to_be_bytes());
+        buffer.extend_from_slice(&[0x00; 4]);
+        let input = CommandInput::new(buffer.len() as u32, buffer);
+        let parsed = parse_command(&input).unwrap();
+        let mut runtime = empty_state_runtime();
+        let response = dispatch(&mut runtime, &parsed);
+        assert_eq!(response.code(), TPM_RC_COMMAND_CODE);
+        let bytes = serialize_response(&response).unwrap();
+        assert_eq!(&bytes[..2], &TPM_ST_NO_SESSIONS.to_be_bytes());
+    }
+}

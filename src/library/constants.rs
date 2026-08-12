@@ -4,6 +4,7 @@ use crate::ffi_types::{TpmResult, TpmlibTpmProperty, TpmlibTpmVersion};
 
 pub const TPM_SUCCESS: TpmResult = 0;
 pub const TPM_FAIL: TpmResult = 9;
+pub const TPM_SIZE: TpmResult = 23;
 #[cfg(feature = "tpm2")]
 pub(in crate::library) const TPM_INVALID_POSTINIT: TpmResult = 38;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -44,6 +45,10 @@ pub(in crate::library) const TPM_RC_CURVE: TpmResult = 0x0a6;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_FAILURE: TpmResult = 0x101;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_COMMAND_SIZE: TpmResult = 0x142;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_COMMAND_CODE: TpmResult = 0x143;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NO_RESULT: TpmResult = 0x154;
 
 pub(in crate::library) const TPMLIB_TPM_VERSION_1_2: TpmlibTpmVersion = 0;
@@ -55,4 +60,4 @@ pub(in crate::library) const TPMPROP_TPM_BUFFER_MAX: TpmlibTpmProperty = 2;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPMPROP_TPM_KEY_HANDLES: TpmlibTpmProperty = 3;
 
-pub(in crate::library) const TPM_BUFFER_MAX: c_int = 4096;
+pub const TPM_BUFFER_MAX: c_int = 4096;
