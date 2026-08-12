@@ -205,6 +205,25 @@ mod tests {
     }
 
     #[test]
+    fn terminate_between_prepare_and_execute_returns_an_empty_success() {
+        use crate::library::state_blob::StateBlobKind;
+
+        let library = Library::new();
+        assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+        library.stage_empty_state(StateBlobKind::Permanent);
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+
+        let context = prepared_tpm2(&library);
+        library.terminate();
+
+        let response = context
+            .execute(&startup_command())
+            .expect("a prepared context must re-check the current runtime");
+        assert!(response.is_empty());
+        assert_eq!(library.tpm2_runtime_locality(), None);
+    }
+
+    #[test]
     fn preparation_without_tpm2_selection_is_disabled() {
         let library = Library::new();
         assert!(
