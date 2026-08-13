@@ -15,11 +15,11 @@ mod store;
 pub(super) use attach::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedBnPrime, OwnedCommandBitmap, OwnedDrbgState,
     OwnedHashObjectBody, OwnedHashPayload, OwnedHashState, OwnedIndexOrderlyRam, OwnedNvIndex,
-    OwnedObjectBody, OwnedOrderlyData, OwnedPcrAllocation, OwnedPcrPolicyEntry, OwnedPcrSelection,
-    OwnedPersistentData, OwnedPersistentState, OwnedPublicId, OwnedSecret, OwnedStateClearData,
-    OwnedStateResetData, OwnedTpmtPublic, OwnedTpmtSensitive, OwnedUserNvram, OwnedUserNvramEntry,
-    materialize_persistent_state, own_any_object, own_orderly_data, own_state_clear,
-    own_state_reset,
+    OwnedObjectBody, OwnedOrderlyData, OwnedPcrAllocation, OwnedPcrBank, OwnedPcrPolicyEntry,
+    OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState, OwnedPublicId, OwnedSecret,
+    OwnedStateClearData, OwnedStateResetData, OwnedTpmtPublic, OwnedTpmtSensitive, OwnedUserNvram,
+    OwnedUserNvramEntry, materialize_persistent_state, own_any_object, own_orderly_data,
+    own_state_clear, own_state_reset,
 };
 pub(super) use compat_tail::{
     CompatTail, SEED_COMPAT_LEVEL_LAST, SEED_COMPAT_LEVEL_ORIGINAL, parse_compat_tail,
@@ -28,6 +28,8 @@ pub(super) use data::{PersistentDataPrefix, parse_persistent_data_prefix};
 pub(super) use orderly::{OrderlyData, parse_orderly_data};
 pub(super) use store::persistent_all_store;
 
+#[cfg(test)]
+pub(super) use attach::OwnedOrderlyRamEntry;
 #[cfg(test)]
 pub(super) use compat_tail::CompatTailFixture;
 #[cfg(test)]

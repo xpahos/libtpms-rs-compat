@@ -22,8 +22,8 @@ pub(in crate::library::tpm2) const TPM_SU_STATE: u16 = 0x0001;
 
 const SU_NONE_VALUE: u16 = 0xffff;
 const SU_DA_USED_VALUE: u16 = 0xfffe;
-const PRE_STARTUP_FLAG: u16 = 0x8000;
-const STARTUP_LOCALITY_3: u16 = 0x4000;
+pub(super) const PRE_STARTUP_FLAG: u16 = 0x8000;
+pub(super) const STARTUP_LOCALITY_3: u16 = 0x4000;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -969,11 +969,11 @@ mod tests {
     fn unknown_commands_still_answer_command_code_after_startup() {
         let mut runtime = manufactured_runtime();
         dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR));
-        let mut shutdown = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0c];
-        shutdown.extend_from_slice(&0x0000_0145u32.to_be_bytes());
-        shutdown.extend_from_slice(&[0x00, 0x00]);
+        let mut unknown = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0c];
+        unknown.extend_from_slice(&0x2000_0000u32.to_be_bytes());
+        unknown.extend_from_slice(&[0x00, 0x00]);
         assert_eq!(
-            dispatch_bytes(&mut runtime, &shutdown),
+            dispatch_bytes(&mut runtime, &unknown),
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x43]
         );
     }

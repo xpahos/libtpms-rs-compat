@@ -629,6 +629,172 @@ mod tests {
             assert!(!runtime.nv_update_pending);
         }
 
+        fn shutdown_command(shutdown_type: u16) -> CommandInput {
+            let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x45];
+            out.extend_from_slice(&shutdown_type.to_be_bytes());
+            input(&out)
+        }
+
+        #[test]
+        fn successful_shutdown_commits_the_updated_permanent_state_once() {
+            let mut runtime = manufactured_runtime();
+            let mut stored: Vec<Vec<u8>> = Vec::new();
+            let mut store = |runtime: &Tpm2Runtime| {
+                stored.push(persistent_all_store(runtime.state.as_ref().unwrap()).unwrap());
+                Ok(())
+            };
+            let response = process(&mut runtime, 0, &startup_command(), &mut store).unwrap();
+            assert_eq!(response, SUCCESS_RESPONSE);
+            let response = process(&mut runtime, 0, &shutdown_command(0x0001), &mut store).unwrap();
+            assert_eq!(response, SUCCESS_RESPONSE);
+            assert!(
+                runtime.startup_received,
+                "consuming the commit leaves g_initialized set"
+            );
+            assert!(!runtime.nv_update_pending, "the pending flag is consumed");
+
+            let response = process(&mut runtime, 0, &startup_command(), &mut store).unwrap();
+            assert_eq!(
+                response[6..],
+                [0x00, 0x00, 0x01, 0x00],
+                "Startup after Shutdown needs _TPM_Init first"
+            );
+            assert!(runtime.startup_received);
+
+            assert_eq!(stored.len(), 2, "one commit per state-changing command");
+            assert_eq!(
+                stored[1],
+                persistent_all_store(runtime.state.as_ref().unwrap()).unwrap()
+            );
+
+            let envelope = PersistentAllEnvelope::parse(&stored[1]).unwrap();
+            let decoded = crate::library::tpm2::parse_persistent_all_payload(&envelope).unwrap();
+            let state = materialize_persistent_state(decoded).unwrap();
+            assert_eq!(state.persistent.orderly_state, 0x0001);
+            assert!(
+                state.state_reset.is_some() && state.state_clear.is_some(),
+                "an SU_STATE blob carries the SU sections"
+            );
+            assert_eq!(
+                state.orderly.drbg_state.seed.expose(),
+                runtime.live.orderly.drbg_state.seed.expose(),
+                "Shutdown persisted the live go"
+            );
+        }
+
+        #[test]
+        fn failed_shutdown_commands_do_not_commit() {
+            let commits = core::cell::Cell::new(0u32);
+            let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
+                commits.set(commits.get() + 1);
+                Ok(())
+            };
+
+            let mut runtime = manufactured_runtime();
+            let response = process(&mut runtime, 0, &shutdown_command(0x0000), count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x01, 0x00]);
+            assert_eq!(commits.get(), 0);
+
+            let mut runtime = manufactured_runtime();
+            assert_eq!(
+                process(&mut runtime, 0, &startup_command(), count).unwrap(),
+                SUCCESS_RESPONSE
+            );
+            assert_eq!(commits.get(), 1);
+
+            let response = process(&mut runtime, 0, &shutdown_command(0x0002), count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x01, 0xc4]);
+
+            runtime.nv_available = false;
+            let response = process(&mut runtime, 0, &shutdown_command(0x0000), count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x09, 0x23]);
+            runtime.nv_available = true;
+
+            runtime.live.pcr_reconfig = true;
+            let response = process(&mut runtime, 0, &shutdown_command(0x0001), count).unwrap();
+            assert_eq!(response[6..], [0x00, 0x00, 0x01, 0xca]);
+            runtime.live.pcr_reconfig = false;
+
+            assert_eq!(commits.get(), 1, "failed Shutdowns never reach the commit");
+            assert!(runtime.startup_received);
+        }
+
+        #[test]
+        fn successful_shutdown_reaches_tpm_nvram_storedata() {
+            use crate::ffi_types::LibtpmsCallbacks;
+            use crate::library::tpm2::{HostNvram, host_nv_commit};
+            use std::sync::Mutex;
+
+            static STORED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
+            unsafe extern "C" fn storedata_recording(
+                data: *const core::ffi::c_uchar,
+                length: u32,
+                _tpm_number: u32,
+                name: *const core::ffi::c_char,
+            ) -> TpmResult {
+                // SAFETY: the host may read `length` bytes and a NUL-terminated
+                // name per the callback contract.
+                let name = unsafe { core::ffi::CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned();
+                let bytes =
+                    // SAFETY: see above.
+                    unsafe { core::slice::from_raw_parts(data, length as usize) }.to_vec();
+                STORED.lock().unwrap().push((name, bytes));
+                crate::library::constants::TPM_SUCCESS
+            }
+
+            STORED.lock().unwrap().clear();
+            let host_nvram = HostNvram::new(LibtpmsCallbacks {
+                tpm_nvram_storedata: Some(storedata_recording),
+                ..LibtpmsCallbacks::empty()
+            });
+            let mut runtime = manufactured_runtime();
+            let commit = |runtime: &Tpm2Runtime| host_nv_commit(&host_nvram, runtime);
+            assert_eq!(
+                process(&mut runtime, 0, &startup_command(), commit).unwrap(),
+                SUCCESS_RESPONSE
+            );
+            assert_eq!(
+                process(&mut runtime, 0, &shutdown_command(0x0001), commit).unwrap(),
+                SUCCESS_RESPONSE
+            );
+
+            let stored = STORED.lock().unwrap();
+            assert_eq!(stored.len(), 2);
+            assert!(stored.iter().all(|(name, _)| name == "permall"));
+            assert_eq!(
+                stored[1].1,
+                persistent_all_store(runtime.state.as_ref().unwrap()).unwrap(),
+                "the Shutdown commit stored the post-Shutdown permanent state"
+            );
+        }
+
+        #[test]
+        fn a_shutdown_commit_failure_keeps_mutations_and_enters_failure_mode() {
+            let mut runtime = manufactured_runtime();
+            assert_eq!(
+                process(&mut runtime, 0, &startup_command(), |_| Ok(())).unwrap(),
+                SUCCESS_RESPONSE
+            );
+            let response = process(&mut runtime, 0, &shutdown_command(0x0000), |_| {
+                Err(TPM_FAIL)
+            })
+            .unwrap();
+            assert_eq!(response, FAILURE_RESPONSE);
+            assert!(runtime.failure_mode);
+            assert!(
+                runtime.startup_received,
+                "Shutdown never clears g_initialized, even on a commit failure"
+            );
+            assert_eq!(
+                runtime.state.as_ref().unwrap().persistent.orderly_state,
+                0x0000,
+                "the applied NV-image mutation stays"
+            );
+        }
+
         #[test]
         fn a_commit_failure_puts_the_tpm_into_failure_mode() {
             let mut runtime = manufactured_runtime();

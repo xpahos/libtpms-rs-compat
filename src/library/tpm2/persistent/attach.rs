@@ -247,7 +247,7 @@ pub(in crate::library::tpm2) fn own_orderly_data(orderly: &OrderlyData<'_>) -> O
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedStateResetData {
     pub(in crate::library::tpm2) null_proof: OwnedSecret,
