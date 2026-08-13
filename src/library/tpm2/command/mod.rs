@@ -3,6 +3,8 @@ mod get_capability;
 mod header;
 mod pcr_extend;
 mod pcr_read;
+mod pcr_reset;
+mod pcr_update;
 mod registry;
 mod session;
 mod shutdown;

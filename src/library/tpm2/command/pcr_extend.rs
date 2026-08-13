@@ -1,19 +1,18 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY, TPM_RC_NV_UNAVAILABLE,
-    TPM_RC_SIZE,
+    TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY, TPM_RC_SIZE,
 };
 
 use super::super::algorithm::{algorithm_enabled, hash_profile_name};
 use super::super::marshal::BlobReader;
-use super::super::nv::build_nv_image;
-use super::super::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE, is_orderly};
 use super::super::pcr::{
     BankHasher, HASH_COUNT, PCR_SLOT_BANKS, allocation_selects, bank_slot, pcr_extend_allowed,
-    pcr_in_tcb_group, pcr_is_state_saved,
 };
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
+use super::pcr_update::{
+    commit_orderly_clear, commit_pcr_counter, live_pcr_counter, pcr_changed, prepare_orderly_clear,
+};
 use super::registry::TPM_RH_NULL;
 
 const TPM_RC_P: TpmResult = 0x040;
@@ -91,31 +90,12 @@ fn prepare_extend(
     pcr: usize,
     digests: &[DigestValue<'_>],
 ) -> Result<PreparedExtend, TpmResult> {
-    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-    let stored_orderly = state.persistent.orderly_state;
-
-    let orderly_state = if pcr_is_state_saved(pcr) && is_orderly(stored_orderly) {
-        if !runtime.nv_available {
-            return Err(TPM_RC_NV_UNAVAILABLE);
-        }
-        Some(if runtime.live.da_used {
-            SU_DA_USED_VALUE
-        } else {
-            SU_NONE_VALUE
-        })
-    } else {
-        None
-    };
+    let orderly_state = prepare_orderly_clear(runtime, pcr)?;
 
     let allocation = runtime.effective_pcr_allocated().ok_or(TPM_RC_FAILURE)?;
     let live = runtime.live.pcrs.get(pcr).ok_or(TPM_RC_FAILURE)?;
     let mut banks: [Option<Vec<u8>>; PCR_SLOT_BANKS.len()] = core::array::from_fn(|_| None);
-    let mut pcr_counter = runtime
-        .live
-        .state_reset
-        .as_ref()
-        .ok_or(TPM_RC_FAILURE)?
-        .pcr_counter;
+    let mut pcr_counter = live_pcr_counter(runtime)?;
 
     for entry in digests {
         let (hash_alg, digest_size) = PCR_SLOT_BANKS
@@ -145,31 +125,12 @@ fn prepare_extend(
     })
 }
 
-fn pcr_changed(pcr_counter: u32, pcr: usize) -> Result<u32, TpmResult> {
-    if pcr != 0 && pcr_in_tcb_group(pcr) {
-        return Ok(pcr_counter);
-    }
-    pcr_counter.checked_add(1).ok_or(TPM_RC_FAILURE)
-}
-
 fn commit_extend(
     runtime: &mut Tpm2Runtime,
     pcr: usize,
     prepared: PreparedExtend,
 ) -> Result<(), TpmResult> {
-    if let Some(orderly_state) = prepared.orderly_state {
-        let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
-        let backup_orderly_state = state.persistent.orderly_state;
-        state.persistent.orderly_state = orderly_state;
-        match build_nv_image(state) {
-            Ok(image) => runtime.nv_memory = image,
-            Err(_) => {
-                state.persistent.orderly_state = backup_orderly_state;
-                return Err(TPM_RC_FAILURE);
-            }
-        }
-        runtime.nv_update_pending = true;
-    }
+    commit_orderly_clear(runtime, prepared.orderly_state)?;
 
     let live_pcr = runtime.live.pcrs.get_mut(pcr).ok_or(TPM_RC_FAILURE)?;
     for (slot, value) in prepared.banks.into_iter().enumerate() {
@@ -177,9 +138,7 @@ fn commit_extend(
             live_pcr.banks[slot] = Some(value);
         }
     }
-    let state_reset = runtime.live.state_reset.as_mut().ok_or(TPM_RC_FAILURE)?;
-    state_reset.pcr_counter = prepared.pcr_counter;
-    Ok(())
+    commit_pcr_counter(runtime, prepared.pcr_counter)
 }
 
 #[cfg(test)]
@@ -192,6 +151,7 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::constants::{TPM_RC_AUTH_MISSING, TPM_RC_INITIALIZE};
     use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::nv::build_nv_image;
     use crate::library::tpm2::persistent::{OwnedPcrAllocation, OwnedPcrSelection};
     use crate::library::tpm2::process;
     use crate::library::tpm2::profile::validate_user_profile;

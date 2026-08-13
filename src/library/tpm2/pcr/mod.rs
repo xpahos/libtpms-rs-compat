@@ -34,11 +34,15 @@ pub(super) const PCR_SLOT_BANKS: [(u16, usize); 4] = [
 pub(super) const HCRTM_PCR: usize = 0;
 pub(super) const DRTM_PCR: usize = 17;
 
+const DRTM_ENABLED: bool = true;
+const DRTM_LOCALITY: u8 = 4;
+
 #[derive(Clone, Copy)]
 pub(super) struct PcrPlatformAttributes {
     pub(super) state_save: bool,
     pub(super) do_not_increment_pcr_counter: bool,
     pub(super) auth_values_group: u8,
+    pub(super) reset_locality: u8,
     pub(super) extend_locality: u8,
 }
 
@@ -47,18 +51,21 @@ const fn static_rtm_pcr() -> PcrPlatformAttributes {
         state_save: true,
         do_not_increment_pcr_counter: false,
         auth_values_group: 0,
+        reset_locality: 0x00,
         extend_locality: 0x1f,
     }
 }
 
 const fn dynamic_pcr(
     do_not_increment_pcr_counter: bool,
+    reset_locality: u8,
     extend_locality: u8,
 ) -> PcrPlatformAttributes {
     PcrPlatformAttributes {
         state_save: false,
         do_not_increment_pcr_counter,
         auth_values_group: 0,
+        reset_locality,
         extend_locality,
     }
 }
@@ -66,18 +73,25 @@ const fn dynamic_pcr(
 pub(super) fn pcr_platform_attributes(pcr: usize) -> PcrPlatformAttributes {
     match pcr {
         0..=15 => static_rtm_pcr(),
-        16 => dynamic_pcr(true, 0x1f),
-        17 | 18 => dynamic_pcr(false, 0x1c),
-        19 => dynamic_pcr(false, 0x0c),
-        20 => dynamic_pcr(false, 0x0e),
-        21 | 22 => dynamic_pcr(true, 0x04),
-        23 => dynamic_pcr(true, 0x1f),
+        16 => dynamic_pcr(true, 0x0f, 0x1f),
+        17 | 18 => dynamic_pcr(false, 0x10, 0x1c),
+        19 => dynamic_pcr(false, 0x10, 0x0c),
+        20 => dynamic_pcr(false, 0x1c, 0x0e),
+        21 | 22 => dynamic_pcr(true, 0x1c, 0x04),
+        23 => dynamic_pcr(true, 0x0f, 0x1f),
         _ => static_rtm_pcr(),
     }
 }
 
 pub(super) fn pcr_extend_allowed(pcr: usize, locality: u8) -> bool {
     locality <= 4 && pcr_platform_attributes(pcr).extend_locality & (1 << locality) != 0
+}
+
+pub(super) fn pcr_reset_allowed(pcr: usize, locality: u8) -> bool {
+    if locality > 4 || (DRTM_ENABLED && locality == DRTM_LOCALITY) {
+        return false;
+    }
+    pcr_platform_attributes(pcr).reset_locality & (1 << locality) != 0
 }
 
 pub(super) fn pcr_is_state_saved(pcr: usize) -> bool {
@@ -243,8 +257,64 @@ impl PcrFixture {
 mod tests {
     use super::*;
     use crate::library::constants::{TPM_RC_BAD_PARAMETER, TPM_RC_BAD_TAG, TPM_RC_INSUFFICIENT};
+    use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
 
     const TAIL_SENTINEL: [u8; 3] = [0xc1, 0xc2, 0xc3];
+
+    const UPSTREAM_RESET_LOCALITY: [u8; IMPLEMENTATION_PCR] = [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x0f, 0x10, 0x10, 0x10, 0x1c, 0x1c, 0x1c, 0x0f,
+    ];
+
+    #[test]
+    fn the_reset_locality_attribute_matches_the_upstream_platform_table() {
+        for (pcr, expected) in UPSTREAM_RESET_LOCALITY.into_iter().enumerate() {
+            assert_eq!(
+                pcr_platform_attributes(pcr).reset_locality,
+                expected,
+                "PCR {pcr}"
+            );
+        }
+    }
+
+    #[test]
+    fn pcr_reset_allowed_matches_the_upstream_platform_table() {
+        for (pcr, reset_locality) in UPSTREAM_RESET_LOCALITY.into_iter().enumerate() {
+            for locality in 0..=4u8 {
+                let expected = locality != 4 && reset_locality & (1 << locality) != 0;
+                assert_eq!(
+                    pcr_reset_allowed(pcr, locality),
+                    expected,
+                    "PCR {pcr} from locality {locality}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn drtm_blocks_every_command_reset_from_locality_four() {
+        for pcr in 0..IMPLEMENTATION_PCR {
+            assert!(!pcr_reset_allowed(pcr, 4), "PCR {pcr}");
+        }
+    }
+
+    #[test]
+    fn localities_above_four_never_allow_a_reset() {
+        for pcr in 0..IMPLEMENTATION_PCR {
+            for locality in 5..=u8::MAX {
+                assert!(!pcr_reset_allowed(pcr, locality), "PCR {pcr}, {locality}");
+            }
+        }
+    }
+
+    #[test]
+    fn static_rtm_pcrs_can_never_be_reset_by_a_command() {
+        for pcr in 0..16 {
+            for locality in 0..=u8::MAX {
+                assert!(!pcr_reset_allowed(pcr, locality), "PCR {pcr}, {locality}");
+            }
+        }
+    }
 
     fn sha256_shadow() -> Vec<u8> {
         vec![0x01]

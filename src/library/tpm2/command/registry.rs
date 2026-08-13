@@ -6,9 +6,11 @@ use super::dispatcher::CommandFrame;
 use super::get_capability;
 use super::pcr_extend;
 use super::pcr_read;
+use super::pcr_reset;
 use super::shutdown;
 use super::startup;
 
+pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
@@ -47,12 +49,14 @@ impl CommandLifecycle {
 
 #[derive(Clone, Copy)]
 pub(super) enum HandleKind {
+    Pcr,
     PcrAllowNull,
 }
 
 impl HandleKind {
     pub(super) fn accepts(self, handle: u32) -> bool {
         match self {
+            Self::Pcr => (handle as usize) < IMPLEMENTATION_PCR,
             Self::PcrAllowNull => (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_NULL,
         }
     }
@@ -73,6 +77,17 @@ pub(in crate::library::tpm2) struct CommandDescriptor {
 }
 
 static COMMANDS: &[CommandDescriptor] = &[
+    CommandDescriptor {
+        code: TPM_CC_PCR_RESET,
+        attributes: tpma_cc(TPM_CC_PCR_RESET, false, 1),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Pcr,
+            user_auth: true,
+        }],
+        sessions_allowed: true,
+        handler: pcr_reset::execute,
+    },
     CommandDescriptor {
         code: TPM_CC_STARTUP,
         attributes: tpma_cc(TPM_CC_STARTUP, true, 0),
@@ -162,6 +177,10 @@ mod tests {
 
     #[test]
     fn lookup_finds_every_registered_command() {
+        assert_eq!(
+            find(TPM_CC_PCR_RESET).map(|d| d.code),
+            Some(TPM_CC_PCR_RESET)
+        );
         assert_eq!(find(TPM_CC_STARTUP).map(|d| d.code), Some(TPM_CC_STARTUP));
         assert_eq!(find(TPM_CC_SHUTDOWN).map(|d| d.code), Some(TPM_CC_SHUTDOWN));
         assert_eq!(
@@ -178,7 +197,12 @@ mod tests {
     #[test]
     fn lookup_rejects_unregistered_command_codes() {
         assert!(find(0x0000_0000).is_none(), "below all entries");
-        assert!(find(TPM_CC_STARTUP - 1).is_none(), "just below the first");
+        assert!(find(TPM_CC_PCR_RESET - 1).is_none(), "just below the first");
+        assert!(
+            find(TPM_CC_PCR_RESET + 1).is_none(),
+            "between PCR_Reset and Startup"
+        );
+        assert!(find(TPM_CC_STARTUP - 1).is_none(), "just below Startup");
         assert!(find(TPM_CC_SHUTDOWN + 1).is_none(), "between the entries");
         assert!(
             find(TPM_CC_GET_CAPABILITY - 1).is_none(),
@@ -204,6 +228,7 @@ mod tests {
         assert_eq!(
             codes,
             [
+                TPM_CC_PCR_RESET,
                 TPM_CC_STARTUP,
                 TPM_CC_SHUTDOWN,
                 TPM_CC_GET_CAPABILITY,
@@ -268,6 +293,46 @@ mod tests {
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
         assert!(descriptor.sessions_allowed);
+    }
+
+    #[test]
+    fn pcr_reset_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_PCR_RESET).unwrap().attributes, 0x0200_013d);
+    }
+
+    #[test]
+    fn pcr_reset_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_PCR_RESET)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn pcr_reset_declares_one_command_handle_requiring_user_authorization() {
+        let descriptor = find(TPM_CC_PCR_RESET).unwrap();
+        assert_eq!(descriptor.handles.len(), 1);
+        assert!(descriptor.handles[0].user_auth);
+        assert!(descriptor.sessions_allowed);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
+    }
+
+    #[test]
+    fn the_exact_pcr_handle_kind_rejects_the_null_handle() {
+        let kind = find(TPM_CC_PCR_RESET).unwrap().handles[0].kind;
+        for pcr in 0..24u32 {
+            assert!(kind.accepts(pcr), "PCR {pcr}");
+        }
+        assert!(
+            !kind.accepts(TPM_RH_NULL),
+            "PCR_Reset unmarshals without allowNull"
+        );
+        for handle in [24u32, 0x0100_0000, 0x8000_0000, TPM_RH_NULL - 1, u32::MAX] {
+            assert!(!kind.accepts(handle), "handle {handle:#x}");
+        }
     }
 
     #[test]

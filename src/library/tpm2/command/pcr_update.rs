@@ -1,0 +1,111 @@
+use crate::ffi_types::TpmResult;
+use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE};
+
+use super::super::nv::build_nv_image;
+use super::super::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE, is_orderly};
+use super::super::pcr::{pcr_in_tcb_group, pcr_is_state_saved};
+use super::super::runtime::Tpm2Runtime;
+
+pub(super) fn prepare_orderly_clear(
+    runtime: &Tpm2Runtime,
+    pcr: usize,
+) -> Result<Option<u16>, TpmResult> {
+    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+    if !pcr_is_state_saved(pcr) || !is_orderly(state.persistent.orderly_state) {
+        return Ok(None);
+    }
+    if !runtime.nv_available {
+        return Err(TPM_RC_NV_UNAVAILABLE);
+    }
+    Ok(Some(if runtime.live.da_used {
+        SU_DA_USED_VALUE
+    } else {
+        SU_NONE_VALUE
+    }))
+}
+
+pub(super) fn commit_orderly_clear(
+    runtime: &mut Tpm2Runtime,
+    orderly_state: Option<u16>,
+) -> Result<(), TpmResult> {
+    let Some(orderly_state) = orderly_state else {
+        return Ok(());
+    };
+    let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
+    let backup_orderly_state = state.persistent.orderly_state;
+    state.persistent.orderly_state = orderly_state;
+    match build_nv_image(state) {
+        Ok(image) => runtime.nv_memory = image,
+        Err(_) => {
+            state.persistent.orderly_state = backup_orderly_state;
+            return Err(TPM_RC_FAILURE);
+        }
+    }
+    runtime.nv_update_pending = true;
+    Ok(())
+}
+
+pub(super) fn live_pcr_counter(runtime: &Tpm2Runtime) -> Result<u32, TpmResult> {
+    runtime
+        .live
+        .state_reset
+        .as_ref()
+        .map(|reset| reset.pcr_counter)
+        .ok_or(TPM_RC_FAILURE)
+}
+
+pub(super) fn pcr_changed(pcr_counter: u32, pcr: usize) -> Result<u32, TpmResult> {
+    if pcr != 0 && pcr_in_tcb_group(pcr) {
+        return Ok(pcr_counter);
+    }
+    pcr_counter.checked_add(1).ok_or(TPM_RC_FAILURE)
+}
+
+pub(super) fn commit_pcr_counter(
+    runtime: &mut Tpm2Runtime,
+    pcr_counter: u32,
+) -> Result<(), TpmResult> {
+    let state_reset = runtime.live.state_reset.as_mut().ok_or(TPM_RC_FAILURE)?;
+    state_reset.pcr_counter = pcr_counter;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::tpm2::runtime::empty_state_runtime;
+
+    #[test]
+    fn a_tcb_group_pcr_holds_the_counter_but_pcr_zero_never_does() {
+        for pcr in [16usize, 21, 22, 23] {
+            assert_eq!(pcr_changed(7, pcr), Ok(7), "PCR {pcr}");
+        }
+        for pcr in [0usize, 1, 10, 17, 18, 19, 20] {
+            assert_eq!(pcr_changed(7, pcr), Ok(8), "PCR {pcr}");
+        }
+    }
+
+    #[test]
+    fn a_counter_at_its_maximum_is_an_internal_failure() {
+        assert_eq!(pcr_changed(u32::MAX, 10), Err(TPM_RC_FAILURE));
+        assert_eq!(pcr_changed(u32::MAX, 21), Ok(u32::MAX), "no increment");
+    }
+
+    #[test]
+    fn a_runtime_without_state_never_panics() {
+        let mut runtime = empty_state_runtime();
+        assert_eq!(prepare_orderly_clear(&runtime, 10), Err(TPM_RC_FAILURE));
+        assert_eq!(
+            commit_orderly_clear(&mut runtime, Some(0xffff)),
+            Err(TPM_RC_FAILURE)
+        );
+        assert_eq!(commit_orderly_clear(&mut runtime, None), Ok(()));
+    }
+
+    #[test]
+    fn a_runtime_without_state_reset_never_panics() {
+        let mut runtime = empty_state_runtime();
+        assert_eq!(live_pcr_counter(&runtime), Err(TPM_RC_FAILURE));
+        assert_eq!(commit_pcr_counter(&mut runtime, 3), Err(TPM_RC_FAILURE));
+    }
+}
