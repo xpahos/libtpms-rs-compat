@@ -5,7 +5,8 @@ use super::crypto::{EntropySource, os_entropy};
 use super::live::{LiveState, RestoredVolatile, split_restored_volatile};
 use super::nv::build_nv_image;
 use super::persistent::{OwnedPcrAllocation, OwnedPersistentState};
-use super::profile::ValidatedProfile;
+use super::profile::{DEFAULT_ALGORITHMS_PROFILE, ValidatedProfile};
+use super::self_test::SelfTestState;
 use super::tis::DrtmSequence;
 use super::volatile::OwnedVolatileState;
 
@@ -34,6 +35,8 @@ pub struct Tpm2Runtime {
     pub(super) active_profile_json: String,
 
     pub(super) drtm_sequence: Option<DrtmSequence>,
+
+    pub(super) self_test: SelfTestState,
 
     pub manufactured: bool,
     pub was_manufactured: bool,
@@ -162,6 +165,7 @@ fn commit_state(
         .unwrap_or_else(|| candidate.persistent.pcr_allocated.clone());
 
     let active_profile_json = format_active_profile(&candidate.profile);
+    let self_test = SelfTestState::for_profile(&candidate.profile);
 
     Ok(Box::new(Tpm2Runtime {
         state: Some(candidate),
@@ -175,6 +179,7 @@ fn commit_state(
         clock: RuntimeClock::POWER_ON_RESET,
         active_profile_json,
         drtm_sequence: None,
+        self_test,
         manufactured: true,
         was_manufactured,
         startup_received: false,
@@ -203,6 +208,7 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         clock: RuntimeClock::POWER_ON_RESET,
         active_profile_json: String::new(),
         drtm_sequence: None,
+        self_test: SelfTestState::for_algorithms(DEFAULT_ALGORITHMS_PROFILE),
         manufactured: false,
         was_manufactured: false,
         startup_received: false,
@@ -216,10 +222,11 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
     })
 }
 
-pub(super) fn manufactured_zeroed_nv_runtime(active_profile_json: String) -> Box<Tpm2Runtime> {
+pub(super) fn manufactured_zeroed_nv_runtime(manufactured: &Tpm2Runtime) -> Box<Tpm2Runtime> {
     let mut runtime = empty_state_runtime();
     runtime.manufactured = true;
     runtime.was_manufactured = true;
-    runtime.active_profile_json = active_profile_json;
+    runtime.active_profile_json = manufactured.active_profile_json.clone();
+    runtime.self_test = SelfTestState::for_primitives(manufactured.self_test.implemented);
     runtime
 }

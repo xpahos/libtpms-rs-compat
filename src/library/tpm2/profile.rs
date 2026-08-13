@@ -11,7 +11,8 @@ const DEFAULT_COMMANDS_PROFILE: &[u8] = b"0x11f-0x122,0x124-0x12e,0x130-0x140,0x
 0x15b-0x15e,0x160-0x165,0x167-0x174,0x176-0x178,0x17a-0x193,0x197,0x199-0x19c";
 const NULL_COMMANDS_PROFILE: &[u8] = b"0x11f-0x122,0x124-0x12e,0x130-0x140,0x142-0x159,\
 0x15b-0x15e,0x160-0x165,0x167-0x174,0x176-0x178,0x17a-0x193,0x197";
-const DEFAULT_ALGORITHMS_PROFILE: &[u8] = b"rsa,rsa-min-size=1024,tdes,tdes-min-size=128,\
+pub(super) const DEFAULT_ALGORITHMS_PROFILE: &[u8] =
+    b"rsa,rsa-min-size=1024,tdes,tdes-min-size=128,\
 sha1,hmac,aes,aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,\
 rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,\
 ecc-min-size=192,ecc-nist,ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,\

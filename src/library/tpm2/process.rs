@@ -3,6 +3,7 @@ use crate::library::CommandInput;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
 
 use super::command::{self, Response};
+use super::failure_mode;
 use super::runtime::Tpm2Runtime;
 
 pub(in crate::library) fn process(
@@ -22,7 +23,7 @@ pub(in crate::library) fn process(
     };
 
     if runtime.failure_mode {
-        return serialize(Response::error(TPM_RC_FAILURE));
+        return failure_mode::process(runtime, command);
     }
 
     super::tis::abort_sequence(runtime);
@@ -177,6 +178,69 @@ mod tests {
             run_process(&mut runtime, 0, &input(&[])).unwrap(),
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01],
             "failure mode wins over header validation, like C"
+        );
+    }
+
+    #[test]
+    fn a_self_test_failure_routes_every_later_command_through_the_failure_boundary() {
+        use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure, fails_on_sha384};
+
+        const BARE_FAILURE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
+        const FULL_SELF_TEST: [u8; 11] = [
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x01, 0x43, 0x01,
+        ];
+
+        let mut runtime = empty_state_runtime();
+        runtime.startup_received = true;
+        runtime.self_test.set_runner(fails_on_sha384);
+        let nv_before = runtime.nv_memory.clone();
+
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&FULL_SELF_TEST)).unwrap(),
+            BARE_FAILURE
+        );
+        assert!(runtime.failure_mode);
+        let recorded = Some(SelfTestFailure {
+            primitive: PrimitiveTest::Sha384,
+        });
+        assert_eq!(runtime.self_test.failure, recorded);
+
+        assert_eq!(
+            run_process(&mut runtime, 0, &unknown_command()).unwrap(),
+            BARE_FAILURE,
+            "an ordinary command now takes the failure-mode boundary"
+        );
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&FULL_SELF_TEST)).unwrap(),
+            BARE_FAILURE
+        );
+        assert_eq!(runtime.self_test.failure, recorded);
+        assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha384));
+        assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha512));
+        assert!(!runtime.self_test.pending.contains(PrimitiveTest::Sha1));
+        assert_eq!(runtime.nv_memory, nv_before);
+        assert!(!runtime.nv_update_pending);
+    }
+
+    #[test]
+    fn a_successful_self_test_leaves_normal_dispatch_untouched() {
+        const SUCCESS: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
+        const FULL_SELF_TEST: [u8; 11] = [
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x01, 0x43, 0x01,
+        ];
+
+        let mut runtime = empty_state_runtime();
+        runtime.startup_received = true;
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&FULL_SELF_TEST)).unwrap(),
+            SUCCESS
+        );
+        assert!(!runtime.failure_mode);
+        assert!(runtime.self_test.failure.is_none());
+        assert_eq!(
+            run_process(&mut runtime, 0, &unknown_command()).unwrap(),
+            UNSUPPORTED_RESPONSE,
+            "the normal dispatcher still answers"
         );
     }
 

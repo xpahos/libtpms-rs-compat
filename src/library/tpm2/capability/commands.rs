@@ -42,6 +42,7 @@ mod tests {
     use super::*;
 
     const TPMA_CC_PCR_RESET: u32 = 0x0200_013d;
+    const TPMA_CC_SELF_TEST: u32 = 0x0040_0143;
     const TPMA_CC_STARTUP: u32 = 0x0040_0144;
     const TPMA_CC_SHUTDOWN: u32 = 0x0040_0145;
     const TPMA_CC_GET_CAPABILITY: u32 = 0x0000_017a;
@@ -55,6 +56,7 @@ mod tests {
             page.entries,
             [
                 TPMA_CC_PCR_RESET,
+                TPMA_CC_SELF_TEST,
                 TPMA_CC_STARTUP,
                 TPMA_CC_SHUTDOWN,
                 TPMA_CC_GET_CAPABILITY,
@@ -72,12 +74,26 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x013d, 1000);
-        assert_eq!(page.entries.len(), 6);
+        assert_eq!(page.entries.len(), 7);
         assert_eq!(page.entries[0], TPMA_CC_PCR_RESET);
 
         let page = implemented(0x013e, 1000);
-        assert_eq!(page.entries.len(), 5);
+        assert_eq!(page.entries.len(), 6);
         assert!(!page.entries.contains(&TPMA_CC_PCR_RESET));
+    }
+
+    #[test]
+    fn self_test_is_advertised_from_its_own_command_code() {
+        let page = implemented(0x0143, 1);
+        assert_eq!(page.entries, [TPMA_CC_SELF_TEST]);
+        assert!(page.more_data);
+
+        let page = implemented(0x0142, 2);
+        assert_eq!(page.entries, [TPMA_CC_SELF_TEST, TPMA_CC_STARTUP]);
+        assert!(page.more_data);
+
+        let page = implemented(0x0144, 1000);
+        assert!(!page.entries.contains(&TPMA_CC_SELF_TEST));
     }
 
     #[test]
@@ -137,26 +153,26 @@ mod tests {
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 6);
-        assert_eq!(page.entries.len(), 6);
+        let page = implemented(0, 7);
+        assert_eq!(page.entries.len(), 7);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
         assert_eq!(
             page.entries,
-            [TPMA_CC_PCR_RESET, TPMA_CC_STARTUP, TPMA_CC_SHUTDOWN]
+            [TPMA_CC_PCR_RESET, TPMA_CC_SELF_TEST, TPMA_CC_STARTUP]
         );
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 6);
+        assert_eq!(page.entries.len(), 7);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 6);
-        assert_eq!(library_count(), 6);
+        assert_eq!(total_count(), 7);
+        assert_eq!(library_count(), 7);
         assert_eq!(vendor_count(), 0);
     }
 

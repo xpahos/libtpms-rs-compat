@@ -6,6 +6,7 @@ mod command;
 mod command_bitmap;
 mod compile_constants;
 mod crypto;
+mod failure_mode;
 mod info;
 mod live;
 mod lockout;
@@ -21,6 +22,7 @@ mod process;
 mod profile;
 mod public;
 mod runtime;
+mod self_test;
 mod session;
 mod state;
 mod tis;
@@ -246,9 +248,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
                     if !host_nvram.can_store() {
                         return Err(TPM_FAIL);
                     }
-                    runtime::manufactured_zeroed_nv_runtime(
-                        manufactured.active_profile_json.clone(),
-                    )
+                    runtime::manufactured_zeroed_nv_runtime(&manufactured)
                 }
                 NvramLoad::SuccessWithoutData | NvramLoad::NotRegistered => {
                     return Err(TPM_FAIL);
@@ -4105,6 +4105,24 @@ mod tests {
              wins before the backend is consulted again"
         );
         assert!(STORED_BLOBS.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_manufactured_runtime_derives_its_self_tests_from_the_active_profile() {
+        use self_test::PrimitiveTestSet;
+
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_manufacture_backend();
+        let runtime = main_init(context(manufacture_callbacks(), PreloadedBlob::Missing))
+            .expect("first boot manufactures");
+        assert_eq!(
+            runtime.self_test.implemented,
+            PrimitiveTestSet::for_algorithms(&runtime.state().profile.algorithms)
+        );
+        assert_eq!(runtime.self_test.pending, runtime.self_test.implemented);
+        assert!(runtime.self_test.failure.is_none());
     }
 
     #[test]
