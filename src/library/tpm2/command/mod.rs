@@ -1,6 +1,7 @@
 mod dispatcher;
 mod get_capability;
 mod header;
+mod incremental_self_test;
 mod pcr_extend;
 mod pcr_read;
 mod pcr_reset;

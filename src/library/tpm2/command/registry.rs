@@ -4,6 +4,7 @@ use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::dispatcher::CommandFrame;
 use super::get_capability;
+use super::incremental_self_test;
 use super::pcr_extend;
 use super::pcr_read;
 use super::pcr_reset;
@@ -12,6 +13,7 @@ use super::shutdown;
 use super::startup;
 
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
+pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
@@ -89,6 +91,14 @@ static COMMANDS: &[CommandDescriptor] = &[
         }],
         sessions_allowed: true,
         handler: pcr_reset::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_INCREMENTAL_SELF_TEST,
+        attributes: tpma_cc(TPM_CC_INCREMENTAL_SELF_TEST, true, 0),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
+        handler: incremental_self_test::execute,
     },
     CommandDescriptor {
         code: TPM_CC_SELF_TEST,
@@ -192,6 +202,10 @@ mod tests {
             Some(TPM_CC_PCR_RESET)
         );
         assert_eq!(
+            find(TPM_CC_INCREMENTAL_SELF_TEST).map(|d| d.code),
+            Some(TPM_CC_INCREMENTAL_SELF_TEST)
+        );
+        assert_eq!(
             find(TPM_CC_SELF_TEST).map(|d| d.code),
             Some(TPM_CC_SELF_TEST)
         );
@@ -214,11 +228,11 @@ mod tests {
         assert!(find(TPM_CC_PCR_RESET - 1).is_none(), "just below the first");
         assert!(
             find(TPM_CC_PCR_RESET + 1).is_none(),
-            "between PCR_Reset and SelfTest"
+            "between PCR_Reset and IncrementalSelfTest"
         );
         assert!(
-            find(TPM_CC_SELF_TEST - 1).is_none(),
-            "just below SelfTest, where IncrementalSelfTest would sit"
+            find(TPM_CC_INCREMENTAL_SELF_TEST - 1).is_none(),
+            "just below IncrementalSelfTest"
         );
         assert!(find(TPM_CC_SHUTDOWN + 1).is_none(), "between the entries");
         assert!(
@@ -246,6 +260,7 @@ mod tests {
             codes,
             [
                 TPM_CC_PCR_RESET,
+                TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
                 TPM_CC_STARTUP,
                 TPM_CC_SHUTDOWN,
@@ -254,6 +269,33 @@ mod tests {
                 TPM_CC_PCR_EXTEND
             ]
         );
+    }
+
+    #[test]
+    fn incremental_self_test_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(
+            find(TPM_CC_INCREMENTAL_SELF_TEST).unwrap().attributes,
+            0x0040_0142
+        );
+    }
+
+    #[test]
+    fn incremental_self_test_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_INCREMENTAL_SELF_TEST)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn incremental_self_test_declares_no_handles_and_allows_sessions() {
+        let descriptor = find(TPM_CC_INCREMENTAL_SELF_TEST).unwrap();
+        assert!(descriptor.handles.is_empty());
+        assert!(descriptor.sessions_allowed);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
     }
 
     #[test]

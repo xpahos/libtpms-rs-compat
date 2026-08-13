@@ -178,6 +178,15 @@ static S_ALGORITHMS: &[AlgorithmEntry] = &[
     ),
 ];
 
+pub(in crate::library::tpm2) fn enabled_algorithms(
+    profile_algorithms: &[u8],
+) -> impl Iterator<Item = u16> {
+    S_ALGORITHMS
+        .iter()
+        .filter(move |entry| algorithm_enabled(profile_algorithms, entry.profile_name))
+        .map(|entry| entry.algorithm)
+}
+
 pub(in crate::library::tpm2) fn implemented(
     profile_algorithms: &[u8],
     starting_algorithm: u16,
@@ -383,6 +392,39 @@ cmac,ctr,ofb,cbc,cfb,ecb";
         let page = implemented(b"rsa,sha256", TPM_ALG_SHA256, 1);
         assert_eq!(page.entries[0].algorithm, TPM_ALG_SHA256);
         assert!(!page.more_data);
+    }
+
+    #[test]
+    fn the_enabled_iterator_reports_the_profile_filtered_table_in_table_order() {
+        let ids: Vec<u16> = enabled_algorithms(NULL_PROFILE_ALGORITHMS).collect();
+        let expected: Vec<u16> = ORACLE_ALGORITHMS.iter().map(|entry| entry.0).collect();
+        assert_eq!(ids, expected);
+
+        let ids: Vec<u16> = enabled_algorithms(b"sha256,aes,rsa").collect();
+        assert_eq!(ids, [TPM_ALG_RSA, TPM_ALG_AES, TPM_ALG_SHA256]);
+    }
+
+    #[test]
+    fn the_enabled_iterator_reports_nothing_for_an_empty_or_unknown_profile() {
+        assert_eq!(enabled_algorithms(b"").count(), 0);
+        assert_eq!(enabled_algorithms(b"nosuchalgorithm,sha25").count(), 0);
+    }
+
+    #[test]
+    fn the_enabled_iterator_agrees_with_the_reported_capability_page() {
+        for profile in [
+            NULL_PROFILE_ALGORITHMS,
+            b"rsa,sha1,hmac,aes,sha256,rsassa,ecc,symcipher,cfb",
+            b"rsa-min-size=1024,sha256",
+        ] {
+            let reported: Vec<u16> = implemented(profile, 0, 1000)
+                .entries
+                .iter()
+                .map(|property| property.algorithm)
+                .collect();
+            let enabled: Vec<u16> = enabled_algorithms(profile).collect();
+            assert_eq!(reported, enabled);
+        }
     }
 
     #[test]

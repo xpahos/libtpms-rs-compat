@@ -227,6 +227,6 @@ pub(super) fn manufactured_zeroed_nv_runtime(manufactured: &Tpm2Runtime) -> Box<
     runtime.manufactured = true;
     runtime.was_manufactured = true;
     runtime.active_profile_json = manufactured.active_profile_json.clone();
-    runtime.self_test = SelfTestState::for_primitives(manufactured.self_test.implemented);
+    runtime.self_test = manufactured.self_test.restarted();
     runtime
 }

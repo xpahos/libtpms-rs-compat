@@ -42,6 +42,7 @@ mod tests {
     use super::*;
 
     const TPMA_CC_PCR_RESET: u32 = 0x0200_013d;
+    const TPMA_CC_INCREMENTAL_SELF_TEST: u32 = 0x0040_0142;
     const TPMA_CC_SELF_TEST: u32 = 0x0040_0143;
     const TPMA_CC_STARTUP: u32 = 0x0040_0144;
     const TPMA_CC_SHUTDOWN: u32 = 0x0040_0145;
@@ -56,6 +57,7 @@ mod tests {
             page.entries,
             [
                 TPMA_CC_PCR_RESET,
+                TPMA_CC_INCREMENTAL_SELF_TEST,
                 TPMA_CC_SELF_TEST,
                 TPMA_CC_STARTUP,
                 TPMA_CC_SHUTDOWN,
@@ -74,11 +76,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x013d, 1000);
-        assert_eq!(page.entries.len(), 7);
+        assert_eq!(page.entries.len(), 8);
         assert_eq!(page.entries[0], TPMA_CC_PCR_RESET);
 
         let page = implemented(0x013e, 1000);
-        assert_eq!(page.entries.len(), 6);
+        assert_eq!(page.entries.len(), 7);
         assert!(!page.entries.contains(&TPMA_CC_PCR_RESET));
     }
 
@@ -89,11 +91,28 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0142, 2);
-        assert_eq!(page.entries, [TPMA_CC_SELF_TEST, TPMA_CC_STARTUP]);
+        assert_eq!(
+            page.entries,
+            [TPMA_CC_INCREMENTAL_SELF_TEST, TPMA_CC_SELF_TEST]
+        );
         assert!(page.more_data);
 
         let page = implemented(0x0144, 1000);
         assert!(!page.entries.contains(&TPMA_CC_SELF_TEST));
+    }
+
+    #[test]
+    fn incremental_self_test_is_advertised_from_its_own_command_code() {
+        let page = implemented(0x0142, 1);
+        assert_eq!(page.entries, [TPMA_CC_INCREMENTAL_SELF_TEST]);
+        assert!(page.more_data);
+
+        let page = implemented(0x013e, 1);
+        assert_eq!(page.entries, [TPMA_CC_INCREMENTAL_SELF_TEST]);
+        assert!(page.more_data);
+
+        let page = implemented(0x0143, 1000);
+        assert!(!page.entries.contains(&TPMA_CC_INCREMENTAL_SELF_TEST));
     }
 
     #[test]
@@ -153,26 +172,30 @@ mod tests {
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 7);
-        assert_eq!(page.entries.len(), 7);
+        let page = implemented(0, 8);
+        assert_eq!(page.entries.len(), 8);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
         assert_eq!(
             page.entries,
-            [TPMA_CC_PCR_RESET, TPMA_CC_SELF_TEST, TPMA_CC_STARTUP]
+            [
+                TPMA_CC_PCR_RESET,
+                TPMA_CC_INCREMENTAL_SELF_TEST,
+                TPMA_CC_SELF_TEST
+            ]
         );
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 7);
+        assert_eq!(page.entries.len(), 8);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 7);
-        assert_eq!(library_count(), 7);
+        assert_eq!(total_count(), 8);
+        assert_eq!(library_count(), 8);
         assert_eq!(vendor_count(), 0);
     }
 

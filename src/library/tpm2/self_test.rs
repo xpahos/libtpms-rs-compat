@@ -4,9 +4,10 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 
 use super::algorithm::{
-    TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512, algorithm_enabled,
+    TPM_ALG_AES, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512, algorithm_enabled,
     hash_profile_name,
 };
+use super::capability::algorithms::enabled_algorithms;
 use super::pcr::BankHasher;
 use super::profile::ValidatedProfile;
 
@@ -156,14 +157,30 @@ pub(in crate::library::tpm2) enum PrimitiveTest {
 impl PrimitiveTest {
     pub(in crate::library::tpm2) const ALL: [Self; 5] = [
         Self::Sha1,
+        Self::Aes256,
         Self::Sha256,
         Self::Sha384,
         Self::Sha512,
-        Self::Aes256,
     ];
 
     const fn bit(self) -> u8 {
         1 << self as u8
+    }
+
+    const fn algorithm(self) -> u16 {
+        match self {
+            Self::Sha1 => TPM_ALG_SHA1,
+            Self::Sha256 => TPM_ALG_SHA256,
+            Self::Sha384 => TPM_ALG_SHA384,
+            Self::Sha512 => TPM_ALG_SHA512,
+            Self::Aes256 => TPM_ALG_AES,
+        }
+    }
+
+    fn for_algorithm(algorithm: u16) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|test| test.algorithm() == algorithm)
     }
 
     const fn profile_name(self) -> &'static [u8] {
@@ -235,7 +252,6 @@ impl PrimitiveTestSet {
         self.0 &= !test.bit();
     }
 
-    #[cfg(test)]
     pub(in crate::library::tpm2) fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -248,29 +264,44 @@ pub(in crate::library::tpm2) struct SelfTestFailure {
 
 type PrimitiveRunner = fn(PrimitiveTest) -> bool;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::library::tpm2) enum SelectedTestError {
+    UnsupportedAlgorithm(u16),
+    TestFailed,
+}
+
 pub(in crate::library::tpm2) struct SelfTestState {
     pub(in crate::library::tpm2) implemented: PrimitiveTestSet,
     pub(in crate::library::tpm2) pending: PrimitiveTestSet,
     pub(in crate::library::tpm2) failure: Option<SelfTestFailure>,
+    enabled: Box<[u16]>,
     runner: PrimitiveRunner,
 }
 
 impl SelfTestState {
-    pub(in crate::library::tpm2) fn for_primitives(implemented: PrimitiveTestSet) -> Self {
+    pub(in crate::library::tpm2) fn for_algorithms(profile_algorithms: &[u8]) -> Self {
+        let implemented = PrimitiveTestSet::for_algorithms(profile_algorithms);
         Self {
             implemented,
             pending: implemented,
             failure: None,
+            enabled: enabled_algorithms(profile_algorithms).collect(),
             runner: PrimitiveTest::run,
         }
     }
 
-    pub(in crate::library::tpm2) fn for_algorithms(profile_algorithms: &[u8]) -> Self {
-        Self::for_primitives(PrimitiveTestSet::for_algorithms(profile_algorithms))
-    }
-
     pub(in crate::library::tpm2) fn for_profile(profile: &ValidatedProfile) -> Self {
         Self::for_algorithms(&profile.algorithms)
+    }
+
+    pub(in crate::library::tpm2) fn restarted(&self) -> Self {
+        Self {
+            implemented: self.implemented,
+            pending: self.implemented,
+            failure: None,
+            enabled: self.enabled.clone(),
+            runner: PrimitiveTest::run,
+        }
     }
 
     #[cfg(test)]
@@ -294,6 +325,51 @@ impl SelfTestState {
             self.pending.remove(test);
         }
         Ok(())
+    }
+
+    pub(in crate::library::tpm2) fn run_selected(
+        &mut self,
+        requested: &[u16],
+    ) -> Result<(), SelectedTestError> {
+        let selected = self.select(requested)?;
+        if selected.is_empty() {
+            return Ok(());
+        }
+        self.failure = None;
+        for test in PrimitiveTest::ALL {
+            if !selected.contains(test) {
+                continue;
+            }
+            if !(self.runner)(test) {
+                self.failure = Some(SelfTestFailure { primitive: test });
+                return Err(SelectedTestError::TestFailed);
+            }
+            self.pending.remove(test);
+        }
+        Ok(())
+    }
+
+    fn select(&self, requested: &[u16]) -> Result<PrimitiveTestSet, SelectedTestError> {
+        let mut selected = PrimitiveTestSet::default();
+        for &algorithm in requested {
+            if !self.enabled.contains(&algorithm) {
+                return Err(SelectedTestError::UnsupportedAlgorithm(algorithm));
+            }
+            if let Some(test) = PrimitiveTest::for_algorithm(algorithm) {
+                selected.insert(test);
+            }
+        }
+        Ok(selected)
+    }
+
+    pub(in crate::library::tpm2) fn pending_algorithms(&self) -> Vec<u16> {
+        let mut algorithms: Vec<u16> = PrimitiveTest::ALL
+            .into_iter()
+            .filter(|&test| self.pending.contains(test))
+            .map(PrimitiveTest::algorithm)
+            .collect();
+        algorithms.sort_unstable();
+        algorithms
     }
 }
 
@@ -319,6 +395,7 @@ pub(in crate::library::tpm2) fn fails_on_sha384(test: PrimitiveTest) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::algorithm::{TPM_ALG_ERROR, TPM_ALG_HMAC, TPM_ALG_RSA};
     use super::*;
     use crate::library::tpm2::pcr::PCR_SLOT_BANKS;
     use crate::library::tpm2::profile::{DEFAULT_ALGORITHMS_PROFILE, validate_user_profile};
@@ -613,9 +690,9 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         assert_eq!(
             state.failure,
             Some(SelfTestFailure {
-                primitive: PrimitiveTest::Sha256
+                primitive: PrimitiveTest::Aes256
             }),
-            "the first enabled primitive is the one that failed"
+            "the first enabled primitive in upstream order is the one that failed"
         );
     }
 
@@ -687,10 +764,10 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         state.set_runner(fails_on_sha384);
         assert_eq!(state.run(false), Err(TPM_RC_FAILURE));
         assert!(!state.pending.contains(PrimitiveTest::Sha1));
+        assert!(!state.pending.contains(PrimitiveTest::Aes256));
         assert!(!state.pending.contains(PrimitiveTest::Sha256));
         assert!(state.pending.contains(PrimitiveTest::Sha384));
         assert!(state.pending.contains(PrimitiveTest::Sha512));
-        assert!(state.pending.contains(PrimitiveTest::Aes256));
         assert_eq!(
             state.failure,
             Some(SelfTestFailure {
@@ -740,6 +817,287 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 primitive: PrimitiveTest::Sha384
             })
         );
+    }
+
+    fn never_runs(test: PrimitiveTest) -> bool {
+        panic!("an invalid request must never reach the runner, got {test:?}");
+    }
+
+    fn fails_on_aes256(test: PrimitiveTest) -> bool {
+        test != PrimitiveTest::Aes256
+    }
+
+    fn fails_on_aes256_and_sha256(test: PrimitiveTest) -> bool {
+        !matches!(test, PrimitiveTest::Aes256 | PrimitiveTest::Sha256)
+    }
+
+    #[test]
+    fn the_canonical_order_follows_ascending_tpm_algorithm_ids() {
+        let algorithms: Vec<u16> = PrimitiveTest::ALL
+            .into_iter()
+            .map(PrimitiveTest::algorithm)
+            .collect();
+        assert_eq!(
+            algorithms,
+            [
+                TPM_ALG_SHA1,
+                TPM_ALG_AES,
+                TPM_ALG_SHA256,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512
+            ],
+            "upstream CryptRunSelfTests walks the algorithm IDs in numeric order"
+        );
+        assert!(algorithms.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn a_selection_runs_aes_before_sha256() {
+        let mut state = default_state();
+        state.set_runner(fails_on_aes256_and_sha256);
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_SHA256, TPM_ALG_AES]),
+            Err(SelectedTestError::TestFailed)
+        );
+        assert_eq!(
+            state.failure,
+            Some(SelfTestFailure {
+                primitive: PrimitiveTest::Aes256
+            }),
+            "AES has the lower algorithm ID, so it runs and fails first"
+        );
+        assert!(state.pending.contains(PrimitiveTest::Aes256));
+        assert!(
+            state.pending.contains(PrimitiveTest::Sha256),
+            "SHA-256 was never reached"
+        );
+    }
+
+    #[test]
+    fn a_full_test_runs_sha1_before_the_failing_aes_test() {
+        let mut state = default_state();
+        state.set_runner(fails_on_aes256);
+        assert_eq!(state.run(true), Err(TPM_RC_FAILURE));
+        assert!(!state.pending.contains(PrimitiveTest::Sha1));
+        assert_eq!(
+            state.failure,
+            Some(SelfTestFailure {
+                primitive: PrimitiveTest::Aes256
+            })
+        );
+        assert!(state.pending.contains(PrimitiveTest::Aes256));
+        assert!(state.pending.contains(PrimitiveTest::Sha256));
+        assert!(state.pending.contains(PrimitiveTest::Sha384));
+        assert!(state.pending.contains(PrimitiveTest::Sha512));
+        assert_eq!(
+            state.pending_algorithms(),
+            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512],
+            "the reported list stays numerically sorted"
+        );
+    }
+
+    #[test]
+    fn every_primitive_maps_to_its_tpm_algorithm_id() {
+        assert_eq!(PrimitiveTest::Sha1.algorithm(), TPM_ALG_SHA1);
+        assert_eq!(PrimitiveTest::Sha256.algorithm(), TPM_ALG_SHA256);
+        assert_eq!(PrimitiveTest::Sha384.algorithm(), TPM_ALG_SHA384);
+        assert_eq!(PrimitiveTest::Sha512.algorithm(), TPM_ALG_SHA512);
+        assert_eq!(PrimitiveTest::Aes256.algorithm(), TPM_ALG_AES);
+        for test in PrimitiveTest::ALL {
+            assert_eq!(PrimitiveTest::for_algorithm(test.algorithm()), Some(test));
+        }
+        for algorithm in [TPM_ALG_ERROR, TPM_ALG_RSA, TPM_ALG_HMAC, 0x0027, 0xffff] {
+            assert_eq!(PrimitiveTest::for_algorithm(algorithm), None);
+        }
+    }
+
+    #[test]
+    fn an_empty_selection_runs_nothing_and_keeps_the_pending_set() {
+        let mut state = default_state();
+        state.set_runner(never_runs);
+        assert_eq!(state.run_selected(&[]), Ok(()));
+        assert_eq!(state.pending, state.implemented);
+        assert!(state.failure.is_none());
+    }
+
+    #[test]
+    fn a_selection_runs_only_the_requested_primitives() {
+        let mut state = default_state();
+        state.set_runner(counting_runner);
+        RUN_COUNT.with(|count| count.set(0));
+        assert_eq!(state.run_selected(&[TPM_ALG_SHA384, TPM_ALG_AES]), Ok(()));
+        assert_eq!(RUN_COUNT.with(Cell::get), 2);
+        assert!(!state.pending.contains(PrimitiveTest::Sha384));
+        assert!(!state.pending.contains(PrimitiveTest::Aes256));
+        assert!(state.pending.contains(PrimitiveTest::Sha1));
+        assert!(state.pending.contains(PrimitiveTest::Sha256));
+        assert!(state.pending.contains(PrimitiveTest::Sha512));
+    }
+
+    #[test]
+    fn a_duplicated_algorithm_runs_its_primitive_once() {
+        let mut state = default_state();
+        state.set_runner(counting_runner);
+        RUN_COUNT.with(|count| count.set(0));
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_SHA1, TPM_ALG_SHA1, TPM_ALG_SHA1]),
+            Ok(())
+        );
+        assert_eq!(RUN_COUNT.with(Cell::get), 1);
+    }
+
+    #[test]
+    fn a_completed_primitive_runs_again_when_it_is_requested_explicitly() {
+        let mut state = default_state();
+        assert_eq!(state.run(true), Ok(()));
+        assert!(state.pending.is_empty());
+        state.set_runner(counting_runner);
+        RUN_COUNT.with(|count| count.set(0));
+        assert_eq!(state.run_selected(&[TPM_ALG_SHA256]), Ok(()));
+        assert_eq!(RUN_COUNT.with(Cell::get), 1);
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn an_algorithm_outside_the_registry_is_rejected_before_anything_runs() {
+        let mut state = default_state();
+        state.set_runner(never_runs);
+        for algorithm in [0x0002u16, 0x0009, 0x0027, 0x0045, 0xffff] {
+            assert_eq!(
+                state.run_selected(&[TPM_ALG_SHA256, algorithm]),
+                Err(SelectedTestError::UnsupportedAlgorithm(algorithm)),
+                "algorithm {algorithm:#06x}"
+            );
+        }
+        assert_eq!(state.pending, state.implemented);
+        assert!(state.failure.is_none());
+    }
+
+    #[test]
+    fn a_profile_disabled_algorithm_is_rejected_before_anything_runs() {
+        let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
+        let mut state = SelfTestState::for_algorithms(&algorithms);
+        state.set_runner(never_runs);
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_SHA256, TPM_ALG_SHA512]),
+            Err(SelectedTestError::UnsupportedAlgorithm(TPM_ALG_SHA512))
+        );
+        assert_eq!(state.pending, state.implemented);
+    }
+
+    #[test]
+    fn an_enabled_algorithm_without_a_rust_test_runs_nothing() {
+        let mut state = default_state();
+        state.set_runner(never_runs);
+        assert_eq!(state.run_selected(&[TPM_ALG_RSA, TPM_ALG_HMAC]), Ok(()));
+        assert_eq!(state.pending, state.implemented);
+        assert!(!state.pending_algorithms().contains(&TPM_ALG_RSA));
+    }
+
+    #[test]
+    fn a_selected_failure_records_the_primitive_and_keeps_the_rest_pending() {
+        let mut state = default_state();
+        state.set_runner(fails_on_sha384);
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_SHA1, TPM_ALG_SHA384, TPM_ALG_SHA512]),
+            Err(SelectedTestError::TestFailed)
+        );
+        assert_eq!(
+            state.failure,
+            Some(SelfTestFailure {
+                primitive: PrimitiveTest::Sha384
+            })
+        );
+        assert!(!state.pending.contains(PrimitiveTest::Sha1));
+        assert!(state.pending.contains(PrimitiveTest::Sha384));
+        assert!(state.pending.contains(PrimitiveTest::Sha512));
+        assert!(state.pending.contains(PrimitiveTest::Sha256));
+        assert!(state.pending.contains(PrimitiveTest::Aes256));
+    }
+
+    #[test]
+    fn a_successful_retry_clears_the_recorded_failure() {
+        let mut state = default_state();
+        state.set_runner(fails_on_sha384);
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_SHA384]),
+            Err(SelectedTestError::TestFailed)
+        );
+        assert!(state.failure.is_some());
+        state.set_runner(always_passes);
+        assert_eq!(state.run_selected(&[TPM_ALG_SHA384]), Ok(()));
+        assert!(state.failure.is_none());
+        assert!(!state.pending.contains(PrimitiveTest::Sha384));
+    }
+
+    #[test]
+    fn a_rejected_selection_leaves_a_recorded_failure_untouched() {
+        let mut state = default_state();
+        state.set_runner(fails_on_sha384);
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_SHA384]),
+            Err(SelectedTestError::TestFailed)
+        );
+        let recorded = state.failure;
+        let pending = state.pending;
+        assert_eq!(
+            state.run_selected(&[0xffff]),
+            Err(SelectedTestError::UnsupportedAlgorithm(0xffff))
+        );
+        assert_eq!(state.failure, recorded);
+        assert_eq!(state.pending, pending);
+    }
+
+    #[test]
+    fn the_pending_algorithms_are_reported_in_ascending_order() {
+        let mut state = default_state();
+        assert_eq!(
+            state.pending_algorithms(),
+            [
+                TPM_ALG_SHA1,
+                TPM_ALG_AES,
+                TPM_ALG_SHA256,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512
+            ]
+        );
+        assert_eq!(state.run_selected(&[TPM_ALG_SHA1, TPM_ALG_SHA384]), Ok(()));
+        assert_eq!(
+            state.pending_algorithms(),
+            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA512]
+        );
+        assert_eq!(state.run(true), Ok(()));
+        assert_eq!(state.pending_algorithms(), Vec::new());
+    }
+
+    #[test]
+    fn a_profile_without_sha1_never_reports_or_accepts_it() {
+        let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha1");
+        let mut state = SelfTestState::for_algorithms(&algorithms);
+        assert_eq!(
+            state.pending_algorithms(),
+            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512]
+        );
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_SHA1]),
+            Err(SelectedTestError::UnsupportedAlgorithm(TPM_ALG_SHA1))
+        );
+    }
+
+    #[test]
+    fn a_restarted_state_keeps_the_profile_for_validation() {
+        let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
+        let mut source = SelfTestState::for_algorithms(&algorithms);
+        assert_eq!(source.run(true), Ok(()));
+        let mut restarted = source.restarted();
+        assert_eq!(restarted.implemented, source.implemented);
+        assert_eq!(restarted.pending, source.implemented);
+        assert!(restarted.failure.is_none());
+        assert_eq!(
+            restarted.run_selected(&[TPM_ALG_SHA512]),
+            Err(SelectedTestError::UnsupportedAlgorithm(TPM_ALG_SHA512))
+        );
+        assert_eq!(restarted.run_selected(&[TPM_ALG_SHA256]), Ok(()));
     }
 
     #[test]

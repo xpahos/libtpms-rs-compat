@@ -223,6 +223,70 @@ mod tests {
     }
 
     #[test]
+    fn an_incremental_self_test_failure_routes_every_later_command_through_the_boundary() {
+        use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure, always_fails};
+
+        const BARE_FAILURE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
+        const INCREMENTAL_SHA256: [u8; 16] = [
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x0b,
+        ];
+
+        let mut runtime = empty_state_runtime();
+        runtime.startup_received = true;
+        runtime.self_test.set_runner(always_fails);
+        let nv_before = runtime.nv_memory.clone();
+
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&INCREMENTAL_SHA256)).unwrap(),
+            BARE_FAILURE
+        );
+        assert!(runtime.failure_mode);
+        let recorded = Some(SelfTestFailure {
+            primitive: PrimitiveTest::Sha256,
+        });
+        assert_eq!(runtime.self_test.failure, recorded);
+
+        assert_eq!(
+            run_process(&mut runtime, 0, &unknown_command()).unwrap(),
+            BARE_FAILURE,
+            "an ordinary command now takes the failure-mode boundary"
+        );
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&INCREMENTAL_SHA256)).unwrap(),
+            BARE_FAILURE
+        );
+        assert_eq!(runtime.self_test.failure, recorded);
+        assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha256));
+        assert_eq!(runtime.nv_memory, nv_before);
+        assert!(!runtime.nv_update_pending);
+    }
+
+    #[test]
+    fn a_successful_incremental_self_test_leaves_normal_dispatch_untouched() {
+        const INCREMENTAL_SHA256: [u8; 16] = [
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x0b,
+        ];
+
+        let mut runtime = empty_state_runtime();
+        runtime.startup_received = true;
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&INCREMENTAL_SHA256)).unwrap(),
+            [
+                0x80, 0x01, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
+                0x00, 0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d
+            ]
+        );
+        assert!(!runtime.failure_mode);
+        assert_eq!(
+            run_process(&mut runtime, 0, &unknown_command()).unwrap(),
+            UNSUPPORTED_RESPONSE,
+            "the normal dispatcher still answers"
+        );
+    }
+
+    #[test]
     fn a_successful_self_test_leaves_normal_dispatch_untouched() {
         const SUCCESS: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
         const FULL_SELF_TEST: [u8; 11] = [

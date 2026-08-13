@@ -273,10 +273,10 @@ mod tests {
         runtime.self_test.set_runner(fails_on_sha384);
         assert_eq!(run_code(&mut runtime, &FULL_TEST_COMMAND), TPM_RC_FAILURE);
         assert!(!runtime.self_test.pending.contains(PrimitiveTest::Sha1));
+        assert!(!runtime.self_test.pending.contains(PrimitiveTest::Aes256));
         assert!(!runtime.self_test.pending.contains(PrimitiveTest::Sha256));
         assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha384));
         assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha512));
-        assert!(runtime.self_test.pending.contains(PrimitiveTest::Aes256));
     }
 
     #[test]
