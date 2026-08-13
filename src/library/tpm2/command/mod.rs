@@ -1,5 +1,6 @@
 mod dispatcher;
 mod header;
+mod registry;
 mod shutdown;
 mod startup;
 

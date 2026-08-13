@@ -2,36 +2,25 @@ use crate::library::constants::{TPM_RC_COMMAND_CODE, TPM_RC_INITIALIZE};
 
 use super::super::runtime::Tpm2Runtime;
 use super::header::{Command, Response};
-use super::shutdown;
-use super::startup;
-
-pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
-pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
+use super::registry;
 
 pub(in crate::library::tpm2) fn dispatch(
     runtime: &mut Tpm2Runtime,
     command: &Command<'_>,
 ) -> Response {
-    match command.command_code {
-        TPM_CC_STARTUP => {
-            if runtime.startup_received {
-                return Response::error(TPM_RC_INITIALIZE);
-            }
-            startup::execute(runtime, command)
-        }
-        TPM_CC_SHUTDOWN => {
-            if !runtime.startup_received {
-                return Response::error(TPM_RC_INITIALIZE);
-            }
-            shutdown::execute(runtime, command)
-        }
-        _ => Response::error(TPM_RC_COMMAND_CODE),
+    let Some(descriptor) = registry::find(command.command_code) else {
+        return Response::error(TPM_RC_COMMAND_CODE);
+    };
+    if !descriptor.lifecycle.allows(runtime) {
+        return Response::error(TPM_RC_INITIALIZE);
     }
+    (descriptor.handler)(runtime, command)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::header::{TPM_ST_NO_SESSIONS, parse_command, serialize_response};
+    use super::super::registry::{TPM_CC_SHUTDOWN, TPM_CC_STARTUP};
     use super::*;
     use crate::library::CommandInput;
     use crate::library::tpm2::runtime::empty_state_runtime;

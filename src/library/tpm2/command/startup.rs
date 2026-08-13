@@ -581,8 +581,9 @@ fn context_id_oldest(
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatcher::{TPM_CC_STARTUP, dispatch};
+    use super::super::dispatcher::dispatch;
     use super::super::header::{parse_command, serialize_response};
+    use super::super::registry::TPM_CC_STARTUP;
     use super::*;
     use crate::ffi_types::TpmResult;
     use crate::library::CommandInput;

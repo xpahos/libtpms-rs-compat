@@ -224,8 +224,9 @@ fn perform_shutdown(runtime: &mut Tpm2Runtime, shutdown_type: u16) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatcher::{TPM_CC_SHUTDOWN, TPM_CC_STARTUP, dispatch};
+    use super::super::dispatcher::dispatch;
     use super::super::header::{parse_command, serialize_response};
+    use super::super::registry::{TPM_CC_SHUTDOWN, TPM_CC_STARTUP};
     use super::*;
     use crate::library::CommandInput;
     use crate::library::tpm2::manufacture::manufacture_state;
