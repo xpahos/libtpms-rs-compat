@@ -1,10 +1,12 @@
 use super::super::runtime::Tpm2Runtime;
+use super::get_capability;
 use super::header::{Command, Response};
 use super::shutdown;
 use super::startup;
 
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
+pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
@@ -31,10 +33,9 @@ impl CommandLifecycle {
 }
 
 // TODO: Move session eligibility into CommandDescriptor after session processing is centralized.
-pub(super) struct CommandDescriptor {
-    pub(super) code: u32,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) attributes: u32,
+pub(in crate::library::tpm2) struct CommandDescriptor {
+    pub(in crate::library::tpm2) code: u32,
+    pub(in crate::library::tpm2) attributes: u32,
     pub(super) lifecycle: CommandLifecycle,
     pub(super) handler: CommandHandler,
 }
@@ -52,6 +53,12 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handler: shutdown::execute,
     },
+    CommandDescriptor {
+        code: TPM_CC_GET_CAPABILITY,
+        attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handler: get_capability::execute,
+    },
 ];
 
 pub(super) fn find(code: u32) -> Option<&'static CommandDescriptor> {
@@ -61,8 +68,7 @@ pub(super) fn find(code: u32) -> Option<&'static CommandDescriptor> {
         .map(|index| &COMMANDS[index])
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn implemented() -> impl Iterator<Item = &'static CommandDescriptor> {
+pub(in crate::library::tpm2) fn implemented() -> impl Iterator<Item = &'static CommandDescriptor> {
     COMMANDS.iter()
 }
 
@@ -98,24 +104,38 @@ mod tests {
     }
 
     #[test]
-    fn lookup_finds_startup_and_shutdown() {
+    fn lookup_finds_every_registered_command() {
         assert_eq!(find(TPM_CC_STARTUP).map(|d| d.code), Some(TPM_CC_STARTUP));
         assert_eq!(find(TPM_CC_SHUTDOWN).map(|d| d.code), Some(TPM_CC_SHUTDOWN));
+        assert_eq!(
+            find(TPM_CC_GET_CAPABILITY).map(|d| d.code),
+            Some(TPM_CC_GET_CAPABILITY)
+        );
     }
 
     #[test]
     fn lookup_rejects_unregistered_command_codes() {
         assert!(find(0x0000_0000).is_none(), "below all entries");
         assert!(find(TPM_CC_STARTUP - 1).is_none(), "just below the first");
-        assert!(find(TPM_CC_SHUTDOWN + 1).is_none(), "just above the last");
-        assert!(find(0x0000_017b).is_none(), "unimplemented but defined");
+        assert!(find(TPM_CC_SHUTDOWN + 1).is_none(), "between the entries");
+        assert!(
+            find(TPM_CC_GET_CAPABILITY - 1).is_none(),
+            "just below the last"
+        );
+        assert!(
+            find(TPM_CC_GET_CAPABILITY + 1).is_none(),
+            "just above the last"
+        );
         assert!(find(0xffff_ffff).is_none(), "above all entries");
     }
 
     #[test]
     fn iteration_returns_every_implemented_command_exactly_once() {
         let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
-        assert_eq!(codes, [TPM_CC_STARTUP, TPM_CC_SHUTDOWN]);
+        assert_eq!(
+            codes,
+            [TPM_CC_STARTUP, TPM_CC_SHUTDOWN, TPM_CC_GET_CAPABILITY]
+        );
     }
 
     #[test]
@@ -126,6 +146,19 @@ mod tests {
     #[test]
     fn shutdown_attributes_match_the_upstream_tpma_cc() {
         assert_eq!(find(TPM_CC_SHUTDOWN).unwrap().attributes, 0x0040_0145);
+    }
+
+    #[test]
+    fn get_capability_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_GET_CAPABILITY).unwrap().attributes, 0x0000_017a);
+    }
+
+    #[test]
+    fn get_capability_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_GET_CAPABILITY)
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]

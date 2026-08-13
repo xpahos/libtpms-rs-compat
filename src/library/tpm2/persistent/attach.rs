@@ -662,7 +662,7 @@ pub(in crate::library::tpm2) enum OwnedUserNvramEntry {
 }
 
 impl OwnedUserNvramEntry {
-    fn destination_size(&self) -> u64 {
+    pub(in crate::library::tpm2) fn destination_size(&self) -> u64 {
         match self {
             Self::NvIndex { data, .. } => {
                 4 + crate::library::tpm2::nv::SIZEOF_NV_INDEX + data.len() as u64

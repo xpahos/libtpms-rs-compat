@@ -1,4 +1,6 @@
+mod algorithm;
 mod audit;
+mod capability;
 mod clock;
 mod command;
 mod command_bitmap;
