@@ -98,6 +98,18 @@ impl Response {
         }
     }
 
+    pub(in crate::library::tpm2) fn success_with_sessions(
+        parameters: Vec<u8>,
+        auth_sessions: Vec<u8>,
+    ) -> Self {
+        Self {
+            tag: TPM_ST_SESSIONS,
+            code: TPM_SUCCESS,
+            parameters,
+            auth_sessions,
+        }
+    }
+
     #[cfg(test)]
     pub(in crate::library::tpm2) fn code(&self) -> TpmResult {
         self.code

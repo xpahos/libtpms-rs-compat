@@ -13,6 +13,7 @@ mod manufacture;
 mod marshal;
 mod nv;
 mod object;
+mod orderly;
 mod pcr;
 mod persistent;
 mod pp_list;

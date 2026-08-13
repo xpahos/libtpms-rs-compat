@@ -5,12 +5,11 @@ use crate::library::constants::{
 
 use super::super::algorithm::{algorithm_enabled, hash_profile_name};
 use super::super::marshal::BlobReader;
-use super::super::pcr::{HASH_COUNT, PCR_SELECT_MAX, PCR_SELECT_MIN, PCR_SLOT_BANKS};
+use super::super::pcr::{HASH_COUNT, PCR_SELECT_MAX, PCR_SELECT_MIN, bank_slot};
 use super::super::persistent::OwnedPcrAllocation;
 use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
-use super::header::{Command, Response};
-use super::session::check_session_area;
+use super::dispatcher::CommandFrame;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -23,19 +22,14 @@ struct SelectionIn {
     select: Vec<u8>,
 }
 
-pub(super) fn execute(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Response {
-    match run(runtime, command) {
-        Ok(parameters) => Response::success(command.tag, parameters),
-        Err(code) => Response::error(code),
-    }
-}
-
-fn run(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Result<Vec<u8>, TpmResult> {
-    let parameters = check_session_area(command)?;
+pub(super) fn execute(
+    runtime: &mut Tpm2Runtime,
+    frame: &CommandFrame<'_>,
+) -> Result<Vec<u8>, TpmResult> {
     // TODO: Support runtimes without decoded state after the NVChip fallback
     // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-    let mut selections = parse_parameters(&state.profile.algorithms, parameters)?;
+    let mut selections = parse_parameters(&state.profile.algorithms, frame.parameters)?;
     let update_counter = runtime
         .live
         .state_reset
@@ -44,14 +38,6 @@ fn run(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Result<Vec<u8>, TpmR
         .pcr_counter;
     let digests = collect_digests(runtime, &mut selections)?;
     Ok(marshal_response(update_counter, &selections, &digests))
-}
-
-fn bank_slot(hash_alg: u16) -> Option<(usize, usize)> {
-    PCR_SLOT_BANKS
-        .iter()
-        .enumerate()
-        .find(|&(_, &(bank_alg, _))| bank_alg == hash_alg)
-        .map(|(slot, &(_, digest_size))| (slot, digest_size))
 }
 
 fn parse_parameters(

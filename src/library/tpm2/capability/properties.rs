@@ -2,6 +2,7 @@ use crate::library::constants::TPM_BUFFER_MAX;
 
 use super::super::live::LiveState;
 use super::super::nv::RAM_INDEX_SPACE;
+use super::super::orderly::SU_NONE_VALUE;
 use super::super::persistent::{OwnedPersistentState, OwnedUserNvramEntry};
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
@@ -141,8 +142,6 @@ const TPMA_STARTUP_CLEAR_SH_ENABLE: u32 = 1 << 1;
 const TPMA_STARTUP_CLEAR_EH_ENABLE: u32 = 1 << 2;
 const TPMA_STARTUP_CLEAR_PH_ENABLE_NV: u32 = 1 << 3;
 const TPMA_STARTUP_CLEAR_ORDERLY: u32 = 1 << 31;
-
-const SU_NONE_VALUE: u16 = 0xffff;
 
 const TPMA_NV_TPM_NT_SHIFT: u32 = 4;
 const TPMA_NV_TPM_NT_MASK: u32 = 0xf << TPMA_NV_TPM_NT_SHIFT;
@@ -489,8 +488,8 @@ mod tests {
         (0x12c, 0x400),
         (0x12d, 0),
         (0x12e, 0x400),
-        (0x129, 4),
-        (0x12a, 4),
+        (0x129, 5),
+        (0x12a, 5),
     ];
 
     #[test]

@@ -10,25 +10,20 @@ use super::super::pcr::PCR_SLOT_BANKS;
 use super::super::persistent::{OwnedPcrBank, OwnedStateClearData};
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::NUM_STATIC_PCR;
-use super::header::{Command, Response, TPM_ST_NO_SESSIONS};
-use super::session::check_session_area;
+use super::dispatcher::CommandFrame;
 use super::startup::{PRE_STARTUP_FLAG, STARTUP_LOCALITY_3, TPM_SU_CLEAR, TPM_SU_STATE};
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
 const RC_SHUTDOWN_SHUTDOWN_TYPE: TpmResult = TPM_RC_P + TPM_RC_1;
 
-pub(super) fn execute(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Response {
-    match run(runtime, command) {
-        Ok(()) => Response::success(TPM_ST_NO_SESSIONS, Vec::new()),
-        Err(code) => Response::error(code),
-    }
-}
-
-fn run(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Result<(), TpmResult> {
-    let parameters = check_session_area(command)?;
-    let shutdown_type = parse_shutdown_type(parameters)?;
-    perform_shutdown(runtime, shutdown_type)
+pub(super) fn execute(
+    runtime: &mut Tpm2Runtime,
+    frame: &CommandFrame<'_>,
+) -> Result<Vec<u8>, TpmResult> {
+    let shutdown_type = parse_shutdown_type(frame.parameters)?;
+    perform_shutdown(runtime, shutdown_type)?;
+    Ok(Vec::new())
 }
 
 fn parse_shutdown_type(parameters: &[u8]) -> Result<u16, TpmResult> {

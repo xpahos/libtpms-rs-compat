@@ -1,5 +1,8 @@
+mod hasher;
 mod policy;
 mod selection;
+
+pub(super) use hasher::BankHasher;
 
 pub(super) use policy::{
     NUM_POLICY_PCR_GROUP, PCR_POLICY_MAGIC, ParsedPcrPolicies, PcrPolicyEntry, parse_pcr_policies,
@@ -31,8 +34,73 @@ pub(super) const PCR_SLOT_BANKS: [(u16, usize); 4] = [
 pub(super) const HCRTM_PCR: usize = 0;
 pub(super) const DRTM_PCR: usize = 17;
 
+#[derive(Clone, Copy)]
+pub(super) struct PcrPlatformAttributes {
+    pub(super) state_save: bool,
+    pub(super) do_not_increment_pcr_counter: bool,
+    pub(super) auth_values_group: u8,
+    pub(super) extend_locality: u8,
+}
+
+const fn static_rtm_pcr() -> PcrPlatformAttributes {
+    PcrPlatformAttributes {
+        state_save: true,
+        do_not_increment_pcr_counter: false,
+        auth_values_group: 0,
+        extend_locality: 0x1f,
+    }
+}
+
+const fn dynamic_pcr(
+    do_not_increment_pcr_counter: bool,
+    extend_locality: u8,
+) -> PcrPlatformAttributes {
+    PcrPlatformAttributes {
+        state_save: false,
+        do_not_increment_pcr_counter,
+        auth_values_group: 0,
+        extend_locality,
+    }
+}
+
+pub(super) fn pcr_platform_attributes(pcr: usize) -> PcrPlatformAttributes {
+    match pcr {
+        0..=15 => static_rtm_pcr(),
+        16 => dynamic_pcr(true, 0x1f),
+        17 | 18 => dynamic_pcr(false, 0x1c),
+        19 => dynamic_pcr(false, 0x0c),
+        20 => dynamic_pcr(false, 0x0e),
+        21 | 22 => dynamic_pcr(true, 0x04),
+        23 => dynamic_pcr(true, 0x1f),
+        _ => static_rtm_pcr(),
+    }
+}
+
+pub(super) fn pcr_extend_allowed(pcr: usize, locality: u8) -> bool {
+    locality <= 4 && pcr_platform_attributes(pcr).extend_locality & (1 << locality) != 0
+}
+
+pub(super) fn pcr_is_state_saved(pcr: usize) -> bool {
+    pcr_platform_attributes(pcr).state_save
+}
+
+pub(super) fn pcr_auth_value_group(pcr: usize) -> Option<usize> {
+    match pcr_platform_attributes(pcr).auth_values_group {
+        0 => None,
+        group => Some(usize::from(group) - 1),
+    }
+}
+
 pub(super) fn pcr_in_tcb_group(pcr: usize) -> bool {
-    matches!(pcr, 16 | 21 | 22 | 23)
+    pcr_platform_attributes(pcr).do_not_increment_pcr_counter
+}
+
+pub(super) fn bank_slot(hash_alg: u16) -> Option<(usize, usize)> {
+    PCR_SLOT_BANKS
+        .iter()
+        .enumerate()
+        .find(|&(_, &(bank_alg, _))| bank_alg == hash_alg)
+        .map(|(slot, &(_, digest_size))| (slot, digest_size))
 }
 
 pub(super) fn pcr_resets_to_ones(pcr: usize) -> bool {

@@ -45,6 +45,7 @@ mod tests {
     const TPMA_CC_SHUTDOWN: u32 = 0x0040_0145;
     const TPMA_CC_GET_CAPABILITY: u32 = 0x0000_017a;
     const TPMA_CC_PCR_READ: u32 = 0x0000_017e;
+    const TPMA_CC_PCR_EXTEND: u32 = 0x0200_0182;
 
     #[test]
     fn a_query_from_zero_returns_every_registry_command() {
@@ -55,7 +56,8 @@ mod tests {
                 TPMA_CC_STARTUP,
                 TPMA_CC_SHUTDOWN,
                 TPMA_CC_GET_CAPABILITY,
-                TPMA_CC_PCR_READ
+                TPMA_CC_PCR_READ,
+                TPMA_CC_PCR_EXTEND
             ]
         );
         assert!(!page.more_data);
@@ -84,14 +86,24 @@ mod tests {
     #[test]
     fn a_start_between_entries_skips_to_the_next_command() {
         let page = implemented(0x0146, 3);
-        assert_eq!(page.entries, [TPMA_CC_GET_CAPABILITY, TPMA_CC_PCR_READ]);
+        assert_eq!(
+            page.entries,
+            [TPMA_CC_GET_CAPABILITY, TPMA_CC_PCR_READ, TPMA_CC_PCR_EXTEND]
+        );
         assert!(!page.more_data);
     }
 
     #[test]
     fn a_start_above_the_last_command_is_empty() {
-        let page = implemented(0x017f, 10);
+        let page = implemented(0x0183, 10);
         assert!(page.entries.is_empty());
+        assert!(!page.more_data);
+    }
+
+    #[test]
+    fn pcr_extend_is_advertised_from_its_own_command_code() {
+        let page = implemented(0x0182, 10);
+        assert_eq!(page.entries, [TPMA_CC_PCR_EXTEND]);
         assert!(!page.more_data);
     }
 
@@ -101,15 +113,15 @@ mod tests {
         assert!(page.entries.is_empty());
         assert!(page.more_data);
 
-        let page = implemented(0x017f, 0);
+        let page = implemented(0x0183, 0);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 4);
-        assert_eq!(page.entries.len(), 4);
+        let page = implemented(0, 5);
+        assert_eq!(page.entries.len(), 5);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
@@ -120,14 +132,14 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 4);
+        assert_eq!(page.entries.len(), 5);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 4);
-        assert_eq!(library_count(), 4);
+        assert_eq!(total_count(), 5);
+        assert_eq!(library_count(), 5);
         assert_eq!(vendor_count(), 0);
     }
 

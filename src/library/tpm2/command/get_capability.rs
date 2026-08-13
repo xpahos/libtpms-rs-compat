@@ -5,8 +5,7 @@ use super::super::capability::{
     TPM_CAP_ALGS, TPM_CAP_COMMANDS, TPM_CAP_TPM_PROPERTIES, algorithms, commands, properties,
 };
 use super::super::runtime::Tpm2Runtime;
-use super::header::{Command, Response};
-use super::session::check_session_area;
+use super::dispatcher::CommandFrame;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -22,16 +21,11 @@ struct GetCapabilityIn {
     property_count: u32,
 }
 
-pub(super) fn execute(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Response {
-    match run(runtime, command) {
-        Ok(parameters) => Response::success(command.tag, parameters),
-        Err(code) => Response::error(code),
-    }
-}
-
-fn run(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Result<Vec<u8>, TpmResult> {
-    let parameters = check_session_area(command)?;
-    let input = parse_parameters(parameters)?;
+pub(super) fn execute(
+    runtime: &mut Tpm2Runtime,
+    frame: &CommandFrame<'_>,
+) -> Result<Vec<u8>, TpmResult> {
+    let input = parse_parameters(frame.parameters)?;
     collect_capability(runtime, &input)
 }
 
@@ -425,7 +419,10 @@ mod tests {
         let mut runtime = started_runtime();
         assert_eq!(
             query(&mut runtime, 2, 0, 1000),
-            hex("8001000000230000000000000000020000000400400144004001450000017a 0000017e")
+            hex(
+                "8001000000270000000000000000020000000500400144004001450000017a 0000017e \
+                 02000182"
+            )
         );
     }
 
@@ -444,18 +441,23 @@ mod tests {
         );
         assert_eq!(
             query(&mut runtime, 2, 0x0146, 3),
-            hex("80010000001b000000000000000002000000020000017a 0000017e"),
+            hex("80010000001f000000000000000002000000030000017a 0000017e 02000182"),
             "between Shutdown and GetCapability"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x017a, 3),
-            hex("80010000001b000000000000000002000000020000017a 0000017e"),
+            hex("80010000001f000000000000000002000000030000017a 0000017e 02000182"),
             "GetCapability advertises itself through the registry"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x017e, 2),
-            hex("800100000017000000000000000002000000010000017e"),
+            hex("80010000001b000000000000000002000000020000017e 02000182"),
             "PCR_Read advertises itself through the registry"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x0182, 2),
+            hex("80010000001700000000000000000200000001 02000182"),
+            "PCR_Extend advertises itself through the registry"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x2000_0000, 10),
@@ -468,8 +470,11 @@ mod tests {
             "an exhausted count leaves more data"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0, 4),
-            hex("8001000000230000000000000000020000000400400144004001450000017a 0000017e"),
+            query(&mut runtime, 2, 0, 5),
+            hex(
+                "8001000000270000000000000000020000000500400144004001450000017a 0000017e \
+                 02000182"
+            ),
             "an exact count consumes the registry"
         );
     }
@@ -482,8 +487,8 @@ f0000000700000110000000030000011100000040000001120000001800000113000000030000011
 000ffff00000116000000000000011700000800000001180000000600000119000010000000011a000\
 0000d0000011b000000060000011c000001000000011d000000ff0000011e000010000000011f00001\
 00000000120000000400000012100000a8c00000122000001940000012300000001000001240000000\
-00000012500000106000001260000001900000127000007e8000001280000008000000129000000040\
-000012a000000040000012b000000000000012c000004000000012d000000000000012e00000400";
+00000012500000106000001260000001900000127000007e8000001280000008000000129000000050\
+000012a000000050000012b000000000000012c000004000000012d000000000000012e00000400";
 
     #[test]
     fn the_fixed_property_group_matches_the_oracle_with_registry_command_counts() {

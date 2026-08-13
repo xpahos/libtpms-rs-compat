@@ -1,6 +1,10 @@
+use crate::ffi_types::TpmResult;
+
 use super::super::runtime::Tpm2Runtime;
+use super::super::volatile::IMPLEMENTATION_PCR;
+use super::dispatcher::CommandFrame;
 use super::get_capability;
-use super::header::{Command, Response};
+use super::pcr_extend;
 use super::pcr_read;
 use super::shutdown;
 use super::startup;
@@ -9,15 +13,22 @@ pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
+pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
+
+pub(super) const TPM_RH_NULL: u32 = 0x4000_0007;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
+const TPMA_CC_C_HANDLES_SHIFT: u32 = 25;
 
-const fn tpma_cc(code: u32, nv: bool) -> u32 {
-    (code & TPMA_CC_COMMAND_INDEX_MASK) | if nv { TPMA_CC_NV } else { 0 }
+const fn tpma_cc(code: u32, nv: bool, command_handles: u32) -> u32 {
+    (code & TPMA_CC_COMMAND_INDEX_MASK)
+        | if nv { TPMA_CC_NV } else { 0 }
+        | (command_handles << TPMA_CC_C_HANDLES_SHIFT)
 }
 
-pub(super) type CommandHandler = for<'a> fn(&mut Tpm2Runtime, &Command<'a>) -> Response;
+pub(super) type CommandHandler =
+    for<'a> fn(&mut Tpm2Runtime, &CommandFrame<'a>) -> Result<Vec<u8>, TpmResult>;
 
 #[derive(Clone, Copy)]
 pub(super) enum CommandLifecycle {
@@ -34,38 +45,76 @@ impl CommandLifecycle {
     }
 }
 
-// TODO: Move session eligibility into CommandDescriptor after session processing is centralized.
+#[derive(Clone, Copy)]
+pub(super) enum HandleKind {
+    PcrAllowNull,
+}
+
+impl HandleKind {
+    pub(super) fn accepts(self, handle: u32) -> bool {
+        match self {
+            Self::PcrAllowNull => (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_NULL,
+        }
+    }
+}
+
+pub(super) struct HandleSpec {
+    pub(super) kind: HandleKind,
+    pub(super) user_auth: bool,
+}
+
 pub(in crate::library::tpm2) struct CommandDescriptor {
     pub(in crate::library::tpm2) code: u32,
     pub(in crate::library::tpm2) attributes: u32,
     pub(super) lifecycle: CommandLifecycle,
+    pub(super) handles: &'static [HandleSpec],
+    pub(super) sessions_allowed: bool,
     pub(super) handler: CommandHandler,
 }
 
 static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_STARTUP,
-        attributes: tpma_cc(TPM_CC_STARTUP, true),
+        attributes: tpma_cc(TPM_CC_STARTUP, true, 0),
         lifecycle: CommandLifecycle::RequiresNotStarted,
+        handles: &[],
+        sessions_allowed: false,
         handler: startup::execute,
     },
     CommandDescriptor {
         code: TPM_CC_SHUTDOWN,
-        attributes: tpma_cc(TPM_CC_SHUTDOWN, true),
+        attributes: tpma_cc(TPM_CC_SHUTDOWN, true, 0),
         lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
         handler: shutdown::execute,
     },
     CommandDescriptor {
         code: TPM_CC_GET_CAPABILITY,
-        attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false),
+        attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false, 0),
         lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
         handler: get_capability::execute,
     },
     CommandDescriptor {
         code: TPM_CC_PCR_READ,
-        attributes: tpma_cc(TPM_CC_PCR_READ, false),
+        attributes: tpma_cc(TPM_CC_PCR_READ, false, 0),
         lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
         handler: pcr_read::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_PCR_EXTEND,
+        attributes: tpma_cc(TPM_CC_PCR_EXTEND, false, 1),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::PcrAllowNull,
+            user_auth: true,
+        }],
+        sessions_allowed: true,
+        handler: pcr_extend::execute,
     },
 ];
 
@@ -120,6 +169,10 @@ mod tests {
             Some(TPM_CC_GET_CAPABILITY)
         );
         assert_eq!(find(TPM_CC_PCR_READ).map(|d| d.code), Some(TPM_CC_PCR_READ));
+        assert_eq!(
+            find(TPM_CC_PCR_EXTEND).map(|d| d.code),
+            Some(TPM_CC_PCR_EXTEND)
+        );
     }
 
     #[test]
@@ -135,8 +188,13 @@ mod tests {
             find(TPM_CC_GET_CAPABILITY + 1).is_none(),
             "between GetCapability and PCR_Read"
         );
-        assert!(find(TPM_CC_PCR_READ - 1).is_none(), "just below the last");
-        assert!(find(TPM_CC_PCR_READ + 1).is_none(), "just above the last");
+        assert!(find(TPM_CC_PCR_READ - 1).is_none(), "just below PCR_Read");
+        assert!(
+            find(TPM_CC_PCR_READ + 1).is_none(),
+            "between PCR_Read and PCR_Extend"
+        );
+        assert!(find(TPM_CC_PCR_EXTEND - 1).is_none(), "just below the last");
+        assert!(find(TPM_CC_PCR_EXTEND + 1).is_none(), "just above the last");
         assert!(find(0xffff_ffff).is_none(), "above all entries");
     }
 
@@ -149,7 +207,8 @@ mod tests {
                 TPM_CC_STARTUP,
                 TPM_CC_SHUTDOWN,
                 TPM_CC_GET_CAPABILITY,
-                TPM_CC_PCR_READ
+                TPM_CC_PCR_READ,
+                TPM_CC_PCR_EXTEND
             ]
         );
     }
@@ -188,6 +247,66 @@ mod tests {
             .filter(|descriptor| descriptor.code == TPM_CC_PCR_READ)
             .count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn pcr_extend_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_PCR_EXTEND).unwrap().attributes, 0x0200_0182);
+    }
+
+    #[test]
+    fn pcr_extend_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_PCR_EXTEND)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn pcr_extend_declares_one_command_handle_requiring_user_authorization() {
+        let descriptor = find(TPM_CC_PCR_EXTEND).unwrap();
+        assert_eq!(descriptor.handles.len(), 1);
+        assert!(descriptor.handles[0].user_auth);
+        assert!(descriptor.sessions_allowed);
+    }
+
+    #[test]
+    fn the_handle_count_attribute_matches_the_declared_handles() {
+        for descriptor in implemented() {
+            assert_eq!(
+                descriptor.attributes >> 25,
+                descriptor.handles.len() as u32,
+                "code {:#x}",
+                descriptor.code
+            );
+        }
+    }
+
+    #[test]
+    fn only_startup_forbids_an_authorization_area() {
+        for descriptor in implemented() {
+            assert_eq!(
+                descriptor.sessions_allowed,
+                descriptor.code != TPM_CC_STARTUP,
+                "code {:#x}",
+                descriptor.code
+            );
+        }
+    }
+
+    #[test]
+    fn the_pcr_handle_kind_accepts_implemented_pcrs_and_the_null_handle() {
+        let kind = find(TPM_CC_PCR_EXTEND).unwrap().handles[0].kind;
+        for pcr in 0..24u32 {
+            assert!(kind.accepts(pcr), "PCR {pcr}");
+        }
+        assert!(
+            kind.accepts(TPM_RH_NULL),
+            "upstream unmarshals with allowNull"
+        );
+        for handle in [24u32, 0x0100_0000, 0x8000_0000, TPM_RH_NULL - 1, u32::MAX] {
+            assert!(!kind.accepts(handle), "handle {handle:#x}");
+        }
     }
 
     #[test]

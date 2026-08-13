@@ -1,12 +1,13 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_AUTH_CONTEXT, TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY,
-    TPM_RC_NV_UNAVAILABLE, TPM_RC_NV_UNINITIALIZED, TPM_RC_SIZE, TPM_RC_VALUE,
+    TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY, TPM_RC_NV_UNAVAILABLE,
+    TPM_RC_NV_UNINITIALIZED, TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
 use super::super::crypto::{DRBG_MAGIC, Drbg};
 use super::super::live::{unoccupied_objects, unoccupied_sessions};
 use super::super::nv::build_nv_image;
+use super::super::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE, is_orderly};
 use super::super::persistent::{
     OwnedDrbgState, OwnedIndexOrderlyRam, OwnedPcrAllocation, OwnedSecret, OwnedStateClearData,
     OwnedStateResetData, OwnedUserNvramEntry,
@@ -18,13 +19,11 @@ use super::super::{
     TPM_SU_STATE_MASK,
     pcr::{HCRTM_PCR, PCR_SLOT_BANKS, allocation_selects, pcr_in_tcb_group, pcr_resets_to_ones},
 };
-use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
+use super::dispatcher::CommandFrame;
 
 pub(in crate::library::tpm2) const TPM_SU_CLEAR: u16 = 0x0000;
 pub(in crate::library::tpm2) const TPM_SU_STATE: u16 = 0x0001;
 
-const SU_NONE_VALUE: u16 = 0xffff;
-const SU_DA_USED_VALUE: u16 = 0xfffe;
 pub(super) const PRE_STARTUP_FLAG: u16 = 0x8000;
 pub(super) const STARTUP_LOCALITY_3: u16 = 0x4000;
 
@@ -84,32 +83,13 @@ enum StartupMode {
     Resume,
 }
 
-pub(super) fn execute(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Response {
-    match run(runtime, command) {
-        Ok(()) => Response::success(TPM_ST_NO_SESSIONS, Vec::new()),
-        Err(code) => Response::error(code),
-    }
-}
-
-fn run(runtime: &mut Tpm2Runtime, command: &Command<'_>) -> Result<(), TpmResult> {
-    let parameters = check_session_area(command)?;
-    let startup_type = parse_startup_type(parameters)?;
-    perform_startup(runtime, startup_type)
-}
-
-fn check_session_area<'a>(command: &Command<'a>) -> Result<&'a [u8], TpmResult> {
-    if command.tag != TPM_ST_SESSIONS {
-        return Ok(command.payload);
-    }
-    let (size_bytes, rest) = command
-        .payload
-        .split_first_chunk::<4>()
-        .ok_or(TPM_RC_INSUFFICIENT)?;
-    let auth_size = u32::from_be_bytes(*size_bytes) as usize;
-    if auth_size < 9 || auth_size > rest.len() {
-        return Err(TPM_RC_SIZE);
-    }
-    Err(TPM_RC_AUTH_CONTEXT)
+pub(super) fn execute(
+    runtime: &mut Tpm2Runtime,
+    frame: &CommandFrame<'_>,
+) -> Result<Vec<u8>, TpmResult> {
+    let startup_type = parse_startup_type(frame.parameters)?;
+    perform_startup(runtime, startup_type)?;
+    Ok(Vec::new())
 }
 
 fn parse_startup_type(parameters: &[u8]) -> Result<u16, TpmResult> {
@@ -124,10 +104,6 @@ fn parse_startup_type(parameters: &[u8]) -> Result<u16, TpmResult> {
         return Err(TPM_RC_SIZE);
     }
     Ok(startup_type)
-}
-
-fn is_orderly(value: u16) -> bool {
-    value < SU_DA_USED_VALUE
 }
 
 struct PreparedStartup {

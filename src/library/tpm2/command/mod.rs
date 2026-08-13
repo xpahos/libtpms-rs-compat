@@ -1,6 +1,7 @@
 mod dispatcher;
 mod get_capability;
 mod header;
+mod pcr_extend;
 mod pcr_read;
 mod registry;
 mod session;

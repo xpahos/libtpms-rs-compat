@@ -1,12 +1,10 @@
-use sha1::{Digest, Sha1};
-use sha2::{Sha256, Sha384, Sha512};
-
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_BAD_LOCALITY, TPM_SUCCESS};
 
 use super::object::{ATTR_EVENT_SEQ, ATTR_OCCUPIED, ATTR_TEMPORARY, HASH_OBJECT_VERSION};
 use super::pcr::{
-    DRTM_PCR, HCRTM_PCR, PCR_SLOT_BANKS, allocation_selects, pcr_in_tcb_group, pcr_resets_to_ones,
+    BankHasher, DRTM_PCR, HCRTM_PCR, PCR_SLOT_BANKS, allocation_selects, pcr_in_tcb_group,
+    pcr_resets_to_ones,
 };
 use super::persistent::{OwnedAnyObject, OwnedAnyObjectBody, OwnedHashObjectBody, OwnedSecret};
 use super::public::TPM_ALG_NULL;
@@ -17,49 +15,13 @@ const TPMA_OBJECT_NO_DA: u32 = 1 << 10;
 
 const BANK_COUNT: usize = PCR_SLOT_BANKS.len();
 
-enum BankContext {
-    Sha1(Sha1),
-    Sha256(Sha256),
-    Sha384(Sha384),
-    Sha512(Sha512),
-}
-
-impl BankContext {
-    fn new(slot: usize) -> Self {
-        match slot {
-            0 => Self::Sha1(Sha1::new()),
-            1 => Self::Sha256(Sha256::new()),
-            2 => Self::Sha384(Sha384::new()),
-            _ => Self::Sha512(Sha512::new()),
-        }
-    }
-
-    fn update(&mut self, data: &[u8]) {
-        match self {
-            Self::Sha1(context) => context.update(data),
-            Self::Sha256(context) => context.update(data),
-            Self::Sha384(context) => context.update(data),
-            Self::Sha512(context) => context.update(data),
-        }
-    }
-
-    fn finalize(self) -> Vec<u8> {
-        match self {
-            Self::Sha1(context) => context.finalize().to_vec(),
-            Self::Sha256(context) => context.finalize().to_vec(),
-            Self::Sha384(context) => context.finalize().to_vec(),
-            Self::Sha512(context) => context.finalize().to_vec(),
-        }
-    }
-}
-
 pub(super) struct DrtmSequence {
     slot: usize,
-    contexts: [BankContext; BANK_COUNT],
+    contexts: [BankHasher; BANK_COUNT],
 }
 
-fn fresh_contexts() -> [BankContext; BANK_COUNT] {
-    core::array::from_fn(BankContext::new)
+fn fresh_contexts() -> [BankHasher; BANK_COUNT] {
+    BankHasher::all()
 }
 
 fn drtm_sequence_object() -> OwnedAnyObject {
@@ -125,16 +87,22 @@ fn pcr_changed(runtime: &mut Tpm2Runtime, pcr: usize) {
     }
 }
 
-fn pcr_drtm(runtime: &mut Tpm2Runtime, pcr: usize, slot: usize, digest: &[u8], started: bool) {
+fn pcr_drtm(
+    runtime: &mut Tpm2Runtime,
+    pcr: usize,
+    slot: usize,
+    mut extender: BankHasher,
+    digest: &[u8],
+    started: bool,
+) {
     let (_, digest_size) = PCR_SLOT_BANKS[slot];
     let mut value = vec![0u8; digest_size];
     if !started {
         value[digest_size - 1] = 4;
     }
-    let mut context = BankContext::new(slot);
-    context.update(&value);
-    context.update(digest);
-    runtime.live.pcrs[pcr].banks[slot] = Some(context.finalize());
+    extender.update(&value);
+    extender.update(digest);
+    runtime.live.pcrs[pcr].banks[slot] = Some(extender.finalize());
     pcr_changed(runtime, pcr);
 }
 
@@ -194,10 +162,15 @@ pub(in crate::library) fn hash_end(runtime: &mut Tpm2Runtime) -> TpmResult {
         HCRTM_PCR
     };
     let mask = allocated_banks(runtime, pcr);
-    for (slot, context) in sequence.contexts.into_iter().enumerate() {
+    for ((slot, context), extender) in sequence
+        .contexts
+        .into_iter()
+        .enumerate()
+        .zip(BankHasher::all())
+    {
         if mask[slot] {
             let digest = context.finalize();
-            pcr_drtm(runtime, pcr, slot, &digest, started);
+            pcr_drtm(runtime, pcr, slot, extender, &digest, started);
         }
     }
     TPM_SUCCESS
