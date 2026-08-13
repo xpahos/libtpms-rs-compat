@@ -35,6 +35,8 @@ LIBTPMS_BUILD_NAME := $(DYLIB_NAME)
 
 ABI_GENERATOR   := scripts/generate_libtpms_abi.py
 ABI_OUTPUT      := src/generated/tpm_library_abi.rs
+TIS_HEADER      := libtpms/include/libtpms/tpm_tis.h
+TIS_ABI_OUTPUT  := src/generated/tpm_tis_abi.rs
 FFI_TYPES       := src/ffi_types.rs
 
 PA_FIXTURE_GENERATOR := scripts/generate_pa_compile_constants_fixture.py
@@ -114,6 +116,9 @@ generate-abi:
 	$(PYTHON) $(ABI_GENERATOR) \
 		--header $(LIBTPMS_HEADER) \
 		--output $(ABI_OUTPUT)
+	$(PYTHON) $(ABI_GENERATOR) \
+		--header $(TIS_HEADER) \
+		--output $(TIS_ABI_OUTPUT)
 
 check-generated-inputs: check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture
 
@@ -130,6 +135,13 @@ check-generated-abi:
 		--output "$$tmp/tpm_library_abi.rs" >/dev/null && \
 	if ! diff -u $(ABI_OUTPUT) "$$tmp/tpm_library_abi.rs"; then \
 		echo "error: $(ABI_OUTPUT) is stale; run 'make generate-abi' and commit the result" >&2; \
+		exit 1; \
+	fi && \
+	$(PYTHON) $(ABI_GENERATOR) \
+		--header $(TIS_HEADER) \
+		--output "$$tmp/tpm_tis_abi.rs" >/dev/null && \
+	if ! diff -u $(TIS_ABI_OUTPUT) "$$tmp/tpm_tis_abi.rs"; then \
+		echo "error: $(TIS_ABI_OUTPUT) is stale; run 'make generate-abi' and commit the result" >&2; \
 		exit 1; \
 	fi && \
 	echo "check-generated-abi: OK"
@@ -313,7 +325,9 @@ build-swtpm: prepare-swtpm
 	@$(MAKE) --no-print-directory PROFILE=$(PROFILE) verify-swtpm-linkage
 
 # Check that the real swtpm executable (accounting for libtool wrappers)
-# resolves libtpms from the profile-specific prefix, not a system copy.
+# resolves libtpms from the profile-specific prefix, not a system copy, that
+# the Rust library exports the complete TIS ABI, and that no swtpm artifact
+# leaves a TPM_IO_* symbol as an unresolved dynamic lookup.
 verify-swtpm-linkage:
 	@bin="$(SWTPM_BUILD_DIR)/src/swtpm/swtpm"; \
 	if [ -x "$(SWTPM_BUILD_DIR)/src/swtpm/.libs/swtpm" ]; then \
@@ -333,7 +347,14 @@ verify-swtpm-linkage:
 		$(LINK_INSPECT) "$$bin" >&2 || true; \
 		$(READELF_CMD) "$$bin" >&2 || true; \
 		exit 1 ;; \
-	esac
+	esac; \
+	consumers="--consumer $$bin"; \
+	for lib in "$(SWTPM_BUILD_DIR)"/src/swtpm/.libs/libswtpm*.dylib \
+	           "$(SWTPM_BUILD_DIR)"/src/swtpm/.libs/libswtpm*.so*; do \
+		[ -f "$$lib" ] && consumers="$$consumers --consumer $$lib"; \
+	done; \
+	$(PYTHON) scripts/verify_tis_symbols.py \
+		--library "$(PREFIX_RUNTIME_LIB)" $$consumers
 
 # Run the complete upstream swtpm test suite with the runtime library path
 # pointing at the local prefix (prepended, preserving any existing value).

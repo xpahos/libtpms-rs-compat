@@ -26,6 +26,31 @@ pub(super) const PCR_SLOT_BANKS: [(u16, usize); 4] = [
     (TPM_ALG_SHA512, 64),
 ];
 
+pub(super) const HCRTM_PCR: usize = 0;
+pub(super) const DRTM_PCR: usize = 17;
+
+pub(super) fn pcr_in_tcb_group(pcr: usize) -> bool {
+    matches!(pcr, 16 | 21 | 22 | 23)
+}
+
+pub(super) fn pcr_resets_to_ones(pcr: usize) -> bool {
+    (17..=22).contains(&pcr)
+}
+
+pub(super) fn allocation_selects(
+    allocation: &super::persistent::OwnedPcrAllocation,
+    hash_alg: u16,
+    pcr: usize,
+) -> bool {
+    allocation.selections.iter().any(|selection| {
+        selection.hash_alg == hash_alg
+            && selection
+                .select
+                .get(pcr / 8)
+                .is_some_and(|byte| byte & (1 << (pcr % 8)) != 0)
+    })
+}
+
 const BLOCK_SKIP_SINCE_VERSION: u16 = 2;
 
 const SECTION: StateSection = StateSection::Pcr;

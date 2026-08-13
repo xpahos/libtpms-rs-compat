@@ -233,6 +233,77 @@ impl Library {
         self.lock_state().callbacks = table;
     }
 
+    pub fn tis_established_get(&self) -> Result<bool, TpmResult> {
+        let state = self.lock_state();
+        match state.selected {
+            #[cfg(feature = "tpm2")]
+            TpmVersion::V2_0 => state
+                .tpm2_runtime
+                .as_deref()
+                .map(|runtime| runtime.tpm_established)
+                .ok_or(TPM_FAIL),
+            _ => Err(TPM_FAIL),
+        }
+    }
+
+    pub fn tis_established_reset(&self) -> TpmResult {
+        let state = self.lock_state();
+        match state.selected {
+            #[cfg(feature = "tpm2")]
+            TpmVersion::V2_0 => {
+                if state.tpm2_runtime.is_none() {
+                    return TPM_FAIL;
+                }
+                let callbacks = state.callbacks;
+                drop(state);
+                let locality = host_locality_raw(&callbacks);
+                let mut state = self.lock_state();
+                match state.tpm2_runtime.as_deref_mut() {
+                    Some(runtime) => tpm2::tis_established_reset(runtime, locality),
+                    None => TPM_FAIL,
+                }
+            }
+            _ => TPM_FAIL,
+        }
+    }
+
+    pub fn tis_hash_start(&self) -> TpmResult {
+        #[cfg(feature = "tpm2")]
+        return self.with_tpm2_runtime(tpm2::tis_hash_start);
+        #[cfg(not(feature = "tpm2"))]
+        TPM_FAIL
+    }
+
+    #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
+    pub fn tis_hash_data(&self, data: &[u8]) -> TpmResult {
+        #[cfg(feature = "tpm2")]
+        return self.with_tpm2_runtime(|runtime| tpm2::tis_hash_data(runtime, data));
+        #[cfg(not(feature = "tpm2"))]
+        TPM_FAIL
+    }
+
+    pub fn tis_hash_end(&self) -> TpmResult {
+        #[cfg(feature = "tpm2")]
+        return self.with_tpm2_runtime(tpm2::tis_hash_end);
+        #[cfg(not(feature = "tpm2"))]
+        TPM_FAIL
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn with_tpm2_runtime(
+        &self,
+        operation: impl FnOnce(&mut tpm2::Tpm2Runtime) -> TpmResult,
+    ) -> TpmResult {
+        let mut state = self.lock_state();
+        match state.selected {
+            TpmVersion::V2_0 => match state.tpm2_runtime.as_deref_mut() {
+                Some(runtime) => operation(runtime),
+                _ => TPM_FAIL,
+            },
+            _ => TPM_FAIL,
+        }
+    }
+
     pub fn get_tpm_property(&self, prop: TpmlibTpmProperty) -> Option<c_int> {
         if prop == TPMPROP_TPM_BUFFER_MAX {
             return Some(TPM_BUFFER_MAX);
@@ -287,7 +358,7 @@ impl Tpm2ProcessContext<'_> {
 }
 
 #[cfg(feature = "tpm2")]
-fn host_locality(callbacks: &LibtpmsCallbacks) -> u8 {
+fn host_locality_raw(callbacks: &LibtpmsCallbacks) -> u32 {
     let Some(callback) = callbacks.tpm_io_getlocality else {
         return 0;
     };
@@ -295,7 +366,12 @@ fn host_locality(callbacks: &LibtpmsCallbacks) -> u8 {
     // SAFETY: the copied callback has the exact C ABI signature, and the
     // out-pointer references a live local for the duration of the call.
     let _ = unsafe { callback(&mut locality, 0) };
-    locality as u8
+    locality
+}
+
+#[cfg(feature = "tpm2")]
+fn host_locality(callbacks: &LibtpmsCallbacks) -> u8 {
+    host_locality_raw(callbacks) as u8
 }
 
 static LIBRARY: Library = Library::new();
@@ -1222,5 +1298,122 @@ mod tests {
         );
         assert!(!library.was_manufactured());
         assert!(library.lock_state().tpm2_runtime.is_none());
+    }
+
+    #[test]
+    fn tis_calls_without_a_selected_tpm2_fail() {
+        let library = Library::new();
+        assert_eq!(library.tis_established_get(), Err(TPM_FAIL));
+        assert_eq!(library.tis_established_reset(), TPM_FAIL);
+        assert_eq!(library.tis_hash_start(), TPM_FAIL);
+        assert_eq!(library.tis_hash_data(&[1, 2]), TPM_FAIL);
+        assert_eq!(library.tis_hash_end(), TPM_FAIL);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn tis_calls_without_an_initialized_runtime_fail() {
+        let library = Library::new();
+        assert_eq!(
+            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            TPM_SUCCESS
+        );
+        assert_eq!(library.tis_established_get(), Err(TPM_FAIL));
+        assert_eq!(library.tis_established_reset(), TPM_FAIL);
+        assert_eq!(library.tis_hash_start(), TPM_FAIL);
+        assert_eq!(library.tis_hash_data(&[]), TPM_FAIL);
+        assert_eq!(library.tis_hash_end(), TPM_FAIL);
+    }
+
+    #[cfg(feature = "tpm2")]
+    static TIS_LOCALITY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn tis_locality_callback(
+        locality: *mut crate::ffi_types::TpmModifierIndicator,
+        _tpm_number: u32,
+    ) -> TpmResult {
+        // SAFETY: the library passes a live out-pointer per the contract.
+        unsafe { *locality = TIS_LOCALITY.load(std::sync::atomic::Ordering::SeqCst) };
+        TPM_SUCCESS
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn tis_established_lifecycle_through_the_library() {
+        use std::sync::atomic::Ordering;
+
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_STORES.lock().unwrap() = 0;
+        let library = manufacture_library();
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+
+        assert_eq!(library.tis_established_get(), Ok(false));
+        assert_eq!(library.tis_hash_data(&[1]), TPM_SUCCESS, "no-op data");
+        assert_eq!(library.tis_hash_end(), TPM_SUCCESS, "no-op end");
+        assert_eq!(library.tis_hash_start(), TPM_SUCCESS);
+        assert_eq!(library.tis_established_get(), Ok(true));
+
+        assert_eq!(
+            library.tis_established_reset(),
+            crate::library::constants::TPM_BAD_LOCALITY,
+            "no locality callback: the host locality defaults to 0"
+        );
+        assert_eq!(library.tis_established_get(), Ok(true));
+
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_loaddata: Some(loaddata_backend),
+            tpm_nvram_storedata: Some(storedata_backend),
+            tpm_io_getlocality: Some(tis_locality_callback),
+            ..LibtpmsCallbacks::empty()
+        });
+        for locality in [0u32, 1, 2, 5] {
+            TIS_LOCALITY.store(locality, Ordering::SeqCst);
+            assert_eq!(
+                library.tis_established_reset(),
+                crate::library::constants::TPM_BAD_LOCALITY,
+                "locality {locality}"
+            );
+            assert_eq!(library.tis_established_get(), Ok(true));
+        }
+        TIS_LOCALITY.store(3, Ordering::SeqCst);
+        assert_eq!(library.tis_established_reset(), TPM_SUCCESS);
+        assert_eq!(library.tis_established_get(), Ok(false));
+
+        assert_eq!(library.tis_hash_start(), TPM_SUCCESS);
+        TIS_LOCALITY.store(4, Ordering::SeqCst);
+        assert_eq!(library.tis_established_reset(), TPM_SUCCESS);
+        assert_eq!(library.tis_established_get(), Ok(false));
+
+        library.terminate();
+        assert_eq!(library.tis_established_get(), Err(TPM_FAIL));
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn restored_volatile_state_preserves_the_established_flag() {
+        let library = Library::new();
+        assert_eq!(
+            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            TPM_SUCCESS
+        );
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Volatile,
+            crate::library::tpm2::valid_volatile_state_fixture(),
+        );
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(
+            library.tis_established_get(),
+            Ok(true),
+            "the fixture's tpmEstablished bit reaches the active runtime"
+        );
+        library.terminate();
     }
 }

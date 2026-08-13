@@ -8,6 +8,8 @@ pub const TPM_SIZE: TpmResult = 23;
 #[cfg(feature = "tpm2")]
 pub(in crate::library) const TPM_INVALID_POSTINIT: TpmResult = 38;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_BAD_LOCALITY: TpmResult = 61;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RETRY: TpmResult = 0x800;
 
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]

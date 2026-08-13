@@ -895,7 +895,7 @@ def render_rust(functions, header_display):
         "#![allow(unused_imports)]",
         "// Thin delegating wrappers only; the C-to-Rust adaptation lives in",
         "// src/ffi_api.rs. The wrappers carry no per-function safety docs; the",
-        "// safety contract is the libtpms C API documented in tpm_library.h.",
+        "// safety contract is the libtpms C API documented in %s." % os.path.basename(header_display),
         "#![allow(clippy::missing_safety_doc)]",
         "",
         "use crate::ffi_support::ffi_guard;",

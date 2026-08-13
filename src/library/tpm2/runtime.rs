@@ -6,6 +6,7 @@ use super::live::{LiveState, RestoredVolatile, split_restored_volatile};
 use super::nv::build_nv_image;
 use super::persistent::{OwnedPcrAllocation, OwnedPersistentState};
 use super::profile::ValidatedProfile;
+use super::tis::DrtmSequence;
 use super::volatile::OwnedVolatileState;
 
 pub const NV_MEMORY_SIZE: usize = 128 * 1024 + 65 * 704;
@@ -32,9 +33,12 @@ pub struct Tpm2Runtime {
 
     pub(super) active_profile_json: String,
 
+    pub(super) drtm_sequence: Option<DrtmSequence>,
+
     pub manufactured: bool,
     pub was_manufactured: bool,
     pub startup_received: bool,
+    pub tpm_established: bool,
     pub failure_mode: bool,
     #[allow(dead_code)]
     pub reported_failure: bool,
@@ -66,6 +70,7 @@ pub(super) fn merge_volatile_state(runtime: &mut Tpm2Runtime, volatile: OwnedVol
     let (live, flags, carry) = split_restored_volatile(volatile);
     runtime.manufactured = flags.manufactured;
     runtime.startup_received = flags.initialized;
+    runtime.tpm_established = flags.tpm_established;
     runtime.failure_mode = flags.in_failure_mode;
     runtime.clock = flags.resume_clock;
     runtime.live = live;
@@ -169,9 +174,11 @@ fn commit_state(
         nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
         active_profile_json,
+        drtm_sequence: None,
         manufactured: true,
         was_manufactured,
         startup_received: false,
+        tpm_established: false,
         failure_mode: false,
         reported_failure: false,
         power_on: true,
@@ -195,9 +202,11 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
         active_profile_json: String::new(),
+        drtm_sequence: None,
         manufactured: false,
         was_manufactured: false,
         startup_received: false,
+        tpm_established: false,
         failure_mode: false,
         reported_failure: false,
         power_on: true,

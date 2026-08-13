@@ -22,6 +22,7 @@ mod public;
 mod runtime;
 mod session;
 mod state;
+mod tis;
 mod volatile;
 
 use core::ffi::c_int;
@@ -43,6 +44,10 @@ pub(super) use clock::{HostClock, OsClock};
 pub(super) use crypto::{EntropySource, os_entropy};
 pub(super) use process::process;
 pub use runtime::Tpm2Runtime;
+pub(super) use tis::{
+    established_reset as tis_established_reset, hash_data as tis_hash_data,
+    hash_end as tis_hash_end, hash_start as tis_hash_start,
+};
 
 pub fn get_info(flags: TpmlibInfoFlags, runtime: Option<&Tpm2Runtime>) -> String {
     info::get_info(
@@ -2913,7 +2918,7 @@ mod tests {
             .expect("volatile state merged");
         assert_eq!(volatile_state.time, 987_654);
         assert_eq!(volatile_state.max_counter, 42);
-        assert!(volatile_state.tpm_established);
+        assert!(runtime.tpm_established, "tpmEstablished from the blob");
         assert!(runtime.manufactured, "g_manufactured from the blob");
         assert!(runtime.startup_received, "g_initialized from the blob");
         assert!(!runtime.failure_mode);

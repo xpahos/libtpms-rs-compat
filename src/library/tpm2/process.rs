@@ -25,6 +25,8 @@ pub(in crate::library) fn process(
         return serialize(Response::error(TPM_RC_FAILURE));
     }
 
+    super::tis::abort_sequence(runtime);
+
     let response = match command::parse_command(command) {
         Ok(parsed) => command::dispatch(runtime, &parsed),
         Err(error) => Response::error(error.response_code()),

@@ -64,6 +64,26 @@ pub fn was_manufactured() -> bool {
     Library::global().was_manufactured()
 }
 
+pub fn tis_established_get() -> Result<bool, TpmResult> {
+    Library::global().tis_established_get()
+}
+
+pub fn tis_established_reset() -> TpmResult {
+    Library::global().tis_established_reset()
+}
+
+pub fn tis_hash_start() -> TpmResult {
+    Library::global().tis_hash_start()
+}
+
+pub fn tis_hash_data(data: &[u8]) -> TpmResult {
+    Library::global().tis_hash_data(data)
+}
+
+pub fn tis_hash_end() -> TpmResult {
+    Library::global().tis_hash_end()
+}
+
 #[cfg(all(test, feature = "tpm2"))]
 pub(crate) fn stage_empty_permanent_state_for_tests() {
     Library::global().stage_empty_state(state_blob::StateBlobKind::Permanent);

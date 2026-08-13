@@ -32,6 +32,7 @@ const CRYPT_UWORD_BYTES: usize = 8;
 pub(super) const ATTR_EPS_HIERARCHY: u32 = 1 << 1;
 pub(super) const ATTR_PPS_HIERARCHY: u32 = 1 << 2;
 pub(super) const ATTR_SPS_HIERARCHY: u32 = 1 << 3;
+pub(super) const ATTR_TEMPORARY: u32 = 1 << 6;
 pub(super) const ATTR_HMAC_SEQ: u32 = 1 << 8;
 pub(super) const ATTR_HASH_SEQ: u32 = 1 << 9;
 pub(super) const ATTR_EVENT_SEQ: u32 = 1 << 10;

@@ -14,7 +14,10 @@ use super::super::persistent::{
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
 use super::super::volatile::{IMPLEMENTATION_PCR, MAX_LOADED_SESSIONS, OwnedPcr};
-use super::super::{TPM_SU_STATE_MASK, pcr::PCR_SLOT_BANKS};
+use super::super::{
+    TPM_SU_STATE_MASK,
+    pcr::{HCRTM_PCR, PCR_SLOT_BANKS, allocation_selects, pcr_in_tcb_group, pcr_resets_to_ones},
+};
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 
 pub(in crate::library::tpm2) const TPM_SU_CLEAR: u16 = 0x0000;
@@ -38,8 +41,6 @@ const COMMIT_NONCE_SIZE: usize = 64;
 const SEED_COMPAT_LEVEL_LAST: u8 = 1;
 
 const ATTRIBUTE_DRBG_CONTINUOUS_TEST: &[u8] = b"drbg-continous-test";
-
-const HCRTM_PCR: usize = 0;
 
 const TPMA_NV_WRITELOCKED: u32 = 1 << 11;
 const TPMA_NV_WRITEDEFINE: u32 = 1 << 13;
@@ -74,14 +75,6 @@ fn nv_startup_attributes(mut attributes: u32, mode: StartupMode) -> u32 {
 
 fn pcr_state_saved(pcr: usize) -> bool {
     pcr < 16
-}
-
-fn pcr_in_tcb_group(pcr: usize) -> bool {
-    matches!(pcr, 16 | 21 | 22 | 23)
-}
-
-fn pcr_resets_to_ones(pcr: usize) -> bool {
-    (17..=22).contains(&pcr)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -501,16 +494,6 @@ fn pcr_changed_increments(mode: StartupMode) -> u32 {
             !state_saved && (pcr == HCRTM_PCR || !pcr_in_tcb_group(pcr))
         })
         .count() as u32
-}
-
-fn allocation_selects(allocation: &OwnedPcrAllocation, hash_alg: u16, pcr: usize) -> bool {
-    allocation.selections.iter().any(|selection| {
-        selection.hash_alg == hash_alg
-            && selection
-                .select
-                .get(pcr / 8)
-                .is_some_and(|byte| byte & (1 << (pcr % 8)) != 0)
-    })
 }
 
 fn build_startup_pcrs(

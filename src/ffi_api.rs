@@ -250,6 +250,46 @@ pub(crate) fn was_manufactured() -> TpmBool {
     TpmBool::from(library::was_manufactured())
 }
 
+pub(crate) fn tpm_io_hash_start() -> TpmResult {
+    library::tis_hash_start()
+}
+
+pub(crate) unsafe fn tpm_io_hash_data(data: *const c_uchar, data_length: u32) -> TpmResult {
+    if data.is_null() {
+        if data_length != 0 {
+            return TPM_FAIL;
+        }
+        return library::tis_hash_data(&[]);
+    }
+    // SAFETY: `data` is non-null and points to `data_length` readable bytes
+    // by the FFI contract.
+    let bytes = unsafe { core::slice::from_raw_parts(data, data_length as usize) };
+    library::tis_hash_data(bytes)
+}
+
+pub(crate) fn tpm_io_hash_end() -> TpmResult {
+    library::tis_hash_end()
+}
+
+pub(crate) unsafe fn tpm_io_tpm_established_get(tpm_established: *mut TpmBool) -> TpmResult {
+    if tpm_established.is_null() {
+        return TPM_FAIL;
+    }
+    match library::tis_established_get() {
+        Ok(established) => {
+            // SAFETY: the C API contract requires `tpm_established` to point
+            // to a writable TPM_BOOL; the null case was rejected above.
+            unsafe { tpm_established.write(TpmBool::from(established)) };
+            TPM_SUCCESS
+        }
+        Err(code) => code,
+    }
+}
+
+pub(crate) fn tpm_io_tpm_established_reset() -> TpmResult {
+    library::tis_established_reset()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +348,51 @@ mod tests {
         let stored = unsafe { copy_callbacks(&table) };
         assert_eq!(stored.size_of_struct, 0);
         assert!(stored.tpm_nvram_init.is_none());
+    }
+
+    #[test]
+    fn tis_abi_signatures_are_exact() {
+        let _: unsafe extern "C" fn() -> TpmResult = crate::tpm_tis_abi::TPM_IO_Hash_Start;
+        let _: unsafe extern "C" fn(*const c_uchar, u32) -> TpmResult =
+            crate::tpm_tis_abi::TPM_IO_Hash_Data;
+        let _: unsafe extern "C" fn() -> TpmResult = crate::tpm_tis_abi::TPM_IO_Hash_End;
+        let _: unsafe extern "C" fn(*mut TpmBool) -> TpmResult =
+            crate::tpm_tis_abi::TPM_IO_TpmEstablished_Get;
+        let _: unsafe extern "C" fn() -> TpmResult =
+            crate::tpm_tis_abi::TPM_IO_TpmEstablished_Reset;
+    }
+
+    #[test]
+    fn tis_null_established_output_pointer_fails_safely() {
+        // SAFETY: NULL is explicitly accepted and rejected by the adapter.
+        assert_eq!(
+            unsafe { tpm_io_tpm_established_get(core::ptr::null_mut()) },
+            TPM_FAIL
+        );
+        // SAFETY: same, through the exported wrapper and its panic guard.
+        assert_eq!(
+            unsafe { crate::tpm_tis_abi::TPM_IO_TpmEstablished_Get(core::ptr::null_mut()) },
+            TPM_FAIL
+        );
+    }
+
+    #[test]
+    fn tis_null_hash_data_is_valid_only_for_zero_length() {
+        // SAFETY: a null pointer with a nonzero length is rejected before any
+        // dereference.
+        unsafe {
+            assert_eq!(tpm_io_hash_data(core::ptr::null(), 1), TPM_FAIL);
+            assert_eq!(tpm_io_hash_data(core::ptr::null(), u32::MAX), TPM_FAIL);
+            assert_eq!(
+                crate::tpm_tis_abi::TPM_IO_Hash_Data(core::ptr::null(), 4),
+                TPM_FAIL
+            );
+        }
+        // SAFETY: a null pointer with zero length carries no bytes to read;
+        // the result depends on the shared global library state, which other
+        // tests may have initialized concurrently.
+        let result = unsafe { tpm_io_hash_data(core::ptr::null(), 0) };
+        assert!(result == TPM_FAIL || result == TPM_SUCCESS);
     }
 
     #[test]

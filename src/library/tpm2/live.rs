@@ -134,7 +134,6 @@ pub(super) struct RestoredVolatile {
     pub(super) evict_nv_end: u32,
     pub(super) index_orderly_ram_bytes: Vec<u8>,
     pub(super) max_counter: u64,
-    pub(super) tpm_established: bool,
     pub(super) fail_function: u32,
     pub(super) fail_line: u32,
     pub(super) fail_code: u32,
@@ -152,6 +151,7 @@ pub(super) struct RestoredRuntimeFlags {
     pub(super) manufactured: bool,
     pub(super) initialized: bool,
     pub(super) in_failure_mode: bool,
+    pub(super) tpm_established: bool,
     pub(super) resume_clock: RuntimeClock,
 }
 
@@ -228,6 +228,7 @@ pub(super) fn split_restored_volatile(
         manufactured,
         initialized,
         in_failure_mode,
+        tpm_established,
         resume_clock,
     };
 
@@ -240,7 +241,6 @@ pub(super) fn split_restored_volatile(
         evict_nv_end,
         index_orderly_ram_bytes: index_orderly_ram,
         max_counter,
-        tpm_established,
         fail_function,
         fail_line,
         fail_code,
