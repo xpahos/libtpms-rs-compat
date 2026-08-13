@@ -1,12 +1,14 @@
 use super::super::runtime::Tpm2Runtime;
 use super::get_capability;
 use super::header::{Command, Response};
+use super::pcr_read;
 use super::shutdown;
 use super::startup;
 
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
+pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
@@ -58,6 +60,12 @@ static COMMANDS: &[CommandDescriptor] = &[
         attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false),
         lifecycle: CommandLifecycle::RequiresStarted,
         handler: get_capability::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_PCR_READ,
+        attributes: tpma_cc(TPM_CC_PCR_READ, false),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handler: pcr_read::execute,
     },
 ];
 
@@ -111,6 +119,7 @@ mod tests {
             find(TPM_CC_GET_CAPABILITY).map(|d| d.code),
             Some(TPM_CC_GET_CAPABILITY)
         );
+        assert_eq!(find(TPM_CC_PCR_READ).map(|d| d.code), Some(TPM_CC_PCR_READ));
     }
 
     #[test]
@@ -120,12 +129,14 @@ mod tests {
         assert!(find(TPM_CC_SHUTDOWN + 1).is_none(), "between the entries");
         assert!(
             find(TPM_CC_GET_CAPABILITY - 1).is_none(),
-            "just below the last"
+            "just below GetCapability"
         );
         assert!(
             find(TPM_CC_GET_CAPABILITY + 1).is_none(),
-            "just above the last"
+            "between GetCapability and PCR_Read"
         );
+        assert!(find(TPM_CC_PCR_READ - 1).is_none(), "just below the last");
+        assert!(find(TPM_CC_PCR_READ + 1).is_none(), "just above the last");
         assert!(find(0xffff_ffff).is_none(), "above all entries");
     }
 
@@ -134,7 +145,12 @@ mod tests {
         let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
         assert_eq!(
             codes,
-            [TPM_CC_STARTUP, TPM_CC_SHUTDOWN, TPM_CC_GET_CAPABILITY]
+            [
+                TPM_CC_STARTUP,
+                TPM_CC_SHUTDOWN,
+                TPM_CC_GET_CAPABILITY,
+                TPM_CC_PCR_READ
+            ]
         );
     }
 
@@ -157,6 +173,19 @@ mod tests {
     fn get_capability_is_registered_exactly_once() {
         let count = implemented()
             .filter(|descriptor| descriptor.code == TPM_CC_GET_CAPABILITY)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn pcr_read_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_PCR_READ).unwrap().attributes, 0x0000_017e);
+    }
+
+    #[test]
+    fn pcr_read_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_PCR_READ)
             .count();
         assert_eq!(count, 1);
     }

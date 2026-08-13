@@ -33,3 +33,72 @@ pub(super) const TPM_ALG_OFB: u16 = 0x0041;
 pub(super) const TPM_ALG_CBC: u16 = 0x0042;
 pub(super) const TPM_ALG_CFB: u16 = 0x0043;
 pub(super) const TPM_ALG_ECB: u16 = 0x0044;
+
+pub(in crate::library::tpm2) fn algorithm_enabled(
+    profile_algorithms: &[u8],
+    profile_name: &[u8],
+) -> bool {
+    profile_algorithms
+        .split(|&byte| byte == b',')
+        .any(|token| token == profile_name)
+}
+
+pub(in crate::library::tpm2) const fn hash_profile_name(algorithm: u16) -> Option<&'static [u8]> {
+    match algorithm {
+        TPM_ALG_SHA1 => Some(b"sha1"),
+        TPM_ALG_SHA256 => Some(b"sha256"),
+        TPM_ALG_SHA384 => Some(b"sha384"),
+        TPM_ALG_SHA512 => Some(b"sha512"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_matching_is_exact() {
+        assert!(algorithm_enabled(b"sha384", b"sha384"));
+        assert!(!algorithm_enabled(b"sha384", b"sha3"));
+        assert!(!algorithm_enabled(b"sha3", b"sha384"));
+        assert!(!algorithm_enabled(b"ecb2,2ecb", b"ecb"));
+        assert!(algorithm_enabled(b"a,ecb,b", b"ecb"));
+    }
+
+    #[test]
+    fn every_supported_hash_maps_to_its_profile_token() {
+        assert_eq!(hash_profile_name(TPM_ALG_SHA1), Some(b"sha1".as_slice()));
+        assert_eq!(
+            hash_profile_name(TPM_ALG_SHA256),
+            Some(b"sha256".as_slice())
+        );
+        assert_eq!(
+            hash_profile_name(TPM_ALG_SHA384),
+            Some(b"sha384".as_slice())
+        );
+        assert_eq!(
+            hash_profile_name(TPM_ALG_SHA512),
+            Some(b"sha512".as_slice())
+        );
+    }
+
+    #[test]
+    fn alg_null_has_no_profile_token() {
+        assert_eq!(hash_profile_name(TPM_ALG_NULL), None);
+    }
+
+    #[test]
+    fn non_hash_algorithms_have_no_profile_token() {
+        assert_eq!(hash_profile_name(TPM_ALG_AES), None);
+        assert_eq!(hash_profile_name(TPM_ALG_RSA), None);
+        assert_eq!(hash_profile_name(TPM_ALG_HMAC), None);
+    }
+
+    #[test]
+    fn unknown_algorithm_ids_have_no_profile_token() {
+        assert_eq!(hash_profile_name(0x0012), None);
+        assert_eq!(hash_profile_name(0x0027), None);
+        assert_eq!(hash_profile_name(0xffff), None);
+    }
+}

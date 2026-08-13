@@ -4,7 +4,7 @@ use super::super::algorithm::{
     TPM_ALG_ECSCHNORR, TPM_ALG_HMAC, TPM_ALG_KDF1_SP800_56A, TPM_ALG_KDF1_SP800_108, TPM_ALG_KDF2,
     TPM_ALG_KEYEDHASH, TPM_ALG_MGF1, TPM_ALG_OAEP, TPM_ALG_OFB, TPM_ALG_RSA, TPM_ALG_RSAES,
     TPM_ALG_RSAPSS, TPM_ALG_RSASSA, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512,
-    TPM_ALG_SM2, TPM_ALG_SYMCIPHER, TPM_ALG_TDES, TPM_ALG_XOR,
+    TPM_ALG_SM2, TPM_ALG_SYMCIPHER, TPM_ALG_TDES, TPM_ALG_XOR, algorithm_enabled,
 };
 use super::{CapabilityPage, MAX_CAP_DATA, paginate};
 
@@ -177,12 +177,6 @@ static S_ALGORITHMS: &[AlgorithmEntry] = &[
         b"ecb",
     ),
 ];
-
-fn algorithm_enabled(profile_algorithms: &[u8], profile_name: &[u8]) -> bool {
-    profile_algorithms
-        .split(|&byte| byte == b',')
-        .any(|token| token == profile_name)
-}
 
 pub(in crate::library::tpm2) fn implemented(
     profile_algorithms: &[u8],
@@ -378,15 +372,6 @@ cmac,ctr,ofb,cbc,cfb,ecb";
             .map(|property| property.algorithm)
             .collect();
         assert_eq!(ids, [TPM_ALG_SHA256]);
-    }
-
-    #[test]
-    fn token_matching_is_exact() {
-        assert!(algorithm_enabled(b"sha384", b"sha384"));
-        assert!(!algorithm_enabled(b"sha384", b"sha3"));
-        assert!(!algorithm_enabled(b"sha3", b"sha384"));
-        assert!(!algorithm_enabled(b"ecb2,2ecb", b"ecb"));
-        assert!(algorithm_enabled(b"a,ecb,b", b"ecb"));
     }
 
     #[test]

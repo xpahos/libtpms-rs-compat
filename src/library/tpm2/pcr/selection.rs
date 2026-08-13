@@ -3,8 +3,8 @@ use crate::library::tpm2::persistent::{PersistentAllError, StateSection};
 
 pub(in crate::library::tpm2) const HASH_COUNT: usize = 4;
 
-const PCR_SELECT_MIN: usize = 3;
-const PCR_SELECT_MAX: usize = 3;
+pub(in crate::library::tpm2) const PCR_SELECT_MIN: usize = 3;
+pub(in crate::library::tpm2) const PCR_SELECT_MAX: usize = 3;
 
 const TPM_ALG_SHA1: u16 = 0x0004;
 const TPM_ALG_SHA256: u16 = 0x000b;

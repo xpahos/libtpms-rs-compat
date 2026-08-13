@@ -4,7 +4,9 @@ mod selection;
 pub(super) use policy::{
     NUM_POLICY_PCR_GROUP, PCR_POLICY_MAGIC, ParsedPcrPolicies, PcrPolicyEntry, parse_pcr_policies,
 };
-pub(super) use selection::{PcrAllocation, PcrSelection, parse_pcr_allocation};
+pub(super) use selection::{
+    HASH_COUNT, PCR_SELECT_MAX, PCR_SELECT_MIN, PcrAllocation, PcrSelection, parse_pcr_allocation,
+};
 
 #[cfg(test)]
 pub(super) use policy::PcrPoliciesFixture;
