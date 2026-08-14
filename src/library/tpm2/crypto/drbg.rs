@@ -11,6 +11,8 @@ pub(in crate::library::tpm2) const DRBG_KEY_SIZE: usize = 32;
 pub(in crate::library::tpm2) const DRBG_IV_SIZE: usize = 16;
 pub(in crate::library::tpm2) const DRBG_SEED_SIZE: usize = DRBG_KEY_SIZE + DRBG_IV_SIZE;
 
+pub(in crate::library::tpm2) const CTR_DRBG_MAX_REQUESTS_PER_RESEED: u64 = 1 << 20;
+
 pub(in crate::library::tpm2) struct Drbg {
     reseed_counter: u64,
     seed: [u8; DRBG_SEED_SIZE],
@@ -149,6 +151,10 @@ impl Drbg {
 
     pub(in crate::library::tpm2) fn reseed_counter(&self) -> u64 {
         self.reseed_counter
+    }
+
+    pub(in crate::library::tpm2) fn needs_reseed(&self) -> bool {
+        self.reseed_counter >= CTR_DRBG_MAX_REQUESTS_PER_RESEED
     }
 
     pub(in crate::library::tpm2) fn seed(&self) -> &[u8; DRBG_SEED_SIZE] {

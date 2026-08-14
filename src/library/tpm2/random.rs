@@ -33,6 +33,10 @@ pub(super) fn generate_random(
         Err(_) => return Err(fatal_drbg_failure(runtime)),
     };
 
+    if drbg.needs_reseed() && drbg.reseed_from_entropy(runtime.entropy).is_err() {
+        return Err(fatal_drbg_failure(runtime));
+    }
+
     let mut bytes = vec![0u8; length];
     if drbg.generate(&mut bytes).is_err() {
         return Err(fatal_drbg_failure(runtime));
@@ -57,10 +61,14 @@ fn fatal_drbg_failure(runtime: &mut Tpm2Runtime) -> TpmResult {
 mod tests {
     use super::*;
     use crate::library::constants::TPM_FAIL;
-    use crate::library::tpm2::crypto::{DrbgGenerateRecord, generate_record};
+    use crate::library::tpm2::crypto::{
+        CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_SEED_SIZE, DrbgBoundaryCase, DrbgBoundaryRecord,
+        DrbgGenerateRecord, boundary_record, generate_record,
+    };
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::{commit_manufactured_state, empty_state_runtime};
+    use std::cell::RefCell;
 
     const CONTINUOUS_TEST_PROFILE: &[u8] =
         br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
@@ -79,6 +87,19 @@ mod tests {
 
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         Err(TPM_FAIL)
+    }
+
+    thread_local! {
+        static ENTROPY_REQUESTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn recording_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
+        ENTROPY_REQUESTS.with(|requests| requests.borrow_mut().push(buffer.len()));
+        deterministic_entropy(buffer)
+    }
+
+    fn take_entropy_requests() -> Vec<usize> {
+        ENTROPY_REQUESTS.with(|requests| core::mem::take(&mut *requests.borrow_mut()))
     }
 
     fn runtime_for(continuous_test: bool) -> Box<Tpm2Runtime> {
@@ -109,6 +130,29 @@ mod tests {
             record.initial_reseed_counter,
             record.initial_last_value,
         );
+    }
+
+    fn install_boundary(
+        runtime: &mut Tpm2Runtime,
+        record: &DrbgBoundaryRecord,
+        case: &DrbgBoundaryCase,
+    ) {
+        install(
+            runtime,
+            &record.initial_seed,
+            case.initial_reseed_counter,
+            record.initial_last_value,
+        );
+    }
+
+    #[track_caller]
+    fn assert_matches_case(runtime: &Tpm2Runtime, produced: &[u8], case: &DrbgBoundaryCase) {
+        assert_eq!(produced, case.output());
+        let live = live_drbg(runtime);
+        assert_eq!(live.seed, case.seed_after);
+        assert_eq!(live.reseed_counter, case.reseed_counter_after);
+        assert_eq!(live.last_value, case.last_value_after);
+        assert_eq!(live.drbg_magic, DRBG_MAGIC);
     }
 
     struct LiveDrbg {
@@ -383,6 +427,150 @@ mod tests {
             let produced = generate_random(&mut runtime, usize::from(step.requested))
                 .expect("a failing entropy source is never consulted");
             assert_eq!(produced, step.output());
+        }
+    }
+
+    #[test]
+    fn a_request_below_the_reseed_threshold_never_draws_entropy() {
+        for continuous_test in [false, true] {
+            let record = boundary_record(continuous_test);
+            let case = &record.cases[0];
+            assert_eq!(
+                case.initial_reseed_counter,
+                CTR_DRBG_MAX_REQUESTS_PER_RESEED - 1
+            );
+            assert_eq!(case.entropy_draws, 0, "the oracle drew no entropy either");
+
+            let mut runtime = runtime_for(continuous_test);
+            install_boundary(&mut runtime, &record, case);
+            let produced = generate_random(&mut runtime, usize::from(case.requested))
+                .expect("the request below the threshold is served");
+            assert_matches_case(&runtime, &produced, case);
+            assert_eq!(
+                live_drbg(&runtime).reseed_counter,
+                CTR_DRBG_MAX_REQUESTS_PER_RESEED,
+                "the request leaves the generator exactly at the threshold"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_at_the_reseed_threshold_draws_exactly_one_seed_block() {
+        for continuous_test in [false, true] {
+            let record = boundary_record(continuous_test);
+            let case = &record.cases[1];
+            assert_eq!(
+                case.initial_reseed_counter,
+                CTR_DRBG_MAX_REQUESTS_PER_RESEED
+            );
+            assert_eq!(case.entropy_draws, 1);
+
+            let mut runtime = runtime_for(continuous_test);
+            runtime.entropy = recording_entropy;
+            install_boundary(&mut runtime, &record, case);
+            take_entropy_requests();
+            let produced = generate_random(&mut runtime, usize::from(case.requested))
+                .expect("the automatic reseed serves the request");
+            assert_eq!(
+                take_entropy_requests(),
+                [DRBG_SEED_SIZE],
+                "DRBG_Reseed collects one full seed"
+            );
+            assert_matches_case(&runtime, &produced, case);
+            assert_eq!(
+                live_drbg(&runtime).reseed_counter,
+                2,
+                "DRBG_Reseed sets 1 and the generation that follows advances to 2"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_above_the_reseed_threshold_also_reseeds() {
+        for continuous_test in [false, true] {
+            let record = boundary_record(continuous_test);
+            let case = &record.cases[3];
+            assert!(case.initial_reseed_counter > CTR_DRBG_MAX_REQUESTS_PER_RESEED);
+            assert_eq!(case.entropy_draws, 1);
+
+            let mut runtime = runtime_for(continuous_test);
+            runtime.entropy = recording_entropy;
+            install_boundary(&mut runtime, &record, case);
+            take_entropy_requests();
+            let produced = generate_random(&mut runtime, usize::from(case.requested))
+                .expect("the automatic reseed serves the request");
+            assert_eq!(take_entropy_requests(), [DRBG_SEED_SIZE]);
+            assert_matches_case(&runtime, &produced, case);
+            assert_eq!(live_drbg(&runtime).reseed_counter, 2);
+        }
+    }
+
+    #[test]
+    fn a_zero_length_request_at_the_threshold_still_reseeds() {
+        for continuous_test in [false, true] {
+            let record = boundary_record(continuous_test);
+            let case = &record.cases[2];
+            assert_eq!(
+                case.initial_reseed_counter,
+                CTR_DRBG_MAX_REQUESTS_PER_RESEED
+            );
+            assert_eq!(case.requested, 0);
+            assert_eq!(case.entropy_draws, 1);
+
+            let mut runtime = runtime_for(continuous_test);
+            runtime.entropy = recording_entropy;
+            install_boundary(&mut runtime, &record, case);
+            take_entropy_requests();
+            let produced = generate_random(&mut runtime, 0).expect("a zero-byte request is served");
+            assert!(produced.is_empty());
+            assert_eq!(take_entropy_requests(), [DRBG_SEED_SIZE]);
+            assert_matches_case(&runtime, &produced, case);
+            assert_eq!(live_drbg(&runtime).reseed_counter, 2);
+            assert_ne!(
+                live_drbg(&runtime).seed,
+                record.initial_seed.to_vec(),
+                "the reseed and the update both ran"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entropy_failure_at_the_threshold_fails_transactionally() {
+        for continuous_test in [false, true] {
+            let record = boundary_record(continuous_test);
+            for case in [&record.cases[1], &record.cases[2], &record.cases[3]] {
+                let mut runtime = runtime_for(continuous_test);
+                runtime.entropy = failing_entropy;
+                install_boundary(&mut runtime, &record, case);
+                let before = live_drbg(&runtime);
+                let persistent = persistent_snapshot(&runtime);
+                assert!(!runtime.failure_mode, "the TPM starts healthy");
+                assert_fatal_failure(
+                    generate_random(&mut runtime, usize::from(case.requested)),
+                    &runtime,
+                    &before,
+                    &persistent,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_automatic_reseed_leaves_the_persistent_state_and_nv_alone() {
+        for continuous_test in [false, true] {
+            let record = boundary_record(continuous_test);
+            let mut runtime = runtime_for(continuous_test);
+            runtime.entropy = recording_entropy;
+            install_boundary(&mut runtime, &record, &record.cases[1]);
+            let persistent = persistent_snapshot(&runtime);
+            take_entropy_requests();
+
+            generate_random(&mut runtime, usize::from(record.cases[1].requested))
+                .expect("the automatic reseed serves the request");
+
+            assert_eq!(take_entropy_requests(), [DRBG_SEED_SIZE]);
+            assert_persistent_unchanged(&runtime, &persistent);
+            assert!(!runtime.failure_mode, "a served request is not fatal");
         }
     }
 }

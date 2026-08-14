@@ -67,6 +67,32 @@ first):
      8  reseedCounter after the request
     16  lastValue after the request (4 x u32)
 
+Two boundary records -- again one per mode, plain first -- follow the
+generate records in the same file.  They pin the automatic reseed the
+vendored ``DRBG_Generate()`` performs once ``reseedCounter`` reaches
+``CTR_DRBG_MAX_REQUESTS_PER_RESEED`` (1 << 20): the same pinned seed is
+replayed at the counters ``limit - 1``, ``limit`` (twice, once for a
+64-byte and once for a zero-byte request) and ``limit + 7``.  Only the
+threshold cases reach ``DRBG_Reseed(state, NULL, NULL)`` and hence
+``DRBG_GetEntropy``, whose single 48-byte block is the deterministic
+``((i + 48) & 0xff) ^ 0x63`` pattern the Rust test suite injects; the
+recorded draw count makes that observable from Rust.  Upstream reseeds
+only for ``drbgDefault`` -- a private PRNG state takes FAIL_IMMEDIATE
+instead -- so these cases drive ``drbgDefault`` itself, the state the
+runtime generator corresponds to.
+
+Boundary record layout (big-endian scalars):
+    48  initial seed
+    16  initial lastValue (4 x u32)
+    then four cases of:
+     8  initial reseedCounter
+     2  requested size
+     1  entropy blocks drawn while serving the request
+    64  output buffer (zero padded above the requested size)
+    48  seed after the request
+     8  reseedCounter after the request
+    16  lastValue after the request (4 x u32)
+
 ``lastValue`` is a native-endian UINT32[4] in C; the oracle writes the
 values big-endian (like NVMarshal's UINT32_Marshal), so the fixtures are
 identical on every little-endian generator host -- the only hosts the
@@ -221,8 +247,8 @@ static void oracle_fail(const char *what)
 #define FAIL_BOOL(code) do {{ oracle_fail("FAIL_BOOL(" #code ")"); return FALSE; }} while (0)
 #define FAIL_IMMEDIATE(code, retval) oracle_fail("FAIL_IMMEDIATE(" #code ")")
 
-/* The oracle never reseeds from entropy, so neither health flag is ever
- * consulted; both keep the vendored reseed branch compiling. */
+/* The oracle's entropy source never fails, so the healthy answer is the
+ * only one the threshold branch can observe. */
 static BOOL IsEntropyBad(void) {{ return FALSE; }}
 static BOOL IsSelfTest(void) {{ return FALSE; }}
 
@@ -240,13 +266,22 @@ static BOOL RuntimeProfileRequiresAttributeFlags(struct RuntimeProfile *profile,
     return s_continuousTest;
 }}
 
-/* The oracle always supplies entropy explicitly. */
+/* Only the automatic reseed the vendored DRBG_Generate() performs at the
+ * request limit reaches this; every other sequence supplies its entropy
+ * explicitly, and the call count is written into the boundary fixture so
+ * the Rust side can pin exactly when the source is consulted.  The pattern
+ * is the deterministic 48-byte block the Rust test suite injects. */
+static unsigned s_entropyCalls;
 static BOOL DRBG_GetEntropy(UINT32 requiredEntropy, BYTE *entropy)
 {{
-    (void)requiredEntropy;
-    (void)entropy;
-    oracle_fail("DRBG_GetEntropy must not be reached");
-    return FALSE;
+    UINT32 i;
+
+    if (requiredEntropy != sizeof(DRBG_SEED))
+        oracle_fail("DRBG_GetEntropy asked for a partial seed");
+    for (i = 0; i < requiredEntropy; i++)
+        entropy[i] = (BYTE)(((i + DRBG_SEED_SIZE_BYTES) & 0xff) ^ 0x63);
+    s_entropyCalls++;
+    return TRUE;
 }}
 
 /* ---- begin verbatim extract from CryptRand.c ---- */
@@ -313,6 +348,75 @@ static void dump(const char *label, const BYTE *data, size_t size)
 /* The runtime request sizes replayed into the generate fixture. */
 static const UINT16 REQUEST_SIZES[] = {{0, 1, 16, 17, 64, 64}};
 
+/* The reseed-threshold cases replayed into the generate fixture, each
+ * starting from the same pinned seed with a different reseedCounter. */
+static const struct {{
+    UINT64 counter;
+    UINT16 size;
+}} BOUNDARY_CASES[] = {{
+    {{CTR_DRBG_MAX_REQUESTS_PER_RESEED - 1, 64}},
+    {{CTR_DRBG_MAX_REQUESTS_PER_RESEED, 64}},
+    {{CTR_DRBG_MAX_REQUESTS_PER_RESEED, 0}},
+    {{CTR_DRBG_MAX_REQUESTS_PER_RESEED + 7, 64}},
+}};
+
+static void pinned_seed(DRBG_STATE *state)
+{{
+    int i;
+
+    memset(state, 0, sizeof(*state));
+    state->magic = DRBG_MAGIC;
+    for (i = 0; i < DRBG_SEED_SIZE_BYTES; i++)
+        state->seed.bytes[i] = (BYTE)((i * 7 + 3) ^ 0x5a);
+}}
+
+/* The threshold branch only reseeds for the default DRBG -- a private PRNG
+ * state takes FAIL_IMMEDIATE instead -- so these cases drive drbgDefault,
+ * the state the runtime generator corresponds to. */
+static void write_boundary_records(FILE *f)
+{{
+    int mode;
+
+    for (mode = 0; mode <= 1; mode++) {{
+        size_t     which;
+        DRBG_STATE pinned;
+
+        s_continuousTest = mode;
+        printf("boundary mode %d (drbg-continous-test %s)\\n",
+               mode, mode ? "on" : "off");
+
+        pinned_seed(&pinned);
+        fwrite(pinned.seed.bytes, 1, DRBG_SEED_SIZE_BYTES, f);
+        put_last_value(f, pinned.lastValue);
+
+        for (which = 0; which < sizeof(BOUNDARY_CASES) / sizeof(BOUNDARY_CASES[0]); which++) {{
+            UINT16 size = BOUNDARY_CASES[which].size;
+            BYTE   buf[64];
+
+            pinned_seed(&drbgDefault);
+            drbgDefault.reseedCounter = BOUNDARY_CASES[which].counter;
+            s_entropyCalls = 0;
+            memset(buf, 0, sizeof(buf));
+            Generate(&drbgDefault, buf, size);
+            if (s_entropyCalls > 1)
+                oracle_fail("a request drew more than one seed block");
+
+            put_u64be(f, BOUNDARY_CASES[which].counter);
+            put_u16be(f, size);
+            fputc((int)s_entropyCalls, f);
+            fwrite(buf, 1, sizeof(buf), f);
+            fwrite(drbgDefault.seed.bytes, 1, DRBG_SEED_SIZE_BYTES, f);
+            put_u64be(f, drbgDefault.reseedCounter);
+            put_last_value(f, drbgDefault.lastValue);
+            printf("  counter %llu, request %u -> %u entropy draw(s), counter %llu\\n",
+                   (unsigned long long)BOUNDARY_CASES[which].counter,
+                   (unsigned)size, s_entropyCalls,
+                   (unsigned long long)drbgDefault.reseedCounter);
+            dump("    output", buf, size);
+        }}
+    }}
+}}
+
 static void write_generate_fixture(const char *path)
 {{
     FILE *f = fopen(path, "wb");
@@ -326,17 +430,14 @@ static void write_generate_fixture(const char *path)
     for (mode = 0; mode <= 1; mode++) {{
         DRBG_STATE state;
         size_t     step;
-        int        i;
 
         s_continuousTest = mode;
         printf("generate mode %d (drbg-continous-test %s)\\n",
                mode, mode ? "on" : "off");
 
-        memset(&state, 0, sizeof(state));
-        state.magic = DRBG_MAGIC;
-        for (i = 0; i < DRBG_SEED_SIZE_BYTES; i++)
-            state.seed.bytes[i] = (BYTE)((i * 7 + 3) ^ 0x5a);
+        pinned_seed(&state);
         state.reseedCounter = 5;
+        s_entropyCalls = 0;
 
         fwrite(state.seed.bytes, 1, DRBG_SEED_SIZE_BYTES, f);
         put_u64be(f, state.reseedCounter);
@@ -358,7 +459,11 @@ static void write_generate_fixture(const char *path)
                    (unsigned)size, (unsigned long long)state.reseedCounter);
             dump("    output", buf, size);
         }}
+        if (s_entropyCalls != 0)
+            oracle_fail("a below-threshold request drew entropy");
     }}
+
+    write_boundary_records(f);
 
     if (fclose(f) != 0) {{
         perror(path);
@@ -400,6 +505,7 @@ int main(int argc, char **argv)
             entropy.bytes[i] = (BYTE)(((i + DRBG_SEED_SIZE_BYTES) & 0xff) ^ 0xa5);
         memset(&state, 0, sizeof(state));
         state.magic = DRBG_MAGIC;
+        s_entropyCalls = 0;
         if (!DRBG_Reseed(&state, &entropy, NULL))
             oracle_fail("DRBG_Reseed");
         fwrite(state.seed.bytes, 1, DRBG_SEED_SIZE_BYTES, f);
@@ -420,6 +526,8 @@ int main(int argc, char **argv)
         dump("  final seed", state.seed.bytes, DRBG_SEED_SIZE_BYTES);
         printf("  final reseedCounter: %llu\\n",
                (unsigned long long)state.reseedCounter);
+        if (s_entropyCalls != 0)
+            oracle_fail("the manufacture sequence drew host entropy");
     }}
 
     if (fclose(f) != 0) {{
@@ -507,6 +615,9 @@ def extract_drbg_state_branch(drbg_generate: str) -> str:
         "DRBG_Update(",
         "reseedCounter += 1",
         "CTR_DRBG_MAX_REQUESTS_PER_RESEED",
+        "DRBG_Reseed(drbgState, NULL, NULL)",
+        "drbgState == &drbgDefault",
+        "IsEntropyBad()",
         "FAIL_IMMEDIATE",
     ):
         if required not in branch:

@@ -45,7 +45,10 @@ mod tests {
     use super::*;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_RC_INITIALIZE;
-    use crate::library::tpm2::crypto::{DRBG_MAGIC, DrbgGenerateRecord, generate_record};
+    use crate::library::tpm2::crypto::{
+        CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_MAGIC, DrbgGenerateRecord, boundary_record,
+        generate_record,
+    };
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::persistent::{OwnedDrbgState, OwnedSecret};
     use crate::library::tpm2::process;
@@ -446,6 +449,81 @@ mod tests {
 
         let before = snapshot(&runtime);
         let live_before = runtime.live.orderly.drbg_state.clone();
+        for follow_up in [
+            get_capability_properties_command(),
+            get_random_command(&[0x00, 0x10]),
+        ] {
+            let input = CommandInput::new(follow_up.len() as u32, follow_up);
+            let response = process(&mut runtime, 0, &input, |_| {
+                panic!("failure mode must not schedule an NV commit")
+            })
+            .expect("the command processes");
+            assert_eq!(
+                response,
+                error_response(TPM_RC_FAILURE),
+                "failure mode answers every command itself"
+            );
+        }
+        assert_live_drbg_unchanged(&runtime, &live_before);
+        assert_persistent_unchanged(&runtime, &before);
+    }
+
+    fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
+        Err(crate::library::constants::TPM_FAIL)
+    }
+
+    #[test]
+    fn a_command_at_the_reseed_threshold_reseeds_and_answers_the_oracle_bytes() {
+        let record = boundary_record(false);
+        let case = &record.cases[1];
+        let mut runtime = started_runtime();
+        runtime.live.orderly.drbg_state = OwnedDrbgState {
+            reseed_counter: case.initial_reseed_counter,
+            drbg_magic: DRBG_MAGIC,
+            seed: OwnedSecret::copy_of(&record.initial_seed),
+            last_value: record.initial_last_value,
+        };
+        let before = snapshot(&runtime);
+
+        let command = get_random_command(&case.requested.to_be_bytes());
+        let input = CommandInput::new(command.len() as u32, command);
+        let response = process(&mut runtime, 0, &input, |_| {
+            panic!("an automatic reseed must not schedule an NV commit")
+        })
+        .expect("the command processes");
+
+        assert_eq!(random_bytes_of(&response), case.output());
+        assert_eq!(
+            runtime.live.orderly.drbg_state.reseed_counter,
+            case.reseed_counter_after
+        );
+        assert_eq!(
+            runtime.live.orderly.drbg_state.seed.expose(),
+            case.seed_after
+        );
+        assert!(!runtime.failure_mode);
+        assert_persistent_unchanged(&runtime, &before);
+    }
+
+    #[test]
+    fn an_entropy_failure_at_the_reseed_threshold_stops_the_tpm() {
+        let mut runtime = started_runtime();
+        runtime.entropy = failing_entropy;
+        runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+        let before = snapshot(&runtime);
+        let live_before = runtime.live.orderly.drbg_state.clone();
+
+        let command = get_random_command(&[0x00, 0x10]);
+        let input = CommandInput::new(command.len() as u32, command);
+        let response = process(&mut runtime, 0, &input, |_| {
+            panic!("a failed automatic reseed must not schedule an NV commit")
+        })
+        .expect("the command processes");
+        assert_eq!(response, error_response(TPM_RC_FAILURE));
+        assert!(runtime.failure_mode);
+        assert_live_drbg_unchanged(&runtime, &live_before);
+        assert_persistent_unchanged(&runtime, &before);
+
         for follow_up in [
             get_capability_properties_command(),
             get_random_command(&[0x00, 0x10]),
