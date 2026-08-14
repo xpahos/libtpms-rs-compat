@@ -20,6 +20,7 @@ use super::super::{
     pcr::{HCRTM_PCR, PCR_SLOT_BANKS, allocation_selects, pcr_in_tcb_group, pcr_resets_to_ones},
 };
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 
 pub(in crate::library::tpm2) const TPM_SU_CLEAR: u16 = 0x0000;
 pub(in crate::library::tpm2) const TPM_SU_STATE: u16 = 0x0001;
@@ -86,10 +87,10 @@ enum StartupMode {
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let startup_type = parse_startup_type(frame.parameters)?;
     perform_startup(runtime, startup_type)?;
-    Ok(Vec::new())
+    Ok(CommandOutput::empty())
 }
 
 fn parse_startup_type(parameters: &[u8]) -> Result<u16, TpmResult> {

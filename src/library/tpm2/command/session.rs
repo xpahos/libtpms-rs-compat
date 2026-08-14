@@ -212,6 +212,7 @@ pub(super) fn password_auth_response(session_count: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::super::dispatcher::CommandFrame;
+    use super::super::output::CommandOutput;
     use super::super::registry::{CommandLifecycle, HandleKind, HandleSpec};
     use super::*;
     use crate::library::tpm2::persistent::{OwnedSecret, OwnedStateClearData};
@@ -225,8 +226,8 @@ mod tests {
     fn stub_handler(
         _runtime: &mut Tpm2Runtime,
         _frame: &CommandFrame<'_>,
-    ) -> Result<Vec<u8>, TpmResult> {
-        Ok(Vec::new())
+    ) -> Result<CommandOutput, TpmResult> {
+        Ok(CommandOutput::empty())
     }
 
     fn descriptor(handles: &'static [HandleSpec]) -> CommandDescriptor {

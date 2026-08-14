@@ -5,6 +5,7 @@ use super::super::marshal::BlobReader;
 use super::super::runtime::Tpm2Runtime;
 use super::super::self_test::SelectedTestError;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -15,10 +16,12 @@ const MAX_ALG_LIST_SIZE: u32 = 64;
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let to_test = parse_to_test(frame.parameters)?;
     match runtime.self_test.run_selected(&to_test) {
-        Ok(()) => Ok(marshal_to_do_list(&runtime.self_test.pending_algorithms())),
+        Ok(()) => Ok(CommandOutput::from_parameters(marshal_to_do_list(
+            &runtime.self_test.pending_algorithms(),
+        ))),
         Err(SelectedTestError::UnsupportedAlgorithm(_)) => {
             Err(TPM_RC_VALUE + RC_INCREMENTAL_SELF_TEST_TO_TEST)
         }

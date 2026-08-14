@@ -10,6 +10,7 @@ use super::super::orderly::{commit_clear_orderly, prepare_clear_orderly};
 use super::super::persistent::{OwnedPersistentState, OwnedSecret};
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 use super::session::strip_trailing_zeros;
 
 const TPM_RC_P: TpmResult = 0x040;
@@ -24,7 +25,7 @@ const CONTEXT_INTEGRITY_HASH_SIZE: usize = 64;
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let auth_handle = frame.handles.first().copied().ok_or(TPM_RC_FAILURE)?;
     let new_auth = parse_new_auth(frame.parameters)?;
 
@@ -42,7 +43,7 @@ pub(super) fn execute(
         TPM_RH_PLATFORM => set_platform_auth(runtime, new_auth),
         _ => Err(TPM_RC_FAILURE),
     }?;
-    Ok(Vec::new())
+    Ok(CommandOutput::empty())
 }
 
 fn parse_new_auth(parameters: &[u8]) -> Result<&[u8], TpmResult> {

@@ -10,6 +10,7 @@ use super::super::pcr::{
 };
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 use super::pcr_update::{
     commit_orderly_clear, commit_pcr_counter, live_pcr_counter, pcr_changed, prepare_orderly_clear,
 };
@@ -33,7 +34,7 @@ struct PreparedExtend {
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let pcr_handle = frame.handles.first().copied().ok_or(TPM_RC_FAILURE)?;
     // TODO: Support runtimes without decoded state after the NVChip fallback
     // is implemented.
@@ -41,7 +42,7 @@ pub(super) fn execute(
     let digests = parse_digests(&state.profile.algorithms, frame.parameters)?;
 
     if pcr_handle == TPM_RH_NULL {
-        return Ok(Vec::new());
+        return Ok(CommandOutput::empty());
     }
     let pcr = pcr_handle as usize;
     if !pcr_extend_allowed(pcr, runtime.locality) {
@@ -50,7 +51,7 @@ pub(super) fn execute(
 
     let prepared = prepare_extend(runtime, pcr, &digests)?;
     commit_extend(runtime, pcr, prepared)?;
-    Ok(Vec::new())
+    Ok(CommandOutput::empty())
 }
 
 fn parse_digests<'a>(

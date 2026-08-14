@@ -3,6 +3,7 @@ use crate::library::constants::{TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -14,10 +15,10 @@ const YES: u8 = 0x01;
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let full_test = parse_full_test(frame.parameters)?;
     match runtime.self_test.run(full_test) {
-        Ok(()) => Ok(Vec::new()),
+        Ok(()) => Ok(CommandOutput::empty()),
         Err(code) => {
             runtime.failure_mode = true;
             Err(code)

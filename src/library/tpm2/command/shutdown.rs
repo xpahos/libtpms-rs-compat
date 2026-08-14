@@ -11,6 +11,7 @@ use super::super::persistent::{OwnedPcrBank, OwnedStateClearData};
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::NUM_STATIC_PCR;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 use super::startup::{PRE_STARTUP_FLAG, STARTUP_LOCALITY_3, TPM_SU_CLEAR, TPM_SU_STATE};
 
 const TPM_RC_P: TpmResult = 0x040;
@@ -20,10 +21,10 @@ const RC_SHUTDOWN_SHUTDOWN_TYPE: TpmResult = TPM_RC_P + TPM_RC_1;
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let shutdown_type = parse_shutdown_type(frame.parameters)?;
     perform_shutdown(runtime, shutdown_type)?;
-    Ok(Vec::new())
+    Ok(CommandOutput::empty())
 }
 
 fn parse_shutdown_type(parameters: &[u8]) -> Result<u16, TpmResult> {

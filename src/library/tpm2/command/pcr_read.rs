@@ -10,6 +10,7 @@ use super::super::persistent::OwnedPcrAllocation;
 use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -25,7 +26,7 @@ struct SelectionIn {
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     // TODO: Support runtimes without decoded state after the NVChip fallback
     // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
@@ -37,7 +38,8 @@ pub(super) fn execute(
         .ok_or(TPM_RC_FAILURE)?
         .pcr_counter;
     let digests = collect_digests(runtime, &mut selections)?;
-    marshal_response(update_counter, &selections, &digests)
+    let parameters = marshal_response(update_counter, &selections, &digests)?;
+    Ok(CommandOutput::from_parameters(parameters))
 }
 
 fn parse_parameters(

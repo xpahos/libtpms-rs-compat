@@ -48,7 +48,7 @@ fn run(
         handles,
         parameters,
     };
-    let parameters = (descriptor.handler)(runtime, &frame)?;
+    let parameters = (descriptor.handler)(runtime, &frame)?.into_parameters();
     Ok(if command.tag == TPM_ST_SESSIONS {
         Response::success_with_sessions(parameters, password_auth_response(session_count))
     } else {

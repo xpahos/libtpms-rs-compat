@@ -6,6 +6,7 @@ use super::super::capability::{
 };
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -24,9 +25,10 @@ struct GetCapabilityIn {
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let input = parse_parameters(frame.parameters)?;
-    collect_capability(runtime, &input)
+    let parameters = collect_capability(runtime, &input)?;
+    Ok(CommandOutput::from_parameters(parameters))
 }
 
 fn read_parameter(input: &[u8], parameter_index: TpmResult) -> Result<(u32, &[u8]), TpmResult> {

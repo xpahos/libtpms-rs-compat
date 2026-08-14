@@ -7,6 +7,7 @@ use super::dispatcher::CommandFrame;
 use super::get_capability;
 use super::hierarchy_change_auth;
 use super::incremental_self_test;
+use super::output::CommandOutput;
 use super::pcr_extend;
 use super::pcr_read;
 use super::pcr_reset;
@@ -37,7 +38,7 @@ const fn tpma_cc(code: u32, nv: bool, command_handles: u32) -> u32 {
 }
 
 pub(super) type CommandHandler =
-    for<'a> fn(&mut Tpm2Runtime, &CommandFrame<'a>) -> Result<Vec<u8>, TpmResult>;
+    for<'a> fn(&mut Tpm2Runtime, &CommandFrame<'a>) -> Result<CommandOutput, TpmResult>;
 
 #[derive(Clone, Copy)]
 pub(super) enum CommandLifecycle {

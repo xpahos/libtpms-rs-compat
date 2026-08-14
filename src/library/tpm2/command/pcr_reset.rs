@@ -4,6 +4,7 @@ use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_LOCALITY, TPM_RC_SIZE};
 use super::super::pcr::{PCR_SLOT_BANKS, allocation_selects, pcr_reset_allowed};
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
+use super::output::CommandOutput;
 use super::pcr_update::{
     commit_orderly_clear, commit_pcr_counter, live_pcr_counter, pcr_changed, prepare_orderly_clear,
 };
@@ -17,7 +18,7 @@ struct PreparedReset {
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
-) -> Result<Vec<u8>, TpmResult> {
+) -> Result<CommandOutput, TpmResult> {
     let pcr_handle = frame.handles.first().copied().ok_or(TPM_RC_FAILURE)?;
     if !frame.parameters.is_empty() {
         return Err(TPM_RC_SIZE);
@@ -30,7 +31,7 @@ pub(super) fn execute(
 
     let prepared = prepare_reset(runtime, pcr)?;
     commit_reset(runtime, pcr, prepared)?;
-    Ok(Vec::new())
+    Ok(CommandOutput::empty())
 }
 
 fn prepare_reset(runtime: &Tpm2Runtime, pcr: usize) -> Result<PreparedReset, TpmResult> {
