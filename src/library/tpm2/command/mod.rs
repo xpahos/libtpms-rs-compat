@@ -1,6 +1,7 @@
 mod dispatcher;
 mod get_capability;
 mod get_random;
+mod hash;
 mod header;
 mod hierarchy_change_auth;
 mod incremental_self_test;

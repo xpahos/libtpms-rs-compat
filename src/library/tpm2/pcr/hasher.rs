@@ -1,51 +1,29 @@
-use sha1::{Digest, Sha1};
-use sha2::{Sha256, Sha384, Sha512};
-
+use super::super::crypto::Hasher;
 use super::PCR_SLOT_BANKS;
 
-pub(in crate::library::tpm2) enum BankHasher {
-    Sha1(Sha1),
-    Sha256(Sha256),
-    Sha384(Sha384),
-    Sha512(Sha512),
-}
+pub(in crate::library::tpm2) struct BankHasher(Hasher);
 
 impl BankHasher {
     pub(in crate::library::tpm2) fn all() -> [Self; PCR_SLOT_BANKS.len()] {
-        [
-            Self::Sha1(Sha1::new()),
-            Self::Sha256(Sha256::new()),
-            Self::Sha384(Sha384::new()),
-            Self::Sha512(Sha512::new()),
-        ]
+        core::array::from_fn(|slot| Self::new(slot).expect("every bank slot is compiled"))
     }
 
     pub(in crate::library::tpm2) fn new(slot: usize) -> Option<Self> {
-        Some(match slot {
-            0 => Self::Sha1(Sha1::new()),
-            1 => Self::Sha256(Sha256::new()),
-            2 => Self::Sha384(Sha384::new()),
-            3 => Self::Sha512(Sha512::new()),
-            _ => return None,
-        })
+        let &(hash_alg, _) = PCR_SLOT_BANKS.get(slot)?;
+        Hasher::new(hash_alg).map(Self)
+    }
+
+    #[cfg(test)]
+    pub(in crate::library::tpm2) fn hash_alg(&self) -> u16 {
+        self.0.hash_alg()
     }
 
     pub(in crate::library::tpm2) fn update(&mut self, data: &[u8]) {
-        match self {
-            Self::Sha1(context) => context.update(data),
-            Self::Sha256(context) => context.update(data),
-            Self::Sha384(context) => context.update(data),
-            Self::Sha512(context) => context.update(data),
-        }
+        self.0.update(data);
     }
 
     pub(in crate::library::tpm2) fn finalize(self) -> Vec<u8> {
-        match self {
-            Self::Sha1(context) => context.finalize().to_vec(),
-            Self::Sha256(context) => context.finalize().to_vec(),
-            Self::Sha384(context) => context.finalize().to_vec(),
-            Self::Sha512(context) => context.finalize().to_vec(),
-        }
+        self.0.finalize()
     }
 
     pub(in crate::library::tpm2) fn extend(
@@ -73,10 +51,10 @@ mod tests {
 
     #[test]
     fn each_slot_selects_its_compiled_algorithm() {
-        assert!(matches!(BankHasher::new(0), Some(BankHasher::Sha1(_))));
-        assert!(matches!(BankHasher::new(1), Some(BankHasher::Sha256(_))));
-        assert!(matches!(BankHasher::new(2), Some(BankHasher::Sha384(_))));
-        assert!(matches!(BankHasher::new(3), Some(BankHasher::Sha512(_))));
+        for (slot, &(hash_alg, _)) in PCR_SLOT_BANKS.iter().enumerate() {
+            let hasher = BankHasher::new(slot).expect("a compiled bank slot");
+            assert_eq!(hasher.hash_alg(), hash_alg, "slot {slot}");
+        }
     }
 
     #[test]
@@ -138,11 +116,7 @@ mod tests {
     fn the_infallible_set_matches_the_fallible_constructor_slot_for_slot() {
         for (slot, hasher) in BankHasher::all().into_iter().enumerate() {
             let expected = BankHasher::new(slot).expect("a compiled bank slot");
-            assert_eq!(
-                core::mem::discriminant(&hasher),
-                core::mem::discriminant(&expected),
-                "slot {slot}"
-            );
+            assert_eq!(hasher.hash_alg(), expected.hash_alg(), "slot {slot}");
         }
     }
 

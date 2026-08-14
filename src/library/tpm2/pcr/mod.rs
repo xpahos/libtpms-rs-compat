@@ -16,20 +16,16 @@ pub(super) use policy::PcrPoliciesFixture;
 #[cfg(test)]
 pub(super) use selection::PcrAllocationFixture;
 
+use super::crypto::COMPILED_HASHES;
 use super::marshal::{BlobReader, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, StateSection, parse_nv_header};
-use super::public::{TPM_ALG_NULL, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512};
+use super::public::TPM_ALG_NULL;
 use super::state::algs_active;
 
 pub(super) const PCR_MAGIC: u32 = 0xe95f_0387;
 const PCR_VERSION: u16 = 2;
 
-pub(super) const PCR_SLOT_BANKS: [(u16, usize); 4] = [
-    (TPM_ALG_SHA1, 20),
-    (TPM_ALG_SHA256, 32),
-    (TPM_ALG_SHA384, 48),
-    (TPM_ALG_SHA512, 64),
-];
+pub(super) const PCR_SLOT_BANKS: [(u16, usize); COMPILED_HASHES.len()] = COMPILED_HASHES;
 
 pub(super) const HCRTM_PCR: usize = 0;
 pub(super) const DRTM_PCR: usize = 17;
@@ -257,6 +253,7 @@ impl PcrFixture {
 mod tests {
     use super::*;
     use crate::library::constants::{TPM_RC_BAD_PARAMETER, TPM_RC_BAD_TAG, TPM_RC_INSUFFICIENT};
+    use crate::library::tpm2::public::{TPM_ALG_SHA1, TPM_ALG_SHA256};
     use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
 
     const TAIL_SENTINEL: [u8; 3] = [0xc1, 0xc2, 0xc3];

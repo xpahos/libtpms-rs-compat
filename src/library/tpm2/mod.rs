@@ -8,6 +8,8 @@ mod compile_constants;
 mod crypto;
 mod dictionary_attack;
 mod failure_mode;
+#[cfg(test)]
+mod hash_vectors;
 mod hierarchy;
 mod info;
 mod live;
@@ -28,6 +30,7 @@ mod runtime;
 mod self_test;
 mod session;
 mod state;
+mod ticket;
 mod tis;
 mod volatile;
 

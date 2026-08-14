@@ -6,6 +6,7 @@ use super::super::volatile::IMPLEMENTATION_PCR;
 use super::dispatcher::CommandFrame;
 use super::get_capability;
 use super::get_random;
+use super::hash;
 use super::hierarchy_change_auth;
 use super::incremental_self_test;
 use super::output::CommandOutput;
@@ -26,6 +27,7 @@ pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
+pub(in crate::library::tpm2) const TPM_CC_HASH: u32 = 0x0000_017d;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 
@@ -170,6 +172,14 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: get_random::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_HASH,
+        attributes: tpma_cc(TPM_CC_HASH, false, 0),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
+        handler: hash::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_PCR_READ,
         attributes: tpma_cc(TPM_CC_PCR_READ, false, 0),
         lifecycle: CommandLifecycle::RequiresStarted,
@@ -264,6 +274,7 @@ mod tests {
             find(TPM_CC_GET_RANDOM).map(|d| d.code),
             Some(TPM_CC_GET_RANDOM)
         );
+        assert_eq!(find(TPM_CC_HASH).map(|d| d.code), Some(TPM_CC_HASH));
         assert_eq!(find(TPM_CC_PCR_READ).map(|d| d.code), Some(TPM_CC_PCR_READ));
         assert_eq!(
             find(TPM_CC_PCR_EXTEND).map(|d| d.code),
@@ -301,9 +312,9 @@ mod tests {
         );
         assert!(
             find(TPM_CC_GET_RANDOM + 1).is_none(),
-            "between GetRandom and PCR_Read"
+            "between GetRandom and Hash"
         );
-        assert!(find(TPM_CC_PCR_READ - 1).is_none(), "just below PCR_Read");
+        assert!(find(TPM_CC_HASH - 1).is_none(), "just below Hash");
         assert!(
             find(TPM_CC_PCR_READ + 1).is_none(),
             "between PCR_Read and PCR_Extend"
@@ -328,6 +339,7 @@ mod tests {
                 TPM_CC_STIR_RANDOM,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
+                TPM_CC_HASH,
                 TPM_CC_PCR_READ,
                 TPM_CC_PCR_EXTEND
             ]
@@ -515,6 +527,35 @@ mod tests {
             descriptor.lifecycle,
             CommandLifecycle::RequiresStarted
         ));
+    }
+
+    #[test]
+    fn hash_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_HASH).unwrap().attributes, 0x0000_017d);
+    }
+
+    #[test]
+    fn hash_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_HASH)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn hash_declares_no_handles_and_allows_sessions() {
+        let descriptor = find(TPM_CC_HASH).unwrap();
+        assert!(descriptor.handles.is_empty());
+        assert!(descriptor.sessions_allowed);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
+    }
+
+    #[test]
+    fn hash_carries_no_nv_attribute() {
+        assert_eq!(find(TPM_CC_HASH).unwrap().attributes & (1 << 22), 0);
     }
 
     #[test]

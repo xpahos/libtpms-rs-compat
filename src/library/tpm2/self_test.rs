@@ -327,6 +327,24 @@ impl SelfTestState {
         Ok(())
     }
 
+    pub(in crate::library::tpm2) fn run_pending_algorithm(
+        &mut self,
+        algorithm: u16,
+    ) -> Result<(), TpmResult> {
+        let Some(test) = PrimitiveTest::for_algorithm(algorithm) else {
+            return Ok(());
+        };
+        if !self.pending.contains(test) {
+            return Ok(());
+        }
+        if !(self.runner)(test) {
+            self.failure = Some(SelfTestFailure { primitive: test });
+            return Err(TPM_RC_FAILURE);
+        }
+        self.pending.remove(test);
+        Ok(())
+    }
+
     pub(in crate::library::tpm2) fn run_selected(
         &mut self,
         requested: &[u16],
@@ -1098,6 +1116,92 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             Err(SelectedTestError::UnsupportedAlgorithm(TPM_ALG_SHA512))
         );
         assert_eq!(restarted.run_selected(&[TPM_ALG_SHA256]), Ok(()));
+    }
+
+    #[test]
+    fn a_pending_algorithm_runs_once_and_stops_being_pending() {
+        let mut state = default_state();
+        state.set_runner(counting_runner);
+        RUN_COUNT.with(|count| count.set(0));
+
+        assert_eq!(state.run_pending_algorithm(TPM_ALG_SHA384), Ok(()));
+        assert_eq!(RUN_COUNT.with(Cell::get), 1);
+        assert!(!state.pending.contains(PrimitiveTest::Sha384));
+
+        assert_eq!(state.run_pending_algorithm(TPM_ALG_SHA384), Ok(()));
+        assert_eq!(RUN_COUNT.with(Cell::get), 1, "an already tested primitive");
+        assert!(state.failure.is_none());
+    }
+
+    #[test]
+    fn a_pending_algorithm_leaves_the_other_primitives_pending() {
+        let mut state = default_state();
+        assert_eq!(state.run_pending_algorithm(TPM_ALG_SHA256), Ok(()));
+        assert_eq!(
+            state.pending_algorithms(),
+            [TPM_ALG_SHA1, TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_SHA512]
+        );
+    }
+
+    #[test]
+    fn an_algorithm_without_a_primitive_test_runs_nothing() {
+        let mut state = default_state();
+        state.set_runner(never_runs);
+        for algorithm in [TPM_ALG_RSA, TPM_ALG_HMAC, TPM_ALG_ERROR, 0x0027, 0xffff] {
+            assert_eq!(
+                state.run_pending_algorithm(algorithm),
+                Ok(()),
+                "algorithm {algorithm:#06x}"
+            );
+        }
+        assert_eq!(state.pending, state.implemented);
+        assert!(state.failure.is_none());
+    }
+
+    #[test]
+    fn an_algorithm_outside_the_profile_runs_nothing_and_is_not_an_error() {
+        let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
+        let mut state = SelfTestState::for_algorithms(&algorithms);
+        state.set_runner(never_runs);
+        assert_eq!(
+            state.run_pending_algorithm(TPM_ALG_SHA512),
+            Ok(()),
+            "internal use never reports the unsupported-algorithm error TPM2_IncrementalSelfTest \
+             answers with"
+        );
+        assert_eq!(state.pending, state.implemented);
+        assert!(state.failure.is_none());
+    }
+
+    #[test]
+    fn a_failed_pending_algorithm_stays_pending_and_records_the_primitive() {
+        let mut state = default_state();
+        state.set_runner(fails_on_sha384);
+        assert_eq!(
+            state.run_pending_algorithm(TPM_ALG_SHA384),
+            Err(TPM_RC_FAILURE)
+        );
+        assert!(state.pending.contains(PrimitiveTest::Sha384));
+        assert_eq!(
+            state.failure,
+            Some(SelfTestFailure {
+                primitive: PrimitiveTest::Sha384
+            })
+        );
+        assert_eq!(state.pending, state.implemented, "nothing else ran");
+    }
+
+    #[test]
+    fn a_retry_after_a_failed_pending_algorithm_can_succeed() {
+        let mut state = default_state();
+        state.set_runner(fails_on_sha384);
+        assert_eq!(
+            state.run_pending_algorithm(TPM_ALG_SHA384),
+            Err(TPM_RC_FAILURE)
+        );
+        state.set_runner(always_passes);
+        assert_eq!(state.run_pending_algorithm(TPM_ALG_SHA384), Ok(()));
+        assert!(!state.pending.contains(PrimitiveTest::Sha384));
     }
 
     #[test]
