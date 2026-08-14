@@ -61,6 +61,32 @@ pub(in crate::library::tpm2) struct DrbgBoundaryRecord {
     pub(in crate::library::tpm2) cases: [DrbgBoundaryCase; BOUNDARY_CASES],
 }
 
+pub(in crate::library::tpm2) struct DrbgStirCase {
+    pub(in crate::library::tpm2) initial_seed: [u8; 48],
+    pub(in crate::library::tpm2) initial_reseed_counter: u64,
+    pub(in crate::library::tpm2) initial_last_value: [u32; 4],
+    pub(in crate::library::tpm2) entropy: [u8; 48],
+    additional_size: u16,
+    additional: [u8; 128],
+    pub(in crate::library::tpm2) derived: [u8; 48],
+    pub(in crate::library::tpm2) seed_after: [u8; 48],
+    pub(in crate::library::tpm2) reseed_counter_after: u64,
+    pub(in crate::library::tpm2) last_value_after: [u32; 4],
+    pub(in crate::library::tpm2) next_output: [u8; 64],
+}
+
+impl DrbgStirCase {
+    pub(in crate::library::tpm2) fn additional(&self) -> &[u8] {
+        &self.additional[..usize::from(self.additional_size)]
+    }
+}
+
+pub(in crate::library::tpm2) const STIR_CASES: usize = 6;
+
+pub(in crate::library::tpm2) struct DrbgStirRecord {
+    pub(in crate::library::tpm2) cases: [DrbgStirCase; STIR_CASES],
+}
+
 const RECORD_SIZE: usize = 48 + 16 + 8 + 64 + 6 * 64 + 48 + 8 + 16;
 
 const GENERATE_STEP_SIZE: usize = 2 + 64 + 48 + 8 + 16;
@@ -71,9 +97,15 @@ const BOUNDARY_RECORD_SIZE: usize = 48 + 16 + BOUNDARY_CASES * BOUNDARY_CASE_SIZ
 
 const GENERATE_FIXTURE_SIZE: usize = 2 * GENERATE_RECORD_SIZE + 2 * BOUNDARY_RECORD_SIZE;
 
+const STIR_CASE_SIZE: usize = 48 + 8 + 16 + 48 + 2 + 128 + 48 + 48 + 8 + 16 + 64;
+const STIR_RECORD_SIZE: usize = STIR_CASES * STIR_CASE_SIZE;
+const STIR_FIXTURE_SIZE: usize = 2 * STIR_RECORD_SIZE;
+
 const FIXTURE: &[u8] = include_bytes!("../testdata/drbg_manufacture_vectors.bin");
 
 const GENERATE_FIXTURE: &[u8] = include_bytes!("../testdata/drbg_generate_vectors.bin");
+
+const STIR_FIXTURE: &[u8] = include_bytes!("../testdata/drbg_stir_vectors.bin");
 
 struct Reader<'a>(&'a [u8]);
 
@@ -151,6 +183,35 @@ pub(in crate::library::tpm2) fn generate_record(continuous_test: bool) -> DrbgGe
                 seed_after: reader.array(),
                 reseed_counter_after: reader.u64(),
                 last_value_after: reader.last_value(),
+            }
+        }),
+    }
+}
+
+pub(in crate::library::tpm2) fn stir_record(continuous_test: bool) -> DrbgStirRecord {
+    assert_eq!(
+        STIR_FIXTURE.len(),
+        STIR_FIXTURE_SIZE,
+        "stale fixture layout"
+    );
+    let offset = usize::from(continuous_test) * STIR_RECORD_SIZE;
+    let record = &STIR_FIXTURE[offset..offset + STIR_RECORD_SIZE];
+    DrbgStirRecord {
+        cases: core::array::from_fn(|index| {
+            let start = index * STIR_CASE_SIZE;
+            let mut reader = Reader(&record[start..start + STIR_CASE_SIZE]);
+            DrbgStirCase {
+                initial_seed: reader.array(),
+                initial_reseed_counter: reader.u64(),
+                initial_last_value: reader.last_value(),
+                entropy: reader.array(),
+                additional_size: reader.u16(),
+                additional: reader.array(),
+                derived: reader.array(),
+                seed_after: reader.array(),
+                reseed_counter_after: reader.u64(),
+                last_value_after: reader.last_value(),
+                next_output: reader.array(),
             }
         }),
     }

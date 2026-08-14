@@ -13,6 +13,12 @@ pub(in crate::library::tpm2) const DRBG_SEED_SIZE: usize = DRBG_KEY_SIZE + DRBG_
 
 pub(in crate::library::tpm2) const CTR_DRBG_MAX_REQUESTS_PER_RESEED: u64 = 1 << 20;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::library::tpm2) enum StirError {
+    Entropy,
+    Fatal(TpmResult),
+}
+
 pub(in crate::library::tpm2) struct Drbg {
     reseed_counter: u64,
     seed: [u8; DRBG_SEED_SIZE],
@@ -29,7 +35,7 @@ fn increment_iv(iv: &mut [u8; DRBG_IV_SIZE]) {
     }
 }
 
-fn encrypt_block(cipher: &aes::Aes256, block: [u8; DRBG_IV_SIZE]) -> [u8; DRBG_IV_SIZE] {
+pub(super) fn encrypt_block(cipher: &aes::Aes256, block: [u8; DRBG_IV_SIZE]) -> [u8; DRBG_IV_SIZE] {
     let mut block = aes::Block::from(block);
     cipher.encrypt_block(&mut block);
     block.into()
@@ -80,6 +86,21 @@ impl Drbg {
         let mut seed_material = [0u8; DRBG_SEED_SIZE];
         entropy(&mut seed_material)?;
         self.reseed(&seed_material)
+    }
+
+    pub(in crate::library::tpm2) fn stir(
+        &mut self,
+        entropy: EntropySource,
+        additional_data: Option<&[u8; DRBG_SEED_SIZE]>,
+    ) -> Result<(), StirError> {
+        let mut seed_material = [0u8; DRBG_SEED_SIZE];
+        entropy(&mut seed_material).map_err(|_| StirError::Entropy)?;
+        if let Some(data) = additional_data {
+            for (byte, data_byte) in seed_material.iter_mut().zip(data) {
+                *byte ^= data_byte;
+            }
+        }
+        self.reseed(&seed_material).map_err(StirError::Fatal)
     }
 
     fn reseed(&mut self, provided_entropy: &[u8; DRBG_SEED_SIZE]) -> Result<(), TpmResult> {

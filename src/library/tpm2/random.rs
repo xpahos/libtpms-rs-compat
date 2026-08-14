@@ -1,15 +1,29 @@
 use crate::ffi_types::TpmResult;
-use crate::library::constants::TPM_RC_FAILURE;
+use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NO_RESULT};
 
-use super::crypto::{DRBG_MAGIC, Drbg};
+use super::crypto::{DRBG_MAGIC, Drbg, StirError, df_buffer};
 use super::persistent::{OwnedDrbgState, OwnedSecret};
 use super::profile::ATTRIBUTE_DRBG_CONTINUOUS_TEST;
 use super::runtime::Tpm2Runtime;
 
-pub(super) fn generate_random(
-    runtime: &mut Tpm2Runtime,
-    length: usize,
-) -> Result<Vec<u8>, TpmResult> {
+pub(super) fn stir_random(runtime: &mut Tpm2Runtime, in_data: &[u8]) -> Result<(), TpmResult> {
+    let (mut drbg, magic) = restore_live_drbg(runtime)?;
+    let additional = df_buffer(in_data);
+    match drbg.stir(runtime.entropy, additional.as_ref()) {
+        Ok(()) => {}
+        Err(StirError::Entropy) => return Err(TPM_RC_NO_RESULT),
+        Err(StirError::Fatal(_)) => return Err(fatal_drbg_failure(runtime)),
+    }
+    runtime.live.orderly.drbg_state = OwnedDrbgState {
+        reseed_counter: drbg.reseed_counter(),
+        drbg_magic: magic,
+        seed: OwnedSecret::copy_of(drbg.seed()),
+        last_value: drbg.last_value(),
+    };
+    Ok(())
+}
+
+fn restore_live_drbg(runtime: &mut Tpm2Runtime) -> Result<(Drbg, u32), TpmResult> {
     // TODO: Support runtimes without decoded state after the NVChip fallback
     // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
@@ -28,10 +42,17 @@ pub(super) fn generate_random(
         stored.last_value,
         continuous_test,
     );
-    let mut drbg = match restored {
-        Ok(drbg) => drbg,
-        Err(_) => return Err(fatal_drbg_failure(runtime)),
-    };
+    match restored {
+        Ok(drbg) => Ok((drbg, magic)),
+        Err(_) => Err(fatal_drbg_failure(runtime)),
+    }
+}
+
+pub(super) fn generate_random(
+    runtime: &mut Tpm2Runtime,
+    length: usize,
+) -> Result<Vec<u8>, TpmResult> {
+    let (mut drbg, magic) = restore_live_drbg(runtime)?;
 
     if drbg.needs_reseed() && drbg.reseed_from_entropy(runtime.entropy).is_err() {
         return Err(fatal_drbg_failure(runtime));
@@ -63,7 +84,7 @@ mod tests {
     use crate::library::constants::TPM_FAIL;
     use crate::library::tpm2::crypto::{
         CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_SEED_SIZE, DrbgBoundaryCase, DrbgBoundaryRecord,
-        DrbgGenerateRecord, boundary_record, generate_record,
+        DrbgGenerateRecord, DrbgStirCase, boundary_record, generate_record, stir_record,
     };
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::validate_user_profile;
@@ -553,6 +574,297 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn install_stir(runtime: &mut Tpm2Runtime, case: &DrbgStirCase) {
+        install(
+            runtime,
+            &case.initial_seed,
+            case.initial_reseed_counter,
+            case.initial_last_value,
+        );
+    }
+
+    fn stir_runtime(continuous_test: bool) -> Box<Tpm2Runtime> {
+        let mut runtime = runtime_for(continuous_test);
+        runtime.entropy = recording_entropy;
+        take_entropy_requests();
+        runtime
+    }
+
+    #[test]
+    fn the_test_entropy_pattern_is_the_block_the_oracle_injected() {
+        let mut block = [0u8; DRBG_SEED_SIZE];
+        deterministic_entropy(&mut block).expect("fills");
+        for continuous_test in [false, true] {
+            for (index, case) in stir_record(continuous_test).cases.iter().enumerate() {
+                assert_eq!(case.entropy, block, "continuous {continuous_test}, {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_stir_matches_the_vendored_oracle() {
+        for continuous_test in [false, true] {
+            let record = stir_record(continuous_test);
+            for (index, case) in record.cases.iter().enumerate() {
+                let mut runtime = stir_runtime(continuous_test);
+                install_stir(&mut runtime, case);
+
+                stir_random(&mut runtime, case.additional()).expect("the live DRBG stirs");
+
+                let live = live_drbg(&runtime);
+                assert_eq!(
+                    live.seed, case.seed_after,
+                    "seed after continuous {continuous_test}, case {index}"
+                );
+                assert_eq!(
+                    live.reseed_counter, case.reseed_counter_after,
+                    "counter after continuous {continuous_test}, case {index}"
+                );
+                assert_eq!(
+                    live.last_value, case.last_value_after,
+                    "lastValue after continuous {continuous_test}, case {index}"
+                );
+                assert_eq!(live.drbg_magic, DRBG_MAGIC, "the magic is preserved");
+                assert!(!runtime.failure_mode);
+            }
+        }
+    }
+
+    #[test]
+    fn the_stream_after_a_stir_matches_the_vendored_oracle() {
+        for continuous_test in [false, true] {
+            let record = stir_record(continuous_test);
+            for (index, case) in record.cases.iter().enumerate() {
+                let mut runtime = stir_runtime(continuous_test);
+                install_stir(&mut runtime, case);
+                stir_random(&mut runtime, case.additional()).expect("stirs");
+
+                let produced = generate_random(&mut runtime, 64).expect("generates");
+                assert_eq!(
+                    produced, case.next_output,
+                    "continuous {continuous_test}, case {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stir_forces_the_counter_to_one_and_the_next_request_advances_to_two() {
+        for continuous_test in [false, true] {
+            let record = stir_record(continuous_test);
+            for (index, case) in record.cases.iter().enumerate() {
+                let mut runtime = stir_runtime(continuous_test);
+                install_stir(&mut runtime, case);
+                stir_random(&mut runtime, case.additional()).expect("stirs");
+                assert_eq!(case.reseed_counter_after, 1, "the oracle forced 1 too");
+                assert_eq!(live_drbg(&runtime).reseed_counter, 1, "case {index}");
+
+                generate_random(&mut runtime, 16).expect("generates");
+                assert_eq!(live_drbg(&runtime).reseed_counter, 2, "case {index}");
+                assert_eq!(
+                    take_entropy_requests(),
+                    [DRBG_SEED_SIZE],
+                    "the request after a stir does not reseed again, case {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stir_draws_exactly_one_full_seed_block() {
+        for continuous_test in [false, true] {
+            let record = stir_record(continuous_test);
+            for (index, case) in record.cases.iter().enumerate() {
+                let mut runtime = stir_runtime(continuous_test);
+                install_stir(&mut runtime, case);
+                stir_random(&mut runtime, case.additional()).expect("stirs");
+                assert_eq!(
+                    take_entropy_requests(),
+                    [DRBG_SEED_SIZE],
+                    "continuous {continuous_test}, case {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_input_reseeds_from_entropy_alone() {
+        let record = stir_record(false);
+        let case = &record.cases[0];
+        assert!(
+            case.additional().is_empty(),
+            "the fixture leads with 0 bytes"
+        );
+        assert_eq!(case.derived, [0; DRBG_SEED_SIZE], "DfBuffer returned NULL");
+
+        let mut runtime = stir_runtime(false);
+        install_stir(&mut runtime, case);
+        stir_random(&mut runtime, &[]).expect("stirs");
+        let entropy_only = live_drbg(&runtime);
+        assert_eq!(entropy_only.seed, case.seed_after);
+
+        let mut runtime = stir_runtime(false);
+        install_stir(&mut runtime, case);
+        stir_random(&mut runtime, &[0x00]).expect("stirs");
+        assert_ne!(
+            live_drbg(&runtime).seed,
+            entropy_only.seed,
+            "a one-byte input is not the same as no input"
+        );
+    }
+
+    #[test]
+    fn a_non_empty_input_changes_the_resulting_state() {
+        let record = stir_record(false);
+        let mut runtime = stir_runtime(false);
+        install_stir(&mut runtime, &record.cases[0]);
+        stir_random(&mut runtime, &[]).expect("stirs");
+        let entropy_only = live_drbg(&runtime).seed;
+
+        for length in [1usize, 16, 48, 128] {
+            let input: Vec<u8> = (0..length).map(|index| index as u8).collect();
+            let mut runtime = stir_runtime(false);
+            install_stir(&mut runtime, &record.cases[0]);
+            stir_random(&mut runtime, &input).expect("stirs");
+            assert_ne!(live_drbg(&runtime).seed, entropy_only, "length {length}");
+        }
+    }
+
+    #[test]
+    fn different_inputs_of_the_same_length_produce_different_states() {
+        let record = stir_record(false);
+        let (left, right) = (&record.cases[2], &record.cases[3]);
+        assert_eq!(
+            left.additional().len(),
+            right.additional().len(),
+            "16 bytes"
+        );
+        assert_ne!(left.additional(), right.additional());
+
+        let mut states = Vec::new();
+        for case in [left, right] {
+            let mut runtime = stir_runtime(false);
+            install_stir(&mut runtime, &record.cases[0]);
+            stir_random(&mut runtime, case.additional()).expect("stirs");
+            states.push(live_drbg(&runtime).seed);
+        }
+        assert_ne!(states[0], states[1]);
+    }
+
+    #[test]
+    fn a_successful_stir_leaves_the_persistent_state_and_nv_alone() {
+        for continuous_test in [false, true] {
+            let record = stir_record(continuous_test);
+            for case in &record.cases {
+                let mut runtime = stir_runtime(continuous_test);
+                install_stir(&mut runtime, case);
+                let persistent = persistent_snapshot(&runtime);
+                stir_random(&mut runtime, case.additional()).expect("stirs");
+                assert_persistent_unchanged(&runtime, &persistent);
+                assert!(!runtime.failure_mode, "a served stir is not fatal");
+            }
+        }
+    }
+
+    #[test]
+    fn an_entropy_failure_reports_no_result_and_changes_nothing() {
+        for continuous_test in [false, true] {
+            let record = stir_record(continuous_test);
+            for case in &record.cases {
+                let mut runtime = runtime_for(continuous_test);
+                runtime.entropy = failing_entropy;
+                install_stir(&mut runtime, case);
+                let before = live_drbg(&runtime);
+                let persistent = persistent_snapshot(&runtime);
+
+                assert_eq!(
+                    stir_random(&mut runtime, case.additional()),
+                    Err(TPM_RC_NO_RESULT)
+                );
+                assert!(
+                    !runtime.failure_mode,
+                    "upstream CryptRandomStir does not fail the TPM"
+                );
+                assert_live_drbg_unchanged(&runtime, &before);
+                assert_persistent_unchanged(&runtime, &persistent);
+            }
+        }
+    }
+
+    #[test]
+    fn a_malformed_seed_length_fails_the_stir_transactionally() {
+        for length in [0usize, 1, 47, 49, 64] {
+            let mut runtime = stir_runtime(false);
+            install(&mut runtime, &vec![0x5a; length], 3, [1, 2, 3, 4]);
+            let before = live_drbg(&runtime);
+            let persistent = persistent_snapshot(&runtime);
+            assert_eq!(stir_random(&mut runtime, &[0x11; 16]), Err(TPM_RC_FAILURE));
+            assert!(runtime.failure_mode, "a fatal DRBG error stops the TPM");
+            assert_live_drbg_unchanged(&runtime, &before);
+            assert_persistent_unchanged(&runtime, &persistent);
+            assert_eq!(
+                take_entropy_requests(),
+                [] as [usize; 0],
+                "the state check precedes entropy collection"
+            );
+        }
+    }
+
+    #[test]
+    fn a_foreign_magic_fails_the_stir_instead_of_reseeding() {
+        let record = stir_record(false);
+        for magic in [0u32, DRBG_MAGIC ^ 1, 0xffff_ffff] {
+            let mut runtime = stir_runtime(false);
+            install_stir(&mut runtime, &record.cases[0]);
+            runtime.live.orderly.drbg_state.drbg_magic = magic;
+            let before = live_drbg(&runtime);
+            let persistent = persistent_snapshot(&runtime);
+            assert_eq!(stir_random(&mut runtime, &[0x11; 16]), Err(TPM_RC_FAILURE));
+            assert!(runtime.failure_mode);
+            assert_live_drbg_unchanged(&runtime, &before);
+            assert_persistent_unchanged(&runtime, &persistent);
+        }
+    }
+
+    #[test]
+    fn a_stir_on_a_runtime_without_decoded_state_fails_transactionally() {
+        let record = stir_record(false);
+        let mut runtime = empty_state_runtime();
+        runtime.entropy = unreachable_entropy;
+        install_stir(&mut runtime, &record.cases[0]);
+        let before = live_drbg(&runtime);
+        assert_eq!(stir_random(&mut runtime, &[0x11; 16]), Err(TPM_RC_FAILURE));
+        assert!(!runtime.failure_mode);
+        assert_live_drbg_unchanged(&runtime, &before);
+        assert!(!runtime.nv_update_pending);
+    }
+
+    #[test]
+    fn the_continuous_test_attribute_reaches_the_stir() {
+        let plain = stir_record(false);
+        let continuous = stir_record(true);
+        for (index, (left, right)) in plain.cases.iter().zip(&continuous.cases).enumerate() {
+            assert_eq!(left.seed_after, right.seed_after, "case {index}");
+            assert_eq!(left.last_value_after, [0; 4], "plain mode never writes");
+            assert_ne!(right.last_value_after, [0; 4], "case {index}");
+        }
+
+        let case = &continuous.cases[0];
+        let mut runtime = stir_runtime(true);
+        install_stir(&mut runtime, case);
+        stir_random(&mut runtime, case.additional()).expect("stirs");
+        assert_eq!(live_drbg(&runtime).last_value, case.last_value_after);
+
+        let mut runtime = stir_runtime(false);
+        install_stir(&mut runtime, case);
+        stir_random(&mut runtime, case.additional()).expect("stirs");
+        assert_eq!(
+            live_drbg(&runtime).last_value,
+            case.initial_last_value,
+            "lastValue is left alone without the attribute"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ use super::pcr_reset;
 use super::self_test;
 use super::shutdown;
 use super::startup;
+use super::stir_random;
 
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
@@ -22,6 +23,7 @@ pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_01
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
+pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
@@ -144,6 +146,14 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: shutdown::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_STIR_RANDOM,
+        attributes: tpma_cc(TPM_CC_STIR_RANDOM, true, 0),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
+        handler: stir_random::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_GET_CAPABILITY,
         attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false, 0),
         lifecycle: CommandLifecycle::RequiresStarted,
@@ -243,6 +253,10 @@ mod tests {
         assert_eq!(find(TPM_CC_STARTUP).map(|d| d.code), Some(TPM_CC_STARTUP));
         assert_eq!(find(TPM_CC_SHUTDOWN).map(|d| d.code), Some(TPM_CC_SHUTDOWN));
         assert_eq!(
+            find(TPM_CC_STIR_RANDOM).map(|d| d.code),
+            Some(TPM_CC_STIR_RANDOM)
+        );
+        assert_eq!(
             find(TPM_CC_GET_CAPABILITY).map(|d| d.code),
             Some(TPM_CC_GET_CAPABILITY)
         );
@@ -277,7 +291,10 @@ mod tests {
             find(TPM_CC_INCREMENTAL_SELF_TEST - 1).is_none(),
             "just below IncrementalSelfTest"
         );
-        assert!(find(TPM_CC_SHUTDOWN + 1).is_none(), "between the entries");
+        assert!(
+            find(TPM_CC_STIR_RANDOM + 1).is_none(),
+            "between StirRandom and GetCapability"
+        );
         assert!(
             find(TPM_CC_GET_CAPABILITY - 1).is_none(),
             "just below GetCapability"
@@ -308,6 +325,7 @@ mod tests {
                 TPM_CC_SELF_TEST,
                 TPM_CC_STARTUP,
                 TPM_CC_SHUTDOWN,
+                TPM_CC_STIR_RANDOM,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
                 TPM_CC_PCR_READ,
@@ -436,6 +454,30 @@ mod tests {
     #[test]
     fn shutdown_attributes_match_the_upstream_tpma_cc() {
         assert_eq!(find(TPM_CC_SHUTDOWN).unwrap().attributes, 0x0040_0145);
+    }
+
+    #[test]
+    fn stir_random_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_STIR_RANDOM).unwrap().attributes, 0x0040_0146);
+    }
+
+    #[test]
+    fn stir_random_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_STIR_RANDOM)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn stir_random_declares_no_handles_and_allows_sessions() {
+        let descriptor = find(TPM_CC_STIR_RANDOM).unwrap();
+        assert!(descriptor.handles.is_empty());
+        assert!(descriptor.sessions_allowed);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
     }
 
     #[test]

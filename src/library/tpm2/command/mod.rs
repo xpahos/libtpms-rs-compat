@@ -14,6 +14,7 @@ mod self_test;
 mod session;
 mod shutdown;
 mod startup;
+mod stir_random;
 
 pub(super) use dispatcher::dispatch;
 pub(super) use header::{

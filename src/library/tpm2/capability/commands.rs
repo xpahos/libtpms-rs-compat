@@ -47,6 +47,7 @@ mod tests {
     const TPMA_CC_SELF_TEST: u32 = 0x0040_0143;
     const TPMA_CC_STARTUP: u32 = 0x0040_0144;
     const TPMA_CC_SHUTDOWN: u32 = 0x0040_0145;
+    const TPMA_CC_STIR_RANDOM: u32 = 0x0040_0146;
     const TPMA_CC_GET_CAPABILITY: u32 = 0x0000_017a;
     const TPMA_CC_GET_RANDOM: u32 = 0x0000_017b;
     const TPMA_CC_PCR_READ: u32 = 0x0000_017e;
@@ -64,6 +65,7 @@ mod tests {
                 TPMA_CC_SELF_TEST,
                 TPMA_CC_STARTUP,
                 TPMA_CC_SHUTDOWN,
+                TPMA_CC_STIR_RANDOM,
                 TPMA_CC_GET_CAPABILITY,
                 TPMA_CC_GET_RANDOM,
                 TPMA_CC_PCR_READ,
@@ -80,11 +82,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0129, 1000);
-        assert_eq!(page.entries.len(), 10);
+        assert_eq!(page.entries.len(), 11);
         assert_eq!(page.entries[0], TPMA_CC_HIERARCHY_CHANGE_AUTH);
 
         let page = implemented(0x012a, 1000);
-        assert_eq!(page.entries.len(), 9);
+        assert_eq!(page.entries.len(), 10);
         assert!(!page.entries.contains(&TPMA_CC_HIERARCHY_CHANGE_AUTH));
     }
 
@@ -95,11 +97,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x013d, 1000);
-        assert_eq!(page.entries.len(), 9);
+        assert_eq!(page.entries.len(), 10);
         assert_eq!(page.entries[0], TPMA_CC_PCR_RESET);
 
         let page = implemented(0x013e, 1000);
-        assert_eq!(page.entries.len(), 8);
+        assert_eq!(page.entries.len(), 9);
         assert!(!page.entries.contains(&TPMA_CC_PCR_RESET));
     }
 
@@ -156,7 +158,7 @@ mod tests {
 
     #[test]
     fn a_start_between_entries_skips_to_the_next_command() {
-        let page = implemented(0x0146, 4);
+        let page = implemented(0x0147, 4);
         assert_eq!(
             page.entries,
             [
@@ -167,6 +169,16 @@ mod tests {
             ]
         );
         assert!(!page.more_data);
+    }
+
+    #[test]
+    fn stir_random_is_advertised_from_its_own_command_code() {
+        let page = implemented(0x0146, 1);
+        assert_eq!(page.entries, [TPMA_CC_STIR_RANDOM]);
+        assert!(page.more_data);
+
+        let page = implemented(0x0147, 1000);
+        assert!(!page.entries.contains(&TPMA_CC_STIR_RANDOM));
     }
 
     #[test]
@@ -206,8 +218,8 @@ mod tests {
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 10);
-        assert_eq!(page.entries.len(), 10);
+        let page = implemented(0, 11);
+        assert_eq!(page.entries.len(), 11);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
@@ -222,14 +234,14 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 10);
+        assert_eq!(page.entries.len(), 11);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 10);
-        assert_eq!(library_count(), 10);
+        assert_eq!(total_count(), 11);
+        assert_eq!(library_count(), 11);
         assert_eq!(vendor_count(), 0);
     }
 
