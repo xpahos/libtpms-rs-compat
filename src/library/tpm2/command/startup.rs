@@ -1617,8 +1617,12 @@ mod tests {
         let clock = RecordingClock::new(1_600_000_500_000, 7_000_000);
         let decoded = parse_volatile_state_blob(&blob, &[], SeedTie::EMPTY, &clock)
             .expect("the pre-startup volatile blob decodes");
-        let owned = crate::library::tpm2::volatile::materialize_volatile_state(&decoded)
-            .expect("materializes");
+        let owned = crate::library::tpm2::volatile::materialize_volatile_state(
+            &decoded,
+            SeedTie::EMPTY,
+            crate::library::tpm2::volatile::CURRENT_OBJECT_VERSION,
+        )
+        .expect("materializes");
         crate::library::tpm2::runtime::merge_volatile_state(&mut runtime, owned);
         crate::library::tpm2::runtime::nv_shadow_restore(&mut runtime);
         runtime.entropy = deterministic_entropy;

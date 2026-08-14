@@ -371,6 +371,7 @@ fn own_index_orderly_ram(ram: &IndexOrderlyRam<'_>) -> Result<OwnedIndexOrderlyR
     })
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) enum OwnedHashPayload {
     Sha1 {
@@ -398,6 +399,7 @@ pub(in crate::library::tpm2) enum OwnedHashPayload {
     },
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedHashState {
     pub(in crate::library::tpm2) state_type: u8,
@@ -405,18 +407,20 @@ pub(in crate::library::tpm2) struct OwnedHashState {
     pub(in crate::library::tpm2) payload: Option<OwnedHashPayload>,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedBnPrime {
     pub(in crate::library::tpm2) numbytes: u16,
     pub(in crate::library::tpm2) data: OwnedSecret,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedPrivateExponent {
     pub(in crate::library::tpm2) primes: [OwnedBnPrime; 4],
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedTpmtPublic {
     pub(in crate::library::tpm2) object_type: u16,
@@ -427,7 +431,7 @@ pub(in crate::library::tpm2) struct OwnedTpmtPublic {
     pub(in crate::library::tpm2) unique: OwnedPublicId,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) enum OwnedPublicId {
     KeyedHash(Vec<u8>),
@@ -436,6 +440,7 @@ pub(in crate::library::tpm2) enum OwnedPublicId {
     Ecc { x: Vec<u8>, y: Vec<u8> },
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedTpmtSensitive {
     pub(in crate::library::tpm2) sensitive_type: u16,
@@ -444,6 +449,7 @@ pub(in crate::library::tpm2) struct OwnedTpmtSensitive {
     pub(in crate::library::tpm2) sensitive: Option<OwnedSecret>,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedObjectBody {
     pub(in crate::library::tpm2) section_version: u16,
@@ -457,6 +463,7 @@ pub(in crate::library::tpm2) struct OwnedObjectBody {
     pub(in crate::library::tpm2) hierarchy: Option<u32>,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedHashObjectBody {
     pub(in crate::library::tpm2) section_version: u16,
@@ -468,6 +475,7 @@ pub(in crate::library::tpm2) struct OwnedHashObjectBody {
     pub(in crate::library::tpm2) hmac_state: Option<(OwnedHashState, OwnedSecret)>,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) enum OwnedAnyObjectBody {
     Unoccupied,
@@ -475,6 +483,7 @@ pub(in crate::library::tpm2) enum OwnedAnyObjectBody {
     Sequence(Box<OwnedHashObjectBody>),
 }
 
+#[derive(Clone)]
 pub(in crate::library::tpm2) struct OwnedAnyObject {
     pub(in crate::library::tpm2) attributes: u32,
     pub(in crate::library::tpm2) body: OwnedAnyObjectBody,

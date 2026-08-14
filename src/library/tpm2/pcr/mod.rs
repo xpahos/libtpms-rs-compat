@@ -23,7 +23,7 @@ use super::public::TPM_ALG_NULL;
 use super::state::algs_active;
 
 pub(super) const PCR_MAGIC: u32 = 0xe95f_0387;
-const PCR_VERSION: u16 = 2;
+pub(super) const PCR_VERSION: u16 = 2;
 
 pub(super) const PCR_SLOT_BANKS: [(u16, usize); COMPILED_HASHES.len()] = COMPILED_HASHES;
 

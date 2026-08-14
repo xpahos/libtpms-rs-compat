@@ -26,7 +26,9 @@ pub(super) use compat_tail::{
 };
 pub(super) use data::{PersistentDataPrefix, parse_persistent_data_prefix};
 pub(super) use orderly::{OrderlyData, parse_orderly_data};
-pub(super) use store::persistent_all_store;
+pub(super) use store::{
+    marshal_orderly_data, marshal_state_clear, marshal_state_reset, persistent_all_store,
+};
 
 #[cfg(test)]
 pub(super) use attach::OwnedOrderlyRamEntry;

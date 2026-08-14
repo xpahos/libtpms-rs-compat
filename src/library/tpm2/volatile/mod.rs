@@ -1,8 +1,15 @@
 mod attach;
+#[cfg_attr(not(test), allow(dead_code))]
+mod store;
 
 pub(super) use attach::{
     OwnedPcr, OwnedSessionProcess, OwnedSessionSlot, OwnedVolatileState, materialize_volatile_state,
 };
+pub(super) use store::{CURRENT_OBJECT_VERSION, volatile_object_version};
+// TODO: Consumed by `TPMLIB_VolatileAll_Store` and
+// `TPMLIB_GetState(TPMLIB_STATE_VOLATILE)` once those entry points exist.
+#[allow(unused_imports)]
+pub(super) use store::{capture_volatile_state, marshal_volatile_state, volatile_all_store};
 
 use sha1::{Digest, Sha1};
 

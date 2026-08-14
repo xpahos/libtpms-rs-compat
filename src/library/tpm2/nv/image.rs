@@ -410,7 +410,7 @@ impl WireWriter {
     }
 }
 
-fn marshal_sym_def_object(w: &mut WireWriter, sym: &SymDefObject) {
+pub(in crate::library::tpm2) fn marshal_sym_def_object(w: &mut WireWriter, sym: &SymDefObject) {
     w.u16(sym.algorithm);
     if let Some(key_bits) = sym.key_bits {
         w.u16(key_bits);

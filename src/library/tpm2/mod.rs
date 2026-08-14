@@ -166,10 +166,17 @@ fn volatile_phase(
         None => volatile::SeedTie::EMPTY,
     };
 
+    let object_version = match runtime.state.as_ref() {
+        Some(state) => volatile::volatile_object_version(state.profile.state_format_level)
+            .map_err(|_| TPM_RC_FAILURE)?,
+        None => volatile::CURRENT_OBJECT_VERSION,
+    };
+
     let owned = {
         let decoded = volatile::parse_volatile_state_blob(&blob, &shadow_views, seed_tie, clock)
             .map_err(|_| TPM_RC_FAILURE)?;
-        volatile::materialize_volatile_state(&decoded).map_err(|_| TPM_RC_FAILURE)?
+        volatile::materialize_volatile_state(&decoded, seed_tie, object_version)
+            .map_err(|_| TPM_RC_FAILURE)?
     };
 
     runtime::merge_volatile_state(runtime, owned);

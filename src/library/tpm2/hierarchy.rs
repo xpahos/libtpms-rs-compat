@@ -2,6 +2,7 @@ use super::persistent::OwnedPersistentData;
 
 pub(super) const TPM_RH_OWNER: u32 = 0x4000_0001;
 pub(super) const TPM_RH_NULL: u32 = 0x4000_0007;
+pub(super) const TPM_RH_UNASSIGNED: u32 = 0x4000_0008;
 pub(super) const TPM_RH_LOCKOUT: u32 = 0x4000_000a;
 pub(super) const TPM_RH_ENDORSEMENT: u32 = 0x4000_000b;
 pub(super) const TPM_RH_PLATFORM: u32 = 0x4000_000c;
@@ -105,6 +106,7 @@ mod tests {
     fn the_permanent_handle_values_match_upstream() {
         assert_eq!(TPM_RH_OWNER, 0x4000_0001);
         assert_eq!(TPM_RH_NULL, 0x4000_0007);
+        assert_eq!(TPM_RH_UNASSIGNED, 0x4000_0008);
         assert_eq!(TPM_RH_LOCKOUT, 0x4000_000a);
         assert_eq!(TPM_RH_ENDORSEMENT, 0x4000_000b);
         assert_eq!(TPM_RH_PLATFORM, 0x4000_000c);

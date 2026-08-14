@@ -3,11 +3,11 @@ use super::persistent::{PersistentAllError, PersistentField, StateSection, parse
 use super::public::{DIGEST_SIZE, NAME_SIZE, SymDefObject, parse_sym_def, read_tpm2b};
 
 pub(super) const SESSION_MAGIC: u32 = 0x44be_9f45;
-const SESSION_VERSION: u16 = 2;
+pub(super) const SESSION_VERSION: u16 = 2;
 pub(super) const SESSION_SLOT_MAGIC: u32 = 0x3664_aebc;
-const SESSION_SLOT_VERSION: u16 = 2;
+pub(super) const SESSION_SLOT_VERSION: u16 = 2;
 
-const EPOCH_CLOCK_SIZE: u8 = 4;
+pub(super) const EPOCH_CLOCK_SIZE: u8 = 4;
 
 const BLOCK_SKIP_SINCE_VERSION: u16 = 2;
 

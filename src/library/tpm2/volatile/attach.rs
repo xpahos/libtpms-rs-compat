@@ -3,7 +3,7 @@ use crate::library::constants::TPM_FAIL;
 
 use super::{
     DecodedVolatileState, IMPLEMENTATION_PCR, MAX_LOADED_OBJECTS, MAX_LOADED_SESSIONS,
-    MAX_SESSION_NUM, RAM_INDEX_SPACE, SessionProcess, TailV4,
+    MAX_SESSION_NUM, RAM_INDEX_SPACE, SeedTie, SessionProcess, TailV4,
 };
 use crate::library::tpm2::clock::RuntimeClock;
 use crate::library::tpm2::pcr::PCR_SLOT_BANKS;
@@ -14,6 +14,7 @@ use crate::library::tpm2::persistent::{
 use crate::library::tpm2::public::SymDefObject;
 use crate::library::tpm2::session::{Session, SessionSlot};
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedSession {
     pub(in crate::library::tpm2) attributes: u32,
@@ -40,13 +41,14 @@ impl core::fmt::Debug for OwnedSession {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedSessionSlot {
     pub(in crate::library::tpm2) occupied: bool,
     pub(in crate::library::tpm2) session: Option<OwnedSession>,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedSessionProcess {
     pub(in crate::library::tpm2) session_handles: [u32; MAX_SESSION_NUM],
@@ -69,7 +71,7 @@ impl core::fmt::Debug for OwnedSessionProcess {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedPcr {
     pub(in crate::library::tpm2) banks: [Option<Vec<u8>>; PCR_SLOT_BANKS.len()],
@@ -118,6 +120,10 @@ pub(in crate::library::tpm2) struct OwnedVolatileState {
     pub(in crate::library::tpm2) times_are_realtime: bool,
     pub(in crate::library::tpm2) tail_v4: Option<TailV4>,
     pub(in crate::library::tpm2) resume_clock: RuntimeClock,
+    pub(in crate::library::tpm2) ep_seed: OwnedSecret,
+    pub(in crate::library::tpm2) sp_seed: OwnedSecret,
+    pub(in crate::library::tpm2) pp_seed: OwnedSecret,
+    pub(in crate::library::tpm2) object_version: u16,
 }
 
 fn own_session(session: &Session<'_>) -> OwnedSession {
@@ -169,6 +175,8 @@ fn own_session_process(process: &SessionProcess<'_>) -> OwnedSessionProcess {
 
 pub(in crate::library::tpm2) fn materialize_volatile_state(
     decoded: &DecodedVolatileState<'_>,
+    seeds: SeedTie<'_>,
+    object_version: u16,
 ) -> Result<OwnedVolatileState, TpmResult> {
     if decoded.objects.len() != MAX_LOADED_OBJECTS
         || decoded.pcrs.len() != IMPLEMENTATION_PCR
@@ -238,11 +246,16 @@ pub(in crate::library::tpm2) fn materialize_volatile_state(
         times_are_realtime: decoded.times_are_realtime,
         tail_v4: decoded.tail_v4,
         resume_clock: decoded.resume_clock,
+        ep_seed: OwnedSecret::copy_of(seeds.ep_seed),
+        sp_seed: OwnedSecret::copy_of(seeds.sp_seed),
+        pp_seed: OwnedSecret::copy_of(seeds.pp_seed),
+        object_version,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::store::CURRENT_OBJECT_VERSION;
     use super::super::{VolatileFixture, parse_volatile_state_blob};
     use super::*;
     use crate::library::tpm2::clock::RecordingClock;
@@ -255,7 +268,12 @@ mod tests {
         let decoded =
             parse_volatile_state_blob(blob, &[], VolatileFixture::seed_tie(), &test_clock())
                 .expect("decodes");
-        materialize_volatile_state(&decoded).expect("materializes")
+        materialize_volatile_state(
+            &decoded,
+            VolatileFixture::seed_tie(),
+            CURRENT_OBJECT_VERSION,
+        )
+        .expect("materializes")
     }
 
     #[test]
@@ -325,28 +343,60 @@ mod tests {
 
         let mut mutated = decoded;
         mutated.objects.pop();
-        assert_eq!(materialize_volatile_state(&mutated).unwrap_err(), TPM_FAIL);
+        assert_eq!(
+            materialize_volatile_state(
+                &mutated,
+                VolatileFixture::seed_tie(),
+                CURRENT_OBJECT_VERSION
+            )
+            .unwrap_err(),
+            TPM_FAIL
+        );
 
         let decoded =
             parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
                 .expect("decodes");
         let mut mutated = decoded;
         mutated.pcrs.pop();
-        assert_eq!(materialize_volatile_state(&mutated).unwrap_err(), TPM_FAIL);
+        assert_eq!(
+            materialize_volatile_state(
+                &mutated,
+                VolatileFixture::seed_tie(),
+                CURRENT_OBJECT_VERSION
+            )
+            .unwrap_err(),
+            TPM_FAIL
+        );
 
         let decoded =
             parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
                 .expect("decodes");
         let mut mutated = decoded;
         mutated.sessions.pop();
-        assert_eq!(materialize_volatile_state(&mutated).unwrap_err(), TPM_FAIL);
+        assert_eq!(
+            materialize_volatile_state(
+                &mutated,
+                VolatileFixture::seed_tie(),
+                CURRENT_OBJECT_VERSION
+            )
+            .unwrap_err(),
+            TPM_FAIL
+        );
 
         let decoded =
             parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
                 .expect("decodes");
         let mut mutated = decoded;
         mutated.index_orderly_ram = &mutated.index_orderly_ram[..500];
-        assert_eq!(materialize_volatile_state(&mutated).unwrap_err(), TPM_FAIL);
+        assert_eq!(
+            materialize_volatile_state(
+                &mutated,
+                VolatileFixture::seed_tie(),
+                CURRENT_OBJECT_VERSION
+            )
+            .unwrap_err(),
+            TPM_FAIL
+        );
     }
 
     #[test]
@@ -356,6 +406,14 @@ mod tests {
             parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
                 .expect("decodes");
         decoded.sessions[0].occupied = false;
-        assert_eq!(materialize_volatile_state(&decoded).unwrap_err(), TPM_FAIL);
+        assert_eq!(
+            materialize_volatile_state(
+                &decoded,
+                VolatileFixture::seed_tie(),
+                CURRENT_OBJECT_VERSION
+            )
+            .unwrap_err(),
+            TPM_FAIL
+        );
     }
 }

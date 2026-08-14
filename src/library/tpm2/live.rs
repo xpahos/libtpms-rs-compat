@@ -1,16 +1,21 @@
 use super::clock::RuntimeClock;
+use super::hierarchy::TPM_RH_UNASSIGNED;
 use super::nv::RAM_INDEX_SPACE;
 use super::persistent::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedDrbgState, OwnedIndexOrderlyRam, OwnedOrderlyData,
     OwnedSecret, OwnedStateClearData, OwnedStateResetData,
 };
+use super::runtime::NV_MEMORY_SIZE;
 use super::volatile::{
-    IMPLEMENTATION_PCR, MAX_LOADED_OBJECTS, MAX_LOADED_SESSIONS, OwnedPcr, OwnedSessionProcess,
-    OwnedSessionSlot, OwnedVolatileState, TailV4,
+    IMPLEMENTATION_PCR, MAX_LOADED_OBJECTS, MAX_LOADED_SESSIONS, MAX_SESSION_NUM, OwnedPcr,
+    OwnedSessionProcess, OwnedSessionSlot, OwnedVolatileState, TailV4,
 };
-use crate::library::tpm2::state::MAX_ACTIVE_SESSIONS;
+use crate::library::tpm2::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
 
 const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const CLOCK_NOMINAL: u32 = 30_000;
 
 #[derive(Debug)]
 pub(super) struct LiveState {
@@ -88,6 +93,56 @@ pub(super) fn empty_index_orderly_ram() -> OwnedIndexOrderlyRam {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn power_on_state_clear() -> OwnedStateClearData {
+    OwnedStateClearData {
+        sh_enable: false,
+        eh_enable: false,
+        ph_enable_nv: false,
+        platform_alg: 0,
+        platform_policy: Vec::new(),
+        platform_auth: OwnedSecret::from_vec(Vec::new()),
+        pcr_save: core::array::from_fn(|_| None),
+        pcr_auth_values: core::array::from_fn(|_| OwnedSecret::from_vec(Vec::new())),
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn power_on_state_reset() -> OwnedStateResetData {
+    OwnedStateResetData {
+        null_proof: OwnedSecret::from_vec(Vec::new()),
+        null_seed: OwnedSecret::from_vec(Vec::new()),
+        clear_count: 0,
+        object_context_id: 0,
+        context_array: Box::new([0u16; MAX_ACTIVE_SESSIONS]),
+        context_slot_mask: 0xffff,
+        context_counter: 0,
+        command_audit_digest: Vec::new(),
+        restart_count: 0,
+        pcr_counter: 0,
+        commit_counter: 0,
+        commit_nonce: OwnedSecret::from_vec(Vec::new()),
+        commit_array: [0u8; COMMIT_ARRAY_SIZE],
+        null_seed_compat_level: SEED_COMPAT_LEVEL_ORIGINAL,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn empty_session_process() -> OwnedSessionProcess {
+    OwnedSessionProcess {
+        session_handles: [0; MAX_SESSION_NUM],
+        attributes: [0; MAX_SESSION_NUM],
+        associated_handles: [0; MAX_SESSION_NUM],
+        nonce_callers: core::array::from_fn(|_| OwnedSecret::from_vec(Vec::new())),
+        input_auth_values: core::array::from_fn(|_| OwnedSecret::from_vec(Vec::new())),
+        encrypt_session_index: 0,
+        decrypt_session_index: 0,
+        audit_session_index: 0,
+        cp_hash_for_command_audit: Vec::new(),
+        da_pending_on_nv: false,
+    }
+}
+
 impl LiveState {
     pub(super) fn power_on() -> Self {
         Self {
@@ -149,6 +204,33 @@ pub(super) struct RestoredVolatile {
     pub(super) tail_v4: Option<TailV4>,
 }
 
+impl RestoredVolatile {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn power_on() -> Self {
+        Self {
+            header_version: 0,
+            exclusive_audit_session: 0,
+            time: 0,
+            drtm_handle: TPM_RH_UNASSIGNED,
+            session_process: empty_session_process(),
+            evict_nv_end: NV_MEMORY_SIZE as u32,
+            index_orderly_ram_bytes: Vec::new(),
+            max_counter: 0,
+            fail_function: 0,
+            fail_line: 0,
+            fail_code: 0,
+            real_time_previous: 0,
+            tpm_time: 0,
+            timer_reset: true,
+            timer_stopped: true,
+            adjust_rate: CLOCK_NOMINAL,
+            backthen: 0,
+            times_are_realtime: false,
+            tail_v4: None,
+        }
+    }
+}
+
 pub(super) struct RestoredRuntimeFlags {
     pub(super) manufactured: bool,
     pub(super) initialized: bool,
@@ -201,6 +283,10 @@ pub(super) fn split_restored_volatile(
         times_are_realtime,
         tail_v4,
         resume_clock,
+        ep_seed: _,
+        sp_seed: _,
+        pp_seed: _,
+        object_version: _,
     } = volatile;
 
     let live = LiveState {

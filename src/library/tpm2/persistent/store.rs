@@ -154,7 +154,10 @@ fn marshal_persistent_data(
     })
 }
 
-fn marshal_orderly_data(w: &mut WireWriter, data: &OwnedOrderlyData) -> Result<(), TpmResult> {
+pub(in crate::library::tpm2) fn marshal_orderly_data(
+    w: &mut WireWriter,
+    data: &OwnedOrderlyData,
+) -> Result<(), TpmResult> {
     w.nv_header(ORDERLY_DATA_VERSION, ORDERLY_DATA_MAGIC, 1);
     w.u64(data.clock);
     w.u8(data.clock_safe);
@@ -179,7 +182,11 @@ fn marshal_orderly_data(w: &mut WireWriter, data: &OwnedOrderlyData) -> Result<(
     w.block(true, |_| Ok(()))
 }
 
-fn marshal_state_reset(w: &mut WireWriter, data: &OwnedStateResetData) -> Result<(), TpmResult> {
+pub(in crate::library::tpm2) fn marshal_state_reset(
+    w: &mut WireWriter,
+    data: &OwnedStateResetData,
+    null_seed_compat_level: u8,
+) -> Result<(), TpmResult> {
     w.nv_header(STATE_RESET_DATA_VERSION, STATE_RESET_DATA_MAGIC, 4);
     w.tpm2b(data.null_proof.as_bytes())?;
     w.tpm2b(data.null_seed.as_bytes())?;
@@ -206,12 +213,15 @@ fn marshal_state_reset(w: &mut WireWriter, data: &OwnedStateResetData) -> Result
         Ok(())
     })?;
     w.block(true, |w| {
-        w.u8(SEED_COMPAT_LEVEL_ORIGINAL);
+        w.u8(null_seed_compat_level);
         w.block(true, |_| Ok(()))
     })
 }
 
-fn marshal_state_clear(w: &mut WireWriter, data: &OwnedStateClearData) -> Result<(), TpmResult> {
+pub(in crate::library::tpm2) fn marshal_state_clear(
+    w: &mut WireWriter,
+    data: &OwnedStateClearData,
+) -> Result<(), TpmResult> {
     w.nv_header(STATE_CLEAR_DATA_VERSION, STATE_CLEAR_DATA_MAGIC, 1);
     w.u8(u8::from(data.sh_enable));
     w.u8(u8::from(data.eh_enable));
@@ -355,7 +365,7 @@ pub(in crate::library::tpm2) fn persistent_all_store(
         let (Some(reset), Some(clear)) = (&state.state_reset, &state.state_clear) else {
             return Err(TPM_FAIL);
         };
-        marshal_state_reset(&mut w, reset)?;
+        marshal_state_reset(&mut w, reset, SEED_COMPAT_LEVEL_ORIGINAL)?;
         marshal_state_clear(&mut w, clear)?;
     }
 
