@@ -1,6 +1,7 @@
 mod dispatcher;
 mod get_capability;
 mod header;
+mod hierarchy_change_auth;
 mod incremental_self_test;
 mod pcr_extend;
 mod pcr_read;

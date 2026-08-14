@@ -76,7 +76,7 @@ fn parse_handles<'a>(
 }
 
 fn check_authorization<'a>(
-    runtime: &Tpm2Runtime,
+    runtime: &mut Tpm2Runtime,
     descriptor: &CommandDescriptor,
     command: &Command<'_>,
     handles: &[u32],

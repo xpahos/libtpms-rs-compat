@@ -35,6 +35,8 @@ pub(in crate::library) const TPM_RC_HANDLE: TpmResult = 0x08b;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_KDF: TpmResult = 0x08c;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_AUTH_FAIL: TpmResult = 0x08e;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NONCE: TpmResult = 0x08f;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_SCHEME: TpmResult = 0x092;
@@ -70,6 +72,8 @@ pub(in crate::library) const TPM_RC_NO_RESULT: TpmResult = 0x154;
 pub(in crate::library) const TPM_RC_LOCALITY: TpmResult = 0x907;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_REFERENCE_S0: TpmResult = 0x918;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_LOCKOUT: TpmResult = 0x921;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NV_UNAVAILABLE: TpmResult = 0x923;
 

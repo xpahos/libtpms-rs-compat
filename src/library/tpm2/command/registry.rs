@@ -1,9 +1,11 @@
 use crate::ffi_types::TpmResult;
 
+use super::super::hierarchy::is_hierarchy_auth_handle;
 use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::dispatcher::CommandFrame;
 use super::get_capability;
+use super::hierarchy_change_auth;
 use super::incremental_self_test;
 use super::pcr_extend;
 use super::pcr_read;
@@ -12,6 +14,7 @@ use super::self_test;
 use super::shutdown;
 use super::startup;
 
+pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
@@ -21,7 +24,7 @@ pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 
-pub(super) const TPM_RH_NULL: u32 = 0x4000_0007;
+pub(super) use super::super::hierarchy::TPM_RH_NULL;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
@@ -53,6 +56,7 @@ impl CommandLifecycle {
 
 #[derive(Clone, Copy)]
 pub(super) enum HandleKind {
+    HierarchyAuth,
     Pcr,
     PcrAllowNull,
 }
@@ -60,6 +64,7 @@ pub(super) enum HandleKind {
 impl HandleKind {
     pub(super) fn accepts(self, handle: u32) -> bool {
         match self {
+            Self::HierarchyAuth => is_hierarchy_auth_handle(handle),
             Self::Pcr => (handle as usize) < IMPLEMENTATION_PCR,
             Self::PcrAllowNull => (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_NULL,
         }
@@ -81,6 +86,17 @@ pub(in crate::library::tpm2) struct CommandDescriptor {
 }
 
 static COMMANDS: &[CommandDescriptor] = &[
+    CommandDescriptor {
+        code: TPM_CC_HIERARCHY_CHANGE_AUTH,
+        attributes: tpma_cc(TPM_CC_HIERARCHY_CHANGE_AUTH, true, 1),
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::HierarchyAuth,
+            user_auth: true,
+        }],
+        sessions_allowed: true,
+        handler: hierarchy_change_auth::execute,
+    },
     CommandDescriptor {
         code: TPM_CC_PCR_RESET,
         attributes: tpma_cc(TPM_CC_PCR_RESET, false, 1),
@@ -198,6 +214,10 @@ mod tests {
     #[test]
     fn lookup_finds_every_registered_command() {
         assert_eq!(
+            find(TPM_CC_HIERARCHY_CHANGE_AUTH).map(|d| d.code),
+            Some(TPM_CC_HIERARCHY_CHANGE_AUTH)
+        );
+        assert_eq!(
             find(TPM_CC_PCR_RESET).map(|d| d.code),
             Some(TPM_CC_PCR_RESET)
         );
@@ -225,7 +245,15 @@ mod tests {
     #[test]
     fn lookup_rejects_unregistered_command_codes() {
         assert!(find(0x0000_0000).is_none(), "below all entries");
-        assert!(find(TPM_CC_PCR_RESET - 1).is_none(), "just below the first");
+        assert!(
+            find(TPM_CC_HIERARCHY_CHANGE_AUTH - 1).is_none(),
+            "just below the first"
+        );
+        assert!(
+            find(TPM_CC_HIERARCHY_CHANGE_AUTH + 1).is_none(),
+            "between HierarchyChangeAuth and PCR_Reset"
+        );
+        assert!(find(TPM_CC_PCR_RESET - 1).is_none(), "just below PCR_Reset");
         assert!(
             find(TPM_CC_PCR_RESET + 1).is_none(),
             "between PCR_Reset and IncrementalSelfTest"
@@ -259,6 +287,7 @@ mod tests {
         assert_eq!(
             codes,
             [
+                TPM_CC_HIERARCHY_CHANGE_AUTH,
                 TPM_CC_PCR_RESET,
                 TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
@@ -269,6 +298,67 @@ mod tests {
                 TPM_CC_PCR_EXTEND
             ]
         );
+    }
+
+    #[test]
+    fn hierarchy_change_auth_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(
+            find(TPM_CC_HIERARCHY_CHANGE_AUTH).unwrap().attributes,
+            0x0240_0129
+        );
+    }
+
+    #[test]
+    fn hierarchy_change_auth_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_HIERARCHY_CHANGE_AUTH)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn hierarchy_change_auth_declares_one_command_handle_requiring_user_authorization() {
+        let descriptor = find(TPM_CC_HIERARCHY_CHANGE_AUTH).unwrap();
+        assert_eq!(descriptor.handles.len(), 1);
+        assert!(descriptor.handles[0].user_auth);
+        assert!(descriptor.sessions_allowed);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
+    }
+
+    #[test]
+    fn the_hierarchy_auth_handle_kind_accepts_only_the_four_hierarchies() {
+        use crate::library::tpm2::hierarchy::{
+            TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
+        };
+        let kind = find(TPM_CC_HIERARCHY_CHANGE_AUTH).unwrap().handles[0].kind;
+        for handle in [
+            TPM_RH_OWNER,
+            TPM_RH_ENDORSEMENT,
+            TPM_RH_PLATFORM,
+            TPM_RH_LOCKOUT,
+        ] {
+            assert!(kind.accepts(handle), "handle {handle:#x}");
+        }
+        assert!(!kind.accepts(TPM_RH_NULL), "the null hierarchy has no auth");
+        for handle in [
+            0u32,
+            23,
+            IMPLEMENTATION_PCR as u32,
+            0x0100_0000,
+            0x0200_0000,
+            0x0300_0000,
+            0x4000_0000,
+            0x4000_0009,
+            0x4000_000d,
+            0x8000_0000,
+            0x8100_0000,
+            u32::MAX,
+        ] {
+            assert!(!kind.accepts(handle), "handle {handle:#x}");
+        }
     }
 
     #[test]

@@ -1,15 +1,24 @@
+use subtle::ConstantTimeEq;
+
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_ATTRIBUTES, TPM_RC_AUTH_MISSING, TPM_RC_BAD_AUTH, TPM_RC_FAILURE, TPM_RC_HANDLE,
-    TPM_RC_INSUFFICIENT, TPM_RC_NONCE, TPM_RC_REFERENCE_S0, TPM_RC_RESERVED_BITS, TPM_RC_SIZE,
-    TPM_RC_VALUE,
+    TPM_RC_ATTRIBUTES, TPM_RC_AUTH_FAIL, TPM_RC_AUTH_MISSING, TPM_RC_BAD_AUTH, TPM_RC_FAILURE,
+    TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_NONCE, TPM_RC_REFERENCE_S0, TPM_RC_RESERVED_BITS,
+    TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
+use super::super::dictionary_attack::{
+    check_locked_out, is_da_protected_handle, register_lockout_failure,
+};
+use super::super::hierarchy::{
+    TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
+    is_hierarchy_auth_handle,
+};
 use super::super::marshal::{BlobReader, Tpm2bError};
 use super::super::pcr::pcr_auth_value_group;
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::MAX_ACTIVE_SESSIONS;
-use super::registry::{CommandDescriptor, TPM_RH_NULL};
+use super::registry::CommandDescriptor;
 
 const TPM_RC_S: TpmResult = 0x800;
 const TPM_RC_1: TpmResult = 0x100;
@@ -90,7 +99,7 @@ pub(super) fn parse_session_area<'a>(
     Ok(sessions)
 }
 
-fn strip_trailing_zeros(bytes: &[u8]) -> &[u8] {
+pub(super) fn strip_trailing_zeros(bytes: &[u8]) -> &[u8] {
     let end = bytes
         .iter()
         .rposition(|&byte| byte != 0)
@@ -108,9 +117,32 @@ fn auth_value_group(runtime: &Tpm2Runtime, group: usize) -> Result<&[u8], TpmRes
         .ok_or(TPM_RC_FAILURE)
 }
 
+fn hierarchy_auth_value(runtime: &Tpm2Runtime, handle: u32) -> Result<&[u8], TpmResult> {
+    match handle {
+        TPM_RH_PLATFORM => runtime
+            .live
+            .state_clear
+            .as_ref()
+            .map(|clear| clear.platform_auth.as_bytes())
+            .ok_or(TPM_RC_FAILURE),
+        _ => {
+            let persistent = &runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?.persistent;
+            match handle {
+                TPM_RH_OWNER => Ok(persistent.owner_auth.as_bytes()),
+                TPM_RH_ENDORSEMENT => Ok(persistent.endorsement_auth.as_bytes()),
+                TPM_RH_LOCKOUT => Ok(persistent.lockout_auth.as_bytes()),
+                _ => Err(TPM_RC_FAILURE),
+            }
+        }
+    }
+}
+
 fn effective_auth_value(runtime: &Tpm2Runtime, handle: u32) -> Result<&[u8], TpmResult> {
     if handle == TPM_RH_NULL {
         return Ok(&[]);
+    }
+    if is_hierarchy_auth_handle(handle) {
+        return hierarchy_auth_value(runtime, handle);
     }
     match pcr_auth_value_group(handle as usize) {
         Some(group) => auth_value_group(runtime, group),
@@ -119,11 +151,24 @@ fn effective_auth_value(runtime: &Tpm2Runtime, handle: u32) -> Result<&[u8], Tpm
 }
 
 fn password_matches(expected: &[u8], given: &[u8]) -> bool {
-    strip_trailing_zeros(expected) == strip_trailing_zeros(given)
+    let expected = strip_trailing_zeros(expected);
+    let given = strip_trailing_zeros(given);
+    if expected.len() != given.len() {
+        return false;
+    }
+    bool::from(expected.ct_eq(given))
+}
+
+fn failed_password_code(runtime: &mut Tpm2Runtime, handle: u32) -> Result<TpmResult, TpmResult> {
+    if !is_da_protected_handle(handle) {
+        return Ok(TPM_RC_BAD_AUTH);
+    }
+    register_lockout_failure(runtime)?;
+    Ok(TPM_RC_AUTH_FAIL)
 }
 
 pub(super) fn authorize_sessions(
-    runtime: &Tpm2Runtime,
+    runtime: &mut Tpm2Runtime,
     descriptor: &CommandDescriptor,
     handles: &[u32],
     sessions: &[PasswordSession<'_>],
@@ -144,9 +189,12 @@ pub(super) fn authorize_sessions(
         let Some(handle) = associated else {
             return Err(TPM_RC_HANDLE + error_index);
         };
-        let expected = effective_auth_value(runtime, handle)?;
-        if !password_matches(expected, session.password) {
-            return Err(TPM_RC_BAD_AUTH + error_index);
+        if is_da_protected_handle(handle) {
+            check_locked_out(runtime)?;
+        }
+        let matched = password_matches(effective_auth_value(runtime, handle)?, session.password);
+        if !matched {
+            return Err(failed_password_code(runtime, handle)? + error_index);
         }
     }
     Ok(())
@@ -229,21 +277,21 @@ mod tests {
 
     #[test]
     fn a_wrong_password_is_decorated_with_the_first_session_number() {
-        let runtime = empty_state_runtime();
+        let mut runtime = empty_state_runtime();
         let descriptor = descriptor(&ONE_AUTH_HANDLE);
         assert_eq!(
-            authorize_sessions(&runtime, &descriptor, &[10], &[session(b"wrong")]),
+            authorize_sessions(&mut runtime, &descriptor, &[10], &[session(b"wrong")]),
             Err(TPM_RC_BAD_AUTH + SESSION1)
         );
     }
 
     #[test]
     fn a_wrong_password_in_the_second_session_is_decorated_with_its_own_number() {
-        let runtime = empty_state_runtime();
+        let mut runtime = empty_state_runtime();
         let descriptor = descriptor(&TWO_AUTH_HANDLES);
         assert_eq!(
             authorize_sessions(
-                &runtime,
+                &mut runtime,
                 &descriptor,
                 &[10, 11],
                 &[session(&[]), session(b"wrong")]
@@ -253,7 +301,7 @@ mod tests {
         );
         assert_eq!(
             authorize_sessions(
-                &runtime,
+                &mut runtime,
                 &descriptor,
                 &[10, 11],
                 &[session(b"wrong"), session(&[])]
@@ -265,10 +313,10 @@ mod tests {
 
     #[test]
     fn correct_empty_passwords_authorize_every_session() {
-        let runtime = empty_state_runtime();
+        let mut runtime = empty_state_runtime();
         assert_eq!(
             authorize_sessions(
-                &runtime,
+                &mut runtime,
                 &descriptor(&ONE_AUTH_HANDLE),
                 &[10],
                 &[session(&[])]
@@ -277,7 +325,7 @@ mod tests {
         );
         assert_eq!(
             authorize_sessions(
-                &runtime,
+                &mut runtime,
                 &descriptor(&TWO_AUTH_HANDLES),
                 &[10, 11],
                 &[session(&[]), session(&[0x00, 0x00])]
@@ -346,6 +394,84 @@ mod tests {
         assert!(!password_matches(b"pw", b"pW"));
         assert!(!password_matches(&[], b"pw"));
         assert!(!password_matches(&[0x00, 0x01], &[0x01, 0x00]));
+    }
+
+    #[test]
+    fn equal_values_compare_equal_whatever_their_length() {
+        assert!(password_matches(&[], &[]), "both empty");
+        assert!(password_matches(&[0x7f], &[0x7f]), "equal single byte");
+        assert!(
+            password_matches(&[0xa5; 20], &[0xa5; 20]),
+            "equal non-empty"
+        );
+        assert!(password_matches(&[0xaa; 64], &[0xaa; 64]), "equal maximum");
+        assert!(
+            password_matches(&[0x41, 0x42, 0x00], &[0x41, 0x42, 0x00, 0x00, 0x00]),
+            "equal after trailing-zero normalization"
+        );
+    }
+
+    #[test]
+    fn all_zero_values_normalize_to_empty() {
+        assert!(password_matches(&[0x00; 8], &[]));
+        assert!(password_matches(&[], &[0x00; 64]));
+        assert!(password_matches(&[0x00; 3], &[0x00; 20]));
+    }
+
+    #[test]
+    fn a_mismatch_at_any_position_compares_unequal() {
+        let expected = [0x10u8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
+        for position in 0..expected.len() {
+            let mut given = expected;
+            given[position] ^= 0x80;
+            assert!(
+                !password_matches(&expected, &given),
+                "mismatch at byte {position}"
+            );
+        }
+    }
+
+    #[test]
+    fn different_normalized_lengths_compare_unequal() {
+        assert!(!password_matches(&[0x01], &[0x01, 0x02]));
+        assert!(!password_matches(&[], &[0x01]));
+        assert!(!password_matches(b"pw", b"pwd"));
+        assert!(
+            !password_matches(&[0x01, 0x00, 0x01], &[0x01]),
+            "an interior zero is not stripped, so the lengths still differ"
+        );
+    }
+
+    #[test]
+    fn only_the_lockout_hierarchy_takes_the_dictionary_attack_path() {
+        let mut runtime = empty_state_runtime();
+        for handle in [
+            TPM_RH_OWNER,
+            TPM_RH_ENDORSEMENT,
+            TPM_RH_PLATFORM,
+            TPM_RH_NULL,
+            0,
+            23,
+        ] {
+            assert_eq!(
+                failed_password_code(&mut runtime, handle),
+                Ok(TPM_RC_BAD_AUTH),
+                "handle {handle:#x} is DA exempt"
+            );
+        }
+        assert_eq!(
+            failed_password_code(&mut runtime, TPM_RH_LOCKOUT),
+            Err(TPM_RC_FAILURE),
+            "the lockout path records the failure first, and this runtime has no state"
+        );
+    }
+
+    #[test]
+    fn the_password_failure_codes_carry_the_session_decoration() {
+        assert_eq!(TPM_RC_BAD_AUTH + SESSION1, 0x9a2);
+        assert_eq!(TPM_RC_BAD_AUTH + SESSION2, 0xaa2);
+        assert_eq!(TPM_RC_AUTH_FAIL + SESSION1, 0x98e);
+        assert_eq!(TPM_RC_AUTH_FAIL + SESSION2, 0xa8e);
     }
 
     #[test]

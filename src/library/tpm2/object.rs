@@ -1,3 +1,4 @@
+use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use super::marshal::{BlobReader, BlockDisposition, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, PersistentField, StateSection, parse_nv_header};
 use super::public::{
@@ -39,11 +40,6 @@ pub(super) const ATTR_EVENT_SEQ: u32 = 1 << 10;
 pub(super) const ATTR_OCCUPIED: u32 = 1 << 15;
 
 pub(super) const HASH_STATE_COUNT: usize = 4;
-
-pub(super) const TPM_RH_OWNER: u32 = 0x4000_0001;
-pub(super) const TPM_RH_NULL: u32 = 0x4000_0007;
-pub(super) const TPM_RH_ENDORSEMENT: u32 = 0x4000_000b;
-pub(super) const TPM_RH_PLATFORM: u32 = 0x4000_000c;
 
 const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
 const SEED_COMPAT_LEVEL_LAST: u8 = 1;
