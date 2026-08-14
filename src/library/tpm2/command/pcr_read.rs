@@ -4,7 +4,7 @@ use crate::library::constants::{
 };
 
 use super::super::algorithm::{algorithm_enabled, hash_profile_name};
-use super::super::marshal::BlobReader;
+use super::super::marshal::{BlobReader, BlobWriter};
 use super::super::pcr::{HASH_COUNT, PCR_SELECT_MAX, PCR_SELECT_MIN, bank_slot};
 use super::super::persistent::OwnedPcrAllocation;
 use super::super::runtime::Tpm2Runtime;
@@ -37,7 +37,7 @@ pub(super) fn execute(
         .ok_or(TPM_RC_FAILURE)?
         .pcr_counter;
     let digests = collect_digests(runtime, &mut selections)?;
-    Ok(marshal_response(update_counter, &selections, &digests))
+    marshal_response(update_counter, &selections, &digests)
 }
 
 fn parse_parameters(
@@ -175,21 +175,20 @@ fn marshal_response(
     update_counter: u32,
     selections: &[SelectionIn],
     digests: &[Vec<u8>],
-) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&update_counter.to_be_bytes());
-    out.extend_from_slice(&(selections.len() as u32).to_be_bytes());
+) -> Result<Vec<u8>, TpmResult> {
+    let mut writer = BlobWriter::new();
+    writer.write_u32(update_counter);
+    writer.write_u32(u32::try_from(selections.len()).map_err(|_| TPM_RC_FAILURE)?);
     for selection in selections {
-        out.extend_from_slice(&selection.hash_alg.to_be_bytes());
-        out.push(selection.select.len() as u8);
-        out.extend_from_slice(&selection.select);
+        writer.write_u16(selection.hash_alg);
+        writer.write_u8(u8::try_from(selection.select.len()).map_err(|_| TPM_RC_FAILURE)?);
+        writer.write_bytes(&selection.select);
     }
-    out.extend_from_slice(&(digests.len() as u32).to_be_bytes());
+    writer.write_u32(u32::try_from(digests.len()).map_err(|_| TPM_RC_FAILURE)?);
     for digest in digests {
-        out.extend_from_slice(&(digest.len() as u16).to_be_bytes());
-        out.extend_from_slice(digest);
+        writer.write_tpm2b(digest).map_err(|_| TPM_RC_FAILURE)?;
     }
-    out
+    Ok(writer.into_bytes())
 }
 
 #[cfg(test)]

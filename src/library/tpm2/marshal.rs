@@ -77,6 +77,72 @@ pub(super) enum Tpm2bError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BlobWriteError {
+    LengthOverflow { actual: usize, maximum: usize },
+}
+
+pub(super) struct BlobWriter {
+    bytes: Vec<u8>,
+}
+
+impl BlobWriter {
+    pub(super) fn new() -> Self {
+        Self { bytes: Vec::new() }
+    }
+
+    pub(super) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(capacity),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(super) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    pub(super) fn write_u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    pub(super) fn write_u16(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub(super) fn write_u32(&mut self, value: u32) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub(super) fn write_bytes(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    pub(super) fn write_tpm2b(&mut self, payload: &[u8]) -> Result<(), BlobWriteError> {
+        let length = u16::try_from(payload.len()).map_err(|_| BlobWriteError::LengthOverflow {
+            actual: payload.len(),
+            maximum: usize::from(u16::MAX),
+        })?;
+        self.write_u16(length);
+        self.write_bytes(payload);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BlockDisposition {
     AbsentNotNeeded,
     SkippedBytes(u16),
@@ -320,6 +386,135 @@ mod tests {
             let _ = reader.take(len + 1);
             let _ = reader.take(0);
         }
+    }
+
+    #[test]
+    fn a_new_writer_is_empty() {
+        let writer = BlobWriter::new();
+        assert_eq!(writer.len(), 0);
+        assert!(writer.is_empty());
+        assert_eq!(writer.as_slice(), &[] as &[u8]);
+        assert_eq!(writer.into_bytes(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn with_capacity_does_not_change_the_logical_length() {
+        let mut writer = BlobWriter::with_capacity(64);
+        assert_eq!(writer.len(), 0);
+        assert!(writer.is_empty());
+        writer.write_u8(0x11);
+        assert_eq!(writer.len(), 1);
+        assert!(!writer.is_empty());
+    }
+
+    #[test]
+    fn with_capacity_does_not_cap_the_output() {
+        let mut writer = BlobWriter::with_capacity(1);
+        writer.write_bytes(&[0x5a; 4096]);
+        assert_eq!(writer.len(), 4096);
+        assert_eq!(writer.into_bytes(), vec![0x5a; 4096]);
+    }
+
+    #[test]
+    fn u8_is_written_verbatim() {
+        let mut writer = BlobWriter::new();
+        writer.write_u8(0x9f);
+        assert_eq!(writer.as_slice(), &[0x9f]);
+    }
+
+    #[test]
+    fn u16_is_written_big_endian() {
+        let mut writer = BlobWriter::new();
+        writer.write_u16(0x1234);
+        assert_eq!(writer.as_slice(), &[0x12, 0x34]);
+    }
+
+    #[test]
+    fn u32_is_written_big_endian() {
+        let mut writer = BlobWriter::new();
+        writer.write_u32(0xab36_4723);
+        assert_eq!(writer.as_slice(), &[0xab, 0x36, 0x47, 0x23]);
+    }
+
+    #[test]
+    fn sequential_writes_preserve_order() {
+        let mut writer = BlobWriter::new();
+        writer.write_u8(0x01);
+        writer.write_u16(0x0203);
+        writer.write_u32(0x0405_0607);
+        writer.write_bytes(&[0x08, 0x09]);
+        assert_eq!(
+            writer.into_bytes(),
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]
+        );
+    }
+
+    #[test]
+    fn write_bytes_appends_verbatim() {
+        let mut writer = BlobWriter::new();
+        writer.write_bytes(&[0xaa, 0xbb]);
+        writer.write_bytes(&[0xcc]);
+        assert_eq!(writer.as_slice(), &[0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn writing_an_empty_slice_is_a_no_op() {
+        let mut writer = BlobWriter::new();
+        writer.write_bytes(&[]);
+        assert!(writer.is_empty());
+        writer.write_u8(0x77);
+        writer.write_bytes(&[]);
+        assert_eq!(writer.as_slice(), &[0x77]);
+    }
+
+    #[test]
+    fn an_empty_tpm2b_encodes_as_a_zero_length() {
+        let mut writer = BlobWriter::new();
+        assert_eq!(writer.write_tpm2b(&[]), Ok(()));
+        assert_eq!(writer.as_slice(), &[0x00, 0x00]);
+    }
+
+    #[test]
+    fn a_nonempty_tpm2b_carries_its_length_prefix() {
+        let mut writer = BlobWriter::new();
+        assert_eq!(writer.write_tpm2b(&[0xa1, 0xa2, 0xa3]), Ok(()));
+        assert_eq!(writer.as_slice(), &[0x00, 0x03, 0xa1, 0xa2, 0xa3]);
+    }
+
+    #[test]
+    fn a_tpm2b_of_exactly_u16_max_bytes_is_accepted() {
+        let payload = vec![0x5a; usize::from(u16::MAX)];
+        let mut writer = BlobWriter::new();
+        assert_eq!(writer.write_tpm2b(&payload), Ok(()));
+        assert_eq!(writer.len(), payload.len() + 2);
+        assert_eq!(&writer.as_slice()[..2], &[0xff, 0xff]);
+        assert_eq!(&writer.as_slice()[2..], &payload[..]);
+    }
+
+    #[test]
+    fn a_tpm2b_above_u16_max_is_rejected() {
+        let payload = vec![0x5a; usize::from(u16::MAX) + 1];
+        let mut writer = BlobWriter::new();
+        assert_eq!(
+            writer.write_tpm2b(&payload),
+            Err(BlobWriteError::LengthOverflow {
+                actual: 0x1_0000,
+                maximum: 0xffff
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_tpm2b_write_leaves_earlier_bytes_untouched() {
+        let mut writer = BlobWriter::new();
+        writer.write_u32(0xdead_beef);
+        assert!(
+            writer
+                .write_tpm2b(&vec![0u8; usize::from(u16::MAX) + 1])
+                .is_err()
+        );
+        assert_eq!(writer.len(), 4);
+        assert_eq!(writer.into_bytes(), vec![0xde, 0xad, 0xbe, 0xef]);
     }
 
     #[test]

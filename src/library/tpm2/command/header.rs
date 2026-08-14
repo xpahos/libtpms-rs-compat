@@ -4,6 +4,8 @@ use crate::library::constants::{
     TPM_BUFFER_MAX, TPM_RC_BAD_TAG, TPM_RC_COMMAND_SIZE, TPM_RC_INSUFFICIENT, TPM_SUCCESS,
 };
 
+use super::super::marshal::BlobWriter;
+
 pub(in crate::library::tpm2) const TPM_ST_NO_SESSIONS: u16 = 0x8001;
 pub(in crate::library::tpm2) const TPM_ST_SESSIONS: u16 = 0x8002;
 
@@ -155,16 +157,16 @@ pub(in crate::library::tpm2) fn serialize_response(
         0
     };
     let size = checked_response_size(parameter_size_field, parameters.len(), auth_sessions.len())?;
-    let mut out = Vec::with_capacity(size as usize);
-    out.extend_from_slice(&tag.to_be_bytes());
-    out.extend_from_slice(&size.to_be_bytes());
-    out.extend_from_slice(&response.code.to_be_bytes());
+    let mut writer = BlobWriter::with_capacity(size as usize);
+    writer.write_u16(tag);
+    writer.write_u32(size);
+    writer.write_u32(response.code);
     if parameter_size_field != 0 {
-        out.extend_from_slice(&(parameters.len() as u32).to_be_bytes());
+        writer.write_u32(u32::try_from(parameters.len()).map_err(|_| ResponseTooLarge)?);
     }
-    out.extend_from_slice(parameters);
-    out.extend_from_slice(auth_sessions);
-    Ok(out)
+    writer.write_bytes(parameters);
+    writer.write_bytes(auth_sessions);
+    Ok(writer.into_bytes())
 }
 
 #[cfg(test)]
