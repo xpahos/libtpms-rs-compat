@@ -4,9 +4,7 @@ use crate::ffi_types::{
     LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
     TpmlibTpmProperty, TpmlibTpmVersion,
 };
-#[cfg(feature = "tpm2")]
-use crate::library::TPM_SIZE;
-use crate::library::{self, TPM_FAIL, TPM_SUCCESS};
+use crate::library::{self, TPM_FAIL, TPM_SIZE, TPM_SUCCESS};
 
 #[cfg(feature = "tpm2")]
 const RESPONSE_BUFFER_SIZE: usize = library::TPM_BUFFER_MAX as usize;
@@ -120,11 +118,44 @@ unsafe fn copy_response(
     TPM_SUCCESS
 }
 
-pub(crate) unsafe fn volatile_all_store(
-    _buffer: *mut *mut c_uchar,
-    _buflen: *mut u32,
+pub(crate) unsafe fn volatile_all_store(buffer: *mut *mut c_uchar, buflen: *mut u32) -> TpmResult {
+    // SAFETY: forwarded from TPMLIB_VolatileAll_Store.
+    unsafe { return_blob(buffer, buflen, library::volatile_all_store) }
+}
+
+/// # Safety
+///
+/// `buffer` and `buflen` must be null or point to writable output storage.
+unsafe fn return_blob(
+    buffer: *mut *mut c_uchar,
+    buflen: *mut u32,
+    create: impl FnOnce() -> Result<Vec<u8>, TpmResult>,
 ) -> TpmResult {
-    todo!("TPMLIB_VolatileAll_Store is not implemented")
+    if buffer.is_null() || buflen.is_null() {
+        return TPM_FAIL;
+    }
+    // SAFETY: `buffer` was null-checked and is writable by the FFI contract.
+    unsafe { buffer.write(core::ptr::null_mut()) };
+
+    let blob = match create() {
+        Ok(blob) => blob,
+        Err(code) => return code,
+    };
+    let Ok(len) = u32::try_from(blob.len()) else {
+        return TPM_SIZE;
+    };
+    let allocated = crate::ffi_support::malloc_bytes(&blob);
+    if allocated.is_null() && !blob.is_empty() {
+        return TPM_SIZE;
+    }
+
+    // SAFETY: both outputs were null-checked and are writable by the FFI
+    // contract. `allocated` is owned by the caller after this write.
+    unsafe {
+        buffer.write(allocated);
+        buflen.write(len);
+    }
+    TPM_SUCCESS
 }
 
 pub(crate) fn cancel_command() -> TpmResult {
@@ -446,6 +477,119 @@ mod tests {
             unsafe { get_tpm_property(BUFFER_MAX_PROPERTY, core::ptr::null_mut()) },
             TPM_FAIL
         );
+    }
+
+    const LEN_SENTINEL: u32 = 0xdead_beef;
+
+    #[test]
+    fn blob_outputs_reject_null_pointers() {
+        let called = core::cell::Cell::new(false);
+
+        let mut buflen = LEN_SENTINEL;
+        // SAFETY: `buffer` is null on purpose; `buflen` references a live
+        // writable local.
+        assert_eq!(
+            unsafe {
+                return_blob(core::ptr::null_mut(), &mut buflen, || {
+                    called.set(true);
+                    Ok(vec![1])
+                })
+            },
+            TPM_FAIL
+        );
+        assert_eq!(buflen, LEN_SENTINEL);
+
+        let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+        // SAFETY: `buflen` is null on purpose; `buffer` references a live
+        // writable local.
+        assert_eq!(
+            unsafe {
+                return_blob(&mut buffer, core::ptr::null_mut(), || {
+                    called.set(true);
+                    Ok(vec![1])
+                })
+            },
+            TPM_FAIL
+        );
+        assert_eq!(buffer, core::ptr::dangling_mut::<c_uchar>());
+
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn volatile_all_store_abi_signature_is_exact() {
+        let _: unsafe extern "C" fn(*mut *mut c_uchar, *mut u32) -> TpmResult =
+            crate::tpm_library_abi::TPMLIB_VolatileAll_Store;
+    }
+
+    #[test]
+    fn exported_volatile_all_store_rejects_null_pointers() {
+        let mut buflen = LEN_SENTINEL;
+        // SAFETY: `buffer` is null on purpose; `buflen` references a live
+        // writable local.
+        assert_eq!(
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_VolatileAll_Store(core::ptr::null_mut(), &mut buflen)
+            },
+            TPM_FAIL
+        );
+        assert_eq!(buflen, LEN_SENTINEL);
+
+        let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+        // SAFETY: `buflen` is null on purpose; `buffer` references a live
+        // writable local.
+        assert_eq!(
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_VolatileAll_Store(&mut buffer, core::ptr::null_mut())
+            },
+            TPM_FAIL
+        );
+        assert_eq!(buffer, core::ptr::dangling_mut::<c_uchar>());
+    }
+
+    #[test]
+    fn blob_outputs_preserve_errors_without_allocating() {
+        let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+        let mut buflen = 0xdead_beef;
+        // SAFETY: both output pointers reference live writable locals.
+        assert_eq!(
+            unsafe { return_blob(&mut buffer, &mut buflen, || Err(0x1234)) },
+            0x1234
+        );
+        assert!(buffer.is_null());
+        assert_eq!(buflen, 0xdead_beef);
+    }
+
+    #[test]
+    fn blob_outputs_transfer_a_c_allocation_to_the_caller() {
+        let expected = [1u8, 2, 3, 4];
+        let mut buffer = core::ptr::null_mut();
+        let mut buflen = 0u32;
+        // SAFETY: both output pointers reference live writable locals.
+        assert_eq!(
+            unsafe { return_blob(&mut buffer, &mut buflen, || Ok(expected.to_vec())) },
+            TPM_SUCCESS
+        );
+        assert_eq!(buflen, expected.len() as u32);
+        assert!(!buffer.is_null());
+        // SAFETY: success returned a C allocation containing `buflen` bytes.
+        let actual = unsafe { core::slice::from_raw_parts(buffer, buflen as usize) };
+        assert_eq!(actual, expected);
+        // SAFETY: ownership of the C allocation was transferred to this test.
+        unsafe { libc::free(buffer.cast()) };
+    }
+
+    #[test]
+    fn blob_outputs_represent_an_empty_blob_as_null_and_zero() {
+        let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+        let mut buflen = 0xdead_beef;
+        // SAFETY: both output pointers reference live writable locals.
+        assert_eq!(
+            unsafe { return_blob(&mut buffer, &mut buflen, || Ok(Vec::new())) },
+            TPM_SUCCESS
+        );
+        assert!(buffer.is_null());
+        assert_eq!(buflen, 0);
     }
 
     const NO_LIMITS: Option<library::BufferSizeLimits> = None;

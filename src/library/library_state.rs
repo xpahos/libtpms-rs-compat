@@ -265,6 +265,19 @@ impl Library {
         }
     }
 
+    pub fn volatile_all_store(&self) -> Result<Vec<u8>, TpmResult> {
+        let state = self.lock_state();
+        match state.selected {
+            #[cfg(feature = "tpm2")]
+            TpmVersion::V2_0 => state
+                .tpm2_runtime
+                .as_deref()
+                .ok_or(TPM_FAIL)
+                .and_then(tpm2::volatile_all_store),
+            _ => Err(TPM_FAIL),
+        }
+    }
+
     pub fn register_callbacks(&self, table: LibtpmsCallbacks) {
         self.lock_state().callbacks = table;
     }
@@ -574,6 +587,21 @@ mod tests {
         assert!(library.lock_state().tpm2_runtime.is_none());
         assert!(!library.was_manufactured());
         library.terminate();
+    }
+
+    #[test]
+    fn volatile_store_without_a_running_tpm_fails() {
+        let library = Library::new();
+        assert_eq!(library.volatile_all_store(), Err(TPM_FAIL));
+
+        #[cfg(feature = "tpm2")]
+        {
+            assert_eq!(
+                library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+                TPM_SUCCESS
+            );
+            assert_eq!(library.volatile_all_store(), Err(TPM_FAIL));
+        }
     }
 
     #[cfg(feature = "tpm2")]

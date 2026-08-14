@@ -69,6 +69,10 @@ pub fn was_manufactured() -> bool {
     Library::global().was_manufactured()
 }
 
+pub fn volatile_all_store() -> Result<Vec<u8>, TpmResult> {
+    Library::global().volatile_all_store()
+}
+
 pub fn tis_established_get() -> Result<bool, TpmResult> {
     Library::global().tis_established_get()
 }

@@ -14,7 +14,6 @@ use crate::library::tpm2::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
 
 const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const CLOCK_NOMINAL: u32 = 30_000;
 
 #[derive(Debug)]
@@ -93,7 +92,6 @@ pub(super) fn empty_index_orderly_ram() -> OwnedIndexOrderlyRam {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn power_on_state_clear() -> OwnedStateClearData {
     OwnedStateClearData {
         sh_enable: false,
@@ -107,7 +105,6 @@ pub(super) fn power_on_state_clear() -> OwnedStateClearData {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn power_on_state_reset() -> OwnedStateResetData {
     OwnedStateResetData {
         null_proof: OwnedSecret::from_vec(Vec::new()),
@@ -127,7 +124,6 @@ pub(super) fn power_on_state_reset() -> OwnedStateResetData {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn empty_session_process() -> OwnedSessionProcess {
     OwnedSessionProcess {
         session_handles: [0; MAX_SESSION_NUM],
@@ -205,7 +201,6 @@ pub(super) struct RestoredVolatile {
 }
 
 impl RestoredVolatile {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn power_on() -> Self {
         Self {
             header_version: 0,

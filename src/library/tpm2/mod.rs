@@ -62,6 +62,10 @@ pub(super) use tis::{
     hash_end as tis_hash_end, hash_start as tis_hash_start,
 };
 
+pub(super) fn volatile_all_store(runtime: &Tpm2Runtime) -> Result<Vec<u8>, TpmResult> {
+    volatile::volatile_all_store(runtime, &OsClock)
+}
+
 pub fn get_info(flags: TpmlibInfoFlags, runtime: Option<&Tpm2Runtime>) -> String {
     info::get_info(
         flags,
