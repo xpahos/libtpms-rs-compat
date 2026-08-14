@@ -23,6 +23,7 @@ mod pp_list;
 mod process;
 mod profile;
 mod public;
+mod random;
 mod runtime;
 mod self_test;
 mod session;

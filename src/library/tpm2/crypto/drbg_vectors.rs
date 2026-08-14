@@ -14,9 +14,37 @@ pub(in crate::library::tpm2) struct DrbgVectorRecord {
     pub(in crate::library::tpm2) final_last_value: [u32; 4],
 }
 
+pub(in crate::library::tpm2) struct DrbgGenerateStep {
+    pub(in crate::library::tpm2) requested: u16,
+    output: [u8; 64],
+    pub(in crate::library::tpm2) seed_after: [u8; 48],
+    pub(in crate::library::tpm2) reseed_counter_after: u64,
+    pub(in crate::library::tpm2) last_value_after: [u32; 4],
+}
+
+impl DrbgGenerateStep {
+    pub(in crate::library::tpm2) fn output(&self) -> &[u8] {
+        &self.output[..usize::from(self.requested)]
+    }
+}
+
+pub(in crate::library::tpm2) const GENERATE_STEPS: usize = 6;
+
+pub(in crate::library::tpm2) struct DrbgGenerateRecord {
+    pub(in crate::library::tpm2) initial_seed: [u8; 48],
+    pub(in crate::library::tpm2) initial_reseed_counter: u64,
+    pub(in crate::library::tpm2) initial_last_value: [u32; 4],
+    pub(in crate::library::tpm2) steps: [DrbgGenerateStep; GENERATE_STEPS],
+}
+
 const RECORD_SIZE: usize = 48 + 16 + 8 + 64 + 6 * 64 + 48 + 8 + 16;
 
+const GENERATE_STEP_SIZE: usize = 2 + 64 + 48 + 8 + 16;
+const GENERATE_RECORD_SIZE: usize = 48 + 8 + 16 + GENERATE_STEPS * GENERATE_STEP_SIZE;
+
 const FIXTURE: &[u8] = include_bytes!("../testdata/drbg_manufacture_vectors.bin");
+
+const GENERATE_FIXTURE: &[u8] = include_bytes!("../testdata/drbg_generate_vectors.bin");
 
 struct Reader<'a>(&'a [u8]);
 
@@ -32,6 +60,14 @@ impl Reader<'_> {
         core::array::from_fn(|word| {
             u32::from_be_bytes(bytes[word * 4..word * 4 + 4].try_into().unwrap())
         })
+    }
+
+    fn u16(&mut self) -> u16 {
+        u16::from_be_bytes(self.array())
+    }
+
+    fn u64(&mut self) -> u64 {
+        u64::from_be_bytes(self.array())
     }
 }
 
@@ -53,5 +89,36 @@ pub(in crate::library::tpm2) fn vector_record(continuous_test: bool) -> DrbgVect
         final_seed: reader.array(),
         final_reseed_counter: u64::from_be_bytes(reader.array()),
         final_last_value: reader.last_value(),
+    }
+}
+
+pub(in crate::library::tpm2) fn generate_record(continuous_test: bool) -> DrbgGenerateRecord {
+    assert_eq!(
+        GENERATE_FIXTURE.len(),
+        2 * GENERATE_RECORD_SIZE,
+        "stale fixture layout"
+    );
+    let offset = usize::from(continuous_test) * GENERATE_RECORD_SIZE;
+    let record = &GENERATE_FIXTURE[offset..offset + GENERATE_RECORD_SIZE];
+    let mut reader = Reader(record);
+    let initial_seed = reader.array();
+    let initial_reseed_counter = reader.u64();
+    let initial_last_value = reader.last_value();
+    let steps_at = GENERATE_RECORD_SIZE - GENERATE_STEPS * GENERATE_STEP_SIZE;
+    DrbgGenerateRecord {
+        initial_seed,
+        initial_reseed_counter,
+        initial_last_value,
+        steps: core::array::from_fn(|index| {
+            let start = steps_at + index * GENERATE_STEP_SIZE;
+            let mut reader = Reader(&record[start..start + GENERATE_STEP_SIZE]);
+            DrbgGenerateStep {
+                requested: reader.u16(),
+                output: reader.array(),
+                seed_after: reader.array(),
+                reseed_counter_after: reader.u64(),
+                last_value_after: reader.last_value(),
+            }
+        }),
     }
 }

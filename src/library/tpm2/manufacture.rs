@@ -7,7 +7,7 @@ use super::persistent::{
     OwnedPcrPolicyEntry, OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState, OwnedSecret,
     OwnedUserNvram,
 };
-use super::profile::{ValidatedProfile, command_enabled};
+use super::profile::{ATTRIBUTE_DRBG_CONTINUOUS_TEST, ValidatedProfile, command_enabled};
 
 const TPM_ALG_NULL: u16 = 0x0010;
 const TPM_ALG_SHA1: u16 = 0x0004;
@@ -19,8 +19,6 @@ const PRIMARY_SEED_SIZE: usize = 64;
 const PROOF_SIZE: usize = 64;
 
 const COMMIT_NONCE_SIZE: usize = 64;
-
-const ATTRIBUTE_DRBG_CONTINUOUS_TEST: &[u8] = b"drbg-continous-test";
 
 const FIRMWARE_V1: u32 = 0x2024_0125;
 const FIRMWARE_V2: u32 = 0x0012_0000;

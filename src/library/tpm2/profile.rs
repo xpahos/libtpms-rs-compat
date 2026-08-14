@@ -54,6 +54,8 @@ const PROFILE_CUSTOM: ProfileDesc = ProfileDesc {
 This profile requires at least libtpms v0.10.",
 };
 
+pub(in crate::library::tpm2) const ATTRIBUTE_DRBG_CONTINUOUS_TEST: &[u8] = b"drbg-continous-test";
+
 const ATTRIBUTES: [(&[u8], u32); 10] = [
     (b"no-unpadded-encryption", 7),
     (b"no-sha1-signing", 7),
@@ -62,7 +64,7 @@ const ATTRIBUTES: [(&[u8], u32); 10] = [
     (b"no-sha1-hmac-verification", 7),
     (b"no-sha1-hmac", 7),
     (b"fips-host", 7),
-    (b"drbg-continous-test", 7),
+    (ATTRIBUTE_DRBG_CONTINUOUS_TEST, 7),
     (b"pct", 7),
     (b"no-ecc-key-derivation", 7),
 ];

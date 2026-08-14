@@ -12,6 +12,7 @@ use super::super::persistent::{
     OwnedDrbgState, OwnedIndexOrderlyRam, OwnedPcrAllocation, OwnedSecret, OwnedStateClearData,
     OwnedStateResetData, OwnedUserNvramEntry,
 };
+use super::super::profile::ATTRIBUTE_DRBG_CONTINUOUS_TEST;
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
 use super::super::volatile::{IMPLEMENTATION_PCR, MAX_LOADED_SESSIONS, OwnedPcr};
@@ -39,8 +40,6 @@ const PRIMARY_SEED_SIZE: usize = 64;
 const COMMIT_NONCE_SIZE: usize = 64;
 
 const SEED_COMPAT_LEVEL_LAST: u8 = 1;
-
-const ATTRIBUTE_DRBG_CONTINUOUS_TEST: &[u8] = b"drbg-continous-test";
 
 const TPMA_NV_WRITELOCKED: u32 = 1 << 11;
 const TPMA_NV_WRITEDEFINE: u32 = 1 << 13;
