@@ -57,12 +57,12 @@ impl PreloadedState {
         self.slot(kind)
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
     pub(in crate::library) fn set_data(&mut self, kind: StateBlobKind, data: Vec<u8>) {
         *self.slot_mut(kind) = PreloadedBlob::from_data(data);
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
     pub(in crate::library) fn set_empty(&mut self, kind: StateBlobKind) {
         *self.slot_mut(kind) = PreloadedBlob::Empty;
     }

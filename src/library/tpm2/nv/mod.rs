@@ -6,7 +6,7 @@ mod orderly_ram;
 mod user;
 
 pub(in crate::library) use host::HostNvram;
-pub(super) use host::{NvramLoad, PermanentStateProbe};
+pub(super) use host::{NvramLoad, NvramWrite, PermanentStateProbe};
 pub(super) use image::{
     WireWriter, any_object_image, build_nv_image, command_bitmap_image, marshal_sym_def_object,
 };

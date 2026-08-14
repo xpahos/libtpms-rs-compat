@@ -4,7 +4,11 @@ use crate::ffi_types::{
     LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
     TpmlibTpmProperty, TpmlibTpmVersion,
 };
-use crate::library::{self, TPM_FAIL, TPM_SIZE, TPM_SUCCESS};
+use crate::library::{
+    self, StateBlobKind, StateInput, StateOutput, TPM_FAIL, TPM_SIZE, TPM_SUCCESS,
+};
+
+const BUFLEN_EMPTY_BUFFER: u32 = 0xffff_ffff;
 
 #[cfg(feature = "tpm2")]
 const RESPONSE_BUFFER_SIZE: usize = library::TPM_BUFFER_MAX as usize;
@@ -120,7 +124,11 @@ unsafe fn copy_response(
 
 pub(crate) unsafe fn volatile_all_store(buffer: *mut *mut c_uchar, buflen: *mut u32) -> TpmResult {
     // SAFETY: forwarded from TPMLIB_VolatileAll_Store.
-    unsafe { return_blob(buffer, buflen, library::volatile_all_store) }
+    unsafe {
+        return_blob(buffer, buflen, || {
+            library::volatile_all_store().map(StateOutput::Data)
+        })
+    }
 }
 
 /// # Safety
@@ -129,7 +137,7 @@ pub(crate) unsafe fn volatile_all_store(buffer: *mut *mut c_uchar, buflen: *mut 
 unsafe fn return_blob(
     buffer: *mut *mut c_uchar,
     buflen: *mut u32,
-    create: impl FnOnce() -> Result<Vec<u8>, TpmResult>,
+    create: impl FnOnce() -> Result<StateOutput, TpmResult>,
 ) -> TpmResult {
     if buffer.is_null() || buflen.is_null() {
         return TPM_FAIL;
@@ -137,17 +145,20 @@ unsafe fn return_blob(
     // SAFETY: `buffer` was null-checked and is writable by the FFI contract.
     unsafe { buffer.write(core::ptr::null_mut()) };
 
-    let blob = match create() {
-        Ok(blob) => blob,
+    let (allocated, len) = match create() {
         Err(code) => return code,
+        Ok(StateOutput::Empty) => (core::ptr::null_mut(), BUFLEN_EMPTY_BUFFER),
+        Ok(StateOutput::Data(blob)) => {
+            let Ok(len) = u32::try_from(blob.len()) else {
+                return TPM_SIZE;
+            };
+            let allocated = crate::ffi_support::malloc_bytes(&blob);
+            if allocated.is_null() && !blob.is_empty() {
+                return TPM_SIZE;
+            }
+            (allocated, len)
+        }
     };
-    let Ok(len) = u32::try_from(blob.len()) else {
-        return TPM_SIZE;
-    };
-    let allocated = crate::ffi_support::malloc_bytes(&blob);
-    if allocated.is_null() && !blob.is_empty() {
-        return TPM_SIZE;
-    }
 
     // SAFETY: both outputs were null-checked and are writable by the FFI
     // contract. `allocated` is owned by the caller after this write.
@@ -276,19 +287,43 @@ pub(crate) fn validate_state(_st: TpmlibStateType, _flags: c_uint) -> TpmResult 
 }
 
 pub(crate) unsafe fn set_state(
-    _st: TpmlibStateType,
-    _buffer: *const c_uchar,
-    _buflen: u32,
+    st: TpmlibStateType,
+    buffer: *const c_uchar,
+    buflen: u32,
 ) -> TpmResult {
-    todo!("TPMLIB_SetState is not implemented")
+    let Some(kind) = StateBlobKind::from_c(st) else {
+        return TPM_FAIL;
+    };
+    // SAFETY: forwarded from TPMLIB_SetState, whose contract allows a null
+    // buffer and otherwise guarantees `buflen` readable bytes.
+    library::set_state(kind, unsafe { copy_state_input(buffer, buflen) })
+}
+
+/// # Safety
+///
+/// `buffer` must be null or point to `buflen` readable bytes.
+unsafe fn copy_state_input(buffer: *const c_uchar, buflen: u32) -> StateInput {
+    if buffer.is_null() {
+        return StateInput::Empty;
+    }
+    // SAFETY: `buffer` is non-null and points to `buflen` readable bytes per
+    // this function's contract; the copy ends the caller's involvement.
+    StateInput::Data(unsafe { core::slice::from_raw_parts(buffer, buflen as usize) }.to_vec())
 }
 
 pub(crate) unsafe fn get_state(
-    _st: TpmlibStateType,
-    _buffer: *mut *mut c_uchar,
-    _buflen: *mut u32,
+    st: TpmlibStateType,
+    buffer: *mut *mut c_uchar,
+    buflen: *mut u32,
 ) -> TpmResult {
-    todo!("TPMLIB_GetState is not implemented")
+    // SAFETY: forwarded from TPMLIB_GetState; `return_blob` rejects null
+    // output pointers before it asks the library for any state.
+    unsafe {
+        return_blob(buffer, buflen, || {
+            let kind = StateBlobKind::from_c(st).ok_or(TPM_FAIL)?;
+            library::get_state(kind)
+        })
+    }
 }
 
 pub(crate) unsafe fn set_profile(profile: *const c_char) -> TpmResult {
@@ -492,7 +527,7 @@ mod tests {
             unsafe {
                 return_blob(core::ptr::null_mut(), &mut buflen, || {
                     called.set(true);
-                    Ok(vec![1])
+                    Ok(StateOutput::Data(vec![1]))
                 })
             },
             TPM_FAIL
@@ -506,7 +541,7 @@ mod tests {
             unsafe {
                 return_blob(&mut buffer, core::ptr::null_mut(), || {
                     called.set(true);
-                    Ok(vec![1])
+                    Ok(StateOutput::Data(vec![1]))
                 })
             },
             TPM_FAIL
@@ -567,7 +602,11 @@ mod tests {
         let mut buflen = 0u32;
         // SAFETY: both output pointers reference live writable locals.
         assert_eq!(
-            unsafe { return_blob(&mut buffer, &mut buflen, || Ok(expected.to_vec())) },
+            unsafe {
+                return_blob(&mut buffer, &mut buflen, || {
+                    Ok(StateOutput::Data(expected.to_vec()))
+                })
+            },
             TPM_SUCCESS
         );
         assert_eq!(buflen, expected.len() as u32);
@@ -580,16 +619,148 @@ mod tests {
     }
 
     #[test]
+    fn blob_outputs_represent_an_explicitly_empty_state_with_the_wire_sentinel() {
+        let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+        let mut buflen = 0u32;
+        // SAFETY: both output pointers reference live writable locals.
+        assert_eq!(
+            unsafe { return_blob(&mut buffer, &mut buflen, || Ok(StateOutput::Empty)) },
+            TPM_SUCCESS
+        );
+        assert!(buffer.is_null());
+        assert_eq!(buflen, 0xffff_ffff);
+        assert_eq!(buflen, BUFLEN_EMPTY_BUFFER);
+    }
+
+    #[test]
     fn blob_outputs_represent_an_empty_blob_as_null_and_zero() {
         let mut buffer = core::ptr::dangling_mut::<c_uchar>();
         let mut buflen = 0xdead_beef;
         // SAFETY: both output pointers reference live writable locals.
         assert_eq!(
-            unsafe { return_blob(&mut buffer, &mut buflen, || Ok(Vec::new())) },
+            unsafe {
+                return_blob(&mut buffer, &mut buflen, || {
+                    Ok(StateOutput::Data(Vec::new()))
+                })
+            },
             TPM_SUCCESS
         );
         assert!(buffer.is_null());
         assert_eq!(buflen, 0);
+    }
+
+    const PERMANENT_STATE: TpmlibStateType = 1;
+    const VOLATILE_STATE: TpmlibStateType = 2;
+    const SAVE_STATE: TpmlibStateType = 4;
+
+    #[test]
+    fn state_abi_signatures_are_exact() {
+        let _: unsafe extern "C" fn(TpmlibStateType, *const c_uchar, u32) -> TpmResult =
+            crate::tpm_library_abi::TPMLIB_SetState;
+        let _: unsafe extern "C" fn(TpmlibStateType, *mut *mut c_uchar, *mut u32) -> TpmResult =
+            crate::tpm_library_abi::TPMLIB_GetState;
+    }
+
+    #[test]
+    fn a_null_state_buffer_is_an_explicitly_empty_state_whatever_the_length_says() {
+        // SAFETY: a null buffer carries no bytes to read, so any length is
+        // valid for this call.
+        unsafe {
+            for buflen in [0u32, 1, 4096, u32::MAX] {
+                assert_eq!(
+                    copy_state_input(core::ptr::null(), buflen),
+                    StateInput::Empty,
+                    "buflen {buflen}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_null_state_buffer_of_zero_length_is_a_zero_length_blob() {
+        let caller = [7u8; 4];
+        // SAFETY: `caller` is live and no bytes are read at length zero.
+        assert_eq!(
+            unsafe { copy_state_input(caller.as_ptr(), 0) },
+            StateInput::Data(Vec::new()),
+            "distinct from the explicitly empty state"
+        );
+    }
+
+    #[test]
+    fn state_input_is_copied_before_the_library_sees_it() {
+        let mut caller = vec![1u8, 2, 3, 4];
+        // SAFETY: `caller` is live and holds the four bytes announced.
+        let input = unsafe { copy_state_input(caller.as_ptr(), caller.len() as u32) };
+        caller.iter_mut().for_each(|byte| *byte = 0xff);
+        drop(caller);
+        assert_eq!(input, StateInput::Data(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn unknown_state_types_are_rejected_without_reaching_the_library() {
+        for st in [0, 3, 5, 6, 7, -1, i32::MAX, i32::MIN] {
+            // SAFETY: the state type is rejected before `buffer` is read.
+            assert_eq!(
+                unsafe { set_state(st, [1u8, 2].as_ptr(), 2) },
+                TPM_FAIL,
+                "TPMLIB_SetState st {st}"
+            );
+            // SAFETY: same, through the exported wrapper; a null buffer is
+            // explicitly permitted.
+            assert_eq!(
+                unsafe { crate::tpm_library_abi::TPMLIB_SetState(st, core::ptr::null(), 0) },
+                TPM_FAIL,
+                "exported TPMLIB_SetState st {st}"
+            );
+
+            let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+            let mut buflen = LEN_SENTINEL;
+            // SAFETY: both output pointers reference live writable locals.
+            assert_eq!(
+                unsafe { get_state(st, &mut buffer, &mut buflen) },
+                TPM_FAIL,
+                "TPMLIB_GetState st {st}"
+            );
+            assert!(buffer.is_null(), "the output pointer is always cleared");
+            assert_eq!(buflen, LEN_SENTINEL, "no length is reported on failure");
+        }
+    }
+
+    #[test]
+    fn get_state_rejects_every_null_output_combination_before_asking_the_library() {
+        for st in [PERMANENT_STATE, VOLATILE_STATE, SAVE_STATE] {
+            let mut buflen = LEN_SENTINEL;
+            // SAFETY: `buffer` is null on purpose; `buflen` references a live
+            // writable local.
+            assert_eq!(
+                unsafe { get_state(st, core::ptr::null_mut(), &mut buflen) },
+                TPM_FAIL
+            );
+            assert_eq!(buflen, LEN_SENTINEL, "st {st}");
+
+            let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+            // SAFETY: `buflen` is null on purpose; `buffer` references a live
+            // writable local.
+            assert_eq!(
+                unsafe { get_state(st, &mut buffer, core::ptr::null_mut()) },
+                TPM_FAIL
+            );
+            assert_eq!(buffer, core::ptr::dangling_mut::<c_uchar>(), "st {st}");
+
+            // SAFETY: both output pointers are null on purpose, and the
+            // exported wrapper must reject them rather than dereference.
+            assert_eq!(
+                unsafe {
+                    crate::tpm_library_abi::TPMLIB_GetState(
+                        st,
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                    )
+                },
+                TPM_FAIL
+            );
+        }
     }
 
     const NO_LIMITS: Option<library::BufferSizeLimits> = None;

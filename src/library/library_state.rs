@@ -6,14 +6,15 @@ use crate::ffi_types::{
 };
 
 #[cfg(feature = "tpm2")]
-use super::constants::TPM_INVALID_POSTINIT;
+use super::constants::TPM_BAD_TYPE;
 use super::constants::{
-    TPM_BUFFER_MAX, TPM_FAIL, TPM_SUCCESS, TPMLIB_TPM_VERSION_1_2, TPMLIB_TPM_VERSION_2,
-    TPMPROP_TPM_BUFFER_MAX,
+    TPM_BUFFER_MAX, TPM_FAIL, TPM_INVALID_POSTINIT, TPM_SUCCESS, TPMLIB_TPM_VERSION_1_2,
+    TPMLIB_TPM_VERSION_2, TPMPROP_TPM_BUFFER_MAX,
 };
-use super::preloaded_state::PreloadedState;
 #[cfg(feature = "tpm2")]
-use super::state_blob::StateBlobKind;
+use super::preloaded_state::PreloadedBlob;
+use super::preloaded_state::PreloadedState;
+use super::state_blob::{StateBlobKind, StateInput, StateOutput};
 
 #[cfg(feature = "tpm2")]
 use super::tpm2;
@@ -31,9 +32,19 @@ pub struct BufferSizeLimits {
     pub maximum: u32,
 }
 
+#[cfg(feature = "tpm2")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Lifecycle {
+    generation: u64,
+    selected: TpmVersion,
+    initializing: Option<u64>,
+}
+
 struct LibraryState {
     selected: TpmVersion,
     version_locked: bool,
+    lifecycle_generation: u64,
+    initializing: Option<u64>,
     preloaded_state: PreloadedState,
     callbacks: LibtpmsCallbacks,
     #[cfg(feature = "tpm2")]
@@ -51,6 +62,8 @@ impl LibraryState {
         Self {
             selected: TpmVersion::V1_2,
             version_locked: false,
+            lifecycle_generation: 0,
+            initializing: None,
             preloaded_state: PreloadedState::new(),
             callbacks: LibtpmsCallbacks::empty(),
             #[cfg(feature = "tpm2")]
@@ -75,6 +88,7 @@ impl LibraryState {
         };
         if self.selected != requested {
             self.clear_preloaded_state();
+            self.advance_lifecycle();
         }
         self.selected = requested;
         TPM_SUCCESS
@@ -83,10 +97,39 @@ impl LibraryState {
     fn clear_preloaded_state(&mut self) {
         self.preloaded_state.clear_all();
     }
+
+    fn advance_lifecycle(&mut self) {
+        self.lifecycle_generation = self.lifecycle_generation.wrapping_add(1);
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn lifecycle(&self) -> Lifecycle {
+        Lifecycle {
+            generation: self.lifecycle_generation,
+            selected: self.selected,
+            initializing: self.initializing,
+        }
+    }
 }
 
 pub struct Library {
     state: Mutex<LibraryState>,
+}
+
+struct InitializingGuard<'a> {
+    library: &'a Library,
+    epoch: u64,
+}
+
+impl Drop for InitializingGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.library.lock_state();
+        if state.initializing != Some(self.epoch) {
+            return;
+        }
+        state.initializing = None;
+        state.advance_lifecycle();
+    }
 }
 
 impl Library {
@@ -110,8 +153,16 @@ impl Library {
 
     pub fn main_init(&self) -> TpmResult {
         let mut state = self.lock_state();
+        if state.initializing.is_some() {
+            return TPM_INVALID_POSTINIT;
+        }
         state.version_locked = true;
+        state.advance_lifecycle();
+        let epoch = state.lifecycle_generation;
+        state.initializing = Some(epoch);
         let selected = state.selected;
+        #[cfg(feature = "tpm2")]
+        let token = state.lifecycle();
         #[cfg(feature = "tpm2")]
         let context = tpm2::Tpm2InitContext {
             callbacks: state.callbacks,
@@ -125,25 +176,39 @@ impl Library {
             clock: &tpm2::OsClock,
         };
         drop(state);
+        let initializing = InitializingGuard {
+            library: self,
+            epoch,
+        };
 
-        match selected {
+        let result = match selected {
             #[cfg(feature = "tpm2")]
-            TpmVersion::V2_0 => match tpm2::main_init(context) {
-                Ok(mut runtime) => {
-                    let mut state = self.lock_state();
-                    state.preloaded_state.take(StateBlobKind::Permanent);
-                    state.preloaded_state.take(StateBlobKind::Volatile);
-                    runtime.buffer_size = state.tpm2_buffer_size;
-                    state.tpm2_runtime = Some(runtime);
-                    TPM_SUCCESS
+            TpmVersion::V2_0 => {
+                let outcome = tpm2::main_init(context);
+                let mut state = self.lock_state();
+                if state.lifecycle() != token {
+                    TPM_INVALID_POSTINIT
+                } else {
+                    match outcome {
+                        Ok(mut runtime) => {
+                            state.preloaded_state.take(StateBlobKind::Permanent);
+                            state.preloaded_state.take(StateBlobKind::Volatile);
+                            runtime.buffer_size = state.tpm2_buffer_size;
+                            state.tpm2_runtime = Some(runtime);
+                            TPM_SUCCESS
+                        }
+                        Err(code) => {
+                            state.tpm2_runtime = None;
+                            code
+                        }
+                    }
                 }
-                Err(code) => {
-                    self.lock_state().tpm2_runtime = None;
-                    code
-                }
-            },
+            }
             _ => TPM_FAIL,
-        }
+        };
+
+        drop(initializing);
+        result
     }
 
     #[cfg(feature = "tpm2")]
@@ -198,6 +263,7 @@ impl Library {
             }
         }
         state.version_locked = false;
+        state.advance_lifecycle();
     }
 
     #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
@@ -250,6 +316,123 @@ impl Library {
                 })
             }
             _ => None,
+        }
+    }
+
+    #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
+    pub fn set_state(&self, kind: StateBlobKind, input: StateInput) -> TpmResult {
+        let state = self.lock_state();
+        match state.selected {
+            #[cfg(feature = "tpm2")]
+            TpmVersion::V2_0 => {
+                let mut state = state;
+                let bytes = match input {
+                    StateInput::Empty => {
+                        state.preloaded_state.set_empty(kind);
+                        return TPM_SUCCESS;
+                    }
+                    StateInput::Data(bytes) => bytes,
+                };
+                if state.tpm2_runtime.is_some() || state.initializing.is_some() {
+                    return TPM_INVALID_POSTINIT;
+                }
+                let callbacks = state.callbacks;
+                let lifecycle = state.lifecycle();
+                drop(state);
+                self.cache_validated_state(kind, bytes, callbacks, lifecycle)
+            }
+            _ => TPM_FAIL,
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn cache_validated_state(
+        &self,
+        kind: StateBlobKind,
+        bytes: Vec<u8>,
+        callbacks: LibtpmsCallbacks,
+        lifecycle: Lifecycle,
+    ) -> TpmResult {
+        let outcome = self.validate_state_blob(kind, &bytes, callbacks);
+        let mut state = self.lock_state();
+        if state.selected != lifecycle.selected {
+            return TPM_FAIL;
+        }
+        if state.lifecycle() != lifecycle || state.tpm2_runtime.is_some() {
+            return TPM_INVALID_POSTINIT;
+        }
+        if outcome != TPM_SUCCESS {
+            state.preloaded_state.clear_all();
+            return outcome;
+        }
+        state.preloaded_state.set_data(kind, bytes);
+        TPM_SUCCESS
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn validate_state_blob(
+        &self,
+        kind: StateBlobKind,
+        bytes: &[u8],
+        callbacks: LibtpmsCallbacks,
+    ) -> TpmResult {
+        match kind {
+            StateBlobKind::Permanent => tpm2::validate_permanent_state(bytes),
+            StateBlobKind::Volatile => match self.permanent_state_for_validation(callbacks) {
+                Ok(permanent) => tpm2::validate_volatile_state(&permanent, bytes),
+                Err(code) => code,
+            },
+            StateBlobKind::SaveState => TPM_BAD_TYPE,
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn permanent_state_for_validation(
+        &self,
+        callbacks: LibtpmsCallbacks,
+    ) -> Result<Vec<u8>, TpmResult> {
+        let cached = self
+            .lock_state()
+            .preloaded_state
+            .get(StateBlobKind::Permanent)
+            .clone();
+        match cached {
+            PreloadedBlob::Data(blob) => Ok(blob),
+            PreloadedBlob::Empty => Ok(Vec::new()),
+            PreloadedBlob::Missing => {
+                tpm2::load_state_from_backend(callbacks, StateBlobKind::Permanent)
+            }
+        }
+    }
+
+    #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
+    pub fn get_state(&self, kind: StateBlobKind) -> Result<StateOutput, TpmResult> {
+        let state = self.lock_state();
+        match state.selected {
+            #[cfg(feature = "tpm2")]
+            TpmVersion::V2_0 => {
+                if let Some(runtime) = state.tpm2_runtime.as_deref() {
+                    return match kind {
+                        StateBlobKind::Permanent => {
+                            tpm2::persistent_all_store(runtime).map(StateOutput::Data)
+                        }
+                        StateBlobKind::Volatile => {
+                            tpm2::volatile_all_store(runtime).map(StateOutput::Data)
+                        }
+                        StateBlobKind::SaveState => Ok(StateOutput::Data(Vec::new())),
+                    };
+                }
+                match state.preloaded_state.get(kind).clone() {
+                    PreloadedBlob::Data(blob) => Ok(StateOutput::Data(blob)),
+                    PreloadedBlob::Empty => Ok(StateOutput::Empty),
+                    PreloadedBlob::Missing => {
+                        let callbacks = state.callbacks;
+                        drop(state);
+                        tpm2::load_state_from_backend(callbacks, kind).map(StateOutput::Data)
+                    }
+                }
+            }
+            _ => Err(TPM_FAIL),
         }
     }
 
@@ -1678,5 +1861,1093 @@ mod tests {
             "the fixture's tpmEstablished bit reaches the active runtime"
         );
         library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    const ALL_KINDS: [StateBlobKind; 3] = [
+        StateBlobKind::Permanent,
+        StateBlobKind::Volatile,
+        StateBlobKind::SaveState,
+    ];
+
+    #[test]
+    fn state_transfer_without_a_tpm2_selection_fails() {
+        let library = Library::new();
+        for kind in [
+            StateBlobKind::Permanent,
+            StateBlobKind::Volatile,
+            StateBlobKind::SaveState,
+        ] {
+            assert_eq!(library.set_state(kind, StateInput::Empty), TPM_FAIL);
+            assert_eq!(
+                library.set_state(kind, StateInput::Data(vec![1, 2, 3])),
+                TPM_FAIL
+            );
+            assert_eq!(library.get_state(kind), Err(TPM_FAIL));
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn an_empty_input_stages_an_empty_cached_state_for_every_kind() {
+        let library = tpm2_library();
+        for kind in ALL_KINDS {
+            assert_eq!(library.set_state(kind, StateInput::Empty), TPM_SUCCESS);
+            assert_eq!(
+                *library.lock_state().preloaded_state.get(kind),
+                PreloadedBlob::Empty
+            );
+            assert_eq!(library.get_state(kind), Ok(StateOutput::Empty));
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_nonempty_save_state_is_rejected_with_the_upstream_code() {
+        use crate::library::constants::TPM_BAD_TYPE;
+
+        let library = tpm2_library();
+        assert_eq!(
+            library.set_state(StateBlobKind::SaveState, StateInput::Data(vec![1])),
+            TPM_BAD_TYPE
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::SaveState, StateInput::Data(Vec::new())),
+            TPM_BAD_TYPE,
+            "a zero-length blob is still not an explicitly empty state"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn valid_permanent_state_is_cached_byte_for_byte() {
+        let library = tpm2_library();
+        let blob = crate::library::tpm2::valid_permanent_state_fixture();
+        assert_eq!(
+            library.set_state(StateBlobKind::Permanent, StateInput::Data(blob.clone())),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Permanent),
+            PreloadedBlob::Data(blob.clone()),
+            "the original bytes are cached, not a reserialized form"
+        );
+        assert_eq!(
+            library.get_state(StateBlobKind::Permanent),
+            Ok(StateOutput::Data(blob))
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn malformed_permanent_state_is_rejected_and_clears_every_cached_entry() {
+        use crate::library::constants::TPM_RC_INSUFFICIENT;
+
+        let library = tpm2_library();
+        assert_eq!(
+            library.set_state(StateBlobKind::SaveState, StateInput::Empty),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::Volatile, StateInput::Empty),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::Permanent, StateInput::Data(vec![4, 5, 6])),
+            TPM_RC_INSUFFICIENT
+        );
+        let state = library.lock_state();
+        for kind in ALL_KINDS {
+            assert_eq!(
+                *state.preloaded_state.get(kind),
+                PreloadedBlob::Missing,
+                "upstream clears all cached state on a validation failure"
+            );
+        }
+        assert!(state.tpm2_runtime.is_none(), "nothing was published");
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn valid_volatile_state_validates_against_the_staged_permanent_state() {
+        let library = tpm2_library();
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        let volatile = crate::library::tpm2::valid_volatile_state_fixture();
+        assert_eq!(
+            library.set_state(
+                StateBlobKind::Permanent,
+                StateInput::Data(permanent.clone())
+            ),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::Volatile, StateInput::Data(volatile.clone())),
+            TPM_SUCCESS
+        );
+        let state = library.lock_state();
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Permanent),
+            PreloadedBlob::Data(permanent)
+        );
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Data(volatile)
+        );
+        assert!(state.tpm2_runtime.is_none());
+        drop(state);
+        assert_eq!(library.main_init(), TPM_SUCCESS, "the pair really restores");
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_mismatched_volatile_seed_tie_is_rejected_and_clears_the_cache() {
+        use crate::library::constants::TPM_RC_VALUE;
+
+        let library = tpm2_library();
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        assert_eq!(
+            library.set_state(StateBlobKind::Permanent, StateInput::Data(permanent)),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            library.set_state(
+                StateBlobKind::Volatile,
+                StateInput::Data(crate::library::tpm2::seed_mismatched_volatile_state_fixture()),
+            ),
+            TPM_RC_VALUE
+        );
+        let state = library.lock_state();
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Permanent),
+            PreloadedBlob::Missing,
+            "the previously accepted permanent blob goes too"
+        );
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Missing
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn volatile_state_without_any_permanent_state_fails() {
+        let library = tpm2_library();
+        assert_eq!(
+            library.set_state(
+                StateBlobKind::Volatile,
+                StateInput::Data(crate::library::tpm2::valid_volatile_state_fixture()),
+            ),
+            TPM_FAIL,
+            "no cached permanent state and no NVRAM backend"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn volatile_state_against_an_empty_cached_permanent_state_fails() {
+        use crate::library::constants::TPM_RC_INSUFFICIENT;
+
+        let library = tpm2_library();
+        assert_eq!(
+            library.set_state(StateBlobKind::Permanent, StateInput::Empty),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            library.set_state(
+                StateBlobKind::Volatile,
+                StateInput::Data(crate::library::tpm2::valid_volatile_state_fixture()),
+            ),
+            TPM_RC_INSUFFICIENT,
+            "upstream unmarshals the empty cached state and runs out of bytes"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn volatile_state_falls_back_to_the_permanent_state_in_the_backend() {
+        let library = tpm2_library();
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            tpm_nvram_loaddata: Some(loaddata_backend_fixture),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(
+            library.set_state(
+                StateBlobKind::Volatile,
+                StateInput::Data(crate::library::tpm2::valid_volatile_state_fixture()),
+            ),
+            TPM_SUCCESS
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn state_data_is_refused_while_a_runtime_is_active_but_an_empty_state_is_not() {
+        let library = tpm2_library();
+        library.stage_empty_state(StateBlobKind::Permanent);
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        assert_eq!(
+            library.set_state(StateBlobKind::Permanent, StateInput::Data(permanent)),
+            TPM_INVALID_POSTINIT
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::Volatile, StateInput::Data(vec![1])),
+            TPM_INVALID_POSTINIT
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::SaveState, StateInput::Data(vec![1])),
+            TPM_INVALID_POSTINIT,
+            "the lifecycle check comes before the state-type check"
+        );
+        for kind in ALL_KINDS {
+            assert_eq!(
+                *library.lock_state().preloaded_state.get(kind),
+                PreloadedBlob::Missing
+            );
+        }
+
+        for kind in ALL_KINDS {
+            assert_eq!(
+                library.set_state(kind, StateInput::Empty),
+                TPM_SUCCESS,
+                "upstream caches an empty state before its powered-on check"
+            );
+            assert_eq!(
+                *library.lock_state().preloaded_state.get(kind),
+                PreloadedBlob::Empty
+            );
+        }
+
+        library.terminate();
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        assert_eq!(
+            library.set_state(StateBlobKind::Permanent, StateInput::Data(permanent)),
+            TPM_SUCCESS,
+            "state is accepted again after Terminate"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_running_tpm_snapshots_each_state_kind() {
+        let library = tpm2_library();
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+
+        let permanent = library
+            .get_state(StateBlobKind::Permanent)
+            .expect("a running TPM stores its permanent state");
+        assert!(matches!(&permanent, StateOutput::Data(blob) if !blob.is_empty()));
+        assert_eq!(
+            library.get_state(StateBlobKind::Permanent),
+            Ok(permanent),
+            "the snapshot is stable across calls"
+        );
+
+        let StateOutput::Data(volatile) = library
+            .get_state(StateBlobKind::Volatile)
+            .expect("a running TPM stores its volatile state")
+        else {
+            panic!("a running TPM never answers an empty cached state");
+        };
+        let direct = library.volatile_all_store().expect("the same store");
+        assert_eq!(
+            (volatile.len(), &volatile[..6]),
+            (direct.len(), &direct[..6]),
+            "VOLATILE goes through the same store as TPMLIB_VolatileAll_Store; \
+             only the resumed clock differs between two snapshots"
+        );
+
+        assert_eq!(
+            library.get_state(StateBlobKind::SaveState),
+            Ok(StateOutput::Data(Vec::new())),
+            "a running TPM answers SAVE_STATE with a null buffer of length zero"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_stopped_tpm_copies_its_cached_state_without_consuming_it() {
+        let library = tpm2_library();
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        let volatile = crate::library::tpm2::valid_volatile_state_fixture();
+        library
+            .lock_state()
+            .preloaded_state
+            .set_data(StateBlobKind::Permanent, permanent.clone());
+        library
+            .lock_state()
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, volatile.clone());
+
+        for round in 0..3 {
+            assert_eq!(
+                library.get_state(StateBlobKind::Permanent),
+                Ok(StateOutput::Data(permanent.clone())),
+                "round {round}"
+            );
+            assert_eq!(
+                library.get_state(StateBlobKind::Volatile),
+                Ok(StateOutput::Data(volatile.clone())),
+                "round {round}"
+            );
+        }
+        let state = library.lock_state();
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Permanent),
+            PreloadedBlob::Data(permanent)
+        );
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Data(volatile)
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_stopped_tpm_without_cache_or_backend_fails() {
+        let library = tpm2_library();
+        for kind in ALL_KINDS {
+            assert_eq!(library.get_state(kind), Err(TPM_FAIL));
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    static NVRAM_EVENTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn nvram_init_ok() -> TpmResult {
+        NVRAM_EVENTS.lock().unwrap().push("init".to_owned());
+        TPM_SUCCESS
+    }
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn nvram_init_error() -> TpmResult {
+        NVRAM_EVENTS.lock().unwrap().push("init".to_owned());
+        0x4242
+    }
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn loaddata_recording(
+        data: *mut *mut core::ffi::c_uchar,
+        length: *mut u32,
+        _tpm_number: u32,
+        name: *const core::ffi::c_char,
+    ) -> TpmResult {
+        NVRAM_EVENTS
+            .lock()
+            .unwrap()
+            .push(format!("load:{}", requested_name(name)));
+        // SAFETY: out-pointers are valid per the callback contract; the
+        // buffer is malloc'ed and ownership transfers to the caller.
+        unsafe {
+            *data = crate::ffi_support::malloc_bytes(&[0xa5, 0x5a]);
+            *length = 2;
+        }
+        TPM_SUCCESS
+    }
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn loaddata_error(
+        _data: *mut *mut core::ffi::c_uchar,
+        _length: *mut u32,
+        _tpm_number: u32,
+        name: *const core::ffi::c_char,
+    ) -> TpmResult {
+        NVRAM_EVENTS
+            .lock()
+            .unwrap()
+            .push(format!("load:{}", requested_name(name)));
+        0x1357
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_missing_cache_falls_back_to_the_backend_in_upstream_order() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        NVRAM_EVENTS.lock().unwrap().clear();
+        let library = tpm2_library();
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            tpm_nvram_loaddata: Some(loaddata_recording),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(
+            library.get_state(StateBlobKind::Volatile),
+            Ok(StateOutput::Data(vec![0xa5, 0x5a]))
+        );
+        assert_eq!(
+            *NVRAM_EVENTS.lock().unwrap(),
+            ["init".to_owned(), "load:volatilestate".to_owned()],
+            "NVRAM initialization runs before the load"
+        );
+
+        NVRAM_EVENTS.lock().unwrap().clear();
+        library
+            .lock_state()
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, vec![7]);
+        assert_eq!(
+            library.get_state(StateBlobKind::Volatile),
+            Ok(StateOutput::Data(vec![7]))
+        );
+        assert!(
+            NVRAM_EVENTS.lock().unwrap().is_empty(),
+            "a cached blob never reaches the backend"
+        );
+
+        NVRAM_EVENTS.lock().unwrap().clear();
+        library
+            .lock_state()
+            .preloaded_state
+            .set_empty(StateBlobKind::Volatile);
+        assert_eq!(
+            library.get_state(StateBlobKind::Volatile),
+            Ok(StateOutput::Empty)
+        );
+        assert!(
+            NVRAM_EVENTS.lock().unwrap().is_empty(),
+            "an empty cached state never reaches the backend either"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn backend_error_codes_propagate_unchanged() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        NVRAM_EVENTS.lock().unwrap().clear();
+        let library = tpm2_library();
+
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_error),
+            tpm_nvram_loaddata: Some(loaddata_recording),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(library.get_state(StateBlobKind::Permanent), Err(0x4242));
+        assert_eq!(
+            *NVRAM_EVENTS.lock().unwrap(),
+            ["init".to_owned()],
+            "a failed initialization stops before the load"
+        );
+
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            tpm_nvram_loaddata: Some(loaddata_error),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(library.get_state(StateBlobKind::Permanent), Err(0x1357));
+
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            tpm_nvram_loaddata: Some(loaddata_backend),
+            ..LibtpmsCallbacks::empty()
+        });
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        assert_eq!(
+            library.get_state(StateBlobKind::Permanent),
+            Err(crate::library::constants::TPM_RETRY),
+            "an absent blob is reported with the callback's own code"
+        );
+
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(
+            library.get_state(StateBlobKind::Permanent),
+            Err(TPM_FAIL),
+            "no load callback: nothing can be read back"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn volatile_validation_reports_the_upstream_parser_result() {
+        use crate::library::constants::{
+            TPM_RC_BAD_TAG, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_VALUE,
+        };
+
+        let valid = crate::library::tpm2::valid_volatile_state_fixture();
+
+        let truncated = valid[..valid.len() / 2].to_vec();
+        let mut bad_digest = valid.clone();
+        let last = bad_digest.len() - 1;
+        bad_digest[last] ^= 0xff;
+
+        for (blob, expected, what) in [
+            (Vec::new(), TPM_RC_INSUFFICIENT, "an empty blob"),
+            (truncated, TPM_RC_INSUFFICIENT, "a truncated blob"),
+            (
+                crate::library::tpm2::bad_tag_volatile_state_fixture(),
+                TPM_RC_BAD_TAG,
+                "a bad trailing magic",
+            ),
+            (bad_digest, TPM_RC_HASH, "a bad checksum"),
+            (
+                crate::library::tpm2::seed_mismatched_volatile_state_fixture(),
+                TPM_RC_VALUE,
+                "a seed tie mismatch",
+            ),
+        ] {
+            let library = tpm2_library();
+            library.lock_state().preloaded_state.set_data(
+                StateBlobKind::Permanent,
+                crate::library::tpm2::valid_permanent_state_fixture(),
+            );
+            assert_eq!(
+                library.set_state(StateBlobKind::Volatile, StateInput::Data(blob)),
+                expected,
+                "{what}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_restore_still_collapses_every_volatile_error_into_one_code() {
+        use crate::library::constants::TPM_RC_FAILURE;
+
+        let valid = crate::library::tpm2::valid_volatile_state_fixture();
+        for blob in [
+            valid[..valid.len() / 2].to_vec(),
+            crate::library::tpm2::bad_tag_volatile_state_fixture(),
+            crate::library::tpm2::seed_mismatched_volatile_state_fixture(),
+        ] {
+            let library = tpm2_library();
+            library.lock_state().preloaded_state.set_data(
+                StateBlobKind::Permanent,
+                crate::library::tpm2::valid_permanent_state_fixture(),
+            );
+            library
+                .lock_state()
+                .preloaded_state
+                .set_data(StateBlobKind::Volatile, blob);
+            assert_eq!(library.main_init(), TPM_RC_FAILURE);
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    mod gate {
+        use std::sync::{Condvar, Mutex, PoisonError};
+        use std::time::Duration;
+
+        const TIMEOUT: Duration = Duration::from_secs(30);
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Phase {
+            Idle,
+            Parked,
+            Released,
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub(super) enum Park {
+            Parked,
+            PassedThrough,
+            TimedOut,
+        }
+
+        static PHASE: Mutex<Phase> = Mutex::new(Phase::Idle);
+        static SIGNAL: Condvar = Condvar::new();
+        static TIMED_OUT: Mutex<bool> = Mutex::new(false);
+
+        pub(super) static SERIAL: Mutex<()> = Mutex::new(());
+
+        pub(super) fn reset() {
+            *PHASE.lock().unwrap_or_else(PoisonError::into_inner) = Phase::Idle;
+            *TIMED_OUT.lock().unwrap_or_else(PoisonError::into_inner) = false;
+        }
+
+        pub(super) fn park() -> Park {
+            let mut phase = PHASE.lock().unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Idle {
+                return Park::PassedThrough;
+            }
+            *phase = Phase::Parked;
+            SIGNAL.notify_all();
+            let (guard, wait) = SIGNAL
+                .wait_timeout_while(phase, TIMEOUT, |phase| *phase != Phase::Released)
+                .unwrap_or_else(PoisonError::into_inner);
+            drop(guard);
+            if wait.timed_out() {
+                *TIMED_OUT.lock().unwrap_or_else(PoisonError::into_inner) = true;
+                return Park::TimedOut;
+            }
+            Park::Parked
+        }
+
+        #[must_use]
+        pub(super) fn wait_until_parked() -> bool {
+            let phase = PHASE.lock().unwrap_or_else(PoisonError::into_inner);
+            let (phase, wait) = SIGNAL
+                .wait_timeout_while(phase, TIMEOUT, |phase| *phase == Phase::Idle)
+                .unwrap_or_else(PoisonError::into_inner);
+            !wait.timed_out() && *phase == Phase::Parked
+        }
+
+        pub(super) fn timed_out() -> bool {
+            *TIMED_OUT.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        pub(super) struct Release;
+
+        impl Drop for Release {
+            fn drop(&mut self) {
+                *PHASE.lock().unwrap_or_else(PoisonError::into_inner) = Phase::Released;
+                SIGNAL.notify_all();
+            }
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn nvram_init_gate() -> TpmResult {
+        match gate::park() {
+            gate::Park::Parked | gate::Park::PassedThrough => TPM_SUCCESS,
+            gate::Park::TimedOut => TPM_FAIL,
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn io_init_gate() -> TpmResult {
+        match gate::park() {
+            gate::Park::Parked | gate::Park::PassedThrough => TPM_SUCCESS,
+            gate::Park::TimedOut => TPM_FAIL,
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn io_init_gate_failing_passthrough() -> TpmResult {
+        match gate::park() {
+            gate::Park::Parked => TPM_SUCCESS,
+            gate::Park::PassedThrough | gate::Park::TimedOut => TPM_FAIL,
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn gated_library() -> Library {
+        let library = tpm2_library();
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_gate),
+            tpm_nvram_loaddata: Some(loaddata_backend_fixture),
+            ..LibtpmsCallbacks::empty()
+        });
+        library
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn stage_volatile_while(library: &Library, interfere: impl FnOnce(&Library)) -> TpmResult {
+        let volatile = crate::library::tpm2::valid_volatile_state_fixture();
+        let result = std::thread::scope(|scope| {
+            let staging = scope
+                .spawn(|| library.set_state(StateBlobKind::Volatile, StateInput::Data(volatile)));
+            let release = gate::Release;
+            assert!(
+                gate::wait_until_parked(),
+                "timed out waiting for the staging thread to reach the gate"
+            );
+            interfere(library);
+            drop(release);
+            staging.join().expect("the staging thread never panics")
+        });
+        assert!(!gate::timed_out(), "the gated callback timed out");
+        result
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn an_undisturbed_gated_validation_still_caches_the_blob() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        assert_eq!(stage_volatile_while(&library, |_| {}), TPM_SUCCESS);
+        assert_eq!(
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Volatile),
+            PreloadedBlob::Data(crate::library::tpm2::valid_volatile_state_fixture())
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_main_init_in_flight_rejects_a_blob_staged_behind_its_back() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = tpm2_library();
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_io_init: Some(io_init_gate),
+            ..LibtpmsCallbacks::empty()
+        });
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        let volatile = crate::library::tpm2::valid_volatile_state_fixture();
+
+        let staged = std::thread::scope(|scope| {
+            let init = scope.spawn(|| library.main_init());
+            let release = gate::Release;
+            assert!(
+                gate::wait_until_parked(),
+                "timed out waiting for the MainInit to reach the gate"
+            );
+            let staged =
+                library.set_state(StateBlobKind::Volatile, StateInput::Data(volatile.clone()));
+            drop(release);
+            assert_eq!(
+                init.join().expect("the init thread never panics"),
+                TPM_SUCCESS
+            );
+            staged
+        });
+        assert!(!gate::timed_out(), "the gated callback timed out");
+        assert_eq!(
+            staged, TPM_INVALID_POSTINIT,
+            "the MainInit already copied the state this blob would have joined, \
+             and would silently drop it when it finishes"
+        );
+        let state = library.lock_state();
+        assert!(state.tpm2_runtime.is_some());
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Missing
+        );
+        drop(state);
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_concurrent_main_init_never_loses_the_state_it_published() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        let result = stage_volatile_while(&library, |library| {
+            library.stage_empty_state(StateBlobKind::Permanent);
+            assert_eq!(library.main_init(), TPM_SUCCESS);
+        });
+        assert_eq!(
+            result, TPM_INVALID_POSTINIT,
+            "a blob validated for a superseded lifecycle is never published"
+        );
+        let state = library.lock_state();
+        assert!(
+            state.tpm2_runtime.is_some(),
+            "the runtime the concurrent MainInit published survives"
+        );
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Missing,
+            "the late blob does not reappear behind the running TPM"
+        );
+        drop(state);
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_concurrent_failing_main_init_also_discards_the_blob() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        let result = stage_volatile_while(&library, |library| {
+            library
+                .lock_state()
+                .preloaded_state
+                .set_data(StateBlobKind::Permanent, vec![4, 5, 6]);
+            assert_eq!(
+                library.main_init(),
+                crate::library::constants::TPM_RC_INSUFFICIENT
+            );
+        });
+        assert_eq!(result, TPM_INVALID_POSTINIT);
+        let state = library.lock_state();
+        assert!(state.tpm2_runtime.is_none());
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Missing
+        );
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Permanent),
+            PreloadedBlob::Data(vec![4, 5, 6]),
+            "the failed MainInit keeps its own staged blob"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_concurrent_terminate_discards_the_blob() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        let result = stage_volatile_while(&library, Library::terminate);
+        assert_eq!(result, TPM_INVALID_POSTINIT);
+        assert_eq!(
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Volatile),
+            PreloadedBlob::Missing
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_concurrent_version_switch_discards_the_blob() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        let result = stage_volatile_while(&library, |library| {
+            library.lock_state().selected = TpmVersion::V1_2;
+        });
+        assert_eq!(result, TPM_FAIL);
+        assert_eq!(
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Volatile),
+            PreloadedBlob::Missing
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_second_main_init_cannot_take_over_the_first_ones_lifecycle() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = tpm2_library();
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_io_init: Some(io_init_gate_failing_passthrough),
+            ..LibtpmsCallbacks::empty()
+        });
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        let volatile = crate::library::tpm2::valid_volatile_state_fixture();
+
+        let (second_init, staged, first_init) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| library.main_init());
+            let release = gate::Release;
+            assert!(
+                gate::wait_until_parked(),
+                "timed out waiting for the first MainInit to reach the gate"
+            );
+            let second_init = library.main_init();
+            let staged =
+                library.set_state(StateBlobKind::Volatile, StateInput::Data(volatile.clone()));
+            drop(release);
+            let first_init = first.join().expect("the init thread never panics");
+            (second_init, staged, first_init)
+        });
+        assert!(!gate::timed_out(), "the gated callback timed out");
+
+        let state = library.lock_state();
+        let cached = state.preloaded_state.get(StateBlobKind::Volatile).clone();
+        drop(state);
+        if staged == TPM_SUCCESS {
+            assert_eq!(
+                cached,
+                PreloadedBlob::Data(volatile),
+                "a SetState that reported success must never be discarded by a MainInit"
+            );
+        }
+
+        assert_eq!(
+            second_init, TPM_INVALID_POSTINIT,
+            "a MainInit already in flight owns the lifecycle until it finishes"
+        );
+        assert_eq!(first_init, TPM_SUCCESS);
+        assert_eq!(staged, TPM_INVALID_POSTINIT);
+        assert_eq!(cached, PreloadedBlob::Missing);
+        assert!(library.lock_state().tpm2_runtime.is_some());
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn sequential_main_init_calls_are_still_accepted() {
+        let library = tpm2_library();
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        library.terminate();
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        assert_eq!(
+            library.main_init(),
+            TPM_SUCCESS,
+            "the lifecycle is released by every attempt"
+        );
+        library.terminate();
+        assert_eq!(
+            library.main_init(),
+            TPM_FAIL,
+            "no staged state and no backend, not a lifecycle rejection"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn init_while(library: &Library, interfere: impl FnOnce(&Library)) -> TpmResult {
+        let result = std::thread::scope(|scope| {
+            let init = scope.spawn(|| library.main_init());
+            let release = gate::Release;
+            assert!(
+                gate::wait_until_parked(),
+                "timed out waiting for the MainInit to reach the gate"
+            );
+            interfere(library);
+            drop(release);
+            init.join().expect("the init thread never panics")
+        });
+        assert!(!gate::timed_out(), "the gated callback timed out");
+        result
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn gated_init_library() -> Library {
+        let library = tpm2_library();
+        library.register_callbacks(LibtpmsCallbacks {
+            tpm_io_init: Some(io_init_gate),
+            ..LibtpmsCallbacks::empty()
+        });
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        library
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_terminate_during_main_init_discards_the_stale_runtime() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_init_library();
+        let restaged = crate::library::tpm2::valid_permanent_state_fixture();
+
+        let result = init_while(&library, |library| {
+            library.terminate();
+            library
+                .lock_state()
+                .preloaded_state
+                .set_data(StateBlobKind::Permanent, restaged.clone());
+        });
+
+        let state = library.lock_state();
+        assert!(
+            state.tpm2_runtime.is_none(),
+            "the stale runtime is dropped, never published over a completed Terminate"
+        );
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Permanent),
+            PreloadedBlob::Data(restaged),
+            "the newer lifecycle keeps the state staged for it"
+        );
+        assert!(
+            !state.version_locked,
+            "the completed Terminate stays effective"
+        );
+        assert!(
+            state.initializing.is_none(),
+            "the superseded attempt still releases the lifecycle it owned"
+        );
+        drop(state);
+        assert_eq!(
+            result, TPM_INVALID_POSTINIT,
+            "a MainInit superseded by Terminate reports the lifecycle break"
+        );
+    }
+
+    #[cfg(all(feature = "tpm1", feature = "tpm2"))]
+    #[test]
+    fn a_stale_main_init_cannot_overwrite_a_newer_tpm12_lifecycle() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_init_library();
+
+        let result = init_while(&library, |library| {
+            library.terminate();
+            assert_eq!(
+                library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+                TPM_SUCCESS
+            );
+        });
+
+        let state = library.lock_state();
+        assert_eq!(
+            state.selected,
+            TpmVersion::V1_2,
+            "the newer selection survives the stale MainInit"
+        );
+        assert!(
+            state.tpm2_runtime.is_none(),
+            "a TPM 1.2 selection can never carry a published TPM2 runtime"
+        );
+        assert!(state.initializing.is_none());
+        drop(state);
+        assert_eq!(result, TPM_INVALID_POSTINIT);
+
+        assert_eq!(library.volatile_all_store(), Err(TPM_FAIL));
+        assert!(library.get_info(0).is_none());
+        assert!(!library.was_manufactured());
+        assert_eq!(
+            library.set_state(StateBlobKind::Permanent, StateInput::Empty),
+            TPM_FAIL,
+            "state transfer dispatches to TPM 1.2 too"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_failure_mode_volatile_blob_validates_but_does_not_restore() {
+        use crate::library::constants::TPM_RC_FAILURE;
+
+        let blob = crate::library::tpm2::failure_mode_volatile_state_fixture();
+
+        let library = tpm2_library();
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::Volatile, StateInput::Data(blob.clone())),
+            TPM_SUCCESS,
+            "a structurally valid blob is accepted whatever its failure-mode flag says"
+        );
+        assert_eq!(
+            *library
+                .lock_state()
+                .preloaded_state
+                .get(StateBlobKind::Volatile),
+            PreloadedBlob::Data(blob.clone())
+        );
+
+        assert_eq!(
+            library.main_init(),
+            TPM_RC_FAILURE,
+            "restoring the same blob still reaches the failure boundary"
+        );
+        assert!(library.lock_state().tpm2_runtime.is_none());
     }
 }

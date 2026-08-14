@@ -40,13 +40,14 @@ use core::ffi::c_int;
 use crate::ffi_types::{LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty};
 
 use super::constants::{
-    TPM_FAIL, TPM_RC_FAILURE, TPM_SUCCESS, TPMPROP_TPM_KEY_HANDLES, TPMPROP_TPM_RSA_KEY_LENGTH_MAX,
+    TPM_FAIL, TPM_RC_FAILURE, TPM_RETRY, TPM_SUCCESS, TPMPROP_TPM_KEY_HANDLES,
+    TPMPROP_TPM_RSA_KEY_LENGTH_MAX,
 };
 use super::preloaded_state::PreloadedBlob;
 use super::state_blob::StateBlobKind;
 use marshal::{BlobReader, BlockSkipError, skip_optional_block};
 pub(super) use nv::HostNvram;
-use nv::{NvramLoad, PermanentStateProbe};
+use nv::{NvramLoad, NvramWrite, PermanentStateProbe};
 use pcr::PcrSelection;
 use persistent::{PersistentAllEnvelope, PersistentAllError, StateSection};
 
@@ -151,7 +152,38 @@ fn volatile_phase(
         VolatileResolution::NotPresent => return Ok(()),
         VolatileResolution::Nonempty(blob) => blob,
     };
+    attach_volatile_blob(runtime, &blob, clock, VolatileDecodeBoundary::Restore)
+}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VolatileDecodeBoundary {
+    Restore,
+    Validate,
+}
+
+impl VolatileDecodeBoundary {
+    fn map_parse(self, error: PersistentAllError) -> TpmResult {
+        self.map_result(error.tpm_result())
+    }
+
+    fn map_result(self, code: TpmResult) -> TpmResult {
+        match self {
+            Self::Restore => TPM_RC_FAILURE,
+            Self::Validate => code,
+        }
+    }
+
+    fn rejects_restored_failure_mode(self) -> bool {
+        self == Self::Restore
+    }
+}
+
+fn attach_volatile_blob(
+    runtime: &mut Tpm2Runtime,
+    blob: &[u8],
+    clock: &dyn HostClock,
+    boundary: VolatileDecodeBoundary,
+) -> Result<(), TpmResult> {
     let shadow_views: Vec<PcrSelection<'_>> = runtime
         .shadow_pcr_allocated
         .selections
@@ -177,16 +209,16 @@ fn volatile_phase(
     };
 
     let owned = {
-        let decoded = volatile::parse_volatile_state_blob(&blob, &shadow_views, seed_tie, clock)
-            .map_err(|_| TPM_RC_FAILURE)?;
+        let decoded = volatile::parse_volatile_state_blob(blob, &shadow_views, seed_tie, clock)
+            .map_err(|error| boundary.map_parse(error))?;
         volatile::materialize_volatile_state(&decoded, seed_tie, object_version)
-            .map_err(|_| TPM_RC_FAILURE)?
+            .map_err(|code| boundary.map_result(code))?
     };
 
     runtime::merge_volatile_state(runtime, owned);
     runtime::nv_shadow_restore(runtime);
 
-    if runtime.failure_mode {
+    if boundary.rejects_restored_failure_mode() && runtime.failure_mode {
         return Err(TPM_RC_FAILURE);
     }
     Ok(())
@@ -262,7 +294,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
             {
                 NvramLoad::Data(blob) => {
                     drop(manufactured);
-                    initialize_from_permanent_blob(blob, PermanentCommit::FirstBootReload)
+                    initialize_from_permanent_blob(&blob, PermanentCommit::FirstBootReload)
                         .map_err(|_| TPM_RC_FAILURE)?
                 }
                 NvramLoad::Missing => {
@@ -295,7 +327,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
             Ok(runtime)
         }
         PermanentStateSource::PreloadedData(blob) => {
-            let mut runtime = initialize_from_permanent_blob(blob, PermanentCommit::Restore)?;
+            let mut runtime = initialize_from_permanent_blob(&blob, PermanentCommit::Restore)?;
             volatile_phase(
                 &host_nvram,
                 context.preloaded_volatile,
@@ -307,7 +339,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
         }
         PermanentStateSource::Backend => match host_nvram.load(StateBlobKind::Permanent)? {
             NvramLoad::Data(blob) => {
-                let mut runtime = initialize_from_permanent_blob(blob, PermanentCommit::Restore)?;
+                let mut runtime = initialize_from_permanent_blob(&blob, PermanentCommit::Restore)?;
                 volatile_phase(
                     &host_nvram,
                     context.preloaded_volatile,
@@ -323,6 +355,54 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
     }?;
     runtime.entropy = entropy;
     Ok(runtime)
+}
+
+pub(super) fn persistent_all_store(runtime: &Tpm2Runtime) -> Result<Vec<u8>, TpmResult> {
+    match runtime.state.as_ref() {
+        Some(state) => persistent::persistent_all_store(state),
+        None => Err(TPM_FAIL),
+    }
+}
+
+pub(super) fn load_state_from_backend(
+    callbacks: LibtpmsCallbacks,
+    kind: StateBlobKind,
+) -> Result<Vec<u8>, TpmResult> {
+    let host_nvram = HostNvram::new(callbacks);
+    if host_nvram.init()? == NvramWrite::NotRegistered {
+        return Err(TPM_FAIL);
+    }
+    match host_nvram.load(kind)? {
+        NvramLoad::Data(blob) => Ok(blob),
+        NvramLoad::SuccessWithoutData => Ok(Vec::new()),
+        NvramLoad::Missing => Err(TPM_RETRY),
+        // TODO: Implement the NVChip file fallback for hosts that register
+        // no tpm_nvram_loaddata callback.
+        NvramLoad::NotRegistered => Err(TPM_FAIL),
+    }
+}
+
+pub(super) fn validate_permanent_state(blob: &[u8]) -> TpmResult {
+    match initialize_from_permanent_blob(blob, PermanentCommit::Restore) {
+        Ok(_) => TPM_SUCCESS,
+        Err(code) => code,
+    }
+}
+
+pub(super) fn validate_volatile_state(permanent: &[u8], volatile: &[u8]) -> TpmResult {
+    let mut runtime = match initialize_from_permanent_blob(permanent, PermanentCommit::Restore) {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    match attach_volatile_blob(
+        &mut runtime,
+        volatile,
+        &OsClock,
+        VolatileDecodeBoundary::Validate,
+    ) {
+        Ok(()) => TPM_SUCCESS,
+        Err(code) => code,
+    }
 }
 
 const TPM_SU_STATE: u16 = 0x0001;
@@ -432,10 +512,10 @@ enum PermanentCommit {
 }
 
 fn initialize_from_permanent_blob(
-    blob: Vec<u8>,
+    blob: &[u8],
     commit: PermanentCommit,
 ) -> Result<Box<Tpm2Runtime>, TpmResult> {
-    let envelope = PersistentAllEnvelope::parse(&blob).map_err(PersistentAllError::tpm_result)?;
+    let envelope = PersistentAllEnvelope::parse(blob).map_err(PersistentAllError::tpm_result)?;
     let decoded =
         parse_persistent_all_payload(&envelope).map_err(PersistentAllError::tpm_result)?;
     let candidate = persistent::materialize_persistent_state(decoded)?;
@@ -514,6 +594,35 @@ pub(in crate::library) fn valid_permanent_state_fixture() -> Vec<u8> {
 #[cfg(test)]
 pub(in crate::library) fn valid_volatile_state_fixture() -> Vec<u8> {
     volatile::VolatileFixture {
+        ep_seed: Vec::new(),
+        sp_seed: Vec::new(),
+        pp_seed: Vec::new(),
+        ..volatile::VolatileFixture::default()
+    }
+    .bytes()
+}
+
+#[cfg(test)]
+pub(in crate::library) fn seed_mismatched_volatile_state_fixture() -> Vec<u8> {
+    volatile::VolatileFixture::default().bytes()
+}
+
+#[cfg(test)]
+pub(in crate::library) fn failure_mode_volatile_state_fixture() -> Vec<u8> {
+    volatile::VolatileFixture {
+        in_failure_mode: 1,
+        ep_seed: Vec::new(),
+        sp_seed: Vec::new(),
+        pp_seed: Vec::new(),
+        ..volatile::VolatileFixture::default()
+    }
+    .bytes()
+}
+
+#[cfg(test)]
+pub(in crate::library) fn bad_tag_volatile_state_fixture() -> Vec<u8> {
+    volatile::VolatileFixture {
+        trailing_magic: 0,
         ep_seed: Vec::new(),
         sp_seed: Vec::new(),
         pp_seed: Vec::new(),
@@ -3284,7 +3393,7 @@ mod tests {
     #[test]
     fn nv_shadow_restore_boundary_is_exact() {
         let runtime = initialize_from_permanent_blob(
-            valid_permanent_state_fixture(),
+            &valid_permanent_state_fixture(),
             PermanentCommit::Restore,
         )
         .expect("the permanent fixture restores");

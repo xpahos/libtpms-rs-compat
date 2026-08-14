@@ -5,8 +5,9 @@ use crate::ffi_types::{TpmResult, TpmlibTpmProperty, TpmlibTpmVersion};
 pub const TPM_SUCCESS: TpmResult = 0;
 pub const TPM_FAIL: TpmResult = 9;
 pub const TPM_SIZE: TpmResult = 23;
-#[cfg(feature = "tpm2")]
 pub(in crate::library) const TPM_INVALID_POSTINIT: TpmResult = 38;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_BAD_TYPE: TpmResult = 52;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_BAD_LOCALITY: TpmResult = 61;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
