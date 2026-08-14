@@ -1,5 +1,6 @@
 mod algorithm;
 mod audit;
+mod buffer_size;
 mod capability;
 mod clock;
 mod command;
@@ -49,6 +50,9 @@ use nv::{NvramLoad, PermanentStateProbe};
 use pcr::PcrSelection;
 use persistent::{PersistentAllEnvelope, PersistentAllError, StateSection};
 
+pub(super) use buffer_size::{
+    DEFAULT_BUFFER_SIZE, MAX_BUFFER_SIZE, MIN_BUFFER_SIZE, clamp_buffer_size,
+};
 pub(super) use clock::{HostClock, OsClock};
 pub(super) use crypto::{EntropySource, os_entropy};
 pub(super) use process::process;

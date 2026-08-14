@@ -15,6 +15,7 @@ use crate::ffi_types::{
 #[cfg(feature = "tpm2")]
 pub(crate) use command_input::CommandInput;
 pub use constants::{TPM_BUFFER_MAX, TPM_FAIL, TPM_SIZE, TPM_SUCCESS};
+pub use library_state::BufferSizeLimits;
 use library_state::Library;
 pub(crate) use library_state::ProcessPreparation;
 
@@ -58,6 +59,10 @@ pub fn register_callbacks(callbacks: LibtpmsCallbacks) {
 
 pub fn set_profile(profile: Option<&[u8]>) -> TpmResult {
     Library::global().set_profile(profile)
+}
+
+pub fn set_buffer_size(wanted_size: u32) -> Option<BufferSizeLimits> {
+    Library::global().set_buffer_size(wanted_size)
 }
 
 pub fn was_manufactured() -> bool {

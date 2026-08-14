@@ -1,7 +1,7 @@
 use crate::ffi_types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::constants::{
-    TPM_BUFFER_MAX, TPM_RC_BAD_TAG, TPM_RC_COMMAND_SIZE, TPM_RC_INSUFFICIENT, TPM_SUCCESS,
+    TPM_RC_BAD_TAG, TPM_RC_COMMAND_SIZE, TPM_RC_INSUFFICIENT, TPM_SUCCESS,
 };
 
 use super::super::marshal::BlobWriter;
@@ -10,8 +10,6 @@ pub(in crate::library::tpm2) const TPM_ST_NO_SESSIONS: u16 = 0x8001;
 pub(in crate::library::tpm2) const TPM_ST_SESSIONS: u16 = 0x8002;
 
 pub(in crate::library::tpm2) const HEADER_SIZE: usize = 10;
-
-const MAX_COMMAND_SIZE: u32 = TPM_BUFFER_MAX as u32;
 
 #[derive(Debug)]
 pub(in crate::library::tpm2) struct Command<'a> {
@@ -37,8 +35,16 @@ impl CommandParseError {
     }
 }
 
+#[cfg(test)]
 pub(in crate::library::tpm2) fn parse_command(
     input: &CommandInput,
+) -> Result<Command<'_>, CommandParseError> {
+    parse_command_within(input, super::super::buffer_size::DEFAULT_BUFFER_SIZE)
+}
+
+pub(in crate::library::tpm2) fn parse_command_within(
+    input: &CommandInput,
+    buffer_size: u32,
 ) -> Result<Command<'_>, CommandParseError> {
     let (tag_bytes, rest) = input
         .bytes()
@@ -53,7 +59,7 @@ pub(in crate::library::tpm2) fn parse_command(
         .split_first_chunk::<4>()
         .ok_or(CommandParseError::Insufficient)?;
     let declared_size = u32::from_be_bytes(*size_bytes);
-    if declared_size != input.received_size() || declared_size > MAX_COMMAND_SIZE {
+    if declared_size != input.received_size() || declared_size > buffer_size {
         return Err(CommandParseError::CommandSize);
     }
 
@@ -68,8 +74,6 @@ pub(in crate::library::tpm2) fn parse_command(
         payload,
     })
 }
-
-const MAX_RESPONSE_SIZE: usize = TPM_BUFFER_MAX as usize;
 
 const PARAMETER_SIZE_FIELD: usize = 4;
 
@@ -125,18 +129,27 @@ fn checked_response_size(
     parameter_size_field: usize,
     parameters: usize,
     auth_sessions: usize,
+    buffer_size: u32,
 ) -> Result<u32, ResponseTooLarge> {
     HEADER_SIZE
         .checked_add(parameter_size_field)
         .and_then(|total| total.checked_add(parameters))
         .and_then(|total| total.checked_add(auth_sessions))
-        .filter(|total| *total <= MAX_RESPONSE_SIZE)
         .and_then(|total| u32::try_from(total).ok())
+        .filter(|total| *total <= buffer_size)
         .ok_or(ResponseTooLarge)
 }
 
+#[cfg(test)]
 pub(in crate::library::tpm2) fn serialize_response(
     response: &Response,
+) -> Result<Vec<u8>, ResponseTooLarge> {
+    serialize_response_within(response, super::super::buffer_size::DEFAULT_BUFFER_SIZE)
+}
+
+pub(in crate::library::tpm2) fn serialize_response_within(
+    response: &Response,
+    buffer_size: u32,
 ) -> Result<Vec<u8>, ResponseTooLarge> {
     let (tag, parameters, auth_sessions) = if response.code == TPM_SUCCESS {
         (
@@ -156,7 +169,12 @@ pub(in crate::library::tpm2) fn serialize_response(
     } else {
         0
     };
-    let size = checked_response_size(parameter_size_field, parameters.len(), auth_sessions.len())?;
+    let size = checked_response_size(
+        parameter_size_field,
+        parameters.len(),
+        auth_sessions.len(),
+        buffer_size,
+    )?;
     let mut writer = BlobWriter::with_capacity(size as usize);
     writer.write_u16(tag);
     writer.write_u32(size);
@@ -173,6 +191,9 @@ pub(in crate::library::tpm2) fn serialize_response(
 mod tests {
     use super::*;
     use crate::library::constants::TPM_RC_COMMAND_CODE;
+    use crate::library::tpm2::buffer_size::{DEFAULT_BUFFER_SIZE, MIN_BUFFER_SIZE};
+
+    const MAX_RESPONSE_SIZE: usize = DEFAULT_BUFFER_SIZE as usize;
 
     fn command_bytes(tag: u16, size: u32, code: u32, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -473,16 +494,97 @@ mod tests {
     #[test]
     fn oversized_response_computations_never_overflow() {
         assert_eq!(
-            checked_response_size(0, usize::MAX, 0),
+            checked_response_size(0, usize::MAX, 0, DEFAULT_BUFFER_SIZE),
             Err(ResponseTooLarge)
         );
         assert_eq!(
-            checked_response_size(PARAMETER_SIZE_FIELD, usize::MAX - 4, usize::MAX),
+            checked_response_size(
+                PARAMETER_SIZE_FIELD,
+                usize::MAX - 4,
+                usize::MAX,
+                DEFAULT_BUFFER_SIZE
+            ),
             Err(ResponseTooLarge)
         );
         assert_eq!(
-            checked_response_size(0, MAX_RESPONSE_SIZE - HEADER_SIZE, 0),
+            checked_response_size(0, MAX_RESPONSE_SIZE - HEADER_SIZE, 0, DEFAULT_BUFFER_SIZE),
             Ok(MAX_RESPONSE_SIZE as u32)
+        );
+    }
+
+    #[test]
+    fn a_configured_buffer_size_moves_the_command_limit() {
+        let at_limit = command_bytes(
+            TPM_ST_NO_SESSIONS,
+            MIN_BUFFER_SIZE,
+            0x144,
+            &vec![0u8; MIN_BUFFER_SIZE as usize - HEADER_SIZE],
+        );
+        let input = received(&at_limit);
+        let command = parse_command_within(&input, MIN_BUFFER_SIZE)
+            .expect("a command of exactly the configured size is accepted");
+        assert_eq!(
+            command.payload.len(),
+            MIN_BUFFER_SIZE as usize - HEADER_SIZE
+        );
+
+        let over = command_bytes(
+            TPM_ST_NO_SESSIONS,
+            MIN_BUFFER_SIZE + 1,
+            0x144,
+            &vec![0u8; MIN_BUFFER_SIZE as usize + 1 - HEADER_SIZE],
+        );
+        assert_eq!(
+            parse_command_within(&received(&over), MIN_BUFFER_SIZE).unwrap_err(),
+            CommandParseError::CommandSize
+        );
+        assert!(
+            parse_command_within(&received(&over), DEFAULT_BUFFER_SIZE).is_ok(),
+            "the same command fits the default buffer size"
+        );
+    }
+
+    #[test]
+    fn a_configured_buffer_size_moves_the_response_limit() {
+        let max = MIN_BUFFER_SIZE as usize - HEADER_SIZE;
+        let bytes = serialize_response_within(
+            &Response::success(TPM_ST_NO_SESSIONS, vec![0u8; max]),
+            MIN_BUFFER_SIZE,
+        )
+        .unwrap();
+        assert_eq!(bytes.len(), MIN_BUFFER_SIZE as usize);
+        assert_eq!(&bytes[2..6], &MIN_BUFFER_SIZE.to_be_bytes());
+
+        let over = Response::success(TPM_ST_NO_SESSIONS, vec![0u8; max + 1]);
+        assert_eq!(
+            serialize_response_within(&over, MIN_BUFFER_SIZE),
+            Err(ResponseTooLarge)
+        );
+        assert_eq!(
+            serialize_response_within(&over, DEFAULT_BUFFER_SIZE)
+                .unwrap()
+                .len(),
+            MIN_BUFFER_SIZE as usize + 1,
+            "the same response fits the default buffer size"
+        );
+
+        let max = MIN_BUFFER_SIZE as usize - HEADER_SIZE - PARAMETER_SIZE_FIELD;
+        assert_eq!(
+            serialize_response_within(
+                &Response::success(TPM_ST_SESSIONS, vec![0u8; max]),
+                MIN_BUFFER_SIZE
+            )
+            .unwrap()
+            .len(),
+            MIN_BUFFER_SIZE as usize,
+            "the session-tagged parameterSize field counts against the limit"
+        );
+        assert_eq!(
+            serialize_response_within(
+                &Response::success(TPM_ST_SESSIONS, vec![0u8; max + 1]),
+                MIN_BUFFER_SIZE
+            ),
+            Err(ResponseTooLarge)
         );
     }
 

@@ -28,7 +28,8 @@ pub(in crate::library) fn process(
 
     super::tis::abort_sequence(runtime);
 
-    let response = match command::parse_command(command) {
+    let buffer_size = runtime.buffer_size;
+    let response = match command::parse_command_within(command, buffer_size) {
         Ok(parsed) => command::dispatch(runtime, &parsed),
         Err(error) => Response::error(error.response_code()),
     };
@@ -37,14 +38,14 @@ pub(in crate::library) fn process(
         runtime.nv_update_pending = false;
         if commit_nv(runtime).is_err() {
             runtime.failure_mode = true;
-            return serialize(Response::error(TPM_RC_FAILURE));
+            return serialize(Response::error(TPM_RC_FAILURE), buffer_size);
         }
     }
-    serialize(response)
+    serialize(response, buffer_size)
 }
 
-fn serialize(response: Response) -> Result<Vec<u8>, TpmResult> {
-    command::serialize_response(&response).map_err(|_| TPM_FAIL)
+fn serialize(response: Response, buffer_size: u32) -> Result<Vec<u8>, TpmResult> {
+    command::serialize_response_within(&response, buffer_size).map_err(|_| TPM_FAIL)
 }
 
 #[cfg(test)]
@@ -322,6 +323,57 @@ mod tests {
             );
         }
         assert_runtime_is_pristine(&runtime);
+    }
+
+    #[test]
+    fn the_runtime_buffer_size_bounds_the_accepted_command_size() {
+        use crate::library::tpm2::buffer_size::{DEFAULT_BUFFER_SIZE, MIN_BUFFER_SIZE};
+
+        fn unsupported_command(size: u32) -> CommandInput {
+            let mut bytes = vec![0u8; size as usize];
+            bytes[..2].copy_from_slice(&[0x80, 0x01]);
+            bytes[2..6].copy_from_slice(&size.to_be_bytes());
+            bytes[6..10].copy_from_slice(&[0x20, 0x00, 0x00, 0x00]);
+            CommandInput::new(size, bytes)
+        }
+
+        let mut runtime = empty_state_runtime();
+        assert_eq!(runtime.buffer_size, DEFAULT_BUFFER_SIZE);
+        assert_eq!(
+            run_process(&mut runtime, 0, &unsupported_command(DEFAULT_BUFFER_SIZE)).unwrap(),
+            UNSUPPORTED_RESPONSE
+        );
+
+        runtime.buffer_size = MIN_BUFFER_SIZE;
+        assert_eq!(
+            run_process(&mut runtime, 0, &unsupported_command(MIN_BUFFER_SIZE)).unwrap(),
+            UNSUPPORTED_RESPONSE,
+            "a command of exactly the configured size is accepted"
+        );
+        assert_eq!(
+            run_process(&mut runtime, 0, &unsupported_command(MIN_BUFFER_SIZE + 1)).unwrap(),
+            COMMAND_SIZE_RESPONSE,
+            "one byte more is rejected"
+        );
+        assert_eq!(
+            run_process(&mut runtime, 0, &unsupported_command(DEFAULT_BUFFER_SIZE)).unwrap(),
+            COMMAND_SIZE_RESPONSE
+        );
+
+        runtime.failure_mode = true;
+        assert_eq!(
+            run_process(&mut runtime, 0, &startup_command()).unwrap(),
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01],
+            "the failure-mode response still fits the configured buffer"
+        );
+        runtime.failure_mode = false;
+
+        runtime.buffer_size = DEFAULT_BUFFER_SIZE;
+        assert_eq!(
+            run_process(&mut runtime, 0, &unsupported_command(DEFAULT_BUFFER_SIZE)).unwrap(),
+            UNSUPPORTED_RESPONSE,
+            "restoring the maximum restores the original behavior"
+        );
     }
 
     #[test]

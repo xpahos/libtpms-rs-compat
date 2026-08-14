@@ -24,11 +24,20 @@ pub enum TpmVersion {
     V2_0,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferSizeLimits {
+    pub current: u32,
+    pub minimum: u32,
+    pub maximum: u32,
+}
+
 struct LibraryState {
     selected: TpmVersion,
     version_locked: bool,
     preloaded_state: PreloadedState,
     callbacks: LibtpmsCallbacks,
+    #[cfg(feature = "tpm2")]
+    tpm2_buffer_size: u32,
     #[cfg(feature = "tpm2")]
     configured_profile: Option<Vec<u8>>,
     #[cfg(feature = "tpm2")]
@@ -44,6 +53,8 @@ impl LibraryState {
             version_locked: false,
             preloaded_state: PreloadedState::new(),
             callbacks: LibtpmsCallbacks::empty(),
+            #[cfg(feature = "tpm2")]
+            tpm2_buffer_size: tpm2::DEFAULT_BUFFER_SIZE,
             #[cfg(feature = "tpm2")]
             configured_profile: None,
             #[cfg(feature = "tpm2")]
@@ -118,10 +129,11 @@ impl Library {
         match selected {
             #[cfg(feature = "tpm2")]
             TpmVersion::V2_0 => match tpm2::main_init(context) {
-                Ok(runtime) => {
+                Ok(mut runtime) => {
                     let mut state = self.lock_state();
                     state.preloaded_state.take(StateBlobKind::Permanent);
                     state.preloaded_state.take(StateBlobKind::Volatile);
+                    runtime.buffer_size = state.tpm2_buffer_size;
                     state.tpm2_runtime = Some(runtime);
                     TPM_SUCCESS
                 }
@@ -214,6 +226,30 @@ impl Library {
                 }
             }
             _ => TPM_FAIL,
+        }
+    }
+
+    #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
+    pub fn set_buffer_size(&self, wanted_size: u32) -> Option<BufferSizeLimits> {
+        let state = self.lock_state();
+        match state.selected {
+            #[cfg(feature = "tpm2")]
+            TpmVersion::V2_0 => {
+                let mut state = state;
+                if wanted_size != 0 {
+                    state.tpm2_buffer_size = tpm2::clamp_buffer_size(wanted_size);
+                }
+                let current = state.tpm2_buffer_size;
+                if let Some(runtime) = state.tpm2_runtime.as_deref_mut() {
+                    runtime.buffer_size = current;
+                }
+                Some(BufferSizeLimits {
+                    current,
+                    minimum: tpm2::MIN_BUFFER_SIZE,
+                    maximum: tpm2::MAX_BUFFER_SIZE,
+                })
+            }
+            _ => None,
         }
     }
 
@@ -538,6 +574,205 @@ mod tests {
         assert!(library.lock_state().tpm2_runtime.is_none());
         assert!(!library.was_manufactured());
         library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn tpm2_library() -> Library {
+        let library = Library::new();
+        assert_eq!(
+            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            TPM_SUCCESS
+        );
+        library
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[track_caller]
+    fn buffer_size(library: &Library, wanted_size: u32) -> u32 {
+        let limits = library
+            .set_buffer_size(wanted_size)
+            .expect("TPM 2 is selected");
+        assert_eq!(limits.minimum, 2808);
+        assert_eq!(limits.maximum, 4096);
+        limits.current
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn the_buffer_size_starts_at_the_compile_time_maximum_and_queries_leave_it() {
+        let library = tpm2_library();
+        assert_eq!(buffer_size(&library, 0), 4096);
+        assert_eq!(buffer_size(&library, 0), 4096, "a query changes nothing");
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn wanted_buffer_sizes_clamp_into_the_supported_range() {
+        let library = tpm2_library();
+        assert_eq!(buffer_size(&library, 2808), 2808);
+        assert_eq!(buffer_size(&library, 4096), 4096);
+        assert_eq!(buffer_size(&library, 2807), 2808, "below the minimum");
+        assert_eq!(buffer_size(&library, 1), 2808);
+        assert_eq!(buffer_size(&library, 4097), 4096, "above the maximum");
+        assert_eq!(buffer_size(&library, u32::MAX), 4096);
+        assert_eq!(buffer_size(&library, 3000), 3000, "in range");
+        assert_eq!(buffer_size(&library, 0), 3000, "a query keeps the value");
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn the_buffer_size_is_per_library_and_survives_terminate() {
+        let library = tpm2_library();
+        let untouched = tpm2_library();
+        library.stage_empty_state(StateBlobKind::Permanent);
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(
+            library
+                .lock_state()
+                .tpm2_runtime
+                .as_ref()
+                .unwrap()
+                .buffer_size,
+            4096
+        );
+
+        assert_eq!(buffer_size(&library, 3000), 3000);
+        assert_eq!(
+            library
+                .lock_state()
+                .tpm2_runtime
+                .as_ref()
+                .unwrap()
+                .buffer_size,
+            3000,
+            "a live runtime sees the change immediately"
+        );
+        assert_eq!(
+            buffer_size(&untouched, 0),
+            4096,
+            "another library instance keeps its own value"
+        );
+
+        library.terminate();
+        assert_eq!(buffer_size(&library, 0), 3000, "terminate keeps the value");
+        library.stage_empty_state(StateBlobKind::Permanent);
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(
+            library
+                .lock_state()
+                .tpm2_runtime
+                .as_ref()
+                .unwrap()
+                .buffer_size,
+            3000,
+            "the re-initialized runtime starts from the configured value"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn the_buffer_size_bounds_the_accepted_command_size() {
+        use crate::library::constants::TPM_RC_COMMAND_SIZE;
+
+        fn unsupported_command(size: u32) -> crate::library::CommandInput {
+            let mut bytes = vec![0u8; size as usize];
+            bytes[..2].copy_from_slice(&[0x80, 0x01]);
+            bytes[2..6].copy_from_slice(&size.to_be_bytes());
+            bytes[6..10].copy_from_slice(&[0x20, 0x00, 0x00, 0x00]);
+            crate::library::CommandInput::new(size, bytes)
+        }
+
+        #[track_caller]
+        fn response_code(library: &Library, size: u32) -> u32 {
+            let ProcessPreparation::Tpm2(context) = library.prepare_process() else {
+                panic!("TPM 2 must be selected");
+            };
+            let response = context.execute(&unsupported_command(size)).unwrap();
+            u32::from_be_bytes(response[6..10].try_into().unwrap())
+        }
+
+        const COMMAND_CODE: u32 = 0x143;
+
+        let library = tpm2_library();
+        library.stage_empty_state(StateBlobKind::Permanent);
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+
+        assert_eq!(response_code(&library, 4096), COMMAND_CODE);
+        assert_eq!(buffer_size(&library, 2808), 2808);
+        assert_eq!(response_code(&library, 2808), COMMAND_CODE);
+        assert_eq!(response_code(&library, 2809), TPM_RC_COMMAND_SIZE);
+        assert_eq!(response_code(&library, 4096), TPM_RC_COMMAND_SIZE);
+
+        assert_eq!(buffer_size(&library, 4096), 4096);
+        assert_eq!(
+            response_code(&library, 4096),
+            COMMAND_CODE,
+            "restoring the maximum restores the original behavior"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn the_configured_buffer_size_is_reported_by_get_capability() {
+        const MAX_COMMAND_SIZE: u32 = 0x11e;
+        const MAX_RESPONSE_SIZE: u32 = 0x11f;
+
+        #[track_caller]
+        fn reported(library: &Library, property: u32) -> u32 {
+            let mut bytes = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x16];
+            bytes.extend_from_slice(&0x0000_017au32.to_be_bytes());
+            bytes.extend_from_slice(&6u32.to_be_bytes());
+            bytes.extend_from_slice(&property.to_be_bytes());
+            bytes.extend_from_slice(&1u32.to_be_bytes());
+            let input = crate::library::CommandInput::new(bytes.len() as u32, bytes);
+            let ProcessPreparation::Tpm2(context) = library.prepare_process() else {
+                panic!("TPM 2 must be selected");
+            };
+            let response = context.execute(&input).unwrap();
+            assert_eq!(&response[6..10], &[0, 0, 0, 0], "TPM_RC_SUCCESS");
+            assert_eq!(&response[19..23], &property.to_be_bytes());
+            u32::from_be_bytes(response[23..27].try_into().unwrap())
+        }
+
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_STORES.lock().unwrap() = 0;
+        let library = manufacture_library();
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        let startup = crate::library::CommandInput::new(
+            12,
+            vec![
+                0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
+            ],
+        );
+        let ProcessPreparation::Tpm2(context) = library.prepare_process() else {
+            panic!("TPM 2 must be selected");
+        };
+        context.execute(&startup).unwrap();
+
+        assert_eq!(reported(&library, MAX_COMMAND_SIZE), 4096);
+        assert_eq!(reported(&library, MAX_RESPONSE_SIZE), 4096);
+        assert_eq!(buffer_size(&library, 2808), 2808);
+        assert_eq!(reported(&library, MAX_COMMAND_SIZE), 2808);
+        assert_eq!(reported(&library, MAX_RESPONSE_SIZE), 2808);
+        assert_eq!(
+            library.get_tpm_property(TPMPROP_TPM_BUFFER_MAX),
+            Some(4096),
+            "TPMPROP_TPM_BUFFER_MAX stays the compile-time maximum"
+        );
+        library.terminate();
+    }
+
+    #[test]
+    fn set_buffer_size_without_a_tpm2_selection_reports_nothing() {
+        let library = Library::new();
+        for wanted_size in [0u32, 1, 2808, 4096, u32::MAX] {
+            assert_eq!(library.set_buffer_size(wanted_size), None);
+        }
     }
 
     #[test]

@@ -18,8 +18,10 @@ mod startup;
 mod stir_random;
 
 pub(super) use dispatcher::dispatch;
+#[cfg(test)]
+pub(super) use header::parse_command;
 pub(super) use header::{
-    HEADER_SIZE, Response, TPM_ST_NO_SESSIONS, parse_command, serialize_response,
+    HEADER_SIZE, Response, TPM_ST_NO_SESSIONS, parse_command_within, serialize_response_within,
 };
 pub(in crate::library::tpm2) use registry::{
     TPM_CC_GET_CAPABILITY, implemented as implemented_commands,

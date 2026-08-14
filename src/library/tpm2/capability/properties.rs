@@ -1,5 +1,3 @@
-use crate::library::constants::TPM_BUFFER_MAX;
-
 use super::super::live::LiveState;
 use super::super::nv::RAM_INDEX_SPACE;
 use super::super::orderly::SU_NONE_VALUE;
@@ -217,8 +215,8 @@ fn property_value(
         TPM_PT_CONTEXT_SYM => Some(CONTEXT_ENCRYPT_ALG),
         TPM_PT_CONTEXT_SYM_SIZE => Some(CONTEXT_ENCRYPT_KEY_BITS),
         TPM_PT_ORDERLY_COUNT => Some(MAX_ORDERLY_COUNT),
-        TPM_PT_MAX_COMMAND_SIZE => Some(TPM_BUFFER_MAX as u32),
-        TPM_PT_MAX_RESPONSE_SIZE => Some(TPM_BUFFER_MAX as u32),
+        TPM_PT_MAX_COMMAND_SIZE => Some(runtime.buffer_size),
+        TPM_PT_MAX_RESPONSE_SIZE => Some(runtime.buffer_size),
         TPM_PT_MAX_DIGEST => Some(SIZEOF_TPMU_HA),
         TPM_PT_MAX_OBJECT_CONTEXT => Some(SIZEOF_CONTEXT_OVERHEAD + SIZEOF_C_OBJECT),
         TPM_PT_MAX_SESSION_CONTEXT => Some(SIZEOF_CONTEXT_OVERHEAD + SIZEOF_C_SESSION),
@@ -503,6 +501,30 @@ mod tests {
             );
         }
         assert_eq!(value(&runtime, TPM_PT_VENDOR_COMMANDS), 0);
+    }
+
+    #[test]
+    fn the_command_and_response_size_properties_follow_the_configured_buffer_size() {
+        use crate::library::tpm2::buffer_size::{DEFAULT_BUFFER_SIZE, MIN_BUFFER_SIZE};
+
+        let mut runtime = started_runtime();
+        assert_eq!(
+            value(&runtime, TPM_PT_MAX_COMMAND_SIZE),
+            DEFAULT_BUFFER_SIZE
+        );
+        assert_eq!(
+            value(&runtime, TPM_PT_MAX_RESPONSE_SIZE),
+            DEFAULT_BUFFER_SIZE
+        );
+
+        runtime.buffer_size = MIN_BUFFER_SIZE;
+        assert_eq!(value(&runtime, TPM_PT_MAX_COMMAND_SIZE), MIN_BUFFER_SIZE);
+        assert_eq!(value(&runtime, TPM_PT_MAX_RESPONSE_SIZE), MIN_BUFFER_SIZE);
+        assert_eq!(
+            value(&runtime, TPM_PT_MAX_CAP_BUFFER),
+            MAX_CAP_BUFFER as u32,
+            "the capability buffer is independent of the configured size"
+        );
     }
 
     #[test]

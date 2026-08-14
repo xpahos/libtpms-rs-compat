@@ -209,11 +209,35 @@ pub(crate) unsafe fn set_debug_prefix(prefix: *const c_char) -> TpmResult {
 }
 
 pub(crate) unsafe fn set_buffer_size(
-    _wanted_size: u32,
-    _min_size: *mut u32,
-    _max_size: *mut u32,
+    wanted_size: u32,
+    min_size: *mut u32,
+    max_size: *mut u32,
 ) -> u32 {
-    todo!("TPMLIB_SetBufferSize is not implemented")
+    // SAFETY: forwarded from TPMLIB_SetBufferSize, whose contract allows both
+    // output pointers to be null and otherwise requires them to be writable.
+    unsafe { report_buffer_size(library::set_buffer_size(wanted_size), min_size, max_size) }
+}
+
+/// # Safety
+///
+/// `min_size` and `max_size` must each be null or point to a writable u32.
+unsafe fn report_buffer_size(
+    limits: Option<library::BufferSizeLimits>,
+    min_size: *mut u32,
+    max_size: *mut u32,
+) -> u32 {
+    let Some(limits) = limits else {
+        return 0;
+    };
+    if !min_size.is_null() {
+        // SAFETY: non-null implies writable per this function's contract.
+        unsafe { min_size.write(limits.minimum) };
+    }
+    if !max_size.is_null() {
+        // SAFETY: non-null implies writable per this function's contract.
+        unsafe { max_size.write(limits.maximum) };
+    }
+    limits.current
 }
 
 pub(crate) fn validate_state(_st: TpmlibStateType, _flags: c_uint) -> TpmResult {
@@ -422,6 +446,103 @@ mod tests {
             unsafe { get_tpm_property(BUFFER_MAX_PROPERTY, core::ptr::null_mut()) },
             TPM_FAIL
         );
+    }
+
+    const NO_LIMITS: Option<library::BufferSizeLimits> = None;
+    const TPM2_LIMITS: Option<library::BufferSizeLimits> = Some(library::BufferSizeLimits {
+        current: 3000,
+        minimum: 2808,
+        maximum: 4096,
+    });
+
+    #[test]
+    fn buffer_size_limits_reach_both_c_output_pointers() {
+        let mut min: u32 = 0xdead_beef;
+        let mut max: u32 = 0xfeed_face;
+        // SAFETY: both outputs are live, writable u32s.
+        let current = unsafe { report_buffer_size(TPM2_LIMITS, &mut min, &mut max) };
+        assert_eq!(current, 3000);
+        assert_eq!(min, 2808);
+        assert_eq!(max, 4096);
+    }
+
+    #[test]
+    fn every_null_output_pointer_combination_is_safe() {
+        let mut min: u32 = 0xdead_beef;
+        let mut max: u32 = 0xfeed_face;
+        // SAFETY: null is explicitly permitted for either output pointer, and
+        // the non-null arguments reference live, writable u32s.
+        unsafe {
+            assert_eq!(
+                report_buffer_size(TPM2_LIMITS, core::ptr::null_mut(), core::ptr::null_mut()),
+                3000
+            );
+            assert_eq!(
+                report_buffer_size(TPM2_LIMITS, &mut min, core::ptr::null_mut()),
+                3000
+            );
+            assert_eq!(min, 2808);
+            min = 0xdead_beef;
+            assert_eq!(
+                report_buffer_size(TPM2_LIMITS, core::ptr::null_mut(), &mut max),
+                3000
+            );
+        }
+        assert_eq!(min, 0xdead_beef, "a null minimum output is never written");
+        assert_eq!(max, 4096);
+    }
+
+    #[test]
+    fn a_disabled_implementation_answers_zero_and_writes_nothing() {
+        let mut min: u32 = 0xdead_beef;
+        let mut max: u32 = 0xfeed_face;
+        // SAFETY: both outputs are live, writable u32s; null is permitted too.
+        unsafe {
+            assert_eq!(report_buffer_size(NO_LIMITS, &mut min, &mut max), 0);
+            assert_eq!(
+                report_buffer_size(NO_LIMITS, core::ptr::null_mut(), core::ptr::null_mut()),
+                0
+            );
+        }
+        assert_eq!(min, 0xdead_beef);
+        assert_eq!(max, 0xfeed_face);
+    }
+
+    #[test]
+    fn the_exported_set_buffer_size_never_panics_on_null_outputs() {
+        let mut min: u32 = 0xdead_beef;
+        let mut max: u32 = 0xfeed_face;
+        // SAFETY: the wanted sizes below either query or request the
+        // compile-time maximum, so the shared global library state other tests
+        // observe cannot change; null outputs are explicitly permitted.
+        let current = unsafe {
+            for wanted_size in [0u32, 4096] {
+                crate::tpm_library_abi::TPMLIB_SetBufferSize(
+                    wanted_size,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                );
+                crate::tpm_library_abi::TPMLIB_SetBufferSize(
+                    wanted_size,
+                    &mut min,
+                    core::ptr::null_mut(),
+                );
+                crate::tpm_library_abi::TPMLIB_SetBufferSize(
+                    wanted_size,
+                    core::ptr::null_mut(),
+                    &mut max,
+                );
+            }
+            crate::tpm_library_abi::TPMLIB_SetBufferSize(0, &mut min, &mut max)
+        };
+        if current == 0 {
+            assert_eq!(min, 0xdead_beef, "a disabled TPM writes no minimum");
+            assert_eq!(max, 0xfeed_face, "a disabled TPM writes no maximum");
+        } else {
+            assert_eq!(current, 4096);
+            assert_eq!(min, 2808);
+            assert_eq!(max, 4096);
+        }
     }
 
     #[test]

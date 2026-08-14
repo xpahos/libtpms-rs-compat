@@ -4,7 +4,7 @@ use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
 
 use super::capability::TPM_CAP_TPM_PROPERTIES;
 use super::command::{
-    HEADER_SIZE, Response, TPM_CC_GET_CAPABILITY, TPM_ST_NO_SESSIONS, serialize_response,
+    HEADER_SIZE, Response, TPM_CC_GET_CAPABILITY, TPM_ST_NO_SESSIONS, serialize_response_within,
 };
 use super::runtime::Tpm2Runtime;
 
@@ -70,18 +70,18 @@ pub(super) fn route(command: &CommandInput) -> FailureModeRoute {
 // restricted TPM2_GetCapability property query once those commands exist; both
 // already reach this boundary through `route`.
 pub(in crate::library::tpm2) fn process(
-    _runtime: &mut Tpm2Runtime,
+    runtime: &mut Tpm2Runtime,
     command: &CommandInput,
 ) -> Result<Vec<u8>, TpmResult> {
     match route(command) {
         FailureModeRoute::BareFailure
         | FailureModeRoute::GetTestResult
-        | FailureModeRoute::RestrictedGetCapability => bare_failure(),
+        | FailureModeRoute::RestrictedGetCapability => bare_failure(runtime.buffer_size),
     }
 }
 
-fn bare_failure() -> Result<Vec<u8>, TpmResult> {
-    serialize_response(&Response::error(TPM_RC_FAILURE)).map_err(|_| TPM_FAIL)
+fn bare_failure(buffer_size: u32) -> Result<Vec<u8>, TpmResult> {
+    serialize_response_within(&Response::error(TPM_RC_FAILURE), buffer_size).map_err(|_| TPM_FAIL)
 }
 
 #[cfg(test)]

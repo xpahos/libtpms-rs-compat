@@ -1,5 +1,6 @@
 use crate::ffi_types::TpmResult;
 
+use super::buffer_size::DEFAULT_BUFFER_SIZE;
 use super::clock::RuntimeClock;
 use super::crypto::{EntropySource, os_entropy};
 use super::live::{LiveState, RestoredVolatile, split_restored_volatile};
@@ -49,6 +50,7 @@ pub struct Tpm2Runtime {
     pub power_on: bool,
     pub nv_available: bool,
     pub locality: u8,
+    pub buffer_size: u32,
     pub nv_memory: Box<[u8]>,
 }
 
@@ -189,6 +191,7 @@ fn commit_state(
         power_on: true,
         nv_available: true,
         locality: 0,
+        buffer_size: DEFAULT_BUFFER_SIZE,
         nv_memory,
     }))
 }
@@ -218,6 +221,7 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         power_on: true,
         nv_available: true,
         locality: 0,
+        buffer_size: DEFAULT_BUFFER_SIZE,
         nv_memory: vec![0u8; NV_MEMORY_SIZE].into_boxed_slice(),
     })
 }
@@ -226,6 +230,7 @@ pub(super) fn manufactured_zeroed_nv_runtime(manufactured: &Tpm2Runtime) -> Box<
     let mut runtime = empty_state_runtime();
     runtime.manufactured = true;
     runtime.was_manufactured = true;
+    runtime.buffer_size = manufactured.buffer_size;
     runtime.active_profile_json = manufactured.active_profile_json.clone();
     runtime.self_test = manufactured.self_test.restarted();
     runtime
