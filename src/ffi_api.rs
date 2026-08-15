@@ -5,11 +5,13 @@ use crate::ffi_types::{
     TpmlibTpmProperty, TpmlibTpmVersion,
 };
 use crate::library::{
-    self, StateBlobKind, StateInput, StateOutput, StateValidationMask, TPM_FAIL, TPM_SIZE,
-    TPM_SUCCESS,
+    self, EncodedBlobKind, StateBlobKind, StateInput, StateOutput, StateValidationMask, TPM_FAIL,
+    TPM_SIZE, TPM_SUCCESS,
 };
 
 const BUFLEN_EMPTY_BUFFER: u32 = 0xffff_ffff;
+
+const TPMLIB_BLOB_TYPE_INITSTATE: TpmlibBlobType = 0;
 
 #[cfg(feature = "tpm2")]
 const RESPONSE_BUFFER_SIZE: usize = library::TPM_BUFFER_MAX as usize;
@@ -226,12 +228,64 @@ pub(crate) unsafe fn register_callbacks(callbacks: *mut LibtpmsCallbacks) -> Tpm
 }
 
 pub(crate) unsafe fn decode_blob(
-    _data: *const c_char,
-    _blob_type: TpmlibBlobType,
-    _result: *mut *mut c_uchar,
-    _result_len: *mut usize,
+    data: *const c_char,
+    blob_type: TpmlibBlobType,
+    result: *mut *mut c_uchar,
+    result_len: *mut usize,
 ) -> TpmResult {
-    todo!("TPMLIB_DecodeBlob is not implemented")
+    if result.is_null() || result_len.is_null() {
+        return TPM_FAIL;
+    }
+    // SAFETY: both outputs were null-checked and are writable by the FFI
+    // contract; publishing null/0 up front keeps every failure path below
+    // from leaving a stale pointer or length behind.
+    unsafe {
+        result.write(core::ptr::null_mut());
+        result_len.write(0);
+    }
+    if data.is_null() {
+        return TPM_FAIL;
+    }
+    let Some(kind) = blob_kind(blob_type) else {
+        return TPM_FAIL;
+    };
+    // SAFETY: forwarded from TPMLIB_DecodeBlob, whose contract requires a
+    // NUL-terminated string valid for this call; null was rejected above.
+    let data = unsafe { copy_c_string(data) };
+    let decoded = match library::decode_blob(kind, &data) {
+        Ok(decoded) => decoded,
+        Err(code) => return code,
+    };
+    let allocated = crate::ffi_support::malloc_bytes(&decoded);
+    if allocated.is_null() {
+        return TPM_FAIL;
+    }
+    // SAFETY: both outputs were null-checked above; `allocated` holds
+    // `decoded.len()` bytes and its ownership transfers to the caller here.
+    unsafe {
+        result.write(allocated);
+        result_len.write(decoded.len());
+    }
+    TPM_SUCCESS
+}
+
+fn blob_kind(blob_type: TpmlibBlobType) -> Option<EncodedBlobKind> {
+    match blob_type {
+        TPMLIB_BLOB_TYPE_INITSTATE => Some(EncodedBlobKind::InitState),
+        _ => None,
+    }
+}
+
+/// # Safety
+///
+/// `data` must be non-null and point to a NUL-terminated string that stays
+/// valid for the duration of the call.
+unsafe fn copy_c_string(data: *const c_char) -> Vec<u8> {
+    // SAFETY: the string is non-null, NUL-terminated and live per this
+    // function's contract; the copy ends the caller's involvement.
+    unsafe { core::ffi::CStr::from_ptr(data) }
+        .to_bytes()
+        .to_vec()
 }
 
 pub(crate) fn set_debug_fd(fd: c_int) {
@@ -1258,5 +1312,269 @@ mod tests {
         terminate();
         assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SUCCESS);
         assert_eq!(outputs.resp_size, 0);
+    }
+
+    const INITSTATE_BLOB: &[u8] = b"-----BEGIN INITSTATE-----\nQUJD\n-----END INITSTATE-----\0";
+    const BLOB_TYPE_INITSTATE: TpmlibBlobType = TPMLIB_BLOB_TYPE_INITSTATE;
+    const PTR_SENTINEL: *mut c_uchar = core::ptr::dangling_mut::<c_uchar>();
+    const SIZE_SENTINEL: usize = 0xdead_beef;
+
+    struct DecodedBlob {
+        result: *mut c_uchar,
+        result_len: usize,
+    }
+
+    impl DecodedBlob {
+        fn new() -> Self {
+            Self {
+                result: PTR_SENTINEL,
+                result_len: SIZE_SENTINEL,
+            }
+        }
+
+        fn call(&mut self, data: &[u8], blob_type: TpmlibBlobType) -> TpmResult {
+            // SAFETY: `data` stays live and NUL-terminated for the call and
+            // both output pointers reference live writable fields.
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_DecodeBlob(
+                    data.as_ptr().cast(),
+                    blob_type,
+                    &mut self.result,
+                    &mut self.result_len,
+                )
+            }
+        }
+
+        fn decoded(&self) -> &[u8] {
+            assert!(!self.result.is_null());
+            // SAFETY: a successful call published a C allocation of exactly
+            // `result_len` initialized bytes.
+            unsafe { core::slice::from_raw_parts(self.result, self.result_len) }
+        }
+
+        fn assert_published_nothing(&self) {
+            assert!(self.result.is_null(), "a failure published an allocation");
+            assert_eq!(self.result_len, 0, "a failure published a length");
+        }
+    }
+
+    impl Drop for DecodedBlob {
+        fn drop(&mut self) {
+            if self.result == PTR_SENTINEL {
+                return;
+            }
+            // SAFETY: the pointer is null or the C-allocator allocation the
+            // call transferred to us.
+            unsafe { libc::free(self.result.cast()) };
+        }
+    }
+
+    #[test]
+    fn the_initstate_blob_type_maps_to_the_only_blob_kind() {
+        assert_eq!(
+            blob_kind(TPMLIB_BLOB_TYPE_INITSTATE),
+            Some(EncodedBlobKind::InitState)
+        );
+        assert_eq!(TPMLIB_BLOB_TYPE_INITSTATE, 0);
+    }
+
+    #[test]
+    fn every_other_blob_type_maps_to_no_blob_kind() {
+        for blob_type in [1, 2, 3, -1, -2, i32::MAX, i32::MIN] {
+            assert_eq!(blob_kind(blob_type), None, "blob type {blob_type}");
+        }
+    }
+
+    #[test]
+    fn the_copied_c_string_stops_at_the_terminator_and_outlives_the_caller() {
+        let mut caller = b"-----BEGIN INITSTATE-----\0trailing".to_vec();
+        // SAFETY: `caller` is NUL-terminated and stays live for the call.
+        let copied = unsafe { copy_c_string(caller.as_ptr().cast()) };
+        assert_eq!(copied, b"-----BEGIN INITSTATE-----");
+
+        caller[0] = b'X';
+        caller.clear();
+        assert_eq!(copied, b"-----BEGIN INITSTATE-----");
+
+        // SAFETY: the byte string is statically live and NUL-terminated.
+        assert_eq!(unsafe { copy_c_string(c"".as_ptr()) }, b"");
+    }
+
+    #[test]
+    fn decode_blob_abi_signature_is_exact() {
+        let _: unsafe extern "C" fn(
+            *const c_char,
+            TpmlibBlobType,
+            *mut *mut c_uchar,
+            *mut usize,
+        ) -> TpmResult = crate::tpm_library_abi::TPMLIB_DecodeBlob;
+    }
+
+    #[test]
+    fn a_valid_blob_decodes_into_a_freeable_c_allocation() {
+        let mut blob = DecodedBlob::new();
+        assert_eq!(blob.call(INITSTATE_BLOB, BLOB_TYPE_INITSTATE), TPM_SUCCESS);
+        assert_eq!(blob.decoded(), b"ABC");
+        assert_ne!(blob.result, PTR_SENTINEL);
+
+        let taken = core::mem::replace(&mut blob.result, PTR_SENTINEL);
+        // SAFETY: `taken` is the C allocation the call handed us, with
+        // `result_len` valid bytes and no other owner.
+        let owned = unsafe { crate::ffi_support::MallocBuffer::from_raw(taken, blob.result_len) };
+        assert_eq!(owned.expect("a non-null allocation").as_slice(), b"ABC");
+    }
+
+    #[test]
+    fn a_null_data_pointer_fails_without_publishing_an_allocation() {
+        let mut result = PTR_SENTINEL;
+        let mut result_len = SIZE_SENTINEL;
+        // SAFETY: `data` is null on purpose; both outputs reference live
+        // writable locals.
+        assert_eq!(
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_DecodeBlob(
+                    core::ptr::null(),
+                    BLOB_TYPE_INITSTATE,
+                    &mut result,
+                    &mut result_len,
+                )
+            },
+            TPM_FAIL
+        );
+        assert!(result.is_null());
+        assert_eq!(result_len, 0);
+    }
+
+    #[test]
+    fn every_null_output_combination_fails_without_touching_the_other_output() {
+        let mut result = PTR_SENTINEL;
+        let mut result_len = SIZE_SENTINEL;
+        // SAFETY: `result` is null on purpose; `result_len` references a live
+        // writable local.
+        assert_eq!(
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_DecodeBlob(
+                    INITSTATE_BLOB.as_ptr().cast(),
+                    BLOB_TYPE_INITSTATE,
+                    core::ptr::null_mut(),
+                    &mut result_len,
+                )
+            },
+            TPM_FAIL
+        );
+        assert_eq!(result_len, SIZE_SENTINEL);
+
+        // SAFETY: `result_len` is null on purpose; `result` references a live
+        // writable local.
+        assert_eq!(
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_DecodeBlob(
+                    INITSTATE_BLOB.as_ptr().cast(),
+                    BLOB_TYPE_INITSTATE,
+                    &mut result,
+                    core::ptr::null_mut(),
+                )
+            },
+            TPM_FAIL
+        );
+        assert_eq!(result, PTR_SENTINEL);
+
+        // SAFETY: both outputs are null on purpose and `data` stays live.
+        assert_eq!(
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_DecodeBlob(
+                    INITSTATE_BLOB.as_ptr().cast(),
+                    BLOB_TYPE_INITSTATE,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+            },
+            TPM_FAIL
+        );
+
+        // SAFETY: every pointer is null on purpose.
+        assert_eq!(
+            unsafe {
+                crate::tpm_library_abi::TPMLIB_DecodeBlob(
+                    core::ptr::null(),
+                    BLOB_TYPE_INITSTATE,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+            },
+            TPM_FAIL
+        );
+    }
+
+    #[test]
+    fn unknown_blob_types_fail_without_publishing_an_allocation() {
+        for blob_type in [1, 2, -1, -2, i32::MAX, i32::MIN] {
+            let mut blob = DecodedBlob::new();
+            assert_eq!(
+                blob.call(INITSTATE_BLOB, blob_type),
+                TPM_FAIL,
+                "blob type {blob_type}"
+            );
+            blob.assert_published_nothing();
+        }
+    }
+
+    #[test]
+    fn malformed_blobs_fail_without_publishing_an_allocation() {
+        for data in [
+            b"\0".as_slice(),
+            b"hello world\0",
+            b"-----BEGIN INITSTATE-----\nQUJD\n\0",
+            b"QUJD\n-----END INITSTATE-----\0",
+            b"-----BEGIN INITSTATE-----\n-----END INITSTATE-----\0",
+            b"-----BEGIN INITSTATE-----\nQ\n-----END INITSTATE-----\0",
+            b"-----BEGIN INITSTATE-----\n====\n-----END INITSTATE-----\0",
+        ] {
+            let mut blob = DecodedBlob::new();
+            assert_eq!(blob.call(data, BLOB_TYPE_INITSTATE), TPM_FAIL);
+            blob.assert_published_nothing();
+        }
+    }
+
+    #[test]
+    fn the_exported_decode_blob_only_sees_the_caller_c_string() {
+        let mut blob = DecodedBlob::new();
+        let trailing = [
+            INITSTATE_BLOB,
+            b"-----BEGIN INITSTATE-----\nRUZH\n-----END INITSTATE-----\0",
+        ]
+        .concat();
+        assert_eq!(blob.call(&trailing, BLOB_TYPE_INITSTATE), TPM_SUCCESS);
+        assert_eq!(blob.decoded(), b"ABC");
+
+        let mut hidden = DecodedBlob::new();
+        let after_terminator = [b"\0".as_slice(), INITSTATE_BLOB].concat();
+        assert_eq!(
+            hidden.call(&after_terminator, BLOB_TYPE_INITSTATE),
+            TPM_FAIL
+        );
+        hidden.assert_published_nothing();
+    }
+
+    #[test]
+    fn the_exported_decode_blob_returns_instead_of_panicking() {
+        let corpus: Vec<Vec<u8>> = [
+            b"\0".as_slice(),
+            b"-----BEGIN INITSTATE-----\0",
+            b"-----END INITSTATE-----\0",
+            b"-----BEGIN INITSTATE-----\n\x80\xff=\n-----END INITSTATE-----\0",
+            INITSTATE_BLOB,
+        ]
+        .iter()
+        .map(|data| data.to_vec())
+        .collect();
+        for data in &corpus {
+            for blob_type in [BLOB_TYPE_INITSTATE, 1, -1, i32::MIN] {
+                let mut blob = DecodedBlob::new();
+                let call = std::panic::AssertUnwindSafe(|| blob.call(data, blob_type));
+                std::panic::catch_unwind(call)
+                    .unwrap_or_else(|_| panic!("the exported TPMLIB_DecodeBlob panicked"));
+            }
+        }
     }
 }

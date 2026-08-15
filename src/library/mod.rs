@@ -1,6 +1,7 @@
 #[cfg(feature = "tpm2")]
 mod command_input;
 mod constants;
+mod encoded_blob;
 mod library_state;
 mod preloaded_state;
 mod state_blob;
@@ -15,6 +16,7 @@ use crate::ffi_types::{
 #[cfg(feature = "tpm2")]
 pub(crate) use command_input::CommandInput;
 pub use constants::{TPM_BUFFER_MAX, TPM_FAIL, TPM_SIZE, TPM_SUCCESS};
+pub use encoded_blob::{EncodedBlobKind, decode_blob};
 pub use library_state::BufferSizeLimits;
 use library_state::Library;
 pub(crate) use library_state::ProcessPreparation;
