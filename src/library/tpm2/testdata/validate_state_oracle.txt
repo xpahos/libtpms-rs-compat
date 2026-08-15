@@ -1,0 +1,44 @@
+# TPMLIB_ValidateState oracle: results and host callback sequences of the
+# vendored C libtpms (libtpms/src/tpm_tpm2_interface.c, TPM2_ValidateState).
+# Regenerate with scripts/generate_validate_state_oracle.py.
+# scenario<TAB>result<TAB>callback events
+permanent_only	0x0	init,load:permall
+save_state_only	0x0	init,load:permall
+combined_permanent_volatile	0x0	init,load:permall,load:volatilestate
+permanent_then_volatile_only.permanent	0x0	init,load:permall
+permanent_then_volatile_only.volatile	0x0	init,load:volatilestate
+save_state_then_volatile_only.save_state	0x0	init,load:permall
+save_state_then_volatile_only.volatile	0x0	init,load:volatilestate
+failed_permanent_then_volatile_only.permanent	0x9a	init,load:permall
+failed_permanent_then_volatile_only.volatile	0x84	init,load:volatilestate
+combined_seed_mismatch_then_volatile_only.combined	0x84	init,load:permall,load:volatilestate
+combined_seed_mismatch_then_volatile_only.volatile	0x0	init,load:volatilestate
+cached_volatile_no_backend_permall	0x0	init
+backend_volatile_no_backend_permall	0x0	init,load:volatilestate
+backend_truncated_volatile_no_backend_permall	0x9a	init,load:volatilestate
+backend_bad_digest_volatile_no_backend_permall	0x83	init,load:volatilestate
+no_volatile_anywhere	0x0	init,load:volatilestate
+empty_cached_volatile	0x0	init
+installed_then_empty_cached_permanent	0x0	init
+empty_cached_permanent_nothing_installed	0x84	init,load:volatilestate
+changed_backend_permall	0x0	init
+failed_set_state_volatile_then_volatile_only.set_state	0x84	init,load:permall
+failed_set_state_volatile_then_volatile_only.volatile	0x0	init,load:volatilestate
+installed_bad_trailing_magic_volatile	0x1e	init,load:volatilestate
+installed_seed_mismatch_volatile	0x84	init,load:volatilestate
+installed_bad_header_magic_volatile	0x1e	init,load:volatilestate
+nothing_installed_valid_volatile	0x84	init,load:volatilestate
+nothing_installed_truncated_volatile	0x9a	init,load:volatilestate
+nothing_installed_bad_digest_volatile	0x84	init,load:volatilestate
+nothing_installed_bad_trailing_magic_volatile	0x84	init,load:volatilestate
+nothing_installed_seed_mismatch_volatile	0x84	init,load:volatilestate
+nothing_installed_bad_header_magic_volatile	0x1e	init,load:volatilestate
+installed_object_rsa	0x0	init,load:volatilestate
+installed_object_ecc	0x0	init,load:volatilestate
+installed_object_aes128	0x0	init,load:volatilestate
+installed_object_aes192	0x84	init,load:volatilestate
+nothing_installed_object_rsa	0x84	init,load:volatilestate
+nothing_installed_object_ecc	0xa6	init,load:volatilestate
+nothing_installed_object_aes128	0x84	init,load:volatilestate
+nothing_installed_object_aes192	0x84	init,load:volatilestate
+running_tpm	0x0	init,load:volatilestate

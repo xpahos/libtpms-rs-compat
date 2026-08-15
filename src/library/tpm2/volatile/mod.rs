@@ -18,7 +18,7 @@ use super::persistent::{
     OrderlyData, PersistentAllError, PersistentField, StateSection, parse_nv_header,
     parse_orderly_data,
 };
-use super::public::DIGEST_SIZE;
+use super::public::{DIGEST_SIZE, StateFormatLimit};
 use super::session::{SessionSlot, parse_session_slot};
 use super::state::{
     StateClearData, StateResetData, parse_state_clear_data, parse_state_reset_data,
@@ -75,6 +75,7 @@ pub(super) struct SeedTie<'a> {
 }
 
 impl SeedTie<'_> {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) const EMPTY: SeedTie<'static> = SeedTie {
         ep_seed: &[],
         sp_seed: &[],
@@ -221,6 +222,7 @@ fn unmarshal_volatile_state<'a>(
     shadow: &[PcrSelection<'_>],
     seed_tie: SeedTie<'_>,
     host_clock: &dyn HostClock,
+    state_format: StateFormatLimit,
 ) -> Result<DecodedVolatileState<'a>, PersistentAllError> {
     let header = parse_nv_header(
         reader,
@@ -320,7 +322,7 @@ fn unmarshal_volatile_state<'a>(
     read_exact_array_size(reader, MAX_LOADED_OBJECTS)?;
     let mut objects = Vec::with_capacity(MAX_LOADED_OBJECTS);
     for _ in 0..MAX_LOADED_OBJECTS {
-        objects.push(parse_any_object(reader)?);
+        objects.push(parse_any_object(reader, state_format)?);
     }
 
     read_block(reader, true)?;
@@ -334,7 +336,7 @@ fn unmarshal_volatile_state<'a>(
     read_exact_array_size(reader, MAX_LOADED_SESSIONS)?;
     let mut sessions = Vec::with_capacity(MAX_LOADED_SESSIONS);
     for _ in 0..MAX_LOADED_SESSIONS {
-        sessions.push(parse_session_slot(reader)?);
+        sessions.push(parse_session_slot(reader, state_format)?);
     }
     let oldest_saved_session = reader.read_u32().map_err(|_| truncated())?;
     let free_session_slots = reader.read_u32().map_err(|_| truncated())?;
@@ -436,6 +438,7 @@ pub(super) fn parse_volatile_state_blob<'a>(
     shadow: &[PcrSelection<'_>],
     seed_tie: SeedTie<'_>,
     host_clock: &dyn HostClock,
+    state_format: StateFormatLimit,
 ) -> Result<DecodedVolatileState<'a>, PersistentAllError> {
     let Some(payload_len) = blob.len().checked_sub(SHA1_DIGEST_SIZE) else {
         return Err(truncated());
@@ -443,7 +446,8 @@ pub(super) fn parse_volatile_state_blob<'a>(
     let computed = Sha1::digest(&blob[..payload_len]);
 
     let mut reader = BlobReader::new(blob);
-    let decoded = unmarshal_volatile_state(&mut reader, shadow, seed_tie, host_clock)?;
+    let decoded =
+        unmarshal_volatile_state(&mut reader, shadow, seed_tie, host_clock, state_format)?;
 
     let remaining = reader.remaining();
     if remaining.len() < SHA1_DIGEST_SIZE {
@@ -785,14 +789,26 @@ mod tests {
     }
 
     fn parse(blob: &[u8]) -> Result<DecodedVolatileState<'_>, PersistentAllError> {
-        parse_volatile_state_blob(blob, &[], VolatileFixture::seed_tie(), &scripted_clock())
+        parse_volatile_state_blob(
+            blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &scripted_clock(),
+            StateFormatLimit::CURRENT,
+        )
     }
 
     fn parse_recording<'a>(
         blob: &'a [u8],
         host: &RecordingClock,
     ) -> Result<DecodedVolatileState<'a>, PersistentAllError> {
-        parse_volatile_state_blob(blob, &[], VolatileFixture::seed_tie(), host)
+        parse_volatile_state_blob(
+            blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            host,
+            StateFormatLimit::CURRENT,
+        )
     }
 
     #[test]
@@ -1250,8 +1266,14 @@ mod tests {
     const C_FIXTURE_V4_FUTURE: &[u8] = include_bytes!("../testdata/volatile_state_v4_future.bin");
 
     fn parse_c_fixture(blob: &[u8]) -> DecodedVolatileState<'_> {
-        parse_volatile_state_blob(blob, &[], SeedTie::EMPTY, &scripted_clock())
-            .expect("the C fixture decodes")
+        parse_volatile_state_blob(
+            blob,
+            &[],
+            SeedTie::EMPTY,
+            &scripted_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("the C fixture decodes")
     }
 
     #[test]
@@ -1408,8 +1430,14 @@ mod tests {
         let index = corrupted.len() - SHA1_DIGEST_SIZE - 1;
         corrupted[index] ^= 0xff;
         assert_eq!(
-            parse_volatile_state_blob(&corrupted, &[], SeedTie::EMPTY, &scripted_clock())
-                .unwrap_err(),
+            parse_volatile_state_blob(
+                &corrupted,
+                &[],
+                SeedTie::EMPTY,
+                &scripted_clock(),
+                StateFormatLimit::CURRENT
+            )
+            .unwrap_err(),
             PersistentAllError::IntegrityDigestMismatch
         );
     }
@@ -1422,7 +1450,14 @@ mod tests {
             let digest = Sha1::digest(&blob);
             blob.extend_from_slice(&digest);
             assert!(
-                parse_volatile_state_blob(&blob, &[], SeedTie::EMPTY, &scripted_clock()).is_err(),
+                parse_volatile_state_blob(
+                    &blob,
+                    &[],
+                    SeedTie::EMPTY,
+                    &scripted_clock(),
+                    StateFormatLimit::CURRENT
+                )
+                .is_err(),
                 "prefix length {len} decoded"
             );
         }

@@ -5,7 +5,8 @@ use crate::ffi_types::{
     TpmlibTpmProperty, TpmlibTpmVersion,
 };
 use crate::library::{
-    self, StateBlobKind, StateInput, StateOutput, TPM_FAIL, TPM_SIZE, TPM_SUCCESS,
+    self, StateBlobKind, StateInput, StateOutput, StateValidationMask, TPM_FAIL, TPM_SIZE,
+    TPM_SUCCESS,
 };
 
 const BUFLEN_EMPTY_BUFFER: u32 = 0xffff_ffff;
@@ -282,8 +283,8 @@ unsafe fn report_buffer_size(
     limits.current
 }
 
-pub(crate) fn validate_state(_st: TpmlibStateType, _flags: c_uint) -> TpmResult {
-    todo!("TPMLIB_ValidateState is not implemented")
+pub(crate) fn validate_state(st: TpmlibStateType, _flags: c_uint) -> TpmResult {
+    library::validate_state(StateValidationMask::from_c(st))
 }
 
 pub(crate) unsafe fn set_state(
@@ -659,6 +660,43 @@ mod tests {
             crate::tpm_library_abi::TPMLIB_SetState;
         let _: unsafe extern "C" fn(TpmlibStateType, *mut *mut c_uchar, *mut u32) -> TpmResult =
             crate::tpm_library_abi::TPMLIB_GetState;
+    }
+
+    #[test]
+    fn validate_state_abi_signature_is_exact() {
+        let _: unsafe extern "C" fn(TpmlibStateType, c_uint) -> TpmResult =
+            crate::tpm_library_abi::TPMLIB_ValidateState;
+    }
+
+    #[test]
+    fn the_exported_validate_state_returns_instead_of_panicking() {
+        for st in [
+            0,
+            PERMANENT_STATE,
+            VOLATILE_STATE,
+            SAVE_STATE,
+            PERMANENT_STATE | VOLATILE_STATE,
+            PERMANENT_STATE | SAVE_STATE,
+            PERMANENT_STATE | VOLATILE_STATE | SAVE_STATE,
+            8,
+            8 | PERMANENT_STATE,
+            -1,
+            i32::MAX,
+            i32::MIN,
+        ] {
+            for flags in [0u32, 1, 0xdead_beef, u32::MAX] {
+                std::panic::catch_unwind(|| validate_state(st, flags))
+                    .unwrap_or_else(|_| panic!("validate_state panicked, st {st} flags {flags}"));
+                // SAFETY: the exported entry point takes no pointers, and its
+                // guard must turn any panic into a return value.
+                std::panic::catch_unwind(|| unsafe {
+                    crate::tpm_library_abi::TPMLIB_ValidateState(st, flags)
+                })
+                .unwrap_or_else(|_| {
+                    panic!("the exported TPMLIB_ValidateState panicked, st {st} flags {flags}")
+                });
+            }
+        }
     }
 
     #[test]

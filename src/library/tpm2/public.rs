@@ -139,6 +139,90 @@ fn read_key_bits(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StateFormatLimit(u32);
+
+impl StateFormatLimit {
+    pub(super) const NONE: Self = Self(0);
+    pub(super) const CURRENT: Self = Self(super::profile::STATE_FORMAT_LEVEL_CURRENT);
+
+    pub(super) const fn new(level: u32) -> Self {
+        Self(level)
+    }
+
+    fn required_symmetric_level(algorithm: u16, key_bits: u16) -> u32 {
+        match (algorithm, key_bits) {
+            (TPM_ALG_AES | TPM_ALG_CAMELLIA, 192) => 4,
+            (TPM_ALG_AES | TPM_ALG_CAMELLIA, 128 | 256) => 1,
+            (TPM_ALG_TDES, 128 | 192) => 1,
+            _ => 0,
+        }
+    }
+
+    fn required_rsa_level(key_bits: u16) -> u32 {
+        match key_bits {
+            1024 | 2048 | 3072 => 1,
+            _ => 0,
+        }
+    }
+
+    fn required_ecc_level(curve: u16) -> u32 {
+        if COMPILED_ECC_CURVES.contains(&curve) {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn check_symmetric_key_bits(
+        self,
+        section: StateSection,
+        algorithm: u16,
+        key_bits: u16,
+    ) -> Result<(), PersistentAllError> {
+        self.check_key_bits(
+            section,
+            Self::required_symmetric_level(algorithm, key_bits),
+            key_bits,
+        )
+    }
+
+    fn check_rsa_key_bits(
+        self,
+        section: StateSection,
+        key_bits: u16,
+    ) -> Result<(), PersistentAllError> {
+        self.check_key_bits(section, Self::required_rsa_level(key_bits), key_bits)
+    }
+
+    fn check_key_bits(
+        self,
+        section: StateSection,
+        required: u32,
+        key_bits: u16,
+    ) -> Result<(), PersistentAllError> {
+        if required <= self.0 {
+            return Ok(());
+        }
+        Err(PersistentAllError::InvalidAlgorithm {
+            section,
+            interface: AlgInterface::KeyBits,
+            actual: key_bits,
+        })
+    }
+
+    fn check_ecc_curve(self, section: StateSection, curve: u16) -> Result<(), PersistentAllError> {
+        if Self::required_ecc_level(curve) <= self.0 {
+            return Ok(());
+        }
+        Err(PersistentAllError::InvalidAlgorithm {
+            section,
+            interface: AlgInterface::EccCurve,
+            actual: curve,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SymDefObject {
     pub(super) algorithm: u16,
     pub(super) key_bits: Option<u16>,
@@ -149,6 +233,7 @@ pub(super) fn parse_sym_def_object(
     reader: &mut BlobReader<'_>,
     section: StateSection,
     allow_null: bool,
+    state_format: StateFormatLimit,
 ) -> Result<SymDefObject, PersistentAllError> {
     let algorithm = read_alg_interface(
         reader,
@@ -165,6 +250,7 @@ pub(super) fn parse_sym_def_object(
         });
     }
     let key_bits = read_key_bits(reader, section, algorithm)?;
+    state_format.check_symmetric_key_bits(section, algorithm, key_bits)?;
     let mode = read_alg_interface(
         reader,
         section,
@@ -184,6 +270,7 @@ const COMPILED_SYMS: [u16; 4] = [TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_TDES, TP
 pub(super) fn parse_sym_def(
     reader: &mut BlobReader<'_>,
     section: StateSection,
+    state_format: StateFormatLimit,
 ) -> Result<SymDefObject, PersistentAllError> {
     let algorithm = read_alg_interface(reader, section, AlgInterface::Sym, &COMPILED_SYMS, true)?;
     if algorithm == TPM_ALG_NULL {
@@ -202,6 +289,7 @@ pub(super) fn parse_sym_def(
         });
     }
     let key_bits = read_key_bits(reader, section, algorithm)?;
+    state_format.check_symmetric_key_bits(section, algorithm, key_bits)?;
     let mode = read_alg_interface(
         reader,
         section,
@@ -343,9 +431,11 @@ fn parse_kdf_scheme(
 fn read_ecc_curve(
     reader: &mut BlobReader<'_>,
     section: StateSection,
+    state_format: StateFormatLimit,
 ) -> Result<u16, PersistentAllError> {
     let actual = reader.read_u16().map_err(|_| truncated(section))?;
     if COMPILED_ECC_CURVES.contains(&actual) {
+        state_format.check_ecc_curve(section, actual)?;
         return Ok(actual);
     }
     Err(PersistentAllError::InvalidAlgorithm {
@@ -395,6 +485,7 @@ pub(super) fn parse_tpmt_public<'a>(
     reader: &mut BlobReader<'a>,
     section: StateSection,
     allow_null_name_alg: bool,
+    state_format: StateFormatLimit,
 ) -> Result<TpmtPublic<'a>, PersistentAllError> {
     use PersistentField as F;
 
@@ -411,9 +502,11 @@ pub(super) fn parse_tpmt_public<'a>(
 
     let parameters = match object_type {
         TPM_ALG_KEYEDHASH => PublicParms::KeyedHash(parse_keyedhash_scheme(reader, section, true)?),
-        TPM_ALG_SYMCIPHER => PublicParms::SymCipher(parse_sym_def_object(reader, section, false)?),
+        TPM_ALG_SYMCIPHER => {
+            PublicParms::SymCipher(parse_sym_def_object(reader, section, false, state_format)?)
+        }
         TPM_ALG_RSA => {
-            let symmetric = parse_sym_def_object(reader, section, true)?;
+            let symmetric = parse_sym_def_object(reader, section, true, state_format)?;
             let scheme = parse_rsa_scheme(reader, section, true)?;
             let key_bits = reader.read_u16().map_err(|_| truncated(section))?;
             if !matches!(key_bits, 1024 | 2048 | 3072) {
@@ -423,6 +516,7 @@ pub(super) fn parse_tpmt_public<'a>(
                     actual: key_bits,
                 });
             }
+            state_format.check_rsa_key_bits(section, key_bits)?;
             let exponent = reader.read_u32().map_err(|_| truncated(section))?;
             PublicParms::Rsa {
                 symmetric,
@@ -432,9 +526,9 @@ pub(super) fn parse_tpmt_public<'a>(
             }
         }
         _ => {
-            let symmetric = parse_sym_def_object(reader, section, true)?;
+            let symmetric = parse_sym_def_object(reader, section, true, state_format)?;
             let scheme = parse_ecc_scheme(reader, section, true)?;
-            let curve_id = read_ecc_curve(reader, section)?;
+            let curve_id = read_ecc_curve(reader, section, state_format)?;
             let kdf = parse_kdf_scheme(reader, section, true)?;
             PublicParms::Ecc {
                 symmetric,
@@ -573,6 +667,19 @@ pub(super) mod fixtures {
         out
     }
 
+    pub(in crate::library::tpm2) fn symcipher_public(key_bits: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&TPM_ALG_SYMCIPHER.to_be_bytes());
+        out.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
+        out.extend_from_slice(&0x0000_0002u32.to_be_bytes());
+        push_tpm2b(&mut out, &[]);
+        out.extend_from_slice(&TPM_ALG_AES.to_be_bytes());
+        out.extend_from_slice(&key_bits.to_be_bytes());
+        out.extend_from_slice(&TPM_ALG_CFB.to_be_bytes());
+        push_tpm2b(&mut out, &[0x33; 32]);
+        out
+    }
+
     pub(in crate::library::tpm2) fn ecc_public() -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&TPM_ALG_ECC.to_be_bytes());
@@ -620,9 +727,70 @@ mod tests {
 
     fn parse_public(data: &[u8]) -> Result<TpmtPublic<'_>, PersistentAllError> {
         let mut reader = BlobReader::new(data);
-        let public = parse_tpmt_public(&mut reader, SECTION, true)?;
+        let public = parse_tpmt_public(&mut reader, SECTION, true, StateFormatLimit::CURRENT)?;
         assert_eq!(reader.remaining(), &[] as &[u8], "exact consumption");
         Ok(public)
+    }
+
+    fn parse_public_at(data: &[u8], state_format: StateFormatLimit) -> crate::ffi_types::TpmResult {
+        let mut reader = BlobReader::new(data);
+        match parse_tpmt_public(&mut reader, SECTION, true, state_format) {
+            Ok(_) => crate::library::constants::TPM_SUCCESS,
+            Err(error) => error.tpm_result(),
+        }
+    }
+
+    #[test]
+    fn key_sizes_and_curves_follow_the_state_format_level() {
+        use crate::library::constants::TPM_SUCCESS;
+
+        let levels = [
+            ("none", StateFormatLimit::NONE),
+            ("one", StateFormatLimit::new(1)),
+            ("four", StateFormatLimit::new(4)),
+            ("current", StateFormatLimit::CURRENT),
+        ];
+        for (name, limit) in levels {
+            let unavailable = limit == StateFormatLimit::NONE;
+            assert_eq!(
+                parse_public_at(&rsa_public(256), limit),
+                if unavailable {
+                    TPM_RC_VALUE
+                } else {
+                    TPM_SUCCESS
+                },
+                "rsa 2048 at level {name}"
+            );
+            assert_eq!(
+                parse_public_at(&ecc_public(), limit),
+                if unavailable {
+                    TPM_RC_CURVE
+                } else {
+                    TPM_SUCCESS
+                },
+                "ecc curve at level {name}"
+            );
+            for key_bits in [128u16, 256] {
+                assert_eq!(
+                    parse_public_at(&symcipher_public(key_bits), limit),
+                    if unavailable {
+                        TPM_RC_VALUE
+                    } else {
+                        TPM_SUCCESS
+                    },
+                    "aes {key_bits} at level {name}"
+                );
+            }
+            assert_eq!(
+                parse_public_at(&symcipher_public(192), limit),
+                if limit == StateFormatLimit::new(4) || limit == StateFormatLimit::CURRENT {
+                    TPM_SUCCESS
+                } else {
+                    TPM_RC_VALUE
+                },
+                "aes 192 at level {name}"
+            );
+        }
     }
 
     #[test]
@@ -725,9 +893,10 @@ mod tests {
         let mut data = rsa_public(4);
         data[2..4].copy_from_slice(&TPM_ALG_NULL.to_be_bytes());
         let mut reader = BlobReader::new(&data);
-        assert!(parse_tpmt_public(&mut reader, SECTION, true).is_ok());
+        assert!(parse_tpmt_public(&mut reader, SECTION, true, StateFormatLimit::CURRENT).is_ok());
         let mut reader = BlobReader::new(&data);
-        let error = parse_tpmt_public(&mut reader, SECTION, false).unwrap_err();
+        let error =
+            parse_tpmt_public(&mut reader, SECTION, false, StateFormatLimit::CURRENT).unwrap_err();
         assert_eq!(error.tpm_result(), TPM_RC_HASH);
     }
 
@@ -900,7 +1069,9 @@ mod tests {
         for full in [rsa_public(16), keyedhash_public(), ecc_public()] {
             for len in 0..full.len() {
                 let mut reader = BlobReader::new(&full[..len]);
-                let error = parse_tpmt_public(&mut reader, SECTION, true).unwrap_err();
+                let error =
+                    parse_tpmt_public(&mut reader, SECTION, true, StateFormatLimit::CURRENT)
+                        .unwrap_err();
                 assert_eq!(
                     error.tpm_result(),
                     TPM_RC_INSUFFICIENT,
@@ -919,7 +1090,7 @@ mod tests {
                 let mut data = full.clone();
                 data[index] = byte;
                 let mut reader = BlobReader::new(&data);
-                let _ = parse_tpmt_public(&mut reader, SECTION, true);
+                let _ = parse_tpmt_public(&mut reader, SECTION, true, StateFormatLimit::CURRENT);
             }
         }
     }

@@ -255,6 +255,7 @@ pub(in crate::library::tpm2) fn materialize_volatile_state(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::public::StateFormatLimit;
     use super::super::store::CURRENT_OBJECT_VERSION;
     use super::super::{VolatileFixture, parse_volatile_state_blob};
     use super::*;
@@ -265,9 +266,14 @@ mod tests {
     }
 
     fn decode_and_materialize(blob: &[u8]) -> OwnedVolatileState {
-        let decoded =
-            parse_volatile_state_blob(blob, &[], VolatileFixture::seed_tie(), &test_clock())
-                .expect("decodes");
+        let decoded = parse_volatile_state_blob(
+            blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &test_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("decodes");
         materialize_volatile_state(
             &decoded,
             VolatileFixture::seed_tie(),
@@ -337,9 +343,14 @@ mod tests {
     #[test]
     fn inconsistent_counts_are_rejected_transactionally() {
         let blob = VolatileFixture::default().bytes();
-        let decoded =
-            parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
-                .expect("decodes");
+        let decoded = parse_volatile_state_blob(
+            &blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &test_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("decodes");
 
         let mut mutated = decoded;
         mutated.objects.pop();
@@ -353,9 +364,14 @@ mod tests {
             TPM_FAIL
         );
 
-        let decoded =
-            parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
-                .expect("decodes");
+        let decoded = parse_volatile_state_blob(
+            &blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &test_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("decodes");
         let mut mutated = decoded;
         mutated.pcrs.pop();
         assert_eq!(
@@ -368,9 +384,14 @@ mod tests {
             TPM_FAIL
         );
 
-        let decoded =
-            parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
-                .expect("decodes");
+        let decoded = parse_volatile_state_blob(
+            &blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &test_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("decodes");
         let mut mutated = decoded;
         mutated.sessions.pop();
         assert_eq!(
@@ -383,9 +404,14 @@ mod tests {
             TPM_FAIL
         );
 
-        let decoded =
-            parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
-                .expect("decodes");
+        let decoded = parse_volatile_state_blob(
+            &blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &test_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("decodes");
         let mut mutated = decoded;
         mutated.index_orderly_ram = &mutated.index_orderly_ram[..500];
         assert_eq!(
@@ -402,9 +428,14 @@ mod tests {
     #[test]
     fn contradictory_session_slot_is_rejected() {
         let blob = VolatileFixture::default().bytes();
-        let mut decoded =
-            parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &test_clock())
-                .expect("decodes");
+        let mut decoded = parse_volatile_state_blob(
+            &blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &test_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("decodes");
         decoded.sessions[0].occupied = false;
         assert_eq!(
             materialize_volatile_state(

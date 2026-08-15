@@ -44,12 +44,13 @@ use super::constants::{
     TPMPROP_TPM_RSA_KEY_LENGTH_MAX,
 };
 use super::preloaded_state::PreloadedBlob;
-use super::state_blob::StateBlobKind;
+use super::state_blob::{StateBlobKind, StateValidationMask};
 use marshal::{BlobReader, BlockSkipError, skip_optional_block};
 pub(super) use nv::HostNvram;
 use nv::{NvramLoad, NvramWrite, PermanentStateProbe};
 use pcr::PcrSelection;
 use persistent::{PersistentAllEnvelope, PersistentAllError, StateSection};
+use public::StateFormatLimit;
 
 pub(super) use buffer_size::{
     DEFAULT_BUFFER_SIZE, MAX_BUFFER_SIZE, MIN_BUFFER_SIZE, clamp_buffer_size,
@@ -178,42 +179,89 @@ impl VolatileDecodeBoundary {
     }
 }
 
-fn attach_volatile_blob(
-    runtime: &mut Tpm2Runtime,
+#[derive(Clone, Debug)]
+pub(super) struct VolatileValidationContext {
+    ep_seed: persistent::OwnedSecret,
+    sp_seed: persistent::OwnedSecret,
+    pp_seed: persistent::OwnedSecret,
+    shadow_pcr_allocated: Vec<persistent::OwnedPcrSelection>,
+    object_version: u16,
+    state_format: StateFormatLimit,
+}
+
+impl VolatileValidationContext {
+    fn without_permanent_state() -> Self {
+        Self {
+            ep_seed: persistent::OwnedSecret::copy_of(&[]),
+            sp_seed: persistent::OwnedSecret::copy_of(&[]),
+            pp_seed: persistent::OwnedSecret::copy_of(&[]),
+            shadow_pcr_allocated: Vec::new(),
+            object_version: volatile::CURRENT_OBJECT_VERSION,
+            state_format: StateFormatLimit::NONE,
+        }
+    }
+}
+
+fn volatile_validation_context(
+    runtime: &Tpm2Runtime,
+) -> Result<VolatileValidationContext, TpmResult> {
+    let Some(state) = runtime.state.as_ref() else {
+        return Ok(VolatileValidationContext {
+            shadow_pcr_allocated: runtime.shadow_pcr_allocated.selections.clone(),
+            state_format: StateFormatLimit::CURRENT,
+            ..VolatileValidationContext::without_permanent_state()
+        });
+    };
+    Ok(VolatileValidationContext {
+        ep_seed: persistent::OwnedSecret::copy_of(state.persistent.ep_seed.as_bytes()),
+        sp_seed: persistent::OwnedSecret::copy_of(state.persistent.sp_seed.as_bytes()),
+        pp_seed: persistent::OwnedSecret::copy_of(state.persistent.pp_seed.as_bytes()),
+        shadow_pcr_allocated: runtime.shadow_pcr_allocated.selections.clone(),
+        object_version: volatile::volatile_object_version(state.profile.state_format_level)
+            .map_err(|_| TPM_RC_FAILURE)?,
+        state_format: StateFormatLimit::new(state.profile.state_format_level),
+    })
+}
+
+fn decode_volatile_blob(
+    context: &VolatileValidationContext,
     blob: &[u8],
     clock: &dyn HostClock,
     boundary: VolatileDecodeBoundary,
-) -> Result<(), TpmResult> {
-    let shadow_views: Vec<PcrSelection<'_>> = runtime
+) -> Result<volatile::OwnedVolatileState, TpmResult> {
+    let shadow_views: Vec<PcrSelection<'_>> = context
         .shadow_pcr_allocated
-        .selections
         .iter()
         .map(|selection| PcrSelection {
             hash_alg: selection.hash_alg,
             select: &selection.select,
         })
         .collect();
-    let seed_tie = match runtime.state.as_ref() {
-        Some(state) => volatile::SeedTie {
-            ep_seed: state.persistent.ep_seed.as_bytes(),
-            sp_seed: state.persistent.sp_seed.as_bytes(),
-            pp_seed: state.persistent.pp_seed.as_bytes(),
-        },
-        None => volatile::SeedTie::EMPTY,
+    let seed_tie = volatile::SeedTie {
+        ep_seed: context.ep_seed.as_bytes(),
+        sp_seed: context.sp_seed.as_bytes(),
+        pp_seed: context.pp_seed.as_bytes(),
     };
+    let decoded = volatile::parse_volatile_state_blob(
+        blob,
+        &shadow_views,
+        seed_tie,
+        clock,
+        context.state_format,
+    )
+    .map_err(|error| boundary.map_parse(error))?;
+    volatile::materialize_volatile_state(&decoded, seed_tie, context.object_version)
+        .map_err(|code| boundary.map_result(code))
+}
 
-    let object_version = match runtime.state.as_ref() {
-        Some(state) => volatile::volatile_object_version(state.profile.state_format_level)
-            .map_err(|_| TPM_RC_FAILURE)?,
-        None => volatile::CURRENT_OBJECT_VERSION,
-    };
-
-    let owned = {
-        let decoded = volatile::parse_volatile_state_blob(blob, &shadow_views, seed_tie, clock)
-            .map_err(|error| boundary.map_parse(error))?;
-        volatile::materialize_volatile_state(&decoded, seed_tie, object_version)
-            .map_err(|code| boundary.map_result(code))?
-    };
+fn attach_volatile_blob(
+    runtime: &mut Tpm2Runtime,
+    blob: &[u8],
+    clock: &dyn HostClock,
+    boundary: VolatileDecodeBoundary,
+) -> Result<(), TpmResult> {
+    let context = volatile_validation_context(runtime)?;
+    let owned = decode_volatile_blob(&context, blob, clock, boundary)?;
 
     runtime::merge_volatile_state(runtime, owned);
     runtime::nv_shadow_restore(runtime);
@@ -382,26 +430,150 @@ pub(super) fn load_state_from_backend(
     }
 }
 
-pub(super) fn validate_permanent_state(blob: &[u8]) -> TpmResult {
-    match initialize_from_permanent_blob(blob, PermanentCommit::Restore) {
+pub(super) fn permanent_validation_context(
+    blob: &[u8],
+) -> Result<VolatileValidationContext, TpmResult> {
+    let runtime = initialize_from_permanent_blob(blob, PermanentCommit::Restore)?;
+    volatile_validation_context(&runtime)
+}
+
+pub(super) fn validate_volatile_in_context(
+    context: &VolatileValidationContext,
+    volatile: &[u8],
+) -> TpmResult {
+    match decode_volatile_blob(
+        context,
+        volatile,
+        &OsClock,
+        VolatileDecodeBoundary::Validate,
+    ) {
         Ok(_) => TPM_SUCCESS,
         Err(code) => code,
     }
 }
 
-pub(super) fn validate_volatile_state(permanent: &[u8], volatile: &[u8]) -> TpmResult {
-    let mut runtime = match initialize_from_permanent_blob(permanent, PermanentCommit::Restore) {
-        Ok(runtime) => runtime,
-        Err(code) => return code,
+enum ValidationStage {
+    Complete(TpmResult),
+    Volatile(Vec<u8>),
+}
+
+pub(super) struct ValidationLoad {
+    permanent: Option<VolatileValidationContext>,
+    stage: ValidationStage,
+}
+
+impl ValidationLoad {
+    fn complete(result: TpmResult) -> Self {
+        Self {
+            permanent: None,
+            stage: ValidationStage::Complete(result),
+        }
+    }
+}
+
+pub(super) struct ValidationOutcome {
+    pub(super) result: TpmResult,
+    pub(super) installed: Option<VolatileValidationContext>,
+}
+
+impl ValidationOutcome {
+    pub(super) fn rejected(result: TpmResult) -> Self {
+        Self {
+            result,
+            installed: None,
+        }
+    }
+}
+
+pub(super) fn load_state_for_validation(
+    callbacks: LibtpmsCallbacks,
+    mask: StateValidationMask,
+    cached_volatile: PreloadedBlob,
+) -> ValidationLoad {
+    let host_nvram = HostNvram::new(callbacks);
+    if let Err(code) = host_nvram.init() {
+        return ValidationLoad::complete(code);
+    }
+
+    let permanent = if mask.selects_permanent_blob() {
+        let blob = match load_permanent_for_validation(&host_nvram) {
+            Ok(blob) => blob,
+            Err(code) => return ValidationLoad::complete(code),
+        };
+        match permanent_validation_context(&blob) {
+            Ok(context) => Some(context),
+            Err(code) => return ValidationLoad::complete(code),
+        }
+    } else {
+        None
     };
-    match attach_volatile_blob(
-        &mut runtime,
-        volatile,
-        &OsClock,
-        VolatileDecodeBoundary::Validate,
-    ) {
-        Ok(()) => TPM_SUCCESS,
-        Err(code) => code,
+
+    let stage = if mask.volatile() {
+        match resolve_volatile_for_validation(&host_nvram, cached_volatile) {
+            Some(blob) => ValidationStage::Volatile(blob),
+            None => ValidationStage::Complete(TPM_SUCCESS),
+        }
+    } else {
+        ValidationStage::Complete(TPM_SUCCESS)
+    };
+
+    ValidationLoad { permanent, stage }
+}
+
+fn resolve_volatile_for_validation(
+    host_nvram: &HostNvram,
+    cached_volatile: PreloadedBlob,
+) -> Option<Vec<u8>> {
+    match cached_volatile {
+        PreloadedBlob::Empty => None,
+        PreloadedBlob::Data(blob) => Some(blob),
+        PreloadedBlob::Missing => match host_nvram.load(StateBlobKind::Volatile) {
+            Ok(NvramLoad::Data(blob)) => Some(blob),
+            Ok(NvramLoad::NotRegistered | NvramLoad::Missing | NvramLoad::SuccessWithoutData)
+            | Err(_) => None,
+        },
+    }
+}
+
+pub(super) fn finish_validation(
+    load: ValidationLoad,
+    runtime: Option<&Tpm2Runtime>,
+    installed: Option<&VolatileValidationContext>,
+) -> ValidationOutcome {
+    let blob = match load.stage {
+        ValidationStage::Complete(result) => {
+            return ValidationOutcome {
+                result,
+                installed: load.permanent,
+            };
+        }
+        ValidationStage::Volatile(blob) => blob,
+    };
+    let result = match (load.permanent.as_ref(), runtime, installed) {
+        (Some(context), _, _) => validate_volatile_in_context(context, &blob),
+        (None, Some(runtime), _) => match volatile_validation_context(runtime) {
+            Ok(context) => validate_volatile_in_context(&context, &blob),
+            Err(code) => code,
+        },
+        (None, None, Some(context)) => validate_volatile_in_context(context, &blob),
+        (None, None, None) => validate_volatile_in_context(
+            &VolatileValidationContext::without_permanent_state(),
+            &blob,
+        ),
+    };
+    ValidationOutcome {
+        result,
+        installed: load.permanent,
+    }
+}
+
+fn load_permanent_for_validation(host_nvram: &HostNvram) -> Result<Vec<u8>, TpmResult> {
+    // TODO: Implement the NVChip file fallback for hosts that register no
+    // tpm_nvram_loaddata callback.
+    match host_nvram.load(StateBlobKind::Permanent)? {
+        NvramLoad::Data(blob) => Ok(blob),
+        NvramLoad::Missing => Err(TPM_RETRY),
+        NvramLoad::NotRegistered | NvramLoad::SuccessWithoutData => Err(TPM_FAIL),
     }
 }
 
@@ -467,7 +639,11 @@ fn parse_persistent_all_payload<'a>(
 
     let index_ram = nv::parse_index_orderly_ram(remaining)?;
 
-    let user = nv::parse_user_nvram(index_ram.remaining, validated_profile.object_format())?;
+    let user = nv::parse_user_nvram(
+        index_ram.remaining,
+        validated_profile.object_format(),
+        StateFormatLimit::new(validated_profile.state_format_level),
+    )?;
 
     const TAIL: StateSection = StateSection::PersistentAllTail;
     let mut reader = BlobReader::new(user.remaining);
@@ -632,15 +808,54 @@ pub(in crate::library) fn bad_tag_volatile_state_fixture() -> Vec<u8> {
 }
 
 #[cfg(test)]
+pub(in crate::library) fn object_volatile_state_fixture(public: &[u8]) -> Vec<u8> {
+    let mut objects = vec![object::fixtures::any_unoccupied_object(); volatile::MAX_LOADED_OBJECTS];
+    objects[0] = object::fixtures::any_public_only_object(public);
+    volatile::VolatileFixture {
+        objects,
+        ep_seed: Vec::new(),
+        sp_seed: Vec::new(),
+        pp_seed: Vec::new(),
+        ..volatile::VolatileFixture::default()
+    }
+    .bytes()
+}
+
+#[cfg(test)]
+pub(in crate::library) fn rsa_object_volatile_state_fixture() -> Vec<u8> {
+    object_volatile_state_fixture(&public::fixtures::rsa_public(256))
+}
+
+#[cfg(test)]
+pub(in crate::library) fn ecc_object_volatile_state_fixture() -> Vec<u8> {
+    object_volatile_state_fixture(&public::fixtures::ecc_public())
+}
+
+#[cfg(test)]
+pub(in crate::library) fn symmetric_object_volatile_state_fixture(key_bits: u16) -> Vec<u8> {
+    object_volatile_state_fixture(&public::fixtures::symcipher_public(key_bits))
+}
+
+#[cfg(test)]
 pub(in crate::library) fn commit_failing_permanent_state_fixture() -> Vec<u8> {
-    let object_bytes = object::fixtures::any_sequence_object(object::fixtures::SEQ_HASH);
+    permanent_state_fixture_with_user_object(
+        &object::fixtures::any_sequence_object(object::fixtures::SEQ_HASH),
+        1,
+    )
+}
+
+#[cfg(test)]
+pub(in crate::library) fn permanent_state_fixture_with_user_object(
+    object_bytes: &[u8],
+    state_format_level: u32,
+) -> Vec<u8> {
     let mut sections = persistent::OrderlyFixture::default().bytes();
     sections.extend_from_slice(&nv::IndexOrderlyRamFixture::default().bytes());
     sections.extend_from_slice(
         &nv::UserNvramFixture {
             entries: vec![nv::UserNvramFixture::persistent_entry(
                 0x8100_0001,
-                &object_bytes,
+                object_bytes,
             )],
             ..nv::UserNvramFixture::default()
         }
@@ -681,7 +896,8 @@ pub(in crate::library) fn commit_failing_permanent_state_fixture() -> Vec<u8> {
         .bytes(),
     );
 
-    let profile = br#"{"Name":"null","StateFormatLevel":1}"#;
+    let profile = format!(r#"{{"Name":"null","StateFormatLevel":{state_format_level}}}"#);
+    let profile = profile.as_bytes();
     let mut blob = vec![0x00, 0x04, 0xab, 0x36, 0x47, 0x23, 0x00, 0x04];
     blob.extend_from_slice(&u16::try_from(profile.len() + 1).unwrap().to_be_bytes());
     blob.extend_from_slice(profile);
@@ -4283,10 +4499,117 @@ mod tests {
     }
 
     #[test]
+    fn a_permanent_blob_gates_its_user_objects_on_its_own_state_format_level() {
+        use crate::library::constants::{TPM_RC_CURVE, TPM_RC_VALUE};
+
+        for (what, public, required_level, rejection) in [
+            (
+                "aes-128",
+                public::fixtures::symcipher_public(128),
+                1,
+                TPM_RC_VALUE,
+            ),
+            (
+                "aes-192",
+                public::fixtures::symcipher_public(192),
+                4,
+                TPM_RC_VALUE,
+            ),
+            (
+                "rsa-2048",
+                public::fixtures::rsa_public(256),
+                1,
+                TPM_RC_VALUE,
+            ),
+            ("ecc-p256", public::fixtures::ecc_public(), 1, TPM_RC_CURVE),
+        ] {
+            let object = object::fixtures::any_public_only_object(&public);
+            for level in [1u32, 4] {
+                let blob = permanent_state_fixture_with_user_object(&object, level);
+                let result = permanent_validation_context(&blob);
+                if level >= required_level {
+                    assert!(result.is_ok(), "{what} in a level {level} blob");
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        rejection,
+                        "{what} in a level {level} blob"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_validation_context_never_formats_hierarchy_seeds() {
+        const EP_SEED: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+        const SP_SEED: [u8; 4] = [0xca, 0xfe, 0xba, 0xbe];
+        const PP_SEED: [u8; 4] = [0xd0, 0xd1, 0xd2, 0xd3];
+
+        let context = VolatileValidationContext {
+            ep_seed: persistent::OwnedSecret::copy_of(&EP_SEED),
+            sp_seed: persistent::OwnedSecret::copy_of(&SP_SEED),
+            pp_seed: persistent::OwnedSecret::copy_of(&PP_SEED),
+            ..VolatileValidationContext::without_permanent_state()
+        };
+        let rendered = format!("{context:?} {:?}", context.clone());
+
+        for seed in [EP_SEED, SP_SEED, PP_SEED] {
+            let decimals: Vec<String> = seed.iter().map(|byte| format!("{byte}")).collect();
+            let shapes = [
+                seed.iter().map(|byte| format!("{byte:02x}")).collect(),
+                seed.iter().map(|byte| format!("{byte:02X}")).collect(),
+                decimals.join(", "),
+                decimals.join(","),
+            ];
+            for shape in shapes.iter().chain(&decimals) {
+                assert!(
+                    !rendered.contains(shape),
+                    "seed {seed:02x?} rendered as {shape} in {rendered}"
+                );
+            }
+        }
+        assert!(rendered.contains("OwnedSecret { len: 4 }"));
+        assert_eq!(
+            context.ep_seed.as_bytes(),
+            EP_SEED,
+            "the seed is still owned"
+        );
+    }
+
+    #[test]
     #[ignore = "manual helper for the swtpm restored-state integration check"]
     fn dump_permall_fixture() {
         if let Ok(path) = std::env::var("PERMALL_DUMP_PATH") {
             std::fs::write(path, valid_permanent_state_fixture()).unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "manual helper for the ValidateState C oracle"]
+    fn dump_volatilestate_fixture() {
+        let Ok(prefix) = std::env::var("VOLATILESTATE_DUMP_PREFIX") else {
+            return;
+        };
+        for (suffix, blob) in [
+            ("valid.bin", valid_volatile_state_fixture()),
+            ("bad_tag.bin", bad_tag_volatile_state_fixture()),
+            (
+                "seed_mismatch.bin",
+                seed_mismatched_volatile_state_fixture(),
+            ),
+            ("rsa_object.bin", rsa_object_volatile_state_fixture()),
+            ("ecc_object.bin", ecc_object_volatile_state_fixture()),
+            (
+                "aes128_object.bin",
+                symmetric_object_volatile_state_fixture(128),
+            ),
+            (
+                "aes192_object.bin",
+                symmetric_object_volatile_state_fixture(192),
+            ),
+        ] {
+            std::fs::write(format!("{prefix}{suffix}"), blob).unwrap();
         }
     }
 }

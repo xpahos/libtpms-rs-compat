@@ -4,7 +4,7 @@ use crate::library::tpm2::object::{AnyObject, parse_any_object};
 use crate::library::tpm2::persistent::{PersistentAllError, StateSection, parse_nv_header};
 use crate::library::tpm2::profile::PersistentObjectFormat;
 use crate::library::tpm2::public::{
-    TPM_ALG_ECC, TPM_ALG_KEYEDHASH, TPM_ALG_RSA, TPM_ALG_SYMCIPHER,
+    StateFormatLimit, TPM_ALG_ECC, TPM_ALG_KEYEDHASH, TPM_ALG_RSA, TPM_ALG_SYMCIPHER,
 };
 
 pub(in crate::library::tpm2) const USER_NVRAM_MAGIC: u32 = 0x094f_22c3;
@@ -100,6 +100,7 @@ pub(in crate::library::tpm2) struct UserNvram<'a> {
 pub(in crate::library::tpm2) fn parse_user_nvram(
     input: &[u8],
     object_format: PersistentObjectFormat,
+    state_format: StateFormatLimit,
 ) -> Result<UserNvram<'_>, PersistentAllError> {
     let mut reader = BlobReader::new(input);
 
@@ -148,7 +149,7 @@ pub(in crate::library::tpm2) fn parse_user_nvram(
                 if o + offset + 4 + SIZEOF_OBJECT > USER_NVRAM_CAPACITY {
                     return Err(capacity_exceeded(o + offset + 4 + SIZEOF_OBJECT));
                 }
-                let object = parse_any_object(&mut reader)?;
+                let object = parse_any_object(&mut reader, state_format)?;
                 let object_type = object.public_type().unwrap_or(0);
                 if !matches!(
                     object_type,
@@ -297,9 +298,17 @@ mod tests {
     const SENTINEL: [u8; 3] = [0xf1, 0xf2, 0xf3];
 
     fn parse(data: &[u8]) -> Result<UserNvram<'_>, PersistentAllError> {
+        parse_at(data, StateFormatLimit::CURRENT)
+    }
+
+    fn parse_at(
+        data: &[u8],
+        state_format: StateFormatLimit,
+    ) -> Result<UserNvram<'_>, PersistentAllError> {
         parse_user_nvram(
             data,
             PersistentObjectFormat::AnyObject { object_version: 4 },
+            state_format,
         )
     }
 
@@ -381,6 +390,53 @@ mod tests {
     }
 
     #[test]
+    fn persistent_objects_obey_the_permanent_state_format_level() {
+        use crate::library::constants::{TPM_RC_CURVE, TPM_RC_VALUE};
+        use crate::library::tpm2::public::fixtures as public_fixtures;
+
+        for (what, public, required_level, rejection) in [
+            (
+                "aes-128",
+                public_fixtures::symcipher_public(128),
+                1,
+                TPM_RC_VALUE,
+            ),
+            (
+                "aes-192",
+                public_fixtures::symcipher_public(192),
+                4,
+                TPM_RC_VALUE,
+            ),
+            (
+                "rsa-2048",
+                public_fixtures::rsa_public(256),
+                1,
+                TPM_RC_VALUE,
+            ),
+            ("ecc-p256", public_fixtures::ecc_public(), 1, TPM_RC_CURVE),
+        ] {
+            let object = object_fixtures::any_public_only_object(&public);
+            let data = UserNvramFixture {
+                entries: vec![UserNvramFixture::persistent_entry(0x8100_0002, &object)],
+                ..with_tail()
+            }
+            .bytes();
+            for level in [0u32, 1, 4, 7] {
+                let result = parse_at(&data, StateFormatLimit::new(level));
+                if level >= required_level {
+                    assert!(result.is_ok(), "{what} at level {level}");
+                } else {
+                    assert_eq!(
+                        result.unwrap_err().tpm_result(),
+                        rejection,
+                        "{what} at level {level}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn legacy_format_uses_the_fixed_rsa3072_size() {
         let object = object_fixtures::any_rsa_object(3);
         let data = UserNvramFixture {
@@ -388,7 +444,12 @@ mod tests {
             ..with_tail()
         }
         .bytes();
-        let parsed = parse_user_nvram(&data, PersistentObjectFormat::LegacyRsa3072).unwrap();
+        let parsed = parse_user_nvram(
+            &data,
+            PersistentObjectFormat::LegacyRsa3072,
+            StateFormatLimit::CURRENT,
+        )
+        .unwrap();
         let UserNvramEntry::Persistent {
             object_destination_size,
             ..

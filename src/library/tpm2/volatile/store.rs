@@ -374,6 +374,7 @@ mod tests {
     use crate::library::tpm2::persistent::ProfileField;
     use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedPcrBank};
     use crate::library::tpm2::profile::{validate_profile, validate_user_profile};
+    use crate::library::tpm2::public::StateFormatLimit;
     use crate::library::tpm2::runtime::{commit_manufactured_state, merge_volatile_state};
     use crate::library::tpm2::volatile::DecodedVolatileState;
 
@@ -388,17 +389,28 @@ mod tests {
     }
 
     fn own_c_fixture(blob: &[u8]) -> OwnedVolatileState {
-        let decoded = parse_volatile_state_blob(blob, &[], SeedTie::EMPTY, &host_clock())
-            .expect("the C fixture decodes");
+        let decoded = parse_volatile_state_blob(
+            blob,
+            &[],
+            SeedTie::EMPTY,
+            &host_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("the C fixture decodes");
         materialize_volatile_state(&decoded, SeedTie::EMPTY, CURRENT_OBJECT_VERSION)
             .expect("the C fixture materializes")
     }
 
     fn own_synthetic_fixture(fixture: &VolatileFixture) -> OwnedVolatileState {
         let blob = fixture.bytes();
-        let decoded =
-            parse_volatile_state_blob(&blob, &[], VolatileFixture::seed_tie(), &host_clock())
-                .expect("the synthetic fixture decodes");
+        let decoded = parse_volatile_state_blob(
+            &blob,
+            &[],
+            VolatileFixture::seed_tie(),
+            &host_clock(),
+            StateFormatLimit::CURRENT,
+        )
+        .expect("the synthetic fixture decodes");
         materialize_volatile_state(
             &decoded,
             VolatileFixture::seed_tie(),
@@ -445,6 +457,7 @@ mod tests {
                 pp_seed: &seeds.2,
             },
             &host_clock(),
+            StateFormatLimit::CURRENT,
         )
         .expect("the produced blob decodes")
     }
@@ -691,6 +704,7 @@ mod tests {
                     pp_seed: &wrong.2,
                 },
                 &host_clock(),
+                StateFormatLimit::CURRENT,
             )
             .is_err()
         );
@@ -977,6 +991,7 @@ mod tests {
                         pp_seed: &seeds.2,
                     },
                     &host_clock(),
+                    StateFormatLimit::CURRENT,
                 )
                 .is_err(),
                 "prefix length {len} decoded"
@@ -1002,6 +1017,7 @@ mod tests {
                         pp_seed: &seeds.2,
                     },
                     &host_clock(),
+                    StateFormatLimit::CURRENT,
                 );
             }
         }

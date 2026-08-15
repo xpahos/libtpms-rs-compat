@@ -1,6 +1,8 @@
 use super::marshal::{BlobReader, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, PersistentField, StateSection, parse_nv_header};
-use super::public::{DIGEST_SIZE, NAME_SIZE, SymDefObject, parse_sym_def, read_tpm2b};
+use super::public::{
+    DIGEST_SIZE, NAME_SIZE, StateFormatLimit, SymDefObject, parse_sym_def, read_tpm2b,
+};
 
 pub(super) const SESSION_MAGIC: u32 = 0x44be_9f45;
 pub(super) const SESSION_VERSION: u16 = 2;
@@ -64,7 +66,10 @@ pub(super) struct SessionSlot<'a> {
     pub(super) session: Option<Session<'a>>,
 }
 
-fn parse_session<'a>(reader: &mut BlobReader<'a>) -> Result<Session<'a>, PersistentAllError> {
+fn parse_session<'a>(
+    reader: &mut BlobReader<'a>,
+    state_format: StateFormatLimit,
+) -> Result<Session<'a>, PersistentAllError> {
     const SECTION: StateSection = StateSection::Session;
 
     let header = parse_nv_header(reader, SECTION, SESSION_MAGIC, SESSION_VERSION)?;
@@ -85,7 +90,7 @@ fn parse_session<'a>(reader: &mut BlobReader<'a>) -> Result<Session<'a>, Persist
     let command_code = reader.read_u32().map_err(|_| truncated(SECTION))?;
     let auth_hash_alg = reader.read_u16().map_err(|_| truncated(SECTION))?;
     let command_locality = reader.read_u8().map_err(|_| truncated(SECTION))?;
-    let symmetric = parse_sym_def(reader, SECTION)?;
+    let symmetric = parse_sym_def(reader, SECTION, state_format)?;
     let session_key = read_tpm2b(reader, SECTION, PersistentField::SessionKey, DIGEST_SIZE)?;
     let nonce_tpm = read_tpm2b(reader, SECTION, PersistentField::NonceTpm, DIGEST_SIZE)?;
     let bound_entity = read_tpm2b(reader, SECTION, PersistentField::BoundEntity, NAME_SIZE)?;
@@ -119,6 +124,7 @@ fn parse_session<'a>(reader: &mut BlobReader<'a>) -> Result<Session<'a>, Persist
 
 pub(super) fn parse_session_slot<'a>(
     reader: &mut BlobReader<'a>,
+    state_format: StateFormatLimit,
 ) -> Result<SessionSlot<'a>, PersistentAllError> {
     const SECTION: StateSection = StateSection::SessionSlot;
 
@@ -131,7 +137,7 @@ pub(super) fn parse_session_slot<'a>(
         });
     }
 
-    let session = parse_session(reader)?;
+    let session = parse_session(reader, state_format)?;
 
     if header.version >= BLOCK_SKIP_SINCE_VERSION {
         skip_future_block(reader, SECTION)?;
@@ -296,7 +302,7 @@ mod tests {
 
     fn parse_slot(data: &[u8]) -> Result<(SessionSlot<'_>, usize), PersistentAllError> {
         let mut reader = BlobReader::new(data);
-        let slot = parse_session_slot(&mut reader)?;
+        let slot = parse_session_slot(&mut reader, StateFormatLimit::CURRENT)?;
         Ok((slot, reader.remaining().len()))
     }
 

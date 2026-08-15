@@ -2,9 +2,9 @@ use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLA
 use super::marshal::{BlobReader, BlockDisposition, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, PersistentField, StateSection, parse_nv_header};
 use super::public::{
-    self, DIGEST_SIZE, NAME_SIZE, TPM_ALG_RSA, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384,
-    TPM_ALG_SHA512, TpmtPublic, TpmtSensitive, parse_nv_tpmt_sensitive, parse_tpmt_public,
-    read_tpm2b,
+    self, DIGEST_SIZE, NAME_SIZE, StateFormatLimit, TPM_ALG_RSA, TPM_ALG_SHA1, TPM_ALG_SHA256,
+    TPM_ALG_SHA384, TPM_ALG_SHA512, TpmtPublic, TpmtSensitive, parse_nv_tpmt_sensitive,
+    parse_tpmt_public, read_tpm2b,
 };
 
 pub(super) const ANY_OBJECT_MAGIC: u32 = 0xfe9a_3974;
@@ -527,12 +527,15 @@ fn parse_hash_object<'a>(
     })
 }
 
-fn parse_object<'a>(reader: &mut BlobReader<'a>) -> Result<ObjectBody<'a>, PersistentAllError> {
+fn parse_object<'a>(
+    reader: &mut BlobReader<'a>,
+    state_format: StateFormatLimit,
+) -> Result<ObjectBody<'a>, PersistentAllError> {
     const S: StateSection = StateSection::Object;
     let header = parse_nv_header(reader, S, OBJECT_MAGIC, OBJECT_VERSION)?;
 
     let start = reader.position();
-    let public = parse_tpmt_public(reader, S, true)?;
+    let public = parse_tpmt_public(reader, S, true, state_format)?;
     let public_wire_len = (reader.position() - start) as u64;
 
     let start = reader.position();
@@ -596,6 +599,7 @@ fn parse_object<'a>(reader: &mut BlobReader<'a>) -> Result<ObjectBody<'a>, Persi
 
 pub(super) fn parse_any_object<'a>(
     reader: &mut BlobReader<'a>,
+    state_format: StateFormatLimit,
 ) -> Result<AnyObject<'a>, PersistentAllError> {
     const S: StateSection = StateSection::AnyObject;
     let header = parse_nv_header(reader, S, ANY_OBJECT_MAGIC, ANY_OBJECT_VERSION)?;
@@ -607,7 +611,7 @@ pub(super) fn parse_any_object<'a>(
     } else if AnyObject::is_sequence(attributes) {
         AnyObjectBody::Sequence(Box::new(parse_hash_object(reader, attributes)?))
     } else {
-        AnyObjectBody::Object(Box::new(parse_object(reader)?))
+        AnyObjectBody::Object(Box::new(parse_object(reader, state_format)?))
     };
 
     if header.version >= BLOCK_SKIP_SINCE_VERSION {
@@ -686,6 +690,34 @@ pub(super) mod fixtures {
         let mut out = nv_header(ANY_OBJECT_VERSION, ANY_OBJECT_MAGIC, 1);
         out.extend_from_slice(&(super::ATTR_OCCUPIED).to_be_bytes());
         out.extend_from_slice(&rsa_object(version));
+        out.extend_from_slice(&empty_future_block());
+        out
+    }
+
+    pub(in crate::library::tpm2) fn public_only_object(public: &[u8]) -> Vec<u8> {
+        let mut out = nv_header(4, OBJECT_MAGIC, 4);
+        out.extend_from_slice(public);
+        out.extend_from_slice(&public_fixtures::public_only_sensitive());
+        out.extend_from_slice(&[0x00, 0x00, 0x00]);
+        public_fixtures::push_tpm2b(&mut out, &[0x51; 34]);
+        out.extend_from_slice(&0x8100_0001u32.to_be_bytes());
+        public_fixtures::push_tpm2b(&mut out, &[0x52; 34]);
+        let mut nested = Vec::new();
+        nested.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
+        let mut seed = vec![0x00u8];
+        seed.push(0x01);
+        seed.extend_from_slice(&u16::try_from(nested.len()).unwrap().to_be_bytes());
+        seed.extend_from_slice(&nested);
+        out.push(0x01);
+        out.extend_from_slice(&u16::try_from(seed.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(&seed);
+        out
+    }
+
+    pub(in crate::library::tpm2) fn any_public_only_object(public: &[u8]) -> Vec<u8> {
+        let mut out = nv_header(ANY_OBJECT_VERSION, ANY_OBJECT_MAGIC, 1);
+        out.extend_from_slice(&(super::ATTR_OCCUPIED).to_be_bytes());
+        out.extend_from_slice(&public_only_object(public));
         out.extend_from_slice(&empty_future_block());
         out
     }
@@ -788,7 +820,7 @@ mod tests {
 
     fn parse(data: &[u8]) -> Result<AnyObject<'_>, PersistentAllError> {
         let mut reader = BlobReader::new(data);
-        let object = parse_any_object(&mut reader)?;
+        let object = parse_any_object(&mut reader, StateFormatLimit::CURRENT)?;
         assert_eq!(reader.remaining(), &[] as &[u8], "exact consumption");
         Ok(object)
     }
@@ -880,7 +912,7 @@ mod tests {
         let offset = 8 + 4 + 8 + 2 + 2 + 4 + 2;
         data[offset..offset + 2].copy_from_slice(&3u16.to_be_bytes());
         let mut reader = BlobReader::new(&data);
-        let error = parse_any_object(&mut reader).unwrap_err();
+        let error = parse_any_object(&mut reader, StateFormatLimit::CURRENT).unwrap_err();
         assert_eq!(
             error,
             PersistentAllError::ArraySizeMismatch {
@@ -921,7 +953,7 @@ mod tests {
         let len = data.len();
         data[len - 7..len - 3].copy_from_slice(&0x4000_0002u32.to_be_bytes());
         let mut reader = BlobReader::new(&data);
-        let error = parse_any_object(&mut reader).unwrap_err();
+        let error = parse_any_object(&mut reader, StateFormatLimit::CURRENT).unwrap_err();
         assert_eq!(
             error,
             PersistentAllError::InvalidHandleValue {
@@ -1020,7 +1052,7 @@ mod tests {
         let full = any_rsa_object(4);
         for len in 0..full.len() {
             let mut reader = BlobReader::new(&full[..len]);
-            let error = parse_any_object(&mut reader).unwrap_err();
+            let error = parse_any_object(&mut reader, StateFormatLimit::CURRENT).unwrap_err();
             assert_eq!(
                 error.tpm_result(),
                 TPM_RC_INSUFFICIENT,
@@ -1044,7 +1076,7 @@ mod tests {
                     let mut data = full.clone();
                     data[index] = byte;
                     let mut reader = BlobReader::new(&data);
-                    let _ = parse_any_object(&mut reader);
+                    let _ = parse_any_object(&mut reader, StateFormatLimit::CURRENT);
                 }
             }
         }

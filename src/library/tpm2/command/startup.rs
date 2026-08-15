@@ -1600,6 +1600,7 @@ mod tests {
         state_clear: Vec<u8>,
     ) -> Box<Tpm2Runtime> {
         use crate::library::tpm2::clock::RecordingClock;
+        use crate::library::tpm2::public::StateFormatLimit;
         use crate::library::tpm2::volatile::{SeedTie, VolatileFixture, parse_volatile_state_blob};
 
         let mut runtime = fixture.runtime();
@@ -1615,8 +1616,14 @@ mod tests {
         }
         .bytes();
         let clock = RecordingClock::new(1_600_000_500_000, 7_000_000);
-        let decoded = parse_volatile_state_blob(&blob, &[], SeedTie::EMPTY, &clock)
-            .expect("the pre-startup volatile blob decodes");
+        let decoded = parse_volatile_state_blob(
+            &blob,
+            &[],
+            SeedTie::EMPTY,
+            &clock,
+            StateFormatLimit::CURRENT,
+        )
+        .expect("the pre-startup volatile blob decodes");
         let owned = crate::library::tpm2::volatile::materialize_volatile_state(
             &decoded,
             SeedTie::EMPTY,

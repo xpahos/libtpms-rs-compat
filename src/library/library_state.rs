@@ -14,7 +14,7 @@ use super::constants::{
 #[cfg(feature = "tpm2")]
 use super::preloaded_state::PreloadedBlob;
 use super::preloaded_state::PreloadedState;
-use super::state_blob::{StateBlobKind, StateInput, StateOutput};
+use super::state_blob::{StateBlobKind, StateInput, StateOutput, StateValidationMask};
 
 #[cfg(feature = "tpm2")]
 use super::tpm2;
@@ -53,6 +53,8 @@ struct LibraryState {
     configured_profile: Option<Vec<u8>>,
     #[cfg(feature = "tpm2")]
     tpm2_runtime: Option<Box<tpm2::Tpm2Runtime>>,
+    #[cfg(feature = "tpm2")]
+    installed_permanent: Option<tpm2::VolatileValidationContext>,
     #[cfg(all(test, feature = "tpm2"))]
     entropy_override: Option<tpm2::EntropySource>,
 }
@@ -72,6 +74,8 @@ impl LibraryState {
             configured_profile: None,
             #[cfg(feature = "tpm2")]
             tpm2_runtime: None,
+            #[cfg(feature = "tpm2")]
+            installed_permanent: None,
             #[cfg(all(test, feature = "tpm2"))]
             entropy_override: None,
         }
@@ -96,6 +100,13 @@ impl LibraryState {
 
     fn clear_preloaded_state(&mut self) {
         self.preloaded_state.clear_all();
+        #[cfg(feature = "tpm2")]
+        self.clear_installed_permanent();
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn clear_installed_permanent(&mut self) {
+        self.installed_permanent = None;
     }
 
     fn advance_lifecycle(&mut self) {
@@ -258,6 +269,7 @@ impl Library {
         #[cfg(feature = "tpm2")]
         {
             state.tpm2_runtime = None;
+            state.clear_installed_permanent();
             if selected == TpmVersion::V2_0 {
                 state.configured_profile = None;
             }
@@ -320,6 +332,38 @@ impl Library {
     }
 
     #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
+    pub fn validate_state(&self, mask: StateValidationMask) -> TpmResult {
+        let state = self.lock_state();
+        match state.selected {
+            #[cfg(feature = "tpm2")]
+            TpmVersion::V2_0 => {
+                let callbacks = state.callbacks;
+                let lifecycle = state.lifecycle();
+                let cached_volatile = state.preloaded_state.get(StateBlobKind::Volatile).clone();
+                drop(state);
+                let loaded = tpm2::load_state_for_validation(callbacks, mask, cached_volatile);
+                let mut state = self.lock_state();
+                if state.selected != lifecycle.selected {
+                    return TPM_FAIL;
+                }
+                if state.lifecycle() != lifecycle {
+                    return TPM_INVALID_POSTINIT;
+                }
+                let outcome = tpm2::finish_validation(
+                    loaded,
+                    state.tpm2_runtime.as_deref(),
+                    state.installed_permanent.as_ref(),
+                );
+                if let Some(installed) = outcome.installed {
+                    state.installed_permanent = Some(installed);
+                }
+                outcome.result
+            }
+            _ => TPM_FAIL,
+        }
+    }
+
+    #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
     pub fn set_state(&self, kind: StateBlobKind, input: StateInput) -> TpmResult {
         let state = self.lock_state();
         match state.selected {
@@ -361,9 +405,12 @@ impl Library {
         if state.lifecycle() != lifecycle || state.tpm2_runtime.is_some() {
             return TPM_INVALID_POSTINIT;
         }
-        if outcome != TPM_SUCCESS {
+        if let Some(installed) = outcome.installed {
+            state.installed_permanent = Some(installed);
+        }
+        if outcome.result != TPM_SUCCESS {
             state.preloaded_state.clear_all();
-            return outcome;
+            return outcome.result;
         }
         state.preloaded_state.set_data(kind, bytes);
         TPM_SUCCESS
@@ -375,14 +422,29 @@ impl Library {
         kind: StateBlobKind,
         bytes: &[u8],
         callbacks: LibtpmsCallbacks,
-    ) -> TpmResult {
+    ) -> tpm2::ValidationOutcome {
         match kind {
-            StateBlobKind::Permanent => tpm2::validate_permanent_state(bytes),
-            StateBlobKind::Volatile => match self.permanent_state_for_validation(callbacks) {
-                Ok(permanent) => tpm2::validate_volatile_state(&permanent, bytes),
-                Err(code) => code,
+            StateBlobKind::Permanent => match tpm2::permanent_validation_context(bytes) {
+                Ok(context) => tpm2::ValidationOutcome {
+                    result: TPM_SUCCESS,
+                    installed: Some(context),
+                },
+                Err(code) => tpm2::ValidationOutcome::rejected(code),
             },
-            StateBlobKind::SaveState => TPM_BAD_TYPE,
+            StateBlobKind::Volatile => {
+                let permanent = match self.permanent_state_for_validation(callbacks) {
+                    Ok(permanent) => permanent,
+                    Err(code) => return tpm2::ValidationOutcome::rejected(code),
+                };
+                match tpm2::permanent_validation_context(&permanent) {
+                    Ok(context) => tpm2::ValidationOutcome {
+                        result: tpm2::validate_volatile_in_context(&context, bytes),
+                        installed: Some(context),
+                    },
+                    Err(code) => tpm2::ValidationOutcome::rejected(code),
+                }
+            }
+            StateBlobKind::SaveState => tpm2::ValidationOutcome::rejected(TPM_BAD_TYPE),
         }
     }
 
@@ -2440,6 +2502,1176 @@ mod tests {
         }
     }
 
+    const VALIDATE_PERMANENT: c_int = 1;
+    const VALIDATE_VOLATILE: c_int = 2;
+    const VALIDATE_SAVE_STATE: c_int = 4;
+
+    fn validation_mask(bits: c_int) -> StateValidationMask {
+        StateValidationMask::from_c(bits)
+    }
+
+    #[test]
+    fn validation_without_a_tpm2_selection_fails() {
+        let library = Library::new();
+        for bits in [
+            0,
+            VALIDATE_PERMANENT,
+            VALIDATE_VOLATILE,
+            VALIDATE_SAVE_STATE,
+            VALIDATE_PERMANENT | VALIDATE_VOLATILE | VALIDATE_SAVE_STATE,
+            -1,
+        ] {
+            assert_eq!(
+                library.validate_state(validation_mask(bits)),
+                TPM_FAIL,
+                "mask {bits}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    static BACKEND_VOLATILESTATE: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn loaddata_state_backend(
+        data: *mut *mut core::ffi::c_uchar,
+        length: *mut u32,
+        _tpm_number: u32,
+        name: *const core::ffi::c_char,
+    ) -> TpmResult {
+        use crate::library::constants::TPM_RETRY;
+        let name = requested_name(name);
+        NVRAM_EVENTS.lock().unwrap().push(format!("load:{name}"));
+        let blob = match name.as_str() {
+            "permall" => BACKEND_PERMALL.lock().unwrap().clone(),
+            "volatilestate" => BACKEND_VOLATILESTATE.lock().unwrap().clone(),
+            _ => None,
+        };
+        let Some(blob) = blob else {
+            return TPM_RETRY;
+        };
+        // SAFETY: out-pointers are valid per the callback contract; the
+        // buffer is malloc'ed and ownership transfers to the caller.
+        unsafe {
+            *data = crate::ffi_support::malloc_bytes(&blob);
+            *length = blob.len() as u32;
+        }
+        TPM_SUCCESS
+    }
+
+    #[cfg(feature = "tpm2")]
+    unsafe extern "C" fn loaddata_zero_length_blob(
+        data: *mut *mut core::ffi::c_uchar,
+        length: *mut u32,
+        _tpm_number: u32,
+        name: *const core::ffi::c_char,
+    ) -> TpmResult {
+        NVRAM_EVENTS
+            .lock()
+            .unwrap()
+            .push(format!("load:{}", requested_name(name)));
+        // SAFETY: out-pointers are valid per the callback contract; the
+        // one-byte allocation is handed over with a declared length of zero.
+        unsafe {
+            *data = crate::ffi_support::malloc_bytes(&[0]);
+            *length = 0;
+        }
+        TPM_SUCCESS
+    }
+
+    #[cfg(feature = "tpm2")]
+    struct ValidationFixture {
+        library: Library,
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
+
+    #[cfg(feature = "tpm2")]
+    impl ValidationFixture {
+        fn new() -> Self {
+            let serial = MANUFACTURE_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let fixture = Self {
+                library: tpm2_library(),
+                _serial: serial,
+            };
+            fixture.clear_backend();
+            fixture
+        }
+
+        fn clear_backend(&self) {
+            NVRAM_EVENTS.lock().unwrap().clear();
+            *BACKEND_PERMALL.lock().unwrap() = None;
+            *BACKEND_VOLATILESTATE.lock().unwrap() = None;
+            *BACKEND_STORES.lock().unwrap() = 0;
+        }
+
+        fn restart(&mut self) {
+            self.library = tpm2_library();
+            self.clear_backend();
+        }
+
+        fn with_backend(&self) {
+            self.library.register_callbacks(LibtpmsCallbacks {
+                tpm_nvram_init: Some(nvram_init_ok),
+                tpm_nvram_loaddata: Some(loaddata_state_backend),
+                ..LibtpmsCallbacks::empty()
+            });
+        }
+
+        fn cache(&self, kind: StateBlobKind, blob: Vec<u8>) {
+            self.library
+                .lock_state()
+                .preloaded_state
+                .set_data(kind, blob);
+        }
+
+        fn accept(&self, kind: StateBlobKind, blob: Vec<u8>) {
+            assert_eq!(
+                self.library.set_state(kind, StateInput::Data(blob)),
+                TPM_SUCCESS,
+                "the fixture blob must be accepted by SetState"
+            );
+        }
+
+        fn events(&self) -> Vec<String> {
+            NVRAM_EVENTS.lock().unwrap().clone()
+        }
+
+        fn forget_events(&self) {
+            NVRAM_EVENTS.lock().unwrap().clear();
+        }
+
+        fn validate(&self, bits: c_int) -> TpmResult {
+            self.library.validate_state(validation_mask(bits))
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn an_empty_mask_still_runs_the_nvram_initialization() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        assert_eq!(fixture.validate(0), TPM_SUCCESS);
+        assert_eq!(
+            fixture.events(),
+            ["init".to_owned()],
+            "upstream calls tpm_nvram_init before it looks at any bit"
+        );
+
+        fixture.forget_events();
+        fixture.library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_error),
+            tpm_nvram_loaddata: Some(loaddata_state_backend),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(fixture.validate(0), 0x4242);
+        assert_eq!(fixture.events(), ["init".to_owned()]);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn unknown_bits_validate_nothing_at_all() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        for bits in [8, 16, 1 << 30, i32::MIN] {
+            fixture.forget_events();
+            assert_eq!(fixture.validate(bits), TPM_SUCCESS, "mask {bits}");
+            assert_eq!(fixture.events(), ["init".to_owned()], "mask {bits}");
+        }
+
+        *BACKEND_PERMALL.lock().unwrap() = Some(vec![1, 2, 3]);
+        fixture.forget_events();
+        assert_eq!(
+            fixture.validate(8 | VALIDATE_PERMANENT),
+            crate::library::constants::TPM_RC_INSUFFICIENT,
+            "a known bit still selects its state next to an unknown one"
+        );
+        assert_eq!(
+            fixture.events(),
+            ["init".to_owned(), "load:permall".to_owned()]
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn permanent_validation_reads_the_backend_blob_and_never_the_cache() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() =
+            Some(crate::library::tpm2::valid_permanent_state_fixture());
+
+        for bits in [
+            VALIDATE_PERMANENT,
+            VALIDATE_SAVE_STATE,
+            VALIDATE_PERMANENT | VALIDATE_SAVE_STATE,
+        ] {
+            fixture.forget_events();
+            assert_eq!(fixture.validate(bits), TPM_SUCCESS, "mask {bits}");
+            assert_eq!(
+                fixture.events(),
+                ["init".to_owned(), "load:permall".to_owned()],
+                "mask {bits} reads permall exactly once and nothing else"
+            );
+        }
+
+        fixture.cache(StateBlobKind::Permanent, vec![1, 2, 3]);
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT),
+            TPM_SUCCESS,
+            "TPM2_ValidateState calls tpm_nvram_loaddata(TPM_PERMANENT_ALL_NAME) itself \
+             instead of consulting the cached state the way VolatileLoad does"
+        );
+
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT),
+            crate::library::constants::TPM_RETRY,
+            "a cached blob cannot stand in for a missing backend blob"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn malformed_permanent_state_reports_the_exact_parser_code() {
+        use crate::library::constants::{TPM_RC_BAD_TAG, TPM_RC_BAD_VERSION, TPM_RC_INSUFFICIENT};
+
+        let valid = crate::library::tpm2::valid_permanent_state_fixture();
+
+        let mut cut_payload = valid[..valid.len() / 2].to_vec();
+        cut_payload.extend_from_slice(&valid[valid.len() - 4..]);
+        let cut_footer = valid[..valid.len() / 2].to_vec();
+        let mut bad_footer = valid.clone();
+        let last = bad_footer.len() - 1;
+        bad_footer[last] ^= 0xff;
+        let mut bad_version = valid.clone();
+        bad_version[6] = 0x00;
+        bad_version[7] = 0x63;
+
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        for (blob, expected, what) in [
+            (cut_payload, TPM_RC_INSUFFICIENT, "a truncated payload"),
+            (cut_footer, TPM_RC_BAD_TAG, "a blob cut before its footer"),
+            (bad_footer, TPM_RC_BAD_TAG, "a bad trailing magic"),
+            (bad_version, TPM_RC_BAD_VERSION, "an unsupported version"),
+            (
+                valid[..3].to_vec(),
+                TPM_RC_INSUFFICIENT,
+                "a stub of a header",
+            ),
+            (vec![1, 2, 3], TPM_RC_INSUFFICIENT, "a stray blob"),
+        ] {
+            *BACKEND_PERMALL.lock().unwrap() = Some(blob);
+            assert_eq!(fixture.validate(VALIDATE_PERMANENT), expected, "{what}");
+            assert_eq!(
+                fixture.validate(VALIDATE_SAVE_STATE),
+                expected,
+                "{what}, through the save-state bit"
+            );
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_permanent_blob_the_backend_cannot_produce_is_told_apart_from_a_zero_length_one() {
+        use crate::library::constants::{TPM_RC_INSUFFICIENT, TPM_RETRY};
+
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT),
+            TPM_RETRY,
+            "no permall at the backend"
+        );
+
+        *BACKEND_PERMALL.lock().unwrap() = Some(Vec::new());
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT),
+            TPM_FAIL,
+            "success without a buffer is upstream's `if (!data) return TPM_FAIL`"
+        );
+
+        fixture.library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            tpm_nvram_loaddata: Some(loaddata_zero_length_blob),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT),
+            TPM_RC_INSUFFICIENT,
+            "a real buffer of zero length reaches the parser"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn volatile_validation_runs_against_the_permanent_state() {
+        let mut fixture = ValidationFixture::new();
+        fixture.with_backend();
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        let volatile = crate::library::tpm2::valid_volatile_state_fixture();
+
+        fixture.accept(StateBlobKind::Permanent, permanent.clone());
+        fixture.accept(StateBlobKind::Volatile, volatile.clone());
+        fixture.forget_events();
+        assert_eq!(fixture.validate(VALIDATE_VOLATILE), TPM_SUCCESS);
+        assert_eq!(
+            fixture.events(),
+            ["init".to_owned()],
+            "the cached blob is decoded against the permanent state SetState installed"
+        );
+
+        fixture.restart();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() = Some(permanent.clone());
+        fixture.cache(StateBlobKind::Volatile, volatile.clone());
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            fixture.events(),
+            ["init".to_owned(), "load:permall".to_owned()],
+            "the permanent blob loaded for its own bit is reused as the context"
+        );
+
+        fixture.restart();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() = Some(permanent);
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(volatile);
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE | VALIDATE_SAVE_STATE),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            fixture.events(),
+            [
+                "init".to_owned(),
+                "load:permall".to_owned(),
+                "load:volatilestate".to_owned()
+            ],
+            "permanent state is validated before volatile state"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_malformed_permanent_blob_stops_the_volatile_step() {
+        use crate::library::constants::TPM_RC_INSUFFICIENT;
+
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() = Some(vec![1, 2, 3]);
+        *BACKEND_VOLATILESTATE.lock().unwrap() =
+            Some(crate::library::tpm2::valid_volatile_state_fixture());
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE),
+            TPM_RC_INSUFFICIENT
+        );
+        assert_eq!(
+            fixture.events(),
+            ["init".to_owned(), "load:permall".to_owned()],
+            "the volatile blob is never fetched once the permanent one failed"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn malformed_volatile_state_reports_the_exact_parser_codes() {
+        use crate::library::constants::{
+            TPM_RC_BAD_TAG, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_VALUE,
+        };
+
+        let valid = crate::library::tpm2::valid_volatile_state_fixture();
+        let truncated = valid[..valid.len() / 2].to_vec();
+        let mut bad_digest = valid.clone();
+        let last = bad_digest.len() - 1;
+        bad_digest[last] ^= 0xff;
+
+        for (blob, expected, what) in [
+            (truncated, TPM_RC_INSUFFICIENT, "a truncated blob"),
+            (
+                crate::library::tpm2::bad_tag_volatile_state_fixture(),
+                TPM_RC_BAD_TAG,
+                "a bad trailing magic",
+            ),
+            (bad_digest, TPM_RC_HASH, "a bad checksum"),
+            (
+                crate::library::tpm2::seed_mismatched_volatile_state_fixture(),
+                TPM_RC_VALUE,
+                "a seed tie mismatch",
+            ),
+        ] {
+            let mut fixture = ValidationFixture::new();
+            fixture.with_backend();
+            fixture.accept(
+                StateBlobKind::Permanent,
+                crate::library::tpm2::valid_permanent_state_fixture(),
+            );
+            fixture.cache(StateBlobKind::Volatile, blob.clone());
+            assert_eq!(fixture.validate(VALIDATE_VOLATILE), expected, "{what}");
+
+            fixture.restart();
+            fixture.with_backend();
+            *BACKEND_PERMALL.lock().unwrap() =
+                Some(crate::library::tpm2::valid_permanent_state_fixture());
+            *BACKEND_VOLATILESTATE.lock().unwrap() = Some(blob);
+            assert_eq!(
+                fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE),
+                expected,
+                "{what}, from the backend"
+            );
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_failure_mode_volatile_blob_validates_but_never_restores() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        fixture.accept(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        fixture.cache(
+            StateBlobKind::Volatile,
+            crate::library::tpm2::failure_mode_volatile_state_fixture(),
+        );
+        assert_eq!(
+            fixture.validate(VALIDATE_VOLATILE),
+            TPM_SUCCESS,
+            "validation reports the parser result, not the restore boundary"
+        );
+        assert!(fixture.library.lock_state().tpm2_runtime.is_none());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn an_explicitly_empty_cached_volatile_state_validates_successfully() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(vec![1, 2, 3]);
+        fixture
+            .library
+            .lock_state()
+            .preloaded_state
+            .set_empty(StateBlobKind::Volatile);
+        assert_eq!(fixture.validate(VALIDATE_VOLATILE), TPM_SUCCESS);
+        assert_eq!(
+            fixture.events(),
+            ["init".to_owned()],
+            "an empty cached state never reaches the backend"
+        );
+
+        fixture.forget_events();
+        *BACKEND_PERMALL.lock().unwrap() =
+            Some(crate::library::tpm2::valid_permanent_state_fixture());
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            fixture.events(),
+            ["init".to_owned(), "load:permall".to_owned()]
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_volatile_load_failure_is_swallowed_but_a_permanent_one_propagates() {
+        let mut fixture = ValidationFixture::new();
+        fixture.library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            tpm_nvram_loaddata: Some(loaddata_error),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(fixture.validate(VALIDATE_PERMANENT), 0x1357);
+        assert_eq!(fixture.validate(VALIDATE_SAVE_STATE), 0x1357);
+
+        fixture.cache(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        assert_eq!(
+            fixture.validate(VALIDATE_VOLATILE),
+            TPM_SUCCESS,
+            "upstream VolatileLoad drops the load result and leaves rc untouched"
+        );
+
+        fixture.restart();
+        fixture.with_backend();
+        fixture.cache(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        assert_eq!(
+            fixture.validate(VALIDATE_VOLATILE),
+            TPM_SUCCESS,
+            "a missing volatile blob is not an error either"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn validation_without_backend_callbacks_follows_upstream() {
+        let fixture = ValidationFixture::new();
+        assert_eq!(fixture.validate(0), TPM_SUCCESS);
+        assert_eq!(fixture.validate(VALIDATE_PERMANENT), TPM_FAIL);
+        assert_eq!(fixture.validate(VALIDATE_SAVE_STATE), TPM_FAIL);
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE | VALIDATE_SAVE_STATE),
+            TPM_FAIL,
+            "the permanent step fails before the volatile one runs"
+        );
+        assert_eq!(
+            fixture.validate(VALIDATE_VOLATILE),
+            TPM_SUCCESS,
+            "with nothing to load there is nothing to reject"
+        );
+        assert!(
+            fixture.events().is_empty(),
+            "an unregistered tpm_nvram_init is skipped, exactly as upstream does"
+        );
+
+        fixture.library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_loaddata: Some(loaddata_state_backend),
+            ..LibtpmsCallbacks::empty()
+        });
+        *BACKEND_PERMALL.lock().unwrap() =
+            Some(crate::library::tpm2::valid_permanent_state_fixture());
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT),
+            TPM_SUCCESS,
+            "a load callback alone is enough"
+        );
+        assert_eq!(fixture.events(), ["load:permall".to_owned()]);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn validation_leaves_every_piece_of_library_state_alone() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        let volatile = crate::library::tpm2::valid_volatile_state_fixture();
+        *BACKEND_PERMALL.lock().unwrap() = Some(permanent.clone());
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(volatile.clone());
+
+        fixture.library.register_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: Some(nvram_init_ok),
+            tpm_nvram_loaddata: Some(loaddata_state_backend),
+            tpm_nvram_storedata: Some(storedata_backend),
+            ..LibtpmsCallbacks::empty()
+        });
+        assert_eq!(
+            fixture.library.set_state(
+                StateBlobKind::Permanent,
+                StateInput::Data(permanent.clone())
+            ),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            fixture
+                .library
+                .set_state(StateBlobKind::Volatile, StateInput::Data(volatile.clone())),
+            TPM_SUCCESS
+        );
+        let profile = br#"{"Name":"default-v1"}"#;
+        assert_eq!(
+            fixture.library.set_profile(Some(profile)),
+            TPM_SUCCESS,
+            "the profile stays configured across the validation"
+        );
+        fixture.library.set_buffer_size(3000);
+        let before = fixture.library.lock_state().lifecycle();
+        *BACKEND_STORES.lock().unwrap() = 0;
+
+        for _ in 0..2 {
+            assert_eq!(
+                fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE | VALIDATE_SAVE_STATE),
+                TPM_SUCCESS,
+                "the cached state is validated, not consumed"
+            );
+        }
+
+        let state = fixture.library.lock_state();
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Permanent),
+            PreloadedBlob::Data(permanent)
+        );
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Data(volatile)
+        );
+        assert!(state.tpm2_runtime.is_none(), "no runtime is ever published");
+        assert_eq!(state.selected, TpmVersion::V2_0);
+        assert_eq!(state.tpm2_buffer_size, 3000);
+        assert_eq!(state.configured_profile.as_deref(), Some(&profile[..]));
+        assert!(!state.version_locked);
+        assert_eq!(state.lifecycle(), before, "the lifecycle never moves");
+        assert!(state.callbacks.tpm_nvram_storedata.is_some());
+        assert!(
+            state.installed_permanent.is_some(),
+            "the decoded permanent state is installed, as upstream unmarshals it into its NV image"
+        );
+        drop(state);
+        assert_eq!(
+            *BACKEND_STORES.lock().unwrap(),
+            0,
+            "nothing is committed to host NVRAM"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    const VALIDATE_STATE_ORACLE: &str = include_str!("tpm2/testdata/validate_state_oracle.txt");
+
+    #[cfg(feature = "tpm2")]
+    fn oracle(scenario: &str) -> (TpmResult, Vec<String>) {
+        for line in VALIDATE_STATE_ORACLE.lines() {
+            let mut fields = line.split('\t');
+            let (Some(name), Some(result)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            if name != scenario {
+                continue;
+            }
+            let result = TpmResult::from_str_radix(result.trim_start_matches("0x"), 16)
+                .unwrap_or_else(|_| panic!("{scenario}: unparsable oracle result {result}"));
+            let events = match fields.next().unwrap_or("") {
+                "" => Vec::new(),
+                events => events.split(',').map(str::to_owned).collect(),
+            };
+            return (result, events);
+        }
+        panic!("{scenario} is missing from the oracle fixture");
+    }
+
+    #[cfg(feature = "tpm2")]
+    impl ValidationFixture {
+        fn assert_oracle(&self, scenario: &str, result: TpmResult) {
+            let (expected, events) = oracle(scenario);
+            assert_eq!(result, expected, "{scenario}: vendored C result");
+            assert_eq!(self.events(), events, "{scenario}: vendored C callbacks");
+        }
+
+        fn permall(&self) -> Vec<u8> {
+            crate::library::tpm2::valid_permanent_state_fixture()
+        }
+
+        fn volatilestate(&self) -> Vec<u8> {
+            crate::library::tpm2::valid_volatile_state_fixture()
+        }
+
+        fn malformed_volatile_matrix(&self) -> Vec<(&'static str, Vec<u8>)> {
+            let valid = self.volatilestate();
+            let mut bad_digest = valid.clone();
+            let last = bad_digest.len() - 1;
+            bad_digest[last] ^= 0xff;
+            let mut bad_header_magic = valid.clone();
+            bad_header_magic[3] ^= 0xff;
+            vec![
+                ("valid_volatile", valid.clone()),
+                ("truncated_volatile", valid[..valid.len() / 2].to_vec()),
+                ("bad_digest_volatile", bad_digest),
+                (
+                    "bad_trailing_magic_volatile",
+                    crate::library::tpm2::bad_tag_volatile_state_fixture(),
+                ),
+                (
+                    "seed_mismatch_volatile",
+                    crate::library::tpm2::seed_mismatched_volatile_state_fixture(),
+                ),
+                ("bad_header_magic_volatile", bad_header_magic),
+            ]
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn every_c_oracle_scenario_is_replayed() {
+        let replayed = [
+            "permanent_only",
+            "save_state_only",
+            "combined_permanent_volatile",
+            "permanent_then_volatile_only.permanent",
+            "permanent_then_volatile_only.volatile",
+            "save_state_then_volatile_only.save_state",
+            "save_state_then_volatile_only.volatile",
+            "failed_permanent_then_volatile_only.permanent",
+            "failed_permanent_then_volatile_only.volatile",
+            "combined_seed_mismatch_then_volatile_only.combined",
+            "combined_seed_mismatch_then_volatile_only.volatile",
+            "cached_volatile_no_backend_permall",
+            "backend_volatile_no_backend_permall",
+            "backend_truncated_volatile_no_backend_permall",
+            "backend_bad_digest_volatile_no_backend_permall",
+            "no_volatile_anywhere",
+            "empty_cached_volatile",
+            "installed_then_empty_cached_permanent",
+            "empty_cached_permanent_nothing_installed",
+            "changed_backend_permall",
+            "failed_set_state_volatile_then_volatile_only.set_state",
+            "failed_set_state_volatile_then_volatile_only.volatile",
+            "installed_bad_trailing_magic_volatile",
+            "installed_seed_mismatch_volatile",
+            "installed_bad_header_magic_volatile",
+            "nothing_installed_valid_volatile",
+            "nothing_installed_truncated_volatile",
+            "nothing_installed_bad_digest_volatile",
+            "nothing_installed_bad_trailing_magic_volatile",
+            "nothing_installed_seed_mismatch_volatile",
+            "nothing_installed_bad_header_magic_volatile",
+            "installed_object_rsa",
+            "installed_object_ecc",
+            "installed_object_aes128",
+            "installed_object_aes192",
+            "nothing_installed_object_rsa",
+            "nothing_installed_object_ecc",
+            "nothing_installed_object_aes128",
+            "nothing_installed_object_aes192",
+            "running_tpm",
+        ];
+        let recorded: Vec<&str> = VALIDATE_STATE_ORACLE
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| line.split('\t').next())
+            .collect();
+        assert_eq!(recorded, replayed);
+        for scenario in replayed {
+            let _ = oracle(scenario);
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn permanent_selecting_masks_match_the_c_oracle() {
+        let mut fixture = ValidationFixture::new();
+        for (scenario, bits) in [
+            ("permanent_only", VALIDATE_PERMANENT),
+            ("save_state_only", VALIDATE_SAVE_STATE),
+            (
+                "combined_permanent_volatile",
+                VALIDATE_PERMANENT | VALIDATE_VOLATILE,
+            ),
+        ] {
+            fixture.restart();
+            fixture.with_backend();
+            *BACKEND_PERMALL.lock().unwrap() = Some(fixture.permall());
+            *BACKEND_VOLATILESTATE.lock().unwrap() = Some(fixture.volatilestate());
+            fixture.forget_events();
+            let result = fixture.validate(bits);
+            fixture.assert_oracle(scenario, result);
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn volatile_only_validation_matches_the_c_oracle() {
+        let mut fixture = ValidationFixture::new();
+        let permall = fixture.permall();
+        let volatilestate = fixture.volatilestate();
+
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall.clone());
+        fixture.accept(StateBlobKind::Volatile, volatilestate.clone());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("cached_volatile_no_backend_permall", result);
+
+        fixture.restart();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall.clone());
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(volatilestate.clone());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("backend_volatile_no_backend_permall", result);
+
+        fixture.restart();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall.clone());
+        *BACKEND_VOLATILESTATE.lock().unwrap() =
+            Some(volatilestate[..volatilestate.len() / 2].to_vec());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("backend_truncated_volatile_no_backend_permall", result);
+
+        let mut bad_digest = volatilestate.clone();
+        let last = bad_digest.len() - 1;
+        bad_digest[last] ^= 0xff;
+        fixture.restart();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall.clone());
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(bad_digest);
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("backend_bad_digest_volatile_no_backend_permall", result);
+
+        fixture.restart();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall.clone());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("no_volatile_anywhere", result);
+
+        fixture.restart();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall.clone());
+        assert_eq!(
+            fixture
+                .library
+                .set_state(StateBlobKind::Volatile, StateInput::Empty),
+            TPM_SUCCESS
+        );
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(volatilestate.clone());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("empty_cached_volatile", result);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_volatile_only_mask_never_consults_the_permanent_backend() {
+        let mut fixture = ValidationFixture::new();
+        let permall = fixture.permall();
+        let volatilestate = fixture.volatilestate();
+
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall.clone());
+        fixture.accept(StateBlobKind::Volatile, volatilestate.clone());
+        assert_eq!(
+            fixture
+                .library
+                .set_state(StateBlobKind::Permanent, StateInput::Empty),
+            TPM_SUCCESS
+        );
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("installed_then_empty_cached_permanent", result);
+
+        fixture.restart();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, permall);
+        fixture.accept(StateBlobKind::Volatile, volatilestate.clone());
+        *BACKEND_PERMALL.lock().unwrap() = Some(vec![1, 2, 3]);
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("changed_backend_permall", result);
+
+        fixture.restart();
+        fixture.with_backend();
+        assert_eq!(
+            fixture
+                .library
+                .set_state(StateBlobKind::Permanent, StateInput::Empty),
+            TPM_SUCCESS
+        );
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(volatilestate);
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("empty_cached_permanent_nothing_installed", result);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_volatile_blob_without_any_installed_permanent_state_matches_the_c_oracle() {
+        let mut fixture = ValidationFixture::new();
+        for (scenario, blob) in fixture.malformed_volatile_matrix() {
+            fixture.restart();
+            fixture.with_backend();
+            *BACKEND_VOLATILESTATE.lock().unwrap() = Some(blob);
+            fixture.forget_events();
+            let result = fixture.validate(VALIDATE_VOLATILE);
+            fixture.assert_oracle(&format!("nothing_installed_{scenario}"), result);
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_volatile_blob_against_installed_permanent_state_matches_the_c_oracle() {
+        let mut fixture = ValidationFixture::new();
+        let permall = fixture.permall();
+        const INSTALLED: [&str; 3] = [
+            "bad_trailing_magic_volatile",
+            "seed_mismatch_volatile",
+            "bad_header_magic_volatile",
+        ];
+        for (scenario, blob) in fixture.malformed_volatile_matrix() {
+            if !INSTALLED.contains(&scenario) {
+                continue;
+            }
+            fixture.restart();
+            fixture.with_backend();
+            fixture.accept(StateBlobKind::Permanent, permall.clone());
+            *BACKEND_VOLATILESTATE.lock().unwrap() = Some(blob);
+            fixture.forget_events();
+            let result = fixture.validate(VALIDATE_VOLATILE);
+            fixture.assert_oracle(&format!("installed_{scenario}"), result);
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_permanent_validation_installs_the_state_it_decoded() {
+        let mut fixture = ValidationFixture::new();
+        let permall = fixture.permall();
+        let volatilestate = fixture.volatilestate();
+
+        for (scenario, bits) in [
+            ("permanent_then_volatile_only", VALIDATE_PERMANENT),
+            ("save_state_then_volatile_only", VALIDATE_SAVE_STATE),
+        ] {
+            let step = if bits == VALIDATE_PERMANENT {
+                "permanent"
+            } else {
+                "save_state"
+            };
+            fixture.restart();
+            fixture.with_backend();
+            *BACKEND_PERMALL.lock().unwrap() = Some(permall.clone());
+            *BACKEND_VOLATILESTATE.lock().unwrap() = Some(volatilestate.clone());
+            fixture.forget_events();
+            let result = fixture.validate(bits);
+            fixture.assert_oracle(&format!("{scenario}.{step}"), result);
+
+            *BACKEND_PERMALL.lock().unwrap() = None;
+            fixture.forget_events();
+            let result = fixture.validate(VALIDATE_VOLATILE);
+            fixture.assert_oracle(&format!("{scenario}.volatile"), result);
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_failed_permanent_validation_installs_nothing() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() = Some(vec![1, 2, 3]);
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(fixture.volatilestate());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_PERMANENT);
+        fixture.assert_oracle("failed_permanent_then_volatile_only.permanent", result);
+        assert!(fixture.library.lock_state().installed_permanent.is_none());
+
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("failed_permanent_then_volatile_only.volatile", result);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_failed_volatile_step_keeps_the_permanent_state_it_installed() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() = Some(fixture.permall());
+        *BACKEND_VOLATILESTATE.lock().unwrap() =
+            Some(crate::library::tpm2::seed_mismatched_volatile_state_fixture());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_PERMANENT | VALIDATE_VOLATILE);
+        fixture.assert_oracle("combined_seed_mismatch_then_volatile_only.combined", result);
+
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(fixture.volatilestate());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("combined_seed_mismatch_then_volatile_only.volatile", result);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_failed_volatile_set_state_installs_the_permanent_state_it_loaded() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() = Some(fixture.permall());
+        fixture.forget_events();
+        let result = fixture.library.set_state(
+            StateBlobKind::Volatile,
+            StateInput::Data(crate::library::tpm2::seed_mismatched_volatile_state_fixture()),
+        );
+        fixture.assert_oracle(
+            "failed_set_state_volatile_then_volatile_only.set_state",
+            result,
+        );
+        assert!(
+            fixture.library.lock_state().installed_permanent.is_some(),
+            "the permanent state the rejected blob was validated against stays installed"
+        );
+
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(fixture.volatilestate());
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle(
+            "failed_set_state_volatile_then_volatile_only.volatile",
+            result,
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn volatile_objects_follow_the_installed_state_format_level() {
+        let mut fixture = ValidationFixture::new();
+        let permall = fixture.permall();
+        let objects = [
+            (
+                "rsa",
+                crate::library::tpm2::rsa_object_volatile_state_fixture(),
+            ),
+            (
+                "ecc",
+                crate::library::tpm2::ecc_object_volatile_state_fixture(),
+            ),
+            (
+                "aes128",
+                crate::library::tpm2::symmetric_object_volatile_state_fixture(128),
+            ),
+            (
+                "aes192",
+                crate::library::tpm2::symmetric_object_volatile_state_fixture(192),
+            ),
+        ];
+        for (kind, blob) in objects {
+            fixture.restart();
+            fixture.with_backend();
+            *BACKEND_VOLATILESTATE.lock().unwrap() = Some(blob.clone());
+            fixture.forget_events();
+            let result = fixture.validate(VALIDATE_VOLATILE);
+            fixture.assert_oracle(&format!("nothing_installed_object_{kind}"), result);
+
+            fixture.restart();
+            fixture.with_backend();
+            fixture.accept(StateBlobKind::Permanent, permall.clone());
+            *BACKEND_VOLATILESTATE.lock().unwrap() = Some(blob);
+            fixture.forget_events();
+            let result = fixture.validate(VALIDATE_VOLATILE);
+            fixture.assert_oracle(&format!("installed_object_{kind}"), result);
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_running_tpm_validates_volatile_state_against_its_own_runtime() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() = Some(fixture.permall());
+        assert_eq!(fixture.library.main_init(), TPM_SUCCESS);
+        let running = fixture
+            .library
+            .volatile_all_store()
+            .expect("a running TPM snapshots its volatile state");
+        *BACKEND_VOLATILESTATE.lock().unwrap() = Some(running);
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        fixture.forget_events();
+        let result = fixture.validate(VALIDATE_VOLATILE);
+        fixture.assert_oracle("running_tpm", result);
+        assert!(fixture.library.lock_state().tpm2_runtime.is_some());
+        fixture.library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn terminate_clears_the_installed_permanent_context() {
+        use crate::library::constants::TPM_RC_VALUE;
+
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, fixture.permall());
+        fixture.accept(StateBlobKind::Volatile, fixture.volatilestate());
+        assert_eq!(fixture.validate(VALIDATE_VOLATILE), TPM_SUCCESS);
+
+        fixture.library.terminate();
+        assert!(fixture.library.lock_state().installed_permanent.is_none());
+        assert_eq!(
+            fixture.validate(VALIDATE_VOLATILE),
+            TPM_RC_VALUE,
+            "the superseded lifecycle takes its permanent context with it"
+        );
+    }
+
+    #[cfg(all(feature = "tpm1", feature = "tpm2"))]
+    #[test]
+    fn a_version_switch_clears_the_installed_permanent_context() {
+        use crate::library::constants::TPM_RC_VALUE;
+
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        fixture.accept(StateBlobKind::Permanent, fixture.permall());
+        let volatilestate = fixture.volatilestate();
+        fixture.accept(StateBlobKind::Volatile, volatilestate.clone());
+        assert_eq!(fixture.validate(VALIDATE_VOLATILE), TPM_SUCCESS);
+
+        assert_eq!(
+            fixture.library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            fixture.library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            TPM_SUCCESS
+        );
+        assert!(fixture.library.lock_state().installed_permanent.is_none());
+        fixture.cache(StateBlobKind::Volatile, volatilestate);
+        assert_eq!(fixture.validate(VALIDATE_VOLATILE), TPM_RC_VALUE);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_cached_malformed_volatile_blob_reports_the_same_code_as_the_backend() {
+        let mut fixture = ValidationFixture::new();
+        let permall = fixture.permall();
+        let volatilestate = fixture.volatilestate();
+        let truncated = volatilestate[..volatilestate.len() / 2].to_vec();
+        let mut bad_digest = volatilestate;
+        let last = bad_digest.len() - 1;
+        bad_digest[last] ^= 0xff;
+
+        for (blob, scenario) in [
+            (truncated, "backend_truncated_volatile_no_backend_permall"),
+            (bad_digest, "backend_bad_digest_volatile_no_backend_permall"),
+        ] {
+            fixture.restart();
+            fixture.with_backend();
+            fixture.accept(StateBlobKind::Permanent, permall.clone());
+            fixture.cache(StateBlobKind::Volatile, blob);
+            fixture.forget_events();
+            let result = fixture.validate(VALIDATE_VOLATILE);
+            let (expected, _) = oracle(scenario);
+            assert_eq!(
+                result, expected,
+                "{scenario}: upstream VolatileLoad decodes cached and backend \
+                 blobs through the same VolatileState_Load"
+            );
+            assert!(
+                fixture.events() == ["init".to_owned()],
+                "a cached blob reaches no backend at all"
+            );
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn validation_alongside_a_running_tpm_reports_the_blob_it_was_given() {
+        let fixture = ValidationFixture::new();
+        fixture.with_backend();
+        *BACKEND_PERMALL.lock().unwrap() =
+            Some(crate::library::tpm2::valid_permanent_state_fixture());
+        assert_eq!(fixture.library.main_init(), TPM_SUCCESS);
+        let locality = fixture.library.tpm2_runtime_locality();
+
+        assert_eq!(fixture.validate(VALIDATE_PERMANENT), TPM_SUCCESS);
+        *BACKEND_PERMALL.lock().unwrap() = Some(vec![1, 2, 3]);
+        assert_eq!(
+            fixture.validate(VALIDATE_PERMANENT),
+            crate::library::constants::TPM_RC_INSUFFICIENT
+        );
+
+        assert!(
+            fixture.library.lock_state().tpm2_runtime.is_some(),
+            "the running TPM is untouched by either validation"
+        );
+        assert_eq!(fixture.library.tpm2_runtime_locality(), locality);
+        fixture.library.terminate();
+    }
+
     #[cfg(feature = "tpm2")]
     mod gate {
         use std::sync::{Condvar, Mutex, PoisonError};
@@ -2722,6 +3954,93 @@ mod tests {
                 .preloaded_state
                 .get(StateBlobKind::Volatile),
             PreloadedBlob::Missing
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn validate_state_while(library: &Library, interfere: impl FnOnce(&Library)) -> TpmResult {
+        let result = std::thread::scope(|scope| {
+            let validation =
+                scope.spawn(|| library.validate_state(validation_mask(VALIDATE_PERMANENT)));
+            let release = gate::Release;
+            assert!(
+                gate::wait_until_parked(),
+                "timed out waiting for the validation thread to reach the gate"
+            );
+            interfere(library);
+            drop(release);
+            validation
+                .join()
+                .expect("the validation thread never panics")
+        });
+        assert!(!gate::timed_out(), "the gated callback timed out");
+        result
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn an_undisturbed_gated_validation_reports_its_own_result() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        library
+            .lock_state()
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, vec![1, 2, 3]);
+        assert_eq!(validate_state_while(&library, |_| {}), TPM_SUCCESS);
+        let state = library.lock_state();
+        assert!(state.tpm2_runtime.is_none());
+        assert_eq!(
+            *state.preloaded_state.get(StateBlobKind::Volatile),
+            PreloadedBlob::Data(vec![1, 2, 3])
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_concurrent_main_init_supersedes_a_validation_in_flight() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        let result = validate_state_while(&library, |library| {
+            assert_eq!(library.main_init(), TPM_SUCCESS);
+        });
+        assert_eq!(
+            result, TPM_INVALID_POSTINIT,
+            "a result computed for a superseded lifecycle is never reported as current"
+        );
+        assert!(
+            library.lock_state().tpm2_runtime.is_some(),
+            "the runtime the concurrent MainInit published survives"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_concurrent_terminate_supersedes_a_validation_in_flight() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        assert_eq!(
+            validate_state_while(&library, Library::terminate),
+            TPM_INVALID_POSTINIT
+        );
+        assert!(library.lock_state().tpm2_runtime.is_none());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_concurrent_version_switch_supersedes_a_validation_in_flight() {
+        let _serial = gate::SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        gate::reset();
+        let library = gated_library();
+        let result = validate_state_while(&library, |library| {
+            library.lock_state().selected = TpmVersion::V1_2;
+        });
+        assert_eq!(
+            result, TPM_FAIL,
+            "a TPM2 validation is never reported against a TPM 1.2 selection"
         );
     }
 

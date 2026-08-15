@@ -18,7 +18,7 @@ pub use constants::{TPM_BUFFER_MAX, TPM_FAIL, TPM_SIZE, TPM_SUCCESS};
 pub use library_state::BufferSizeLimits;
 use library_state::Library;
 pub(crate) use library_state::ProcessPreparation;
-pub use state_blob::{StateBlobKind, StateInput, StateOutput};
+pub use state_blob::{StateBlobKind, StateInput, StateOutput, StateValidationMask};
 
 pub fn get_version() -> u32 {
     crate::version::TPM_LIBRARY_VERSION
@@ -72,6 +72,10 @@ pub fn was_manufactured() -> bool {
 
 pub fn volatile_all_store() -> Result<Vec<u8>, TpmResult> {
     Library::global().volatile_all_store()
+}
+
+pub fn validate_state(mask: StateValidationMask) -> TpmResult {
+    Library::global().validate_state(mask)
 }
 
 pub fn set_state(kind: StateBlobKind, input: StateInput) -> TpmResult {
