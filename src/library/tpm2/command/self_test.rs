@@ -46,6 +46,7 @@ mod tests {
     use super::super::registry::TPM_CC_SELF_TEST;
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::CancelSignal;
     use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INITIALIZE};
     use crate::library::tpm2::runtime::{Tpm2Runtime, empty_state_runtime};
     use crate::library::tpm2::self_test::{PrimitiveTest, always_fails, fails_on_sha384};
@@ -115,6 +116,36 @@ mod tests {
             power_on: runtime.power_on,
             nv_available: runtime.nv_available,
         }
+    }
+
+    #[test]
+    fn a_raised_pin_never_cancels_a_self_test() {
+        for command in [FULL_TEST_COMMAND, PARTIAL_TEST_COMMAND] {
+            let mut runtime = started_runtime();
+            runtime.cancel = CancelSignal::signaled();
+            let snapshot_before = snapshot(&runtime);
+            assert_eq!(
+                run(&mut runtime, &command),
+                SUCCESS_RESPONSE,
+                "TPM2_SelfTest runs against g_toTest and is never cancelable"
+            );
+            assert!(runtime.self_test.pending.is_empty());
+            assert!(!runtime.failure_mode);
+            assert_eq!(snapshot(&runtime), snapshot_before);
+            assert!(
+                runtime.cancel.is_signaled(),
+                "the command neither consults nor clears the pin"
+            );
+        }
+    }
+
+    #[test]
+    fn a_raised_pin_leaves_a_failing_self_test_unchanged() {
+        let mut runtime = started_runtime();
+        runtime.cancel = CancelSignal::signaled();
+        runtime.self_test.set_runner(always_fails);
+        assert_eq!(run_code(&mut runtime, &FULL_TEST_COMMAND), TPM_RC_FAILURE);
+        assert!(runtime.failure_mode);
     }
 
     #[test]

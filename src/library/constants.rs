@@ -71,6 +71,11 @@ pub(in crate::library) const TPM_RC_AUTH_CONTEXT: TpmResult = 0x145;
 pub(in crate::library) const TPM_RC_NO_RESULT: TpmResult = 0x154;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_LOCALITY: TpmResult = 0x907;
+// TODO: Returned by the upstream cancellation checkpoints (AlgorithmTests.c
+// CHECK_CANCELED, CryptEccCommitCompute, RSA key generation). No command
+// implemented so far reaches one.
+#[allow(dead_code)]
+pub(in crate::library) const TPM_RC_CANCELED: TpmResult = 0x909;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_REFERENCE_S0: TpmResult = 0x918;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]

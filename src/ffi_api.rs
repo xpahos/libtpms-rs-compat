@@ -173,7 +173,7 @@ unsafe fn return_blob(
 }
 
 pub(crate) fn cancel_command() -> TpmResult {
-    todo!("TPMLIB_CancelCommand is not implemented")
+    library::cancel_command()
 }
 
 pub(crate) unsafe fn get_tpm_property(prop: TpmlibTpmProperty, result: *mut c_int) -> TpmResult {
@@ -610,6 +610,83 @@ mod tests {
     fn volatile_all_store_abi_signature_is_exact() {
         let _: unsafe extern "C" fn(*mut *mut c_uchar, *mut u32) -> TpmResult =
             crate::tpm_library_abi::TPMLIB_VolatileAll_Store;
+    }
+
+    #[test]
+    fn cancel_command_abi_signature_is_exact() {
+        let _: unsafe extern "C" fn() -> TpmResult = crate::tpm_library_abi::TPMLIB_CancelCommand;
+    }
+
+    #[cfg(feature = "tpm2")]
+    static GLOBAL_LIBRARY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    #[test]
+    fn the_exported_cancel_command_covers_the_whole_dispatch_matrix() {
+        const TPMLIB_TPM_VERSION_1_2: crate::ffi_types::TpmlibTpmVersion = 0;
+        const TPMLIB_TPM_VERSION_2: crate::ffi_types::TpmlibTpmVersion = 1;
+
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // SAFETY: the exported wrapper takes no arguments; every call below
+        // goes through it so the test exercises the real C entry point.
+        let cancel = || unsafe { crate::tpm_library_abi::TPMLIB_CancelCommand() };
+
+        terminate();
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_1_2), TPM_SUCCESS);
+        assert_eq!(cancel(), TPM_FAIL, "TPM 1.2 has no cancel support");
+
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
+        assert_eq!(cancel(), TPM_SUCCESS, "before MainInit");
+
+        crate::library::stage_empty_permanent_state_for_tests();
+        assert_eq!(main_init(), TPM_SUCCESS);
+        assert_eq!(cancel(), TPM_SUCCESS, "while TPM 2.0 is running");
+        assert_eq!(cancel(), TPM_SUCCESS, "repeated requests stay successful");
+
+        terminate();
+        assert_eq!(cancel(), TPM_SUCCESS, "after Terminate");
+        assert_eq!(
+            cancel(),
+            cancel_command(),
+            "the adapter adds nothing to the library dispatch"
+        );
+
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_1_2), TPM_SUCCESS);
+        assert_eq!(cancel(), TPM_FAIL);
+    }
+
+    #[cfg(not(feature = "tpm2"))]
+    #[test]
+    fn the_exported_cancel_command_fails_without_tpm2_support() {
+        assert_eq!(
+            cancel_command(),
+            TPM_FAIL,
+            "no build without tpm2 can select an implementation that cancels"
+        );
+        // SAFETY: the exported wrapper takes no arguments.
+        assert_eq!(
+            unsafe { crate::tpm_library_abi::TPMLIB_CancelCommand() },
+            TPM_FAIL
+        );
+    }
+
+    #[test]
+    fn the_exported_cancel_command_returns_instead_of_panicking() {
+        for round in 0..4 {
+            let code = std::panic::catch_unwind(|| {
+                // SAFETY: the exported wrapper takes no arguments and guards
+                // every unwind before it can cross the C ABI.
+                unsafe { crate::tpm_library_abi::TPMLIB_CancelCommand() }
+            })
+            .unwrap_or_else(|_| panic!("TPMLIB_CancelCommand unwound, round {round}"));
+            assert!(
+                code == TPM_SUCCESS || code == TPM_FAIL,
+                "round {round}: {code}"
+            );
+        }
     }
 
     #[test]
@@ -1132,6 +1209,10 @@ mod tests {
     fn process_end_to_end_follows_the_c_buffer_and_response_contract() {
         const TPMLIB_TPM_VERSION_2: crate::ffi_types::TpmlibTpmVersion = 1;
         const TPM_BUFFER_MAX: u32 = RESPONSE_BUFFER_SIZE as u32;
+
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut outputs = ProcessOutputs::new();
         assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_FAIL);

@@ -69,6 +69,7 @@ mod tests {
     use super::super::registry::TPM_CC_INCREMENTAL_SELF_TEST;
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::CancelSignal;
     use crate::library::constants::TPM_RC_INITIALIZE;
     use crate::library::tpm2::algorithm::{
         TPM_ALG_AES, TPM_ALG_ECC, TPM_ALG_ERROR, TPM_ALG_RSA, TPM_ALG_SHA1, TPM_ALG_SHA256,
@@ -201,6 +202,93 @@ mod tests {
             power_on: runtime.power_on,
             nv_available: runtime.nv_available,
         }
+    }
+
+    #[track_caller]
+    fn stays_uncancelable(algorithm: u16, primitive: PrimitiveTest) {
+        let mut runtime = recording_runtime();
+        runtime.cancel = CancelSignal::signaled();
+        let snapshot_before = snapshot(&runtime);
+
+        let response = run(&mut runtime, &framed(0x8001, &to_test(&[algorithm])));
+        assert_eq!(
+            &response[6..10],
+            &[0x00, 0x00, 0x00, 0x00],
+            "no Rust primitive reaches an upstream cancellation checkpoint: {response:02x?}"
+        );
+        assert_eq!(executed(), [primitive], "the selected primitive still ran");
+        assert!(!runtime.failure_mode);
+        assert!(runtime.self_test.failure.is_none());
+        assert!(!runtime.self_test.pending.contains(primitive));
+        assert_eq!(
+            snapshot(&runtime),
+            snapshot_before,
+            "no NVRAM write is scheduled"
+        );
+        assert!(
+            runtime.cancel.is_signaled(),
+            "dispatch neither consults nor clears the pin"
+        );
+    }
+
+    #[test]
+    fn a_raised_pin_does_not_cancel_an_incremental_sha1_test() {
+        stays_uncancelable(TPM_ALG_SHA1, PrimitiveTest::Sha1);
+    }
+
+    #[test]
+    fn a_raised_pin_does_not_cancel_an_incremental_sha256_test() {
+        stays_uncancelable(TPM_ALG_SHA256, PrimitiveTest::Sha256);
+    }
+
+    #[test]
+    fn a_raised_pin_does_not_cancel_an_incremental_aes_test() {
+        stays_uncancelable(TPM_ALG_AES, PrimitiveTest::Aes256);
+    }
+
+    #[test]
+    fn a_raised_pin_does_not_cancel_an_incremental_sha384_or_sha512_test() {
+        stays_uncancelable(TPM_ALG_SHA384, PrimitiveTest::Sha384);
+        stays_uncancelable(TPM_ALG_SHA512, PrimitiveTest::Sha512);
+    }
+
+    #[test]
+    fn a_raised_pin_leaves_a_whole_incremental_list_running_to_completion() {
+        let mut runtime = recording_runtime();
+        runtime.cancel = CancelSignal::signaled();
+        assert_eq!(
+            to_do_list(&mut runtime, &[TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_AES]),
+            [TPM_ALG_SHA384, TPM_ALG_SHA512]
+        );
+        assert_eq!(RUN_COUNT.with(Cell::get), 3, "every selected test ran");
+        assert!(!runtime.failure_mode);
+    }
+
+    #[test]
+    fn a_raised_pin_does_not_change_a_rejected_list_or_a_failing_test() {
+        let mut runtime = recording_runtime();
+        runtime.cancel = CancelSignal::signaled();
+        assert_eq!(
+            run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_ERROR]))),
+            VALUE_PARAMETER_1
+        );
+        assert!(!runtime.failure_mode);
+
+        let mut runtime = started_runtime();
+        runtime.cancel = CancelSignal::signaled();
+        runtime.self_test.set_runner(always_fails);
+        assert_eq!(
+            run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_SHA256]))),
+            FAILURE,
+            "a genuine self-test failure is unaffected by the pin"
+        );
+        assert!(runtime.failure_mode);
+        assert_eq!(
+            runtime.self_test.failure,
+            Some(SelfTestFailure {
+                primitive: PrimitiveTest::Sha256
+            })
+        );
     }
 
     #[test]

@@ -53,6 +53,9 @@ VOLATILE_FIXTURE_GENERATOR := scripts/generate_volatile_state_fixture.py
 HASH_FIXTURE_GENERATOR := scripts/generate_hash_ticket_fixture.py
 TICKET_SOURCE          := libtpms/src/tpm2/Ticket.c
 
+CANCEL_FIXTURE_GENERATOR := scripts/generate_cancel_checkpoints_fixture.py
+ALGORITHM_TESTS_SOURCE   := libtpms/src/tpm2/AlgorithmTests.c
+
 # ---------------------------------------------------------------------------
 # Cargo target directory / profile selection
 # ---------------------------------------------------------------------------
@@ -92,7 +95,7 @@ SWTPM_CONFIGURE_STAMP := $(SWTPM_TARGET_DIR)/.configured
 
 JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
-.PHONY: all build build-release generate-abi check-generated-inputs check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture test-abi cargo-check check clean \
+.PHONY: all build build-release generate-abi check-generated-inputs check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture test-abi cargo-check check clean \
 	prepare-swtpm build-swtpm test-swtpm clean-swtpm verify-swtpm-linkage
 
 all: check
@@ -123,7 +126,7 @@ generate-abi:
 		--header $(TIS_HEADER) \
 		--output $(TIS_ABI_OUTPUT)
 
-check-generated-inputs: check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture
+check-generated-inputs: check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture
 
 # Verify that the committed generated file is current: regenerate into a
 # temporary directory and diff against $(ABI_OUTPUT).
@@ -222,13 +225,24 @@ check-hash-fixture:
 	}
 	$(PYTHON) $(HASH_FIXTURE_GENERATOR) --check --quiet
 
+# Verify that the checked-in cancellation-checkpoint fixture still matches
+# the vendored sources: the generator rescans the vendored TPM 2 tree for
+# every place the platform cancel flag is polled, resolves the enclosing
+# function, and compares the result against the committed fixture.
+check-cancel-fixture:
+	@test -f $(ALGORITHM_TESTS_SOURCE) || { \
+		echo "error: $(ALGORITHM_TESTS_SOURCE) not found; run 'git submodule update --init libtpms'" >&2; \
+		exit 1; \
+	}
+	$(PYTHON) $(CANCEL_FIXTURE_GENERATOR) --check
+
 test-abi:
 	$(PYTHON) -m unittest discover -s scripts/tests
 
 cargo-check:
 	$(CARGO) check
 
-check: test-abi check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture cargo-check
+check: test-abi check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture cargo-check
 
 clean:
 	$(CARGO) clean

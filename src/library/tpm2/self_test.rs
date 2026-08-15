@@ -309,6 +309,11 @@ impl SelfTestState {
         self.runner = runner;
     }
 
+    #[cfg(test)]
+    pub(in crate::library) fn park_on_gate(&mut self) {
+        self.runner = parks_on_the_gate_once;
+    }
+
     pub(in crate::library::tpm2) fn run(&mut self, full_test: bool) -> Result<(), TpmResult> {
         if full_test {
             self.pending = self.implemented;
@@ -399,6 +404,90 @@ impl core::fmt::Debug for SelfTestState {
             .field("failure", &self.failure)
             .finish_non_exhaustive()
     }
+}
+
+#[cfg(test)]
+pub(in crate::library) struct SelfTestGate {
+    entered: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::SyncSender<()>,
+}
+
+#[cfg(test)]
+const GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(test)]
+static GATE_ENTERED: std::sync::Mutex<Option<std::sync::mpsc::SyncSender<()>>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+static GATE_RELEASE: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(in crate::library) fn arm_self_test_gate() -> SelfTestGate {
+    use std::sync::PoisonError;
+    use std::sync::mpsc::sync_channel;
+
+    let (entered_tx, entered_rx) = sync_channel(1);
+    let (release_tx, release_rx) = sync_channel(1);
+    *GATE_ENTERED.lock().unwrap_or_else(PoisonError::into_inner) = Some(entered_tx);
+    *GATE_RELEASE.lock().unwrap_or_else(PoisonError::into_inner) = Some(release_rx);
+    SelfTestGate {
+        entered: entered_rx,
+        release: release_tx,
+    }
+}
+
+#[cfg(test)]
+impl SelfTestGate {
+    pub(in crate::library) fn wait_until_entered(&self) {
+        self.entered
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("the command reached the gated self-test primitive");
+    }
+
+    pub(in crate::library) fn release(&self) {
+        self.release
+            .send(())
+            .expect("the command is parked on the gate");
+    }
+}
+
+#[cfg(test)]
+impl Drop for SelfTestGate {
+    fn drop(&mut self) {
+        use std::sync::PoisonError;
+        GATE_ENTERED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        GATE_RELEASE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+}
+
+#[cfg(test)]
+fn parks_on_the_gate_once(_test: PrimitiveTest) -> bool {
+    use std::sync::PoisonError;
+
+    let entered = GATE_ENTERED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let Some(entered) = entered else {
+        return true;
+    };
+    entered.send(()).expect("the test thread is waiting");
+    let release = GATE_RELEASE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .expect("the gate was armed with both ends");
+    release
+        .recv_timeout(GATE_TIMEOUT)
+        .expect("the test thread released the parked command");
+    true
 }
 
 #[cfg(test)]
@@ -1116,6 +1205,133 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             Err(SelectedTestError::UnsupportedAlgorithm(TPM_ALG_SHA512))
         );
         assert_eq!(restarted.run_selected(&[TPM_ALG_SHA256]), Ok(()));
+    }
+
+    const CANCEL_CHECKPOINTS: &str = include_str!("testdata/cancel_checkpoints.txt");
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct Checkpoint<'a> {
+        file: &'a str,
+        line: u32,
+        function: &'a str,
+        form: &'a str,
+    }
+
+    fn vendored_checkpoints() -> Vec<Checkpoint<'static>> {
+        CANCEL_CHECKPOINTS
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+            .map(|line| {
+                let mut fields = line.split('\t');
+                let mut next = |what: &str| {
+                    fields
+                        .next()
+                        .unwrap_or_else(|| panic!("every record carries a {what}"))
+                };
+                let checkpoint = Checkpoint {
+                    file: next("file"),
+                    line: next("line").parse().expect("a decimal line number"),
+                    function: next("function"),
+                    form: next("form"),
+                };
+                assert_eq!(fields.next(), None, "records have exactly four fields");
+                checkpoint
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_vendored_cancellation_checkpoints_are_all_in_unimplemented_paths() {
+        let checkpoints = vendored_checkpoints();
+        assert_eq!(
+            checkpoints,
+            vec![
+                Checkpoint {
+                    file: "libtpms/src/tpm2/AlgorithmTests.c",
+                    line: 107,
+                    function: "<macro>",
+                    form: "CHECK_CANCELED: _plat__IsCanceled() && toTest != &g_toTest",
+                },
+                Checkpoint {
+                    file: "libtpms/src/tpm2/AlgorithmTests.c",
+                    line: 733,
+                    function: "TestEccSignAndVerify",
+                    form: "CHECK_CANCELED",
+                },
+                Checkpoint {
+                    file: "libtpms/src/tpm2/AlgorithmTests.c",
+                    line: 741,
+                    function: "TestEccSignAndVerify",
+                    form: "CHECK_CANCELED",
+                },
+                Checkpoint {
+                    file: "libtpms/src/tpm2/AlgorithmTests.c",
+                    line: 748,
+                    function: "TestEccSignAndVerify",
+                    form: "CHECK_CANCELED",
+                },
+                Checkpoint {
+                    file: "libtpms/src/tpm2/crypto/openssl/CryptEccSignature.c",
+                    line: 305,
+                    function: "CryptEccCommitCompute",
+                    form: "_plat__IsCanceled",
+                },
+                Checkpoint {
+                    file: "libtpms/src/tpm2/crypto/openssl/CryptEccSignature.c",
+                    line: 325,
+                    function: "CryptEccCommitCompute",
+                    form: "_plat__IsCanceled",
+                },
+                Checkpoint {
+                    file: "libtpms/src/tpm2/crypto/openssl/CryptRsa.c",
+                    line: 1490,
+                    function: "CryptRsaGenerateKey",
+                    form: "_plat__IsCanceled",
+                },
+            ],
+            "the vendored cancellation checkpoints moved; \
+             rerun scripts/generate_cancel_checkpoints_fixture.py and \
+             re-derive which Rust operations are cancelable"
+        );
+    }
+
+    #[test]
+    fn no_vendored_checkpoint_sits_in_a_path_this_port_implements() {
+        const IMPLEMENTED_UPSTREAM_PATHS: [&str; 8] = [
+            "CryptSelfTest",
+            "CryptIncrementalSelfTest",
+            "CryptRunSelfTests",
+            "CryptTestAlgorithm",
+            "TestAlgorithm",
+            "TestHash",
+            "TestSymmetricAlgorithm",
+            "TestKDFa",
+        ];
+
+        for checkpoint in vendored_checkpoints() {
+            assert!(
+                !IMPLEMENTED_UPSTREAM_PATHS.contains(&checkpoint.function),
+                "{}:{} polls the cancel flag from {}, which this port implements",
+                checkpoint.file,
+                checkpoint.line,
+                checkpoint.function
+            );
+        }
+    }
+
+    #[test]
+    fn the_only_self_test_checkpoint_is_gated_on_a_caller_supplied_list() {
+        let macros: Vec<_> = vendored_checkpoints()
+            .into_iter()
+            .filter(|checkpoint| checkpoint.function == "<macro>")
+            .map(|checkpoint| checkpoint.form.to_owned())
+            .collect();
+        assert_eq!(
+            macros,
+            ["CHECK_CANCELED: _plat__IsCanceled() && toTest != &g_toTest"],
+            "TPM2_SelfTest passes &g_toTest, so the self-test checkpoint is \
+             inert for it whatever the flag says"
+        );
     }
 
     #[test]

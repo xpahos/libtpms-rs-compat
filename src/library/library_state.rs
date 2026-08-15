@@ -1,10 +1,11 @@
 use core::ffi::c_int;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use crate::ffi_types::{
     LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion,
 };
 
+use super::cancel::CancelGate;
 #[cfg(feature = "tpm2")]
 use super::constants::TPM_BAD_TYPE;
 use super::constants::{
@@ -125,6 +126,7 @@ impl LibraryState {
 
 pub struct Library {
     state: Mutex<LibraryState>,
+    cancel: CancelGate,
 }
 
 struct InitializingGuard<'a> {
@@ -144,9 +146,10 @@ impl Drop for InitializingGuard<'_> {
 }
 
 impl Library {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(LibraryState::new()),
+            cancel: CancelGate::new(),
         }
     }
 
@@ -159,7 +162,19 @@ impl Library {
     }
 
     pub fn choose_tpm_version(&self, version: TpmlibTpmVersion) -> TpmResult {
-        self.lock_state().choose_tpm_version(version)
+        let mut state = self.lock_state();
+        let result = state.choose_tpm_version(version);
+        self.cancel
+            .set_cancelable(state.selected == TpmVersion::V2_0);
+        result
+    }
+
+    pub fn cancel_command(&self) -> TpmResult {
+        if self.cancel.request() {
+            TPM_SUCCESS
+        } else {
+            TPM_FAIL
+        }
     }
 
     pub fn main_init(&self) -> TpmResult {
@@ -205,11 +220,13 @@ impl Library {
                             state.preloaded_state.take(StateBlobKind::Permanent);
                             state.preloaded_state.take(StateBlobKind::Volatile);
                             runtime.buffer_size = state.tpm2_buffer_size;
+                            runtime.cancel = self.cancel.power_on();
                             state.tpm2_runtime = Some(runtime);
                             TPM_SUCCESS
                         }
                         Err(code) => {
                             state.tpm2_runtime = None;
+                            self.cancel.power_off();
                             code
                         }
                     }
@@ -257,11 +274,44 @@ impl Library {
         self.lock_state().preloaded_state.set_empty(kind);
     }
 
+    #[cfg(test)]
+    pub(in crate::library) fn cancel_is_signaled(&self) -> bool {
+        self.cancel.is_signaled()
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn arm_cancel_request_park(&self) -> super::cancel::RequestPark {
+        self.cancel.arm_request_park()
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn park_self_test_on_gate(&self) {
+        let mut state = self.lock_state();
+        let runtime = state
+            .tpm2_runtime
+            .as_deref_mut()
+            .expect("a live TPM 2.0 runtime");
+        tpm2::park_self_test_on_gate(runtime);
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn pending_self_test_algorithms(&self) -> Vec<u16> {
+        let state = self.lock_state();
+        let runtime = state
+            .tpm2_runtime
+            .as_deref()
+            .expect("a live TPM 2.0 runtime");
+        tpm2::pending_self_test_algorithms(runtime)
+    }
+
     pub fn terminate(&self) {
         let selected = self.lock_state().selected;
         match selected {
             #[cfg(feature = "tpm2")]
-            TpmVersion::V2_0 => tpm2::terminate(),
+            TpmVersion::V2_0 => {
+                tpm2::terminate();
+                self.cancel.power_off();
+            }
             _ => {}
         }
         let mut state = self.lock_state();
@@ -668,7 +718,13 @@ fn host_locality(callbacks: &LibtpmsCallbacks) -> u8 {
     host_locality_raw(callbacks) as u8
 }
 
-static LIBRARY: Library = Library::new();
+impl Default for Library {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static LIBRARY: LazyLock<Library> = LazyLock::new(Library::new);
 
 #[cfg(test)]
 mod tests {
@@ -676,6 +732,8 @@ mod tests {
     #[cfg(feature = "tpm2")]
     use crate::library::preloaded_state::PreloadedBlob;
     use crate::library::state_blob::StateBlobKind;
+    #[cfg(feature = "tpm2")]
+    use std::sync::Arc;
 
     #[test]
     fn unknown_version_fails() {
@@ -4268,5 +4326,411 @@ mod tests {
             "restoring the same blob still reaches the failure boundary"
         );
         assert!(library.lock_state().tpm2_runtime.is_none());
+    }
+
+    #[test]
+    fn cancel_command_without_a_tpm2_selection_fails() {
+        let library = Library::new();
+        assert_eq!(
+            library.cancel_command(),
+            TPM_FAIL,
+            "TPM 1.2 and the disabled interface answer TPM_FAIL"
+        );
+        assert!(!library.cancel_is_signaled());
+    }
+
+    #[cfg(feature = "tpm1")]
+    #[test]
+    fn cancel_command_after_selecting_tpm1_fails() {
+        let library = Library::new();
+        assert_eq!(
+            library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+            TPM_SUCCESS
+        );
+        assert_eq!(library.cancel_command(), TPM_FAIL);
+        assert!(!library.cancel_is_signaled());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn cancel_command_before_main_init_succeeds_without_raising_the_pin() {
+        let library = tpm2_library();
+        assert_eq!(
+            library.cancel_command(),
+            TPM_SUCCESS,
+            "upstream returns success even with no command in flight"
+        );
+        assert!(
+            !library.cancel_is_signaled(),
+            "_rpc__Signal_CancelOn only sets the flag once power is on"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn selecting_tpm2_after_another_version_starts_answering_cancel() {
+        let library = Library::new();
+        assert_eq!(library.cancel_command(), TPM_FAIL);
+        assert_eq!(
+            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            TPM_SUCCESS
+        );
+        assert_eq!(library.cancel_command(), TPM_SUCCESS);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn cancel_command_is_idempotent_across_the_whole_lifecycle() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_STORES.lock().unwrap() = 0;
+        let library = manufacture_library();
+
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert!(!library.cancel_is_signaled(), "power-on clears the pin");
+        for round in 0..4 {
+            assert_eq!(library.cancel_command(), TPM_SUCCESS, "round {round}");
+            assert!(library.cancel_is_signaled(), "round {round}");
+        }
+
+        library.terminate();
+        assert!(
+            library.cancel_is_signaled(),
+            "_rpc__Signal_PowerOff leaves s_isCanceled alone"
+        );
+        for round in 0..4 {
+            assert_eq!(
+                library.cancel_command(),
+                TPM_SUCCESS,
+                "still dispatched to TPM 2.0, round {round}"
+            );
+        }
+
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert!(
+            !library.cancel_is_signaled(),
+            "a request from the previous lifecycle cannot reach the new one"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn cancel_command_does_not_wait_for_the_library_mutex() {
+        let library = tpm2_library();
+        let held = library.lock_state();
+        assert_eq!(
+            library.cancel_command(),
+            TPM_SUCCESS,
+            "the call completes while the command mutex is held elsewhere"
+        );
+        drop(held);
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn startup_clear() -> crate::library::CommandInput {
+        crate::library::CommandInput::new(
+            12,
+            vec![
+                0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
+            ],
+        )
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn incremental_self_test(algorithms: &[u16]) -> crate::library::CommandInput {
+        let mut bytes = vec![0x80, 0x01];
+        let size = 14 + 2 * algorithms.len() as u32;
+        bytes.extend_from_slice(&size.to_be_bytes());
+        bytes.extend_from_slice(&0x0000_0142u32.to_be_bytes());
+        bytes.extend_from_slice(&(algorithms.len() as u32).to_be_bytes());
+        for &algorithm in algorithms {
+            bytes.extend_from_slice(&algorithm.to_be_bytes());
+        }
+        crate::library::CommandInput::new(size, bytes)
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[track_caller]
+    fn execute(library: &Library, command: &crate::library::CommandInput) -> Vec<u8> {
+        let ProcessPreparation::Tpm2(context) = library.prepare_process() else {
+            panic!("TPM 2 must be selected");
+        };
+        context.execute(command).expect("the response fits")
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[track_caller]
+    fn response_code(response: &[u8]) -> u32 {
+        u32::from_be_bytes(response[6..10].try_into().expect("a complete header"))
+    }
+
+    #[cfg(feature = "tpm2")]
+    const TPM_ALG_SHA1: u16 = 0x0004;
+    #[cfg(feature = "tpm2")]
+    const TPM_ALG_SHA256: u16 = 0x000b;
+    #[cfg(feature = "tpm2")]
+    const TPM_ALG_AES: u16 = 0x0006;
+    #[cfg(feature = "tpm2")]
+    const TPM_ALG_SHA384: u16 = 0x000c;
+    #[cfg(feature = "tpm2")]
+    const TPM_ALG_SHA512: u16 = 0x000d;
+
+    #[cfg(feature = "tpm2")]
+    fn started_library() -> Library {
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_STORES.lock().unwrap() = 0;
+        let library = manufacture_library();
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(response_code(&execute(&library, &startup_clear())), 0);
+        library
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_request_raised_before_a_command_starts_never_cancels_it() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let library = started_library();
+
+        assert_eq!(library.cancel_command(), TPM_SUCCESS);
+        assert!(library.cancel_is_signaled());
+        let response = execute(&library, &incremental_self_test(&[TPM_ALG_SHA1]));
+        assert_eq!(response_code(&response), 0, "{response:02x?}");
+        assert!(
+            !library.cancel_is_signaled(),
+            "the command start cleared it"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_request_raised_while_a_command_runs_is_visible_but_cancels_nothing() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let library = Arc::new(started_library());
+
+        let gate = tpm2::arm_self_test_gate();
+        library.park_self_test_on_gate();
+        let worker_library = Arc::clone(&library);
+        let worker = std::thread::spawn(move || {
+            let ProcessPreparation::Tpm2(context) = worker_library.prepare_process() else {
+                panic!("TPM 2 must be selected");
+            };
+            context.execute(&incremental_self_test(&[TPM_ALG_SHA1, TPM_ALG_SHA256]))
+        });
+
+        gate.wait_until_entered();
+        assert!(
+            !library.cancel_is_signaled(),
+            "the command start cleared the pin"
+        );
+        assert_eq!(
+            library.cancel_command(),
+            TPM_SUCCESS,
+            "cancellation does not block on the command's mutex"
+        );
+        assert!(
+            library.cancel_is_signaled(),
+            "the request is published into the running lifecycle"
+        );
+        gate.release();
+
+        let response = worker
+            .join()
+            .expect("the command thread finished")
+            .expect("the response fits");
+        assert_eq!(
+            response_code(&response),
+            0,
+            "no Rust primitive reaches an upstream cancellation checkpoint"
+        );
+        assert_eq!(
+            library.pending_self_test_algorithms(),
+            [TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_SHA512],
+            "both selected primitives ran to completion"
+        );
+        assert!(
+            library.cancel_is_signaled(),
+            "nothing clears the pin at command completion"
+        );
+
+        let response = execute(&library, &incremental_self_test(&[TPM_ALG_SHA384]));
+        assert_eq!(response_code(&response), 0);
+        assert!(
+            !library.cancel_is_signaled(),
+            "the stale request is dropped by the next command start"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_request_delayed_across_terminate_publishes_nothing() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let library = Arc::new(started_library());
+
+        let park = library.arm_cancel_request_park();
+        let canceller_library = Arc::clone(&library);
+        let canceller = std::thread::spawn(move || canceller_library.cancel_command());
+
+        park.wait_until_entered();
+        library.terminate();
+        park.release();
+        assert_eq!(
+            canceller.join().expect("the request thread finished"),
+            TPM_SUCCESS
+        );
+        assert!(
+            !library.cancel_is_signaled(),
+            "the lifecycle was powered off before the request published"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_request_delayed_across_a_restart_cannot_cancel_the_new_lifecycle() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let library = Arc::new(started_library());
+
+        let park = library.arm_cancel_request_park();
+        let canceller_library = Arc::clone(&library);
+        let canceller = std::thread::spawn(move || canceller_library.cancel_command());
+        park.wait_until_entered();
+
+        library.terminate();
+        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(response_code(&execute(&library, &startup_clear())), 0);
+
+        let gate = tpm2::arm_self_test_gate();
+        library.park_self_test_on_gate();
+        let worker_library = Arc::clone(&library);
+        let worker = std::thread::spawn(move || {
+            let ProcessPreparation::Tpm2(context) = worker_library.prepare_process() else {
+                panic!("TPM 2 must be selected");
+            };
+            context.execute(&incremental_self_test(&[TPM_ALG_SHA1]))
+        });
+        gate.wait_until_entered();
+        assert!(!library.cancel_is_signaled());
+
+        park.release();
+        assert_eq!(
+            canceller.join().expect("the request thread finished"),
+            TPM_SUCCESS
+        );
+        assert!(
+            !library.cancel_is_signaled(),
+            "an obsolete request must not reach a command of the new lifecycle"
+        );
+
+        assert_eq!(library.cancel_command(), TPM_SUCCESS);
+        assert!(
+            library.cancel_is_signaled(),
+            "a fresh request for the live lifecycle still publishes"
+        );
+
+        gate.release();
+        let response = worker
+            .join()
+            .expect("the command thread finished")
+            .expect("the response fits");
+        assert_eq!(response_code(&response), 0);
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn a_request_delayed_across_many_restarts_cannot_reach_the_newest_lifecycle() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let library = Arc::new(started_library());
+
+        let park = library.arm_cancel_request_park();
+        let canceller_library = Arc::clone(&library);
+        let canceller = std::thread::spawn(move || canceller_library.cancel_command());
+        park.wait_until_entered();
+
+        for round in 0..6 {
+            library.terminate();
+            assert_eq!(library.main_init(), TPM_SUCCESS, "round {round}");
+        }
+        park.release();
+        assert_eq!(
+            canceller.join().expect("the request thread finished"),
+            TPM_SUCCESS
+        );
+        assert!(!library.cancel_is_signaled());
+
+        assert_eq!(response_code(&execute(&library, &startup_clear())), 0);
+        let response = execute(&library, &incremental_self_test(&[TPM_ALG_SHA1]));
+        assert_eq!(response_code(&response), 0, "{response:02x?}");
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn cancellation_racing_termination_leaves_the_library_usable() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let library = Arc::new(started_library());
+
+        let canceller_library = Arc::clone(&library);
+        let canceller = std::thread::spawn(move || {
+            for _ in 0..4096 {
+                assert_eq!(canceller_library.cancel_command(), TPM_SUCCESS);
+            }
+        });
+
+        for _ in 0..8 {
+            library.terminate();
+            assert_eq!(library.main_init(), TPM_SUCCESS);
+        }
+        canceller.join().expect("the canceller thread finished");
+
+        assert_eq!(response_code(&execute(&library, &startup_clear())), 0);
+        let response = execute(&library, &incremental_self_test(&[TPM_ALG_SHA1]));
+        assert_eq!(response_code(&response), 0, "{response:02x?}");
+        library.terminate();
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    #[test]
+    fn cancellation_racing_version_selection_stays_consistent() {
+        let library = Arc::new(tpm2_library());
+        let canceller_library = Arc::clone(&library);
+        let canceller = std::thread::spawn(move || {
+            for _ in 0..4096 {
+                let code = canceller_library.cancel_command();
+                assert!(code == TPM_SUCCESS || code == TPM_FAIL, "{code}");
+            }
+        });
+
+        for _ in 0..256 {
+            assert_eq!(
+                library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+                TPM_SUCCESS
+            );
+            assert_eq!(
+                library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+                TPM_SUCCESS
+            );
+        }
+        canceller.join().expect("the canceller finished");
+        assert!(
+            !library.cancel_is_signaled(),
+            "no lifecycle was ever powered on"
+        );
     }
 }

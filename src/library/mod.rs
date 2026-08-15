@@ -1,3 +1,4 @@
+mod cancel;
 #[cfg(feature = "tpm2")]
 mod command_input;
 mod constants;
@@ -36,6 +37,10 @@ pub fn main_init() -> TpmResult {
 
 pub fn terminate() {
     Library::global().terminate();
+}
+
+pub fn cancel_command() -> TpmResult {
+    Library::global().cancel_command()
 }
 
 #[cfg(feature = "tpm2")]

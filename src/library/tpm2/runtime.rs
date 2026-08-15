@@ -1,5 +1,7 @@
 use crate::ffi_types::TpmResult;
 
+use crate::library::cancel::CancelSignal;
+
 use super::buffer_size::DEFAULT_BUFFER_SIZE;
 use super::clock::RuntimeClock;
 use super::crypto::{EntropySource, os_entropy};
@@ -38,6 +40,8 @@ pub struct Tpm2Runtime {
     pub(super) drtm_sequence: Option<DrtmSequence>,
 
     pub(super) self_test: SelfTestState,
+
+    pub(in crate::library) cancel: CancelSignal,
 
     pub manufactured: bool,
     pub was_manufactured: bool,
@@ -182,6 +186,7 @@ fn commit_state(
         active_profile_json,
         drtm_sequence: None,
         self_test,
+        cancel: CancelSignal::detached(),
         manufactured: true,
         was_manufactured,
         startup_received: false,
@@ -212,6 +217,7 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         active_profile_json: String::new(),
         drtm_sequence: None,
         self_test: SelfTestState::for_algorithms(DEFAULT_ALGORITHMS_PROFILE),
+        cancel: CancelSignal::detached(),
         manufactured: false,
         was_manufactured: false,
         startup_received: false,

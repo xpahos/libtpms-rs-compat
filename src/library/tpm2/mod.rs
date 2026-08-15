@@ -64,8 +64,24 @@ pub(super) use tis::{
     hash_end as tis_hash_end, hash_start as tis_hash_start,
 };
 
+#[cfg(test)]
+pub(super) use self_test::arm_self_test_gate;
+
 pub(super) fn volatile_all_store(runtime: &Tpm2Runtime) -> Result<Vec<u8>, TpmResult> {
     volatile::volatile_all_store(runtime, &OsClock)
+}
+
+/// Makes the next self-test run park on the armed [`SelfTestGate`].
+#[cfg(test)]
+pub(super) fn park_self_test_on_gate(runtime: &mut Tpm2Runtime) {
+    runtime.self_test.park_on_gate();
+}
+
+/// The algorithms whose self-test is still pending, as `TPM2_IncrementalSelfTest`
+/// would report them.
+#[cfg(test)]
+pub(super) fn pending_self_test_algorithms(runtime: &Tpm2Runtime) -> Vec<u16> {
+    runtime.self_test.pending_algorithms()
 }
 
 pub fn get_info(flags: TpmlibInfoFlags, runtime: Option<&Tpm2Runtime>) -> String {

@@ -16,6 +16,8 @@ pub(in crate::library) fn process(
         return Ok(Vec::new());
     }
 
+    runtime.cancel.clear();
+
     runtime.locality = if (5..32).contains(&locality) {
         0
     } else {
@@ -51,6 +53,7 @@ fn serialize(response: Response, buffer_size: u32) -> Result<Vec<u8>, TpmResult>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::cancel::CancelSignal;
     use crate::library::constants::TPM_SUCCESS;
     use crate::library::library_state::{Library, ProcessPreparation, Tpm2ProcessContext};
     use crate::library::tpm2::runtime::empty_state_runtime;
@@ -154,6 +157,63 @@ mod tests {
             );
             assert_runtime_is_pristine(&runtime);
         }
+    }
+
+    const INCREMENTAL_SHA256_COMMAND: [u8; 16] = [
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x0b,
+    ];
+    const INCREMENTAL_SHA256_RESPONSE: [u8; 22] = [
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+        0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d,
+    ];
+
+    #[test]
+    fn a_request_made_before_the_command_starts_is_cleared_and_does_not_cancel_it() {
+        let mut runtime = empty_state_runtime();
+        runtime.startup_received = true;
+        runtime.cancel = CancelSignal::signaled();
+
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&INCREMENTAL_SHA256_COMMAND)).unwrap(),
+            INCREMENTAL_SHA256_RESPONSE,
+            "the command-start clear drops the stale request"
+        );
+        assert!(!runtime.cancel.is_signaled());
+        assert!(!runtime.failure_mode);
+    }
+
+    #[test]
+    fn every_command_start_clears_the_pin_exactly_once() {
+        let mut runtime = empty_state_runtime();
+        runtime.cancel = CancelSignal::signaled();
+        assert_eq!(
+            run_process(&mut runtime, 0, &unknown_command()).unwrap(),
+            UNSUPPORTED_RESPONSE
+        );
+        assert!(
+            !runtime.cancel.is_signaled(),
+            "even a command that never polls the pin clears it at the start"
+        );
+
+        runtime.cancel = CancelSignal::signaled();
+        assert_eq!(
+            run_process(&mut runtime, 0, &input(&[])).unwrap(),
+            INSUFFICIENT_RESPONSE
+        );
+        assert!(!runtime.cancel.is_signaled());
+    }
+
+    #[test]
+    fn a_powered_off_runtime_leaves_the_pin_untouched() {
+        let mut runtime = empty_state_runtime();
+        runtime.power_on = false;
+        runtime.cancel = CancelSignal::signaled();
+        assert_eq!(
+            run_process(&mut runtime, 0, &startup_command()).unwrap(),
+            []
+        );
+        assert!(runtime.cancel.is_signaled());
     }
 
     #[test]
