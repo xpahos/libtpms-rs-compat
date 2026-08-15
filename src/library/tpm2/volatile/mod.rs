@@ -1,6 +1,8 @@
 mod attach;
 mod store;
 
+#[cfg(test)]
+pub(super) use attach::OwnedSession;
 pub(super) use attach::{
     OwnedPcr, OwnedSessionProcess, OwnedSessionSlot, OwnedVolatileState, materialize_volatile_state,
 };

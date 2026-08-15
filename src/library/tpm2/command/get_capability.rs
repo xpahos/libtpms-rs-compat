@@ -1,8 +1,11 @@
 use crate::ffi_types::TpmResult;
-use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
+use crate::library::constants::{
+    TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE,
+};
 
 use super::super::capability::{
-    TPM_CAP_ALGS, TPM_CAP_COMMANDS, TPM_CAP_TPM_PROPERTIES, algorithms, commands, properties,
+    TPM_CAP_ALGS, TPM_CAP_COMMANDS, TPM_CAP_HANDLES, TPM_CAP_PCRS, TPM_CAP_TPM_PROPERTIES,
+    algorithms, commands, handles, pcrs, properties,
 };
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
@@ -81,11 +84,44 @@ fn collect_capability(
             }
             Ok(out)
         }
+        TPM_CAP_HANDLES => {
+            // TODO: Support runtimes without decoded state after the NVChip
+            // fallback is implemented.
+            let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+            let page = handles::collect(&runtime.live, state, input.property, input.property_count)
+                .ok_or(TPM_RC_HANDLE + RC_GET_CAPABILITY_PROPERTY)?;
+            let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
+            for handle in &page.entries {
+                out.extend_from_slice(&handle.to_be_bytes());
+            }
+            Ok(out)
+        }
         TPM_CAP_COMMANDS => {
             let page = commands::implemented(input.property, input.property_count);
             let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
             for attributes in &page.entries {
                 out.extend_from_slice(&attributes.to_be_bytes());
+            }
+            Ok(out)
+        }
+        TPM_CAP_PCRS => {
+            // Upstream rejects a non-zero property inside the selector arm, so
+            // the lifecycle and parameter checks still run first.
+            if input.property != 0 {
+                return Err(TPM_RC_VALUE + RC_GET_CAPABILITY_PROPERTY);
+            }
+            // TODO: Support runtimes without decoded state after the NVChip
+            // fallback is implemented.
+            let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+            // `gp.pcrAllocated`: the shadow the state blob carried once
+            // `NVShadowRestore()` has run, otherwise the committed allocation.
+            let allocation = runtime.effective_pcr_allocated().ok_or(TPM_RC_FAILURE)?;
+            let page = pcrs::collect(allocation, &state.profile.algorithms, input.property_count);
+            let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
+            for selection in &page.entries {
+                out.extend_from_slice(&selection.hash_alg.to_be_bytes());
+                out.push(u8::try_from(selection.select.len()).map_err(|_| TPM_RC_FAILURE)?);
+                out.extend_from_slice(&selection.select);
             }
             Ok(out)
         }
@@ -113,7 +149,11 @@ mod tests {
     use super::*;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_RC_INITIALIZE;
+    use crate::library::tpm2::capability::handles::test_state::{
+        load_session, nv_index_entry, occupy_object, persistent_entry, push_nvram, save_session,
+    };
     use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::persistent::{OwnedPcrAllocation, OwnedPcrSelection};
     use crate::library::tpm2::process;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -122,6 +162,7 @@ mod tests {
     const RC_INSUFFICIENT_PARAM2: u32 = 0x2da;
     const RC_INSUFFICIENT_PARAM3: u32 = 0x3da;
     const RC_VALUE_PARAM1: u32 = 0x1c4;
+    const RC_HANDLE_PARAM2: u32 = 0x2cb;
     const RC_SIZE: u32 = 0x095;
     const RC_SESSION1_HANDLE: u32 = 0x98b;
     const RC_INSUFFICIENT: u32 = 0x09a;
@@ -309,7 +350,7 @@ mod tests {
 
     #[test]
     fn unsupported_capability_selectors_return_value_for_parameter_one() {
-        for capability in [1u32, 3, 4, 5, 7, 8, 9, 0xa, 0x100, 0x7fff_ffff, u32::MAX] {
+        for capability in [3u32, 4, 7, 8, 9, 0xa, 0x100, 0x7fff_ffff, u32::MAX] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
             assert_eq!(
@@ -671,13 +712,849 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
     #[test]
     fn responses_echo_the_capability_selector() {
         let mut runtime = started_runtime();
-        for capability in [0u32, 2, 6] {
-            let response = query(&mut runtime, capability, 0x100, 1);
+        for (capability, property) in [(0u32, 0x100u32), (1, 0x100), (2, 0x100), (5, 0), (6, 0x100)]
+        {
+            let response = query(&mut runtime, capability, property, 1);
             assert_eq!(
                 &response[11..15],
                 &capability.to_be_bytes(),
                 "capability {capability}"
             );
+        }
+    }
+
+    /// The empty `TPML_HANDLE` response: no more data, capability 1, count 0.
+    const EMPTY_HANDLE_LIST: &str = "80010000001300000000000000000100000000";
+
+    #[track_caller]
+    fn handles(runtime: &mut Tpm2Runtime, property: u32, count: u32) -> Vec<u8> {
+        query(runtime, TPM_CAP_HANDLES, property, count)
+    }
+
+    #[test]
+    fn the_permanent_handle_list_matches_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        let expected = hex(
+            "80010000002f000000000000000001000000074000000140000007400000094000000a4000000b\
+             4000000c4000000d",
+        );
+        assert_eq!(handles(&mut runtime, 0x4000_0000, 1000), expected);
+        assert_eq!(
+            handles(&mut runtime, 0x4000_0000, 7),
+            expected,
+            "an exact count consumes the list"
+        );
+    }
+
+    #[test]
+    fn permanent_handle_boundary_queries_match_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        assert_eq!(
+            handles(&mut runtime, 0x4000_0000, 0),
+            hex("80010000001300000000010000000100000000"),
+            "count zero"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x4000_0000, 1),
+            hex("8001000000170000000001000000010000000140000001"),
+            "count one"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x4000_0000, 2),
+            hex("80010000001b000000000100000001000000024000000140000007")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x4000_0001, 3),
+            hex("80010000001f00000000010000000100000003400000014000000740000009"),
+            "inclusive start"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x4000_0002, 3),
+            hex("80010000001f0000000001000000010000000340000007400000094000000a"),
+            "a start inside the gap below TPM_RH_NULL"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x4000_0009, 2),
+            hex("80010000001b00000000010000000100000002400000094000000a"),
+            "TPM_RS_PW is enumerated"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x4000_000d, 5),
+            hex("800100000017000000000000000001000000014000000d"),
+            "TPM_RH_PLATFORM_NV is the last permanent handle"
+        );
+        for start in [
+            0x4000_000eu32,
+            0x4000_0110,
+            0x4000_0120,
+            0x4000_ffff,
+            0x40ff_ffff,
+        ] {
+            assert_eq!(
+                handles(&mut runtime, start, 5),
+                hex(EMPTY_HANDLE_LIST),
+                "start {start:#010x}"
+            );
+        }
+        assert_eq!(
+            handles(&mut runtime, 0x40ff_ffff, 0),
+            hex(EMPTY_HANDLE_LIST),
+            "count zero past the last permanent handle"
+        );
+    }
+
+    #[test]
+    fn the_pcr_handle_list_matches_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        let expected = hex(
+            "8001000000730000000000000000010000001800000000000000010000000200000003000000040000\
+             0005000000060000000700000008000000090000000a0000000b0000000c0000000d0000000e0000000f\
+             0000001000000011000000120000001300000014000000150000001600000017",
+        );
+        assert_eq!(handles(&mut runtime, 0x0000_0000, 1000), expected);
+        assert_eq!(handles(&mut runtime, 0x0000_0000, 24), expected);
+    }
+
+    #[test]
+    fn pcr_handle_boundary_queries_match_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        assert_eq!(
+            handles(&mut runtime, 0x0000_0000, 0),
+            hex("80010000001300000000010000000100000000"),
+            "count zero"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0000_0000, 1),
+            hex("8001000000170000000001000000010000000100000000"),
+            "count one"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0000_0000, 23),
+            hex(
+                "80010000006f000000000100000001000000170000000000000001000000020000000300000004000\
+                 00005000000060000000700000008000000090000000a0000000b0000000c0000000d0000000e0000\
+                 000f00000010000000110000001200000013000000140000001500000016"
+            ),
+            "one short of the whole bank"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0000_000a, 3),
+            hex("80010000001f000000000100000001000000030000000a0000000b0000000c"),
+            "a start in the middle of the range"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0000_0017, 5),
+            hex("8001000000170000000000000000010000000100000017"),
+            "the last PCR"
+        );
+        for start in [0x0000_0018u32, 0x00ff_ffff] {
+            assert_eq!(
+                handles(&mut runtime, start, 5),
+                hex(EMPTY_HANDLE_LIST),
+                "start {start:#010x}"
+            );
+        }
+        assert_eq!(
+            handles(&mut runtime, 0x0000_0018, 0),
+            hex(EMPTY_HANDLE_LIST),
+            "count zero past the last PCR"
+        );
+    }
+
+    #[test]
+    fn the_dynamic_handle_ranges_are_empty_on_a_freshly_started_tpm() {
+        let mut runtime = started_runtime();
+        for start in [
+            0x0100_0000u32,
+            0x01ff_ffff,
+            0x0200_0000,
+            0x0300_0000,
+            0x8000_0000,
+            0x8100_0000,
+        ] {
+            assert_eq!(
+                handles(&mut runtime, start, 10),
+                hex(EMPTY_HANDLE_LIST),
+                "start {start:#010x}"
+            );
+            assert_eq!(
+                handles(&mut runtime, start, 0),
+                hex(EMPTY_HANDLE_LIST),
+                "start {start:#010x} with count zero"
+            );
+        }
+    }
+
+    #[test]
+    fn unimplemented_handle_types_return_handle_for_parameter_two() {
+        for handle_type in [
+            0x04u32, 0x05, 0x0f, 0x10, 0x11, 0x12, 0x3f, 0x41, 0x7f, 0x82, 0x90, 0xff,
+        ] {
+            let mut runtime = started_runtime();
+            let before = snapshot(&runtime);
+            assert_eq!(
+                handles(&mut runtime, handle_type << 24, 1000),
+                error_response(RC_HANDLE_PARAM2),
+                "handle type {handle_type:#04x}"
+            );
+            assert_unchanged(&runtime, &before);
+        }
+    }
+
+    #[test]
+    fn nv_index_handles_match_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        // The oracle defines these four indexes in the order 5, 1, 3, a.
+        push_nvram(
+            &mut runtime,
+            [
+                nv_index_entry(0x0100_0005),
+                nv_index_entry(0x0100_0001),
+                nv_index_entry(0x0100_0003),
+                nv_index_entry(0x0100_000a),
+            ],
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0000, 10),
+            hex("800100000023000000000000000001000000040100000101000003010000050100000a"),
+            "storage order is discarded for ascending handles"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0000, 0),
+            hex("80010000001300000000010000000100000000"),
+            "count zero with eligible handles reports more data"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0000, 1),
+            hex("8001000000170000000001000000010000000101000001")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0000, 2),
+            hex("80010000001b000000000100000001000000020100000101000003")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0000, 4),
+            hex("800100000023000000000000000001000000040100000101000003010000050100000a"),
+            "an exact count leaves no more data"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0002, 10),
+            hex("80010000001f0000000000000000010000000301000003010000050100000a"),
+            "a start between two defined indexes"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0005, 1),
+            hex("8001000000170000000001000000010000000101000005")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_000b, 10),
+            hex(EMPTY_HANDLE_LIST),
+            "past the highest index"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_000b, 0),
+            hex(EMPTY_HANDLE_LIST)
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8100_0000, 10),
+            hex(EMPTY_HANDLE_LIST),
+            "NV indexes never appear in the persistent range"
+        );
+    }
+
+    #[test]
+    fn persistent_object_handles_match_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        push_nvram(
+            &mut runtime,
+            [persistent_entry(0x8100_0005), persistent_entry(0x8100_0001)],
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8100_0000, 10),
+            hex("80010000001b000000000000000001000000028100000181000005")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8100_0000, 0),
+            hex("80010000001300000000010000000100000000")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8100_0000, 1),
+            hex("8001000000170000000001000000010000000181000001")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8100_0002, 10),
+            hex("8001000000170000000000000000010000000181000005")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8100_0006, 10),
+            hex(EMPTY_HANDLE_LIST)
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0100_0000, 10),
+            hex(EMPTY_HANDLE_LIST),
+            "persistent objects never appear in the NV index range"
+        );
+    }
+
+    #[test]
+    fn transient_object_handles_match_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        for slot in 0..3 {
+            occupy_object(&mut runtime, slot);
+        }
+        assert_eq!(
+            handles(&mut runtime, 0x8000_0000, 10),
+            hex("80010000001f00000000000000000100000003800000008000000180000002")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8000_0000, 1),
+            hex("8001000000170000000001000000010000000180000000")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8000_0000, 2),
+            hex("80010000001b000000000100000001000000028000000080000001")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8000_0001, 10),
+            hex("80010000001b000000000000000001000000028000000180000002")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x8000_0003, 10),
+            hex(EMPTY_HANDLE_LIST)
+        );
+
+        // The oracle flushes slot 0 and re-queries; the freed slot drops out.
+        runtime.live.objects[0].attributes &= !(1 << 15);
+        assert_eq!(
+            handles(&mut runtime, 0x8000_0000, 10),
+            hex("80010000001b000000000000000001000000028000000180000002")
+        );
+    }
+
+    #[test]
+    fn session_handles_match_the_oracle_bytes() {
+        let mut runtime = started_runtime();
+        // The oracle starts an HMAC session and then a policy session, which
+        // take context slots 0 and 1.
+        load_session(&mut runtime, 0, 0, false);
+        load_session(&mut runtime, 1, 1, true);
+        assert_eq!(
+            handles(&mut runtime, 0x0200_0000, 10),
+            hex("80010000001b000000000000000001000000020200000003000001"),
+            "the policy session is reported in the policy range"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0200_0000, 1),
+            hex("8001000000170000000001000000010000000102000000")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0200_0001, 10),
+            hex("8001000000170000000000000000010000000103000001"),
+            "the start handle selects on the context slot"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0200_0002, 10),
+            hex(EMPTY_HANDLE_LIST)
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0300_0000, 10),
+            hex(EMPTY_HANDLE_LIST),
+            "the policy range only reports context-saved sessions"
+        );
+
+        // The oracle then context saves the session in slot 0.
+        save_session(&mut runtime, 0, 4);
+        assert_eq!(
+            handles(&mut runtime, 0x0200_0000, 10),
+            hex("8001000000170000000000000000010000000103000001"),
+            "only the policy session is still loaded"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0300_0000, 10),
+            hex("8001000000170000000000000000010000000102000000"),
+            "saved sessions are reported in the HMAC range"
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0300_0000, 0),
+            hex("80010000001300000000010000000100000000")
+        );
+        assert_eq!(
+            handles(&mut runtime, 0x0300_0001, 10),
+            hex(EMPTY_HANDLE_LIST)
+        );
+    }
+
+    #[test]
+    fn the_response_size_limit_truncates_the_handle_list() {
+        let mut runtime = started_runtime();
+        // The oracle's four indexes plus the 300 it defines from 0x01001000.
+        push_nvram(
+            &mut runtime,
+            [
+                nv_index_entry(0x0100_0005),
+                nv_index_entry(0x0100_0001),
+                nv_index_entry(0x0100_0003),
+                nv_index_entry(0x0100_000a),
+            ],
+        );
+        push_nvram(
+            &mut runtime,
+            (0..300u32).map(|index| nv_index_entry(0x0100_1000 + index)),
+        );
+        // `oracle16 nv_bulk_count1000`: 254 handles, more data, 1035 bytes.
+        for count in [254u32, 255, 300, 1000] {
+            let response = handles(&mut runtime, 0x0100_0000, count);
+            assert_eq!(response.len(), 0x40b, "count {count}");
+            assert_eq!(&response[..6], &hex("80010000040b")[..], "count {count}");
+            assert_eq!(&response[6..10], &[0, 0, 0, 0], "count {count}");
+            assert_eq!(response[10], 1, "more data, count {count}");
+            assert_eq!(&response[11..15], &hex("00000001")[..], "count {count}");
+            assert_eq!(&response[15..19], &hex("000000fe")[..], "count {count}");
+            assert_eq!(
+                &response[19..35],
+                &hex("01000001 01000003 01000005 0100000a")[..],
+                "count {count}"
+            );
+            assert_eq!(
+                &response[response.len() - 4..],
+                &hex("010010f9")[..],
+                "count {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_queries_are_rejected_before_startup() {
+        let mut runtime = manufactured_runtime();
+        let before = snapshot(&runtime);
+        for (property, label) in [
+            (0x4000_0000u32, "a supported handle type"),
+            (0x0400_0000, "an unsupported handle type"),
+        ] {
+            assert_eq!(
+                handles(&mut runtime, property, 10),
+                error_response(TPM_RC_INITIALIZE),
+                "{label}"
+            );
+        }
+        assert_unchanged(&runtime, &before);
+    }
+
+    #[test]
+    fn handle_queries_do_not_mutate_the_runtime() {
+        let mut runtime = started_runtime();
+        push_nvram(
+            &mut runtime,
+            [nv_index_entry(0x0100_0001), persistent_entry(0x8100_0001)],
+        );
+        occupy_object(&mut runtime, 0);
+        load_session(&mut runtime, 0, 0, false);
+        let before = snapshot(&runtime);
+        for property in [
+            0x0000_0000u32,
+            0x0100_0000,
+            0x0200_0000,
+            0x0300_0000,
+            0x4000_0000,
+            0x8000_0000,
+            0x8100_0000,
+        ] {
+            let response = handles(&mut runtime, property, 1000);
+            assert_eq!(
+                &response[6..10],
+                &[0, 0, 0, 0],
+                "property {property:#010x} succeeds"
+            );
+            assert_unchanged(&runtime, &before);
+        }
+        assert!(!runtime.nv_update_pending);
+        assert_eq!(
+            runtime
+                .state
+                .as_ref()
+                .expect("state present")
+                .user_nvram
+                .entries
+                .len(),
+            2,
+            "the user NVRAM is untouched"
+        );
+    }
+
+    #[test]
+    fn a_handle_query_never_invokes_the_nv_commit_callback() {
+        let mut runtime = started_runtime();
+        let command = get_capability_command(TPM_CAP_HANDLES, 0x4000_0000, 1000);
+        let input = CommandInput::new(command.len() as u32, command);
+        let response = process(&mut runtime, 0, &input, |_| {
+            panic!("a handle query must not schedule an NV commit")
+        })
+        .expect("the command processes");
+        assert_eq!(&response[6..10], &[0, 0, 0, 0]);
+
+        let failing = get_capability_command(TPM_CAP_HANDLES, 0x0400_0000, 1000);
+        let input = CommandInput::new(failing.len() as u32, failing);
+        let response = process(&mut runtime, 0, &input, |_| {
+            panic!("a failing handle query must not schedule an NV commit")
+        })
+        .expect("the command processes");
+        assert_eq!(&response, &error_response(RC_HANDLE_PARAM2));
+    }
+
+    #[test]
+    fn malformed_handle_requests_never_panic() {
+        let valid = get_capability_command(TPM_CAP_HANDLES, 0x4000_0000, 10);
+        for len in 10..=valid.len() {
+            for index in 6..len {
+                for flip in [0x01u8, 0x80, 0xff] {
+                    let mut mutated = valid[..len].to_vec();
+                    mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
+                    mutated[index] ^= flip;
+                    let mut runtime = started_runtime();
+                    let input = CommandInput::new(mutated.len() as u32, mutated);
+                    let parsed = parse_command(&input).expect("the header parses");
+                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                }
+            }
+        }
+    }
+
+    /// The single `TPM2_GetCapability` request `swtpm_setup` issues, from
+    /// `swtpm_tpm2_get_all_pcr_banks()` in `swtpm/src/swtpm_setup/swtpm.c`: a
+    /// no-sessions `TPM_CAP_PCRS` query for up to 64 properties.
+    const SWTPM_SETUP_GET_CAPABILITY: &str = "80010000001600000 17a 00000005 00000000 00000040";
+
+    /// `oracle17 swtpm_setup`: all four compiled banks, every PCR allocated.
+    const ORACLE_PCRS_ALL_BANKS: &str = "80010000002b000000000000000005000000 04 \
+         000403ffffff 000b03ffffff 000c03ffffff 000d03ffffff";
+    /// `oracle17 count0`: a zero count answers YES and an empty list.
+    const ORACLE_PCRS_COUNT_ZERO: &str = "80010000001300000000010000000500000000";
+    /// The same list with no more data, which is also the empty-allocation answer.
+    const ORACLE_PCRS_EMPTY: &str = "80010000001300000000000000000500000000";
+
+    const RC_VALUE_PARAM2: u32 = 0x2c4;
+
+    #[track_caller]
+    fn pcr_banks(runtime: &mut Tpm2Runtime, property: u32, count: u32) -> Vec<u8> {
+        query(runtime, TPM_CAP_PCRS, property, count)
+    }
+
+    fn started_runtime_with_algorithms(algorithms: &str) -> Box<Tpm2Runtime> {
+        let json = format!(r#"{{"Name":"custom","Algorithms":"{algorithms}"}}"#);
+        let profile = validate_user_profile(Some(json.as_bytes())).expect("the profile validates");
+        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let mut runtime = commit_manufactured_state(state).expect("commits");
+        runtime.entropy = deterministic_entropy;
+        let startup = hex("80010000000c0000014400 00");
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &startup),
+            hex("80010000000a00000000")
+        );
+        runtime.nv_update_pending = false;
+        runtime
+    }
+
+    /// Manufactures, rewrites the PCR allocation, then round trips the state
+    /// through the permanent-state blob so the runtime is one that was
+    /// restored rather than manufactured.
+    fn restored_runtime_with_allocation(selections: Vec<OwnedPcrSelection>) -> Box<Tpm2Runtime> {
+        use crate::library::tpm2::parse_persistent_all_payload;
+        use crate::library::tpm2::persistent::{
+            PersistentAllEnvelope, materialize_persistent_state, persistent_all_store,
+        };
+        use crate::library::tpm2::runtime::commit_restored_state;
+
+        let profile = validate_user_profile(None).expect("the null profile validates");
+        let mut state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        state.persistent.pcr_allocated = OwnedPcrAllocation { selections };
+        let blob = persistent_all_store(&state).expect("the state serializes");
+        let envelope = PersistentAllEnvelope::parse(&blob).expect("the envelope parses");
+        let decoded = parse_persistent_all_payload(&envelope).expect("the payload parses");
+        let candidate = materialize_persistent_state(decoded).expect("materializes");
+        let mut runtime = commit_restored_state(candidate).expect("commits");
+        runtime.entropy = deterministic_entropy;
+        let startup = hex("80010000000c0000014400 00");
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &startup),
+            hex("80010000000a00000000")
+        );
+        runtime.nv_update_pending = false;
+        runtime
+    }
+
+    fn bank(hash_alg: u16, select: [u8; 3]) -> OwnedPcrSelection {
+        OwnedPcrSelection {
+            hash_alg,
+            select: select.to_vec(),
+        }
+    }
+
+    #[test]
+    fn the_swtpm_setup_capability_request_matches_the_oracle_bytes() {
+        let request = hex(SWTPM_SETUP_GET_CAPABILITY);
+        assert_eq!(
+            request,
+            get_capability_command(TPM_CAP_PCRS, 0, 64),
+            "the fixture is the exact request swtpm_setup builds"
+        );
+
+        let mut runtime = started_runtime();
+        let before = snapshot(&runtime);
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &request),
+            hex(ORACLE_PCRS_ALL_BANKS)
+        );
+        assert_unchanged(&runtime, &before);
+    }
+
+    #[test]
+    fn the_default_profile_reports_every_compiled_pcr_bank() {
+        let mut runtime = started_runtime();
+        let expected = hex(ORACLE_PCRS_ALL_BANKS);
+        // `PCRCapGetAllocation()` never pages, so every non-zero count answers
+        // the whole allocation with no more data.
+        for count in [1u32, 2, 3, 4, 5, 64, 1000, u32::MAX] {
+            assert_eq!(pcr_banks(&mut runtime, 0, count), expected, "count {count}");
+        }
+    }
+
+    #[test]
+    fn a_zero_property_count_reports_more_data_and_no_banks() {
+        let mut runtime = started_runtime();
+        assert_eq!(pcr_banks(&mut runtime, 0, 0), hex(ORACLE_PCRS_COUNT_ZERO));
+    }
+
+    #[test]
+    fn a_zero_property_count_reports_more_data_even_with_nothing_allocated() {
+        let mut runtime = restored_runtime_with_allocation(Vec::new());
+        assert_eq!(
+            pcr_banks(&mut runtime, 0, 0),
+            hex(ORACLE_PCRS_COUNT_ZERO),
+            "upstream returns YES for a zero count without consulting the allocation"
+        );
+    }
+
+    #[test]
+    fn a_non_zero_property_returns_value_for_parameter_two() {
+        for property in [1u32, 2, 0x0b, 0x100, 0x4000_0000, 0x7fff_ffff, u32::MAX] {
+            let mut runtime = started_runtime();
+            let before = snapshot(&runtime);
+            for count in [0u32, 1, 64] {
+                assert_eq!(
+                    pcr_banks(&mut runtime, property, count),
+                    error_response(RC_VALUE_PARAM2),
+                    "property {property:#010x}, count {count}"
+                );
+            }
+            assert_unchanged(&runtime, &before);
+        }
+    }
+
+    /// `oracle17` phase 4.  Only `sha1` and `sha512` carry `canBeDisabled` for
+    /// a PCR bank upstream, so these are every profile subset a TPM can boot.
+    #[test]
+    fn a_restricted_profile_drops_its_disabled_banks() {
+        const ALL: &str = "rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,aes,\
+aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,\
+ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=192,ecc-nist,\
+ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb";
+
+        let drop_tokens = |dropped: &[&str]| -> String {
+            ALL.split(',')
+                .filter(|token| !dropped.contains(token))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+
+        for (label, dropped, expected) in [
+            ("all banks", &[][..], ORACLE_PCRS_ALL_BANKS),
+            (
+                "no sha1",
+                &["sha1"][..],
+                "80010000002500000000000000000500000003 000b03ffffff 000c03ffffff 000d03ffffff",
+            ),
+            (
+                "no sha512",
+                &["sha512"][..],
+                "80010000002500000000000000000500000003 000403ffffff 000b03ffffff 000c03ffffff",
+            ),
+            (
+                "no sha1 and no sha512",
+                &["sha1", "sha512"][..],
+                "80010000001f00000000000000000500000002 000b03ffffff 000c03ffffff",
+            ),
+        ] {
+            let mut runtime = started_runtime_with_algorithms(&drop_tokens(dropped));
+            assert_eq!(pcr_banks(&mut runtime, 0, 64), hex(expected), "{label}");
+            assert_eq!(
+                pcr_banks(&mut runtime, 0, 0),
+                hex(ORACLE_PCRS_COUNT_ZERO),
+                "{label} with a zero count"
+            );
+        }
+    }
+
+    #[test]
+    fn a_restored_allocation_is_reported_instead_of_the_manufactured_one() {
+        let mut runtime = restored_runtime_with_allocation(vec![
+            bank(0x000b, [0x0f, 0x00, 0x00]),
+            bank(0x000c, [0xff, 0x01, 0x00]),
+        ]);
+        assert_eq!(
+            pcr_banks(&mut runtime, 0, 64),
+            hex("80010000001f00000000000000000500000002 000b030f0000 000c03ff0100"),
+            "the blob's allocation, bitmaps included"
+        );
+    }
+
+    #[test]
+    fn an_empty_restored_allocation_reports_no_banks() {
+        let mut runtime = restored_runtime_with_allocation(Vec::new());
+        assert_eq!(pcr_banks(&mut runtime, 0, 64), hex(ORACLE_PCRS_EMPTY));
+    }
+
+    #[test]
+    fn the_restored_shadow_allocation_wins_once_it_has_been_applied() {
+        // `NVShadowRestore()` runs when a volatile blob is restored and moves
+        // the tail's shadow into `gp.pcrAllocated`; the answer must follow.
+        let mut runtime = restored_runtime_with_allocation(vec![bank(0x000b, [0xff, 0xff, 0xff])]);
+        runtime.shadow_pcr_allocated = OwnedPcrAllocation {
+            selections: vec![bank(0x0004, [0x01, 0x00, 0x00]), bank(0x000d, [0x02, 0, 0])],
+        };
+        runtime.shadow_pcr_pending = true;
+        crate::library::tpm2::runtime::nv_shadow_restore(&mut runtime);
+        assert_eq!(
+            pcr_banks(&mut runtime, 0, 64),
+            hex("80010000001f00000000000000000500000002 000403010000 000d03020000")
+        );
+    }
+
+    #[test]
+    fn pcr_bank_queries_are_rejected_before_startup() {
+        let mut runtime = manufactured_runtime();
+        let before = snapshot(&runtime);
+        for (property, label) in [(0u32, "a valid property"), (1, "a rejected property")] {
+            assert_eq!(
+                pcr_banks(&mut runtime, property, 64),
+                error_response(TPM_RC_INITIALIZE),
+                "{label}: the lifecycle check precedes the property check"
+            );
+        }
+        assert_unchanged(&runtime, &before);
+    }
+
+    #[test]
+    fn truncated_and_trailing_pcr_bank_parameters_match_the_oracle() {
+        let full = hex("00000005 00000000 00000040");
+        for len in 0..12usize {
+            let expected = match len {
+                0..=3 => RC_INSUFFICIENT_PARAM1,
+                4..=7 => RC_INSUFFICIENT_PARAM2,
+                _ => RC_INSUFFICIENT_PARAM3,
+            };
+            let mut runtime = started_runtime();
+            let before = snapshot(&runtime);
+            let mut command = vec![0x80, 0x01];
+            command.extend_from_slice(&(10 + len as u32).to_be_bytes());
+            command.extend_from_slice(&TPM_CC_GET_CAPABILITY.to_be_bytes());
+            command.extend_from_slice(&full[..len]);
+            assert_eq!(
+                dispatch_bytes(&mut runtime, &command),
+                error_response(expected),
+                "parameter length {len}"
+            );
+            assert_unchanged(&runtime, &before);
+        }
+
+        let mut runtime = started_runtime();
+        let before = snapshot(&runtime);
+        let mut command = hex("80010000001700 00017a");
+        command.extend_from_slice(&full);
+        command.push(0xee);
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &command),
+            error_response(RC_SIZE),
+            "trailing parameter bytes"
+        );
+        assert_unchanged(&runtime, &before);
+    }
+
+    #[test]
+    fn session_tagged_pcr_bank_requests_match_the_oracle() {
+        let pw_auth =
+            hex("80020000002300 00017a 00000009 40000009 0000 00 0000 00000005 00000000 00000040");
+        let no_authsize = hex("80020000000a0000017a");
+        let authsize_zero = hex("80020000001a0000017a 00000000 00000005 00000000 00000040");
+
+        for (label, command, expected) in [
+            ("pw_auth", pw_auth, RC_SESSION1_HANDLE),
+            ("no_authsize", no_authsize, RC_INSUFFICIENT),
+            ("authsize_zero", authsize_zero, RC_SIZE),
+        ] {
+            let mut runtime = started_runtime();
+            let before = snapshot(&runtime);
+            assert_eq!(
+                dispatch_bytes(&mut runtime, &command),
+                error_response(expected),
+                "{label}"
+            );
+            assert_unchanged(&runtime, &before);
+        }
+    }
+
+    #[test]
+    fn pcr_bank_queries_do_not_mutate_the_runtime() {
+        let mut runtime = started_runtime();
+        let before = snapshot(&runtime);
+        let allocation = runtime.effective_pcr_allocated().cloned();
+        for count in [0u32, 1, 64, u32::MAX] {
+            let response = pcr_banks(&mut runtime, 0, count);
+            assert_eq!(&response[6..10], &[0, 0, 0, 0], "count {count}");
+            assert_unchanged(&runtime, &before);
+        }
+        assert_eq!(
+            runtime.effective_pcr_allocated(),
+            allocation.as_ref(),
+            "the collector filters a copy, never the runtime allocation"
+        );
+        assert!(!runtime.nv_update_pending);
+    }
+
+    #[test]
+    fn a_pcr_bank_query_never_invokes_the_nv_commit_callback() {
+        let mut runtime = started_runtime();
+        let command = get_capability_command(TPM_CAP_PCRS, 0, 64);
+        let input = CommandInput::new(command.len() as u32, command);
+        let response = process(&mut runtime, 0, &input, |_| {
+            panic!("a PCR bank query must not schedule an NV commit")
+        })
+        .expect("the command processes");
+        assert_eq!(response, hex(ORACLE_PCRS_ALL_BANKS));
+
+        let failing = get_capability_command(TPM_CAP_PCRS, 1, 64);
+        let input = CommandInput::new(failing.len() as u32, failing);
+        let response = process(&mut runtime, 0, &input, |_| {
+            panic!("a failing PCR bank query must not schedule an NV commit")
+        })
+        .expect("the command processes");
+        assert_eq!(response, error_response(RC_VALUE_PARAM2));
+    }
+
+    #[test]
+    fn malformed_pcr_bank_requests_never_panic() {
+        let valid = get_capability_command(TPM_CAP_PCRS, 0, 64);
+        for len in 10..=valid.len() {
+            for index in 6..len {
+                for flip in [0x01u8, 0x80, 0xff] {
+                    let mut mutated = valid[..len].to_vec();
+                    mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
+                    mutated[index] ^= flip;
+                    let mut runtime = started_runtime();
+                    let input = CommandInput::new(mutated.len() as u32, mutated);
+                    let parsed = parse_command(&input).expect("the header parses");
+                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                }
+            }
         }
     }
 }

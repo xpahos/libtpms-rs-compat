@@ -1,9 +1,13 @@
 pub(super) mod algorithms;
 pub(super) mod commands;
+pub(super) mod handles;
+pub(super) mod pcrs;
 pub(super) mod properties;
 
 pub(super) const TPM_CAP_ALGS: u32 = 0x0000_0000;
+pub(super) const TPM_CAP_HANDLES: u32 = 0x0000_0001;
 pub(super) const TPM_CAP_COMMANDS: u32 = 0x0000_0002;
+pub(super) const TPM_CAP_PCRS: u32 = 0x0000_0005;
 pub(super) const TPM_CAP_TPM_PROPERTIES: u32 = 0x0000_0006;
 
 pub(super) const MAX_CAP_BUFFER: usize = 1024;

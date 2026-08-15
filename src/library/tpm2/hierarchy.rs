@@ -3,9 +3,26 @@ use super::persistent::OwnedPersistentData;
 pub(super) const TPM_RH_OWNER: u32 = 0x4000_0001;
 pub(super) const TPM_RH_NULL: u32 = 0x4000_0007;
 pub(super) const TPM_RH_UNASSIGNED: u32 = 0x4000_0008;
+pub(super) const TPM_RS_PW: u32 = 0x4000_0009;
 pub(super) const TPM_RH_LOCKOUT: u32 = 0x4000_000a;
 pub(super) const TPM_RH_ENDORSEMENT: u32 = 0x4000_000b;
 pub(super) const TPM_RH_PLATFORM: u32 = 0x4000_000c;
+pub(super) const TPM_RH_PLATFORM_NV: u32 = 0x4000_000d;
+
+/// Every permanent handle this TPM implements, ascending.  Upstream walks the
+/// whole TPM_RH_FIRST..=TPM_RH_LAST range in `NextPermanentHandle()` and keeps
+/// the values its build enables; the vendored profile enables no ACT, no
+/// firmware-limited and no SVN-limited handle, which leaves exactly these
+/// seven.
+pub(super) const IMPLEMENTED_PERMANENT_HANDLES: [u32; 7] = [
+    TPM_RH_OWNER,
+    TPM_RH_NULL,
+    TPM_RS_PW,
+    TPM_RH_LOCKOUT,
+    TPM_RH_ENDORSEMENT,
+    TPM_RH_PLATFORM,
+    TPM_RH_PLATFORM_NV,
+];
 
 pub(super) fn is_hierarchy_auth_handle(handle: u32) -> bool {
     matches!(
@@ -110,6 +127,33 @@ mod tests {
         assert_eq!(TPM_RH_LOCKOUT, 0x4000_000a);
         assert_eq!(TPM_RH_ENDORSEMENT, 0x4000_000b);
         assert_eq!(TPM_RH_PLATFORM, 0x4000_000c);
+        assert_eq!(TPM_RS_PW, 0x4000_0009);
+        assert_eq!(TPM_RH_PLATFORM_NV, 0x4000_000d);
+    }
+
+    #[test]
+    fn the_implemented_permanent_handles_match_the_oracle_list() {
+        // `oracle16 perm_all` on the vendored C libtpms.
+        assert_eq!(
+            IMPLEMENTED_PERMANENT_HANDLES,
+            [
+                0x4000_0001,
+                0x4000_0007,
+                0x4000_0009,
+                0x4000_000a,
+                0x4000_000b,
+                0x4000_000c,
+                0x4000_000d,
+            ]
+        );
+        assert!(
+            IMPLEMENTED_PERMANENT_HANDLES.is_sorted(),
+            "the table is enumerated in ascending order"
+        );
+        assert!(
+            !IMPLEMENTED_PERMANENT_HANDLES.contains(&TPM_RH_UNASSIGNED),
+            "0x40000008 is a gap in the permanent range"
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::library::constants::{
 use super::super::dictionary_attack::{
     check_locked_out, is_da_protected_handle, register_lockout_failure,
 };
+pub(super) use super::super::hierarchy::TPM_RS_PW;
 use super::super::hierarchy::{
     TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
     is_hierarchy_auth_handle,
@@ -24,7 +25,6 @@ const TPM_RC_S: TpmResult = 0x800;
 const TPM_RC_1: TpmResult = 0x100;
 
 const MAX_SESSION_NUM: u32 = 3;
-pub(super) const TPM_RS_PW: u32 = 0x4000_0009;
 pub(super) const HMAC_SESSION_FIRST: u32 = 0x0200_0000;
 pub(super) const POLICY_SESSION_FIRST: u32 = 0x0300_0000;
 const SESSION_TPM2B_MAX: usize = 64;
