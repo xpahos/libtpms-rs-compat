@@ -244,47 +244,56 @@ const ECC_SHORTCUTS: [(&[u8], &[u8]); 2] = [(b"ecc-nist", b"ecc-nist-p"), (b"ecc
 
 struct CurveEntry {
     name: &'static [u8],
+    key_size: u32,
     can_be_disabled: bool,
     level: u32,
 }
 const ECC_CURVES: [CurveEntry; 8] = [
     CurveEntry {
         name: b"ecc-nist-p192",
+        key_size: 192,
         can_be_disabled: true,
         level: 1,
     },
     CurveEntry {
         name: b"ecc-nist-p224",
+        key_size: 224,
         can_be_disabled: true,
         level: 1,
     },
     CurveEntry {
         name: b"ecc-nist-p256",
+        key_size: 256,
         can_be_disabled: false,
         level: 1,
     },
     CurveEntry {
         name: b"ecc-nist-p384",
+        key_size: 384,
         can_be_disabled: false,
         level: 1,
     },
     CurveEntry {
         name: b"ecc-nist-p521",
+        key_size: 521,
         can_be_disabled: true,
         level: 1,
     },
     CurveEntry {
         name: b"ecc-bn-p256",
+        key_size: 256,
         can_be_disabled: true,
         level: 1,
     },
     CurveEntry {
         name: b"ecc-bn-p638",
+        key_size: 638,
         can_be_disabled: true,
         level: 1,
     },
     CurveEntry {
         name: b"ecc-sm2-p256",
+        key_size: 256,
         can_be_disabled: true,
         level: 1,
     },
@@ -830,6 +839,164 @@ fn apply_algorithms(
     }
 
     Ok(())
+}
+
+const ALGS_WITH_DEFAULT_MIN_SIZE: [&[u8]; 4] = [b"rsa", b"tdes", b"aes", b"camellia"];
+
+struct AlgorithmSelection {
+    algorithms: [bool; ALGORITHMS.len()],
+    shortcuts: [bool; ECC_SHORTCUTS.len()],
+    curves: [bool; ECC_CURVES.len()],
+    min_sizes: [u32; ALGORITHMS.len()],
+}
+
+fn ecc_index() -> usize {
+    ALGORITHMS
+        .iter()
+        .position(|entry| entry.name == b"ecc")
+        .expect("the algorithm table always carries ecc")
+}
+
+fn select_algorithms(profile: &[u8]) -> AlgorithmSelection {
+    let mut selection = AlgorithmSelection {
+        algorithms: [false; ALGORITHMS.len()],
+        shortcuts: [false; ECC_SHORTCUTS.len()],
+        curves: [false; ECC_CURVES.len()],
+        min_sizes: [0; ALGORITHMS.len()],
+    };
+    for (index, entry) in ALGORITHMS.iter().enumerate() {
+        if !ALGS_WITH_DEFAULT_MIN_SIZE.contains(&entry.name) {
+            continue;
+        }
+        if let Some(smallest) = entry.key_sizes.and_then(<[KeySize]>::first) {
+            selection.min_sizes[index] = u32::from(smallest.size);
+        }
+    }
+
+    for token in profile.split(|&byte| byte == b',') {
+        if select_algorithm_token(&mut selection, token) {
+            continue;
+        }
+        select_ecc_token(&mut selection, token);
+    }
+
+    let ecc_minimum = selection.min_sizes[ecc_index()];
+    for (index, curve) in ECC_CURVES.iter().enumerate() {
+        if curve.can_be_disabled && ecc_minimum > curve.key_size {
+            selection.curves[index] = false;
+        }
+    }
+    selection
+}
+
+fn select_algorithm_token(selection: &mut AlgorithmSelection, token: &[u8]) -> bool {
+    for (index, entry) in ALGORITHMS.iter().enumerate() {
+        if token == entry.name {
+            selection.algorithms[index] = true;
+            return true;
+        }
+        let suffix = if entry.has_min_key_size {
+            b"-min-key-size=".as_slice()
+        } else if entry.key_sizes.is_some() {
+            b"-min-size=".as_slice()
+        } else {
+            continue;
+        };
+        let Some(rest) = token
+            .strip_prefix(entry.name)
+            .and_then(|rest| rest.strip_prefix(suffix))
+        else {
+            continue;
+        };
+        let (value, end, _) = strtoul_c(rest, true);
+        if end == rest.len() {
+            selection.min_sizes[index] = value as u32;
+        }
+        return true;
+    }
+    false
+}
+
+fn select_ecc_token(selection: &mut AlgorithmSelection, token: &[u8]) {
+    let shortcut = ECC_SHORTCUTS
+        .iter()
+        .position(|&(name, _)| name == token)
+        .inspect(|&index| selection.shortcuts[index] = true);
+    for (index, curve) in ECC_CURVES.iter().enumerate() {
+        let matched = match shortcut {
+            Some(shortcut) => curve.name.starts_with(ECC_SHORTCUTS[shortcut].1),
+            None => curve.name == token,
+        };
+        if matched {
+            selection.curves[index] = true;
+        }
+    }
+}
+
+fn push_decimal(out: &mut String, mut value: u32) {
+    let mut digits = [0u8; 10];
+    let mut len = 0;
+    loop {
+        digits[len] = b'0' + (value % 10) as u8;
+        len += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for &digit in digits[..len].iter().rev() {
+        out.push(digit as char);
+    }
+}
+
+fn push_name(out: &mut String, name: &[u8]) {
+    if !out.is_empty() {
+        out.push(',');
+    }
+    out.push_str(core::str::from_utf8(name).unwrap_or_default());
+}
+
+fn render_algorithms(selection: &AlgorithmSelection, wanted: bool) -> String {
+    let ecc = ecc_index();
+    let mut out = String::new();
+    for (index, entry) in ALGORITHMS.iter().enumerate() {
+        if selection.algorithms[index] == wanted {
+            push_name(&mut out, entry.name);
+            let minimum = selection.min_sizes[index];
+            if wanted && minimum > 0 && (entry.key_sizes.is_some() || entry.has_min_key_size) {
+                out.push(',');
+                out.push_str(core::str::from_utf8(entry.name).unwrap_or_default());
+                out.push_str(if entry.has_min_key_size {
+                    "-min-key-size="
+                } else {
+                    "-min-size="
+                });
+                push_decimal(&mut out, minimum);
+            }
+        }
+        if index != ecc {
+            continue;
+        }
+        for (shortcut, &(name, _)) in ECC_SHORTCUTS.iter().enumerate() {
+            if selection.shortcuts[shortcut] == wanted {
+                push_name(&mut out, name);
+            }
+        }
+        for (curve, entry) in ECC_CURVES.iter().enumerate() {
+            if selection.curves[curve] == wanted {
+                push_name(&mut out, entry.name);
+            }
+        }
+    }
+    out
+}
+
+pub(super) fn runtime_algorithm_lists(profile: &[u8]) -> (String, String) {
+    let selection = select_algorithms(profile);
+    (
+        render_algorithms(&selection, true),
+        render_algorithms(&selection, false),
+    )
 }
 
 fn parse_range(token: &[u8]) -> Option<(u32, u32)> {
@@ -1951,5 +2118,276 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
         assert!(command_enabled(DEFAULT_COMMANDS_PROFILE, 0x199));
         assert!(!command_enabled(NULL_COMMANDS_PROFILE, 0x199));
         assert!(!command_enabled(NULL_COMMANDS_PROFILE, 0x12f), "0x12f gap");
+    }
+}
+
+#[cfg(test)]
+mod runtime_algorithm_tests {
+    use super::*;
+
+    const IMPLEMENTED: &str = "rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,\
+hmac-min-key-size=1,aes,aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,\
+rsaes,rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,\
+ecc-min-size=192,ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,ecc-nist-p256,ecc-nist-p384,\
+ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,\
+cmac,ctr,ofb,cbc,cfb,ecb";
+
+    const DEFAULT_ENABLED: &str = "rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,aes,\
+aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,\
+ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=192,ecc-nist,\
+ecc-bn,ecc-nist-p192,ecc-nist-p224,ecc-nist-p256,ecc-nist-p384,ecc-nist-p521,ecc-bn-p256,\
+ecc-bn-p638,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb";
+
+    const CAN_BE_DISABLED: [&str; 24] = [
+        "tdes",
+        "sha1",
+        "sha512",
+        "rsassa",
+        "rsaes",
+        "rsapss",
+        "ecdaa",
+        "sm2",
+        "ecschnorr",
+        "ecmqv",
+        "ecc-nist",
+        "ecc-bn",
+        "ecc-nist-p192",
+        "ecc-nist-p224",
+        "ecc-nist-p521",
+        "ecc-bn-p256",
+        "ecc-bn-p638",
+        "ecc-sm2-p256",
+        "camellia",
+        "cmac",
+        "ctr",
+        "ofb",
+        "cbc",
+        "ecb",
+    ];
+
+    #[track_caller]
+    fn lists(profile: &str) -> (String, String) {
+        runtime_algorithm_lists(profile.as_bytes())
+    }
+
+    fn swtpm_setup_profile(disabled: &[&str]) -> String {
+        let mut algorithms = IMPLEMENTED.replace(',', " ");
+        for name in disabled {
+            if let Some(start) = algorithms.find(name) {
+                algorithms.replace_range(start..start + name.len(), "");
+            }
+            while algorithms.contains("  ") {
+                algorithms = algorithms.replace("  ", " ");
+            }
+            algorithms = algorithms.trim().to_string();
+        }
+        algorithms.replace(' ', ",")
+    }
+
+    #[test]
+    fn the_default_profile_enables_everything_it_names() {
+        let (enabled, disabled) =
+            lists(core::str::from_utf8(DEFAULT_ALGORITHMS_PROFILE).expect("the table is ASCII"));
+        assert_eq!(enabled, DEFAULT_ENABLED);
+        assert_eq!(disabled, "");
+    }
+
+    #[test]
+    fn every_built_in_profile_reports_the_same_lists() {
+        for profile in [PROFILE_NULL, PROFILE_DEFAULT_V1, PROFILE_CUSTOM] {
+            let (enabled, disabled) = runtime_algorithm_lists(profile.algorithms);
+            assert_eq!(enabled, DEFAULT_ENABLED);
+            assert_eq!(disabled, "");
+        }
+    }
+
+    #[test]
+    fn an_empty_profile_is_the_pre_init_state() {
+        let (enabled, disabled) = lists("");
+        assert_eq!(enabled, "");
+        assert_eq!(
+            disabled,
+            "rsa,tdes,sha1,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,\
+rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,\
+ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,ecc-nist-p256,ecc-nist-p384,ecc-nist-p521,\
+ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,symcipher,camellia,cmac,ctr,ofb,cbc,cfb,ecb",
+            "nothing is enabled and no minimum key size is reported"
+        );
+    }
+
+    #[test]
+    fn a_profile_with_only_tdes_removed_disables_exactly_tdes() {
+        let (enabled, disabled) = lists(&swtpm_setup_profile(&["tdes"]));
+        assert_eq!(disabled, "tdes");
+        assert_eq!(
+            enabled,
+            "rsa,rsa-min-size=1024,sha1,hmac,hmac-min-key-size=1,aes,aes-min-size=128,mgf1,\
+keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,\
+ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=192,ecc-nist,ecc-bn,ecc-nist-p192,\
+ecc-nist-p224,ecc-nist-p256,ecc-nist-p384,ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,\
+symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb",
+            "the surviving tdes-min-size= entry never brings tdes back"
+        );
+    }
+
+    #[test]
+    fn the_progressive_disable_sequence_matches_the_oracle() {
+        for step in 1..=CAN_BE_DISABLED.len() {
+            let removed = &CAN_BE_DISABLED[..step];
+            let (_, disabled) = lists(&swtpm_setup_profile(removed));
+            assert_eq!(disabled, removed.join(","), "after {step} removals");
+        }
+    }
+
+    #[test]
+    fn algorithms_and_curves_that_cannot_be_disabled_always_stay_enabled() {
+        let (enabled, _) = lists(&swtpm_setup_profile(&CAN_BE_DISABLED));
+        assert_eq!(
+            enabled,
+            "rsa,rsa-min-size=1024,hmac,hmac-min-key-size=1,aes,aes-min-size=128,mgf1,keyedhash,\
+xor,sha256,sha384,null,oaep,ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=192,\
+ecc-nist-p256,ecc-nist-p384,symcipher,cfb"
+        );
+        for entry in ALGORITHMS.iter().filter(|entry| !entry.can_be_disabled) {
+            let name = core::str::from_utf8(entry.name).unwrap();
+            assert!(
+                enabled.split(',').any(|token| token == name),
+                "{name} must stay enabled"
+            );
+        }
+        for curve in ECC_CURVES.iter().filter(|curve| !curve.can_be_disabled) {
+            let name = core::str::from_utf8(curve.name).unwrap();
+            assert!(
+                enabled.split(',').any(|token| token == name),
+                "{name} must stay enabled"
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_minimum_size_entries_fall_back_to_the_build_minimums() {
+        let (enabled, disabled) = lists(
+            "rsa,tdes,sha1,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,\
+rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,\
+ecc-nist,ecc-bn,ecc-sm2-p256,symcipher,camellia,cmac,ctr,ofb,cbc,cfb,ecb",
+        );
+        assert_eq!(disabled, "");
+        assert_eq!(
+            enabled,
+            "rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,aes,aes-min-size=128,mgf1,\
+keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,\
+ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,\
+ecc-nist-p256,ecc-nist-p384,ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,symcipher,\
+camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb"
+        );
+    }
+
+    #[test]
+    fn raised_minimum_sizes_are_reported_and_filter_the_curves() {
+        let (enabled, disabled) = lists(
+            "rsa,rsa-min-size=2048,tdes,tdes-min-size=192,sha1,hmac,hmac-min-key-size=16,aes,\
+aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,\
+ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=256,ecc-nist,\
+ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=256,cmac,ctr,ofb,cbc,cfb,ecb",
+        );
+        assert_eq!(
+            enabled,
+            "rsa,rsa-min-size=2048,tdes,tdes-min-size=192,sha1,hmac,hmac-min-key-size=16,aes,\
+aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,\
+ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=256,ecc-nist,\
+ecc-bn,ecc-nist-p256,ecc-nist-p384,ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,symcipher,\
+camellia,camellia-min-size=256,cmac,ctr,ofb,cbc,cfb,ecb"
+        );
+        assert_eq!(
+            disabled, "ecc-nist-p192,ecc-nist-p224",
+            "the mandatory 256 and 384 bit curves survive the minimum"
+        );
+    }
+
+    #[test]
+    fn curves_named_individually_leave_the_shortcuts_disabled() {
+        let (enabled, disabled) = lists(
+            "rsa,tdes,sha1,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,\
+rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,\
+ecc-nist-p256,ecc-nist-p384,symcipher,camellia,cmac,ctr,ofb,cbc,cfb,ecb",
+        );
+        assert!(enabled.contains("kdf1-sp800-108,ecc,ecc-nist-p256,ecc-nist-p384,symcipher"));
+        assert_eq!(
+            disabled,
+            "ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,\
+ecc-sm2-p256",
+            "the shortcuts lead the curves, as upstream prints them"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_enables_every_curve_it_covers() {
+        let (enabled, disabled) = lists("ecc,ecc-nist");
+        assert_eq!(
+            enabled,
+            "ecc,ecc-nist,ecc-nist-p192,ecc-nist-p224,ecc-nist-p256,ecc-nist-p384,ecc-nist-p521"
+        );
+        assert!(disabled.contains("ecc-bn,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256"));
+    }
+
+    #[test]
+    fn the_two_lists_partition_every_reported_name() {
+        for profile in [
+            core::str::from_utf8(DEFAULT_ALGORITHMS_PROFILE).unwrap(),
+            "",
+            &swtpm_setup_profile(&["tdes", "sha1", "camellia"]),
+        ] {
+            let (enabled, disabled) = lists(profile);
+            let names = |list: &str| -> Vec<String> {
+                list.split(',')
+                    .filter(|token| !token.is_empty() && !token.contains('='))
+                    .map(str::to_string)
+                    .collect()
+            };
+            let mut all = names(&enabled);
+            all.extend(names(&disabled));
+            all.sort_unstable();
+            let mut expected: Vec<String> = ALGORITHMS
+                .iter()
+                .map(|entry| core::str::from_utf8(entry.name).unwrap().to_string())
+                .chain(
+                    ECC_SHORTCUTS
+                        .iter()
+                        .map(|&(name, _)| core::str::from_utf8(name).unwrap().to_string()),
+                )
+                .chain(
+                    ECC_CURVES
+                        .iter()
+                        .map(|curve| core::str::from_utf8(curve.name).unwrap().to_string()),
+                )
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(all, expected, "profile {profile:?}");
+        }
+    }
+
+    #[test]
+    fn the_lists_are_stable_across_repeated_calls() {
+        let profile = swtpm_setup_profile(&["tdes", "ecc-nist"]);
+        let first = lists(&profile);
+        for _ in 0..4 {
+            assert_eq!(lists(&profile), first);
+        }
+    }
+
+    #[test]
+    fn an_unparsable_minimum_size_never_panics() {
+        for profile in [
+            "rsa-min-size=",
+            "rsa-min-size=abc",
+            "rsa-min-size=99999999999999999999",
+            "hmac-min-key-size=",
+            "ecc-min-size=x",
+            ",,,",
+            "ecc-nist-",
+            "rsa,rsa",
+        ] {
+            let _ = lists(profile);
+        }
     }
 }

@@ -19,7 +19,6 @@ const TPM_HT_PERMANENT: u32 = 0x40;
 const TPM_HT_TRANSIENT: u32 = 0x80;
 const TPM_HT_PERSISTENT: u32 = 0x81;
 
-/// The first handle of a handle type, mirroring the upstream `HR_*` macros.
 const fn handle_range(handle_type: u32) -> u32 {
     handle_type << HR_SHIFT
 }
@@ -29,28 +28,14 @@ const HMAC_SESSION_FIRST: u32 = handle_range(TPM_HT_HMAC_SESSION);
 const POLICY_SESSION_FIRST: u32 = handle_range(TPM_HT_POLICY_SESSION);
 const TRANSIENT_FIRST: u32 = handle_range(TPM_HT_TRANSIENT);
 
-// `SESSION_ATTRIBUTES::isPolicy` is the first member of the C bit field, which
-// the state blob marshals as the raw little-endian host word, so it lands in
-// bit 0 of the attributes we decode.
 const SESSION_ATTR_IS_POLICY: u32 = 1 << 0;
 
-/// Which user NVRAM entries a query selects.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum NvramEntryKind {
     Index,
     Persistent,
 }
 
-/// Collects the `TPML_HANDLE` for `TPM_CAP_HANDLES`.
-///
-/// The high-order byte of `property` selects the handle type and the remainder
-/// is the first handle to report.  `None` means the selected type is not one
-/// this TPM enumerates, which upstream answers with
-/// `TPM_RCS_HANDLE + RC_GetCapability_property`.
-///
-/// Handle types whose entities exist in the runtime state but that no
-/// implemented command can create yet simply report an empty list; nothing here
-/// invents handles that the state does not hold.
 pub(in crate::library::tpm2) fn collect(
     live: &LiveState,
     state: &OwnedPersistentState,
@@ -106,14 +91,6 @@ fn transient(live: &LiveState, property: u32, requested_count: u32) -> Capabilit
     )
 }
 
-/// The context array from the start handle on, paired with its slot index.
-///
-/// Upstream walks the array by index and skips the entries below the start
-/// handle, so the start handle selects a context slot and never a position in
-/// the list of occupied slots.  A context array entry of zero is a free slot;
-/// anything up to `MAX_LOADED_SESSIONS` indexes a session held in RAM
-/// (one-based, as upstream stores it) and any larger value belongs to a session
-/// that has been context saved.
 fn context_slots_from(live: &LiveState, first: usize) -> impl Iterator<Item = (usize, u16)> + '_ {
     live.state_reset
         .as_ref()
@@ -147,8 +124,6 @@ fn saved_sessions(live: &LiveState, property: u32, requested_count: u32) -> Capa
     paginate(
         context_slots_from(live, first)
             .filter(|(_, context)| usize::from(*context) > MAX_LOADED_SESSIONS)
-            // Upstream reports saved sessions in the HMAC range whether or not
-            // they are policy sessions; only loaded sessions get retyped.
             .map(|(slot, _)| HMAC_SESSION_FIRST + slot as u32),
         requested_count,
         MAX_CAP_HANDLES,
@@ -186,18 +161,10 @@ fn user_nvram(
         })
         .filter(|handle| *handle >= property)
         .collect();
-    // Upstream walks NV in storage order and insert-sorts every candidate into
-    // the response, so the page is the lowest handles in ascending order.
     eligible.sort_unstable();
     paginate(eligible.into_iter(), requested_count, MAX_CAP_HANDLES)
 }
 
-/// State injection for handle-capability tests.
-///
-/// No implemented command creates NV indexes, persistent or transient objects
-/// or sessions yet, so the collectors are exercised by placing the entities
-/// straight into the runtime state that the state blob decoder would have
-/// produced.
 #[cfg(test)]
 pub(in crate::library::tpm2) mod test_state {
     use super::{ATTR_OCCUPIED, MAX_LOADED_SESSIONS, SESSION_ATTR_IS_POLICY};
@@ -270,9 +237,6 @@ pub(in crate::library::tpm2) mod test_state {
         }
     }
 
-    /// Loads `context_slot` (zero based) with a session held in RAM slot
-    /// `ram_slot` (zero based), exactly as upstream's one-based context array
-    /// records it.
     pub(in crate::library::tpm2) fn load_session(
         runtime: &mut Tpm2Runtime,
         context_slot: usize,
@@ -289,7 +253,6 @@ pub(in crate::library::tpm2) mod test_state {
         runtime.live.sessions[ram_slot].session = Some(session(policy));
     }
 
-    /// Marks `context_slot` as holding a context-saved session.
     pub(in crate::library::tpm2) fn save_session(
         runtime: &mut Tpm2Runtime,
         context_slot: usize,
@@ -552,10 +515,6 @@ mod tests {
 
     #[test]
     fn the_start_handle_selects_a_context_slot_across_free_slots() {
-        // `oracle16 gap_loaded_from_*`: the oracle starts two sessions and
-        // flushes the one in context slot 0, so slot 0 is free and slot 1 holds
-        // the only session.  The start handle names a context slot, not a
-        // position in the list of occupied slots.
         let mut runtime = started_runtime();
         load_session(&mut runtime, 1, 0, false);
         assert_eq!(entries(&runtime, 0x0200_0000, 10), [0x0200_0001]);

@@ -9,11 +9,6 @@ pub(super) const TPM_RH_ENDORSEMENT: u32 = 0x4000_000b;
 pub(super) const TPM_RH_PLATFORM: u32 = 0x4000_000c;
 pub(super) const TPM_RH_PLATFORM_NV: u32 = 0x4000_000d;
 
-/// Every permanent handle this TPM implements, ascending.  Upstream walks the
-/// whole TPM_RH_FIRST..=TPM_RH_LAST range in `NextPermanentHandle()` and keeps
-/// the values its build enables; the vendored profile enables no ACT, no
-/// firmware-limited and no SVN-limited handle, which leaves exactly these
-/// seven.
 pub(super) const IMPLEMENTED_PERMANENT_HANDLES: [u32; 7] = [
     TPM_RH_OWNER,
     TPM_RH_NULL,

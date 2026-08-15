@@ -6,6 +6,7 @@ mod header;
 mod hierarchy_change_auth;
 mod incremental_self_test;
 mod output;
+mod pcr_allocate;
 mod pcr_extend;
 mod pcr_read;
 mod pcr_reset;

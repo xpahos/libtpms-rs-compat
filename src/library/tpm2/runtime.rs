@@ -37,6 +37,8 @@ pub struct Tpm2Runtime {
 
     pub(super) active_profile_json: String,
 
+    pub(super) active_profile_algorithms: Vec<u8>,
+
     pub(super) drtm_sequence: Option<DrtmSequence>,
 
     pub(super) self_test: SelfTestState,
@@ -171,6 +173,7 @@ fn commit_state(
         .unwrap_or_else(|| candidate.persistent.pcr_allocated.clone());
 
     let active_profile_json = format_active_profile(&candidate.profile);
+    let active_profile_algorithms = candidate.profile.algorithms.clone();
     let self_test = SelfTestState::for_profile(&candidate.profile);
 
     Ok(Box::new(Tpm2Runtime {
@@ -184,6 +187,7 @@ fn commit_state(
         nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
         active_profile_json,
+        active_profile_algorithms,
         drtm_sequence: None,
         self_test,
         cancel: CancelSignal::detached(),
@@ -215,6 +219,7 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
         active_profile_json: String::new(),
+        active_profile_algorithms: Vec::new(),
         drtm_sequence: None,
         self_test: SelfTestState::for_algorithms(DEFAULT_ALGORITHMS_PROFILE),
         cancel: CancelSignal::detached(),
@@ -238,6 +243,7 @@ pub(super) fn manufactured_zeroed_nv_runtime(manufactured: &Tpm2Runtime) -> Box<
     runtime.was_manufactured = true;
     runtime.buffer_size = manufactured.buffer_size;
     runtime.active_profile_json = manufactured.active_profile_json.clone();
+    runtime.active_profile_algorithms = manufactured.active_profile_algorithms.clone();
     runtime.self_test = manufactured.self_test.restarted();
     runtime
 }

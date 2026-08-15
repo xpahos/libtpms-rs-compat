@@ -91,6 +91,10 @@ pub fn get_info(flags: TpmlibInfoFlags, runtime: Option<&Tpm2Runtime>) -> String
             (!runtime.active_profile_json.is_empty())
                 .then_some(runtime.active_profile_json.as_str())
         }),
+        runtime.and_then(|runtime| {
+            (!runtime.active_profile_algorithms.is_empty())
+                .then_some(runtime.active_profile_algorithms.as_slice())
+        }),
     )
 }
 

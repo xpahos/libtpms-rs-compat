@@ -113,8 +113,6 @@ fn collect_capability(
             // TODO: Support runtimes without decoded state after the NVChip
             // fallback is implemented.
             let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-            // `gp.pcrAllocated`: the shadow the state blob carried once
-            // `NVShadowRestore()` has run, otherwise the committed allocation.
             let allocation = runtime.effective_pcr_allocated().ok_or(TPM_RC_FAILURE)?;
             let page = pcrs::collect(allocation, &state.profile.algorithms, input.property_count);
             let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
@@ -463,8 +461,9 @@ mod tests {
         assert_eq!(
             query(&mut runtime, 2, 0, 1000),
             hex(
-                "800100000043000000000000000002000000 0c 02400129 0200013d 00400142 00400143 \
-                 00400144 00400145 00400146 0000017a 0000017b 0000017d 0000017e 02000182"
+                "800100000047000000000000000002000000 0d 02400129 0240012b 0200013d 00400142 \
+                 00400143 00400144 00400145 00400146 0000017a 0000017b 0000017d 0000017e \
+                 02000182"
             )
         );
     }
@@ -484,8 +483,18 @@ mod tests {
         );
         assert_eq!(
             query(&mut runtime, 2, 0x012a, 1),
-            hex("80010000001700000000010000000200000001 0200013d"),
+            hex("80010000001700000000010000000200000001 0240012b"),
             "just above HierarchyChangeAuth"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x012b, 1),
+            hex("80010000001700000000010000000200000001 0240012b"),
+            "PCR_Allocate advertises itself through the registry"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x012c, 1),
+            hex("80010000001700000000010000000200000001 0200013d"),
+            "just above PCR_Allocate"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x013d, 1),
@@ -567,14 +576,23 @@ mod tests {
         );
         assert_eq!(
             query(&mut runtime, 2, 0, 3),
-            hex("80010000001f00000000010000000200000003 02400129 0200013d 00400142"),
+            hex("80010000001f00000000010000000200000003 02400129 0240012b 0200013d"),
             "an exhausted count leaves more data"
         );
         assert_eq!(
             query(&mut runtime, 2, 0, 12),
             hex(
-                "800100000043000000000000000002000000 0c 02400129 0200013d 00400142 00400143 \
-                 00400144 00400145 00400146 0000017a 0000017b 0000017d 0000017e 02000182"
+                "800100000043000000000100000002000000 0c 02400129 0240012b 0200013d 00400142 \
+                 00400143 00400144 00400145 00400146 0000017a 0000017b 0000017d 0000017e"
+            ),
+            "one short of the registry still leaves more data"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0, 13),
+            hex(
+                "800100000047000000000000000002000000 0d 02400129 0240012b 0200013d 00400142 \
+                 00400143 00400144 00400145 00400146 0000017a 0000017b 0000017d 0000017e \
+                 02000182"
             ),
             "an exact count consumes the registry"
         );
@@ -589,7 +607,7 @@ mod tests {
 000d0000011b000000060000011c000001000000011d000000ff0000011e000010000000011f00001\
 00000000120000000400000012100000a8c0000012200000194000001230000000100000124000000\
 000000012500000106000001260000001900000127000007e80000012800000080000001290000000\
-c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e00000400";
+d0000012a0000000d0000012b000000000000012c000004000000012d000000000000012e00000400";
 
     #[test]
     fn the_fixed_property_group_matches_the_oracle_with_registry_command_counts() {
@@ -723,7 +741,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
         }
     }
 
-    /// The empty `TPML_HANDLE` response: no more data, capability 1, count 0.
     const EMPTY_HANDLE_LIST: &str = "80010000001300000000000000000100000000";
 
     #[track_caller]
@@ -904,7 +921,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
     #[test]
     fn nv_index_handles_match_the_oracle_bytes() {
         let mut runtime = started_runtime();
-        // The oracle defines these four indexes in the order 5, 1, 3, a.
         push_nvram(
             &mut runtime,
             [
@@ -1023,7 +1039,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
             hex(EMPTY_HANDLE_LIST)
         );
 
-        // The oracle flushes slot 0 and re-queries; the freed slot drops out.
         runtime.live.objects[0].attributes &= !(1 << 15);
         assert_eq!(
             handles(&mut runtime, 0x8000_0000, 10),
@@ -1034,8 +1049,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
     #[test]
     fn session_handles_match_the_oracle_bytes() {
         let mut runtime = started_runtime();
-        // The oracle starts an HMAC session and then a policy session, which
-        // take context slots 0 and 1.
         load_session(&mut runtime, 0, 0, false);
         load_session(&mut runtime, 1, 1, true);
         assert_eq!(
@@ -1062,7 +1075,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
             "the policy range only reports context-saved sessions"
         );
 
-        // The oracle then context saves the session in slot 0.
         save_session(&mut runtime, 0, 4);
         assert_eq!(
             handles(&mut runtime, 0x0200_0000, 10),
@@ -1087,7 +1099,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
     #[test]
     fn the_response_size_limit_truncates_the_handle_list() {
         let mut runtime = started_runtime();
-        // The oracle's four indexes plus the 300 it defines from 0x01001000.
         push_nvram(
             &mut runtime,
             [
@@ -1219,17 +1230,11 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
         }
     }
 
-    /// The single `TPM2_GetCapability` request `swtpm_setup` issues, from
-    /// `swtpm_tpm2_get_all_pcr_banks()` in `swtpm/src/swtpm_setup/swtpm.c`: a
-    /// no-sessions `TPM_CAP_PCRS` query for up to 64 properties.
     const SWTPM_SETUP_GET_CAPABILITY: &str = "80010000001600000 17a 00000005 00000000 00000040";
 
-    /// `oracle17 swtpm_setup`: all four compiled banks, every PCR allocated.
     const ORACLE_PCRS_ALL_BANKS: &str = "80010000002b000000000000000005000000 04 \
          000403ffffff 000b03ffffff 000c03ffffff 000d03ffffff";
-    /// `oracle17 count0`: a zero count answers YES and an empty list.
     const ORACLE_PCRS_COUNT_ZERO: &str = "80010000001300000000010000000500000000";
-    /// The same list with no more data, which is also the empty-allocation answer.
     const ORACLE_PCRS_EMPTY: &str = "80010000001300000000000000000500000000";
 
     const RC_VALUE_PARAM2: u32 = 0x2c4;
@@ -1254,9 +1259,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
         runtime
     }
 
-    /// Manufactures, rewrites the PCR allocation, then round trips the state
-    /// through the permanent-state blob so the runtime is one that was
-    /// restored rather than manufactured.
     fn restored_runtime_with_allocation(selections: Vec<OwnedPcrSelection>) -> Box<Tpm2Runtime> {
         use crate::library::tpm2::parse_persistent_all_payload;
         use crate::library::tpm2::persistent::{
@@ -1311,8 +1313,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
     fn the_default_profile_reports_every_compiled_pcr_bank() {
         let mut runtime = started_runtime();
         let expected = hex(ORACLE_PCRS_ALL_BANKS);
-        // `PCRCapGetAllocation()` never pages, so every non-zero count answers
-        // the whole allocation with no more data.
         for count in [1u32, 2, 3, 4, 5, 64, 1000, u32::MAX] {
             assert_eq!(pcr_banks(&mut runtime, 0, count), expected, "count {count}");
         }
@@ -1350,8 +1350,6 @@ c0000012a0000000c0000012b000000000000012c000004000000012d000000000000012e0000040
         }
     }
 
-    /// `oracle17` phase 4.  Only `sha1` and `sha512` carry `canBeDisabled` for
-    /// a PCR bank upstream, so these are every profile subset a TPM can boot.
     #[test]
     fn a_restricted_profile_drops_its_disabled_banks() {
         const ALL: &str = "rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,aes,\
@@ -1415,8 +1413,6 @@ ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cf
 
     #[test]
     fn the_restored_shadow_allocation_wins_once_it_has_been_applied() {
-        // `NVShadowRestore()` runs when a volatile blob is restored and moves
-        // the tail's shadow into `gp.pcrAllocated`; the answer must follow.
         let mut runtime = restored_runtime_with_allocation(vec![bank(0x000b, [0xff, 0xff, 0xff])]);
         runtime.shadow_pcr_allocated = OwnedPcrAllocation {
             selections: vec![bank(0x0004, [0x01, 0x00, 0x00]), bank(0x000d, [0x02, 0, 0])],

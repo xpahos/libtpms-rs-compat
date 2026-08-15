@@ -2,20 +2,12 @@ use super::super::algorithm::{algorithm_enabled, hash_profile_name};
 use super::super::persistent::{OwnedPcrAllocation, OwnedPcrSelection};
 use super::CapabilityPage;
 
-/// Collects the `TPML_PCR_SELECTION` for `TPM_CAP_PCRS`.
-///
-/// Upstream's `PCRCapGetAllocation()` ignores `requested_count` except for the
-/// single case of zero, which answers an empty list and `moreData` set; any
-/// other count copies the whole of `gp.pcrAllocated` and clears `moreData`.
-/// The list is therefore never paged and never truncated to the count.
 pub(in crate::library::tpm2) fn collect(
     allocation: &OwnedPcrAllocation,
     profile_algorithms: &[u8],
     requested_count: u32,
 ) -> CapabilityPage<OwnedPcrSelection> {
     if requested_count == 0 {
-        // `PCRCapGetAllocation()` returns YES for a zero count whether or not
-        // any bank is allocated, so this is not the usual "an entry remains".
         return CapabilityPage {
             entries: Vec::new(),
             more_data: true,
@@ -29,15 +21,6 @@ pub(in crate::library::tpm2) fn collect(
     }
 }
 
-/// Drops the banks the active profile disables, exactly as upstream's
-/// `RuntimeAlgorithmsFilterPCRSelection()` does.
-///
-/// That loop decrements `count` and then only closes the gap when
-/// `count - 1 > i`, so removing the entry at `count - 2` leaves the entry after
-/// it outside the new count and the re-examined slot removes a second entry.
-/// A disabled bank therefore never survives, but an enabled bank that follows
-/// one can be dropped with it.  Restored state blobs may carry an allocation of
-/// any length, so the quirk is reachable and is reproduced rather than fixed.
 fn filter_disabled_banks(selections: &mut Vec<OwnedPcrSelection>, profile_algorithms: &[u8]) {
     let mut count = selections.len();
     let mut index = 0;
@@ -47,14 +30,7 @@ fn filter_disabled_banks(selections: &mut Vec<OwnedPcrSelection>, profile_algori
             continue;
         }
         count -= 1;
-        // Upstream's guard is `count - 1 > i` on an unsigned count; a count of
-        // zero wraps it to true but then copies `count - i` == 0 entries, so
-        // the underflow is inert and the saturating form matches it.
         if count.saturating_sub(1) > index {
-            // Upstream copies `count - index` entries from `index + 1` down to
-            // `index`; rotating the same span leaves the identical contents
-            // below the new count and parks the removed entry above it, where
-            // nothing reads it again.
             selections[index..=count].rotate_left(1);
         }
     }
@@ -92,7 +68,6 @@ mod tests {
         }
     }
 
-    /// `oracle18` prints the filtered list as `hash/first bitmap byte` pairs.
     #[track_caller]
     fn filtered(algs: &[u16], profile: &[u8]) -> Vec<(u16, u8)> {
         let mut selections = allocation(algs).selections;
@@ -120,7 +95,6 @@ mod tests {
         }
     }
 
-    /// Every case here is a line of `oracle18.out`.
     #[test]
     fn the_disabled_bank_filter_matches_the_oracle() {
         const S1: u16 = TPM_ALG_SHA1;

@@ -1,5 +1,7 @@
 use crate::ffi_types::TpmlibInfoFlags;
 
+use super::profile;
+
 const INFO_TPMSPECIFICATION: u32 = 1;
 const INFO_TPMATTRIBUTES: u32 = 2;
 const INFO_TPMFEATURES: u32 = 4;
@@ -21,24 +23,34 @@ const TPM_FEATURES: &str = concat!(
     r#""CamelliaKeySizes":[128,192,256]}"#
 );
 
-const RUNTIME_ALGORITHMS: &str = concat!(
-    r#""RuntimeAlgorithms":{"Implemented":"#,
-    r#""rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,hmac-min-key-size=1,"#,
+const ALGORITHMS_IMPLEMENTED: &str = concat!(
+    r#"rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,hmac-min-key-size=1,"#,
     r#"aes,aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,"#,
     r#"rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,"#,
     r#"kdf1-sp800-108,ecc,ecc-min-size=192,ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,"#,
     r#"ecc-nist-p256,ecc-nist-p384,ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,"#,
-    r#"symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb","#,
-    r#""CanBeDisabled":"tdes,sha1,sha512,rsassa,rsaes,rsapss,ecdaa,sm2,ecschnorr,ecmqv,"#,
-    r#"ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,ecc-nist-p521,ecc-bn-p256,"#,
-    r#"ecc-bn-p638,ecc-sm2-p256,camellia,cmac,ctr,ofb,cbc,ecb","#,
-    r#""Enabled":"","#,
-    r#""Disabled":"rsa,tdes,sha1,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,sha512,null,"#,
-    r#"rsassa,rsaes,rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,"#,
-    r#"kdf2,kdf1-sp800-108,ecc,ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,"#,
-    r#"ecc-nist-p256,ecc-nist-p384,ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,"#,
-    r#"symcipher,camellia,cmac,ctr,ofb,cbc,cfb,ecb"}"#
+    r#"symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb"#
 );
+
+const ALGORITHMS_CAN_BE_DISABLED: &str = concat!(
+    r#"tdes,sha1,sha512,rsassa,rsaes,rsapss,ecdaa,sm2,ecschnorr,ecmqv,"#,
+    r#"ecc-nist,ecc-bn,ecc-nist-p192,ecc-nist-p224,ecc-nist-p521,ecc-bn-p256,"#,
+    r#"ecc-bn-p638,ecc-sm2-p256,camellia,cmac,ctr,ofb,cbc,ecb"#
+);
+
+fn runtime_algorithms(active_algorithms: Option<&[u8]>) -> String {
+    let (enabled, disabled) = profile::runtime_algorithm_lists(active_algorithms.unwrap_or(b""));
+    let mut out = String::from(r#""RuntimeAlgorithms":{"Implemented":""#);
+    out.push_str(ALGORITHMS_IMPLEMENTED);
+    out.push_str(r#"","CanBeDisabled":""#);
+    out.push_str(ALGORITHMS_CAN_BE_DISABLED);
+    out.push_str(r#"","Enabled":""#);
+    out.push_str(&enabled);
+    out.push_str(r#"","Disabled":""#);
+    out.push_str(&disabled);
+    out.push_str(r#""}"#);
+    out
+}
 
 const RUNTIME_COMMANDS: &str = concat!(
     r#""RuntimeCommands":{"Implemented":"0x11f-0x122,0x124-0x12e,0x130-0x140,"#,
@@ -104,14 +116,19 @@ const AVAILABLE_PROFILES: &str = concat!(
     r#"and commands. This profile requires at least libtpms v0.10."}]"#
 );
 
-pub fn get_info(flags: TpmlibInfoFlags, active_profile: Option<&str>) -> String {
+pub fn get_info(
+    flags: TpmlibInfoFlags,
+    active_profile: Option<&str>,
+    active_algorithms: Option<&[u8]>,
+) -> String {
     let flags = flags as u32;
     let active = active_profile.map(|json| format!("\"ActiveProfile\":{json}"));
+    let algorithms = runtime_algorithms(active_algorithms);
     let selected: [(u32, Option<&str>); 8] = [
         (INFO_TPMSPECIFICATION, Some(TPM_SPECIFICATION)),
         (INFO_TPMATTRIBUTES, Some(TPM_ATTRIBUTES)),
         (INFO_TPMFEATURES, Some(TPM_FEATURES)),
-        (INFO_RUNTIME_ALGORITHMS, Some(RUNTIME_ALGORITHMS)),
+        (INFO_RUNTIME_ALGORITHMS, Some(algorithms.as_str())),
         (INFO_RUNTIME_COMMANDS, Some(RUNTIME_COMMANDS)),
         (INFO_RUNTIME_ATTRIBUTES, Some(RUNTIME_ATTRIBUTES)),
         (INFO_ACTIVE_PROFILE, active.as_deref()),
@@ -130,7 +147,7 @@ mod tests {
     use super::*;
 
     fn get_info_string(flags: u32) -> String {
-        get_info(flags as TpmlibInfoFlags, None)
+        get_info(flags as TpmlibInfoFlags, None, None)
     }
 
     #[test]
@@ -156,10 +173,10 @@ mod tests {
     fn active_profile_is_reported_after_main_init() {
         const PROFILE: &str = r#"{"Name":"null","StateFormatLevel":1}"#;
         assert_eq!(
-            get_info(INFO_ACTIVE_PROFILE as TpmlibInfoFlags, Some(PROFILE)),
+            get_info(INFO_ACTIVE_PROFILE as TpmlibInfoFlags, Some(PROFILE), None),
             r#"{"ActiveProfile":{"Name":"null","StateFormatLevel":1}}"#
         );
-        let all = get_info(255 as TpmlibInfoFlags, Some(PROFILE));
+        let all = get_info(255 as TpmlibInfoFlags, Some(PROFILE), None);
         let attrs = all.find("RuntimeAttributes").unwrap();
         let active = all.find("ActiveProfile").unwrap();
         let available = all.find("AvailableProfiles").unwrap();
@@ -209,5 +226,111 @@ mod tests {
         assert!(algos.contains(r#""Implemented":"rsa,rsa-min-size=1024,"#));
         let cmds = get_info_string(INFO_RUNTIME_COMMANDS);
         assert!(cmds.contains(r#""Implemented":"0x11f-0x122,"#));
+    }
+}
+
+#[cfg(test)]
+mod runtime_algorithms_tests {
+    use super::*;
+    use crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE;
+
+    #[track_caller]
+    fn field<'a>(info: &'a str, key: &str) -> &'a str {
+        let opening = format!("\"{key}\":\"");
+        let start = info.find(&opening).expect(key) + opening.len();
+        let len = info[start..].find('"').expect("a closing quote");
+        &info[start..start + len]
+    }
+
+    fn section(profile: Option<&[u8]>) -> String {
+        get_info(INFO_RUNTIME_ALGORITHMS as TpmlibInfoFlags, None, profile)
+    }
+
+    const REDUCED: &[u8] = b"rsa,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,null,oaep,ecdsa,\
+ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-nist-p256,ecc-nist-p384,symcipher,cfb";
+
+    #[test]
+    fn the_implemented_and_can_be_disabled_lists_are_profile_independent() {
+        let pre_init = section(None);
+        for profile in [DEFAULT_ALGORITHMS_PROFILE, REDUCED] {
+            let info = section(Some(profile));
+            assert_eq!(field(&info, "Implemented"), field(&pre_init, "Implemented"));
+            assert_eq!(
+                field(&info, "CanBeDisabled"),
+                field(&pre_init, "CanBeDisabled")
+            );
+        }
+    }
+
+    #[test]
+    fn the_section_reports_the_active_profile() {
+        let info = section(Some(DEFAULT_ALGORITHMS_PROFILE));
+        assert_eq!(field(&info, "Disabled"), "");
+        assert!(field(&info, "Enabled").starts_with("rsa,rsa-min-size=1024,tdes,"));
+
+        let info = section(Some(REDUCED));
+        assert_eq!(
+            field(&info, "Enabled"),
+            "rsa,rsa-min-size=1024,hmac,aes,aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,\
+null,oaep,ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-nist-p256,ecc-nist-p384,\
+symcipher,cfb"
+        );
+        assert_eq!(
+            field(&info, "Disabled"),
+            "tdes,sha1,sha512,rsassa,rsaes,rsapss,ecdaa,sm2,ecschnorr,ecmqv,ecc-nist,ecc-bn,\
+ecc-nist-p192,ecc-nist-p224,ecc-nist-p521,ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,camellia,cmac,\
+ctr,ofb,cbc,ecb"
+        );
+    }
+
+    #[test]
+    fn a_profile_without_tdes_reports_exactly_tdes_as_disabled() {
+        let profile: Vec<u8> = DEFAULT_ALGORITHMS_PROFILE
+            .split(|&byte| byte == b',')
+            .filter(|token| *token != b"tdes")
+            .collect::<Vec<_>>()
+            .join(&b","[..]);
+        assert_eq!(field(&section(Some(&profile)), "Disabled"), "tdes");
+    }
+
+    #[test]
+    fn a_profile_with_several_disabled_algorithms_lists_them_in_table_order() {
+        let dropped: [&[u8]; 3] = [b"camellia", b"sha1", b"cbc"];
+        let profile: Vec<u8> = DEFAULT_ALGORITHMS_PROFILE
+            .split(|&byte| byte == b',')
+            .filter(|token| !dropped.contains(token))
+            .collect::<Vec<_>>()
+            .join(&b","[..]);
+        assert_eq!(
+            field(&section(Some(&profile)), "Disabled"),
+            "sha1,camellia,cbc",
+            "the order follows the algorithm table, not the profile"
+        );
+    }
+
+    #[test]
+    fn the_section_keeps_its_key_order_and_stays_valid_json() {
+        for profile in [None, Some(DEFAULT_ALGORITHMS_PROFILE), Some(REDUCED)] {
+            let info = section(profile);
+            assert!(info.starts_with("{\"RuntimeAlgorithms\":{\"Implemented\":\""));
+            assert!(info.ends_with("\"}}"));
+            let keys = ["Implemented", "CanBeDisabled", "Enabled", "Disabled"];
+            let positions: Vec<usize> = keys
+                .iter()
+                .map(|key| info.find(&format!("\"{key}\"")).expect(key))
+                .collect();
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            assert_eq!(info.matches('{').count(), info.matches('}').count());
+            assert_eq!(info.matches('"').count() % 2, 0);
+            assert!(!info.contains(",,"), "no empty list entries");
+        }
+    }
+
+    #[test]
+    fn the_section_is_stable_across_calls() {
+        let first = section(Some(REDUCED));
+        for _ in 0..4 {
+            assert_eq!(section(Some(REDUCED)), first);
+        }
     }
 }
