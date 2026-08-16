@@ -3,6 +3,7 @@ use crate::ffi_types::TpmResult;
 use super::super::hierarchy::is_hierarchy_auth_handle;
 use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
+use super::change_eps;
 use super::dispatcher::CommandFrame;
 use super::get_capability;
 use super::get_random;
@@ -19,6 +20,7 @@ use super::shutdown;
 use super::startup;
 use super::stir_random;
 
+pub(in crate::library::tpm2) const TPM_CC_CHANGE_EPS: u32 = 0x0000_0124;
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 pub(in crate::library::tpm2) const TPM_CC_PCR_ALLOCATE: u32 = 0x0000_012b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
@@ -38,6 +40,7 @@ use super::super::hierarchy::TPM_RH_PLATFORM;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
+const TPMA_CC_EXTENSIVE: u32 = 1 << 23;
 const TPMA_CC_C_HANDLES_SHIFT: u32 = 25;
 
 const fn tpma_cc(code: u32, nv: bool, command_handles: u32) -> u32 {
@@ -98,6 +101,17 @@ pub(in crate::library::tpm2) struct CommandDescriptor {
 }
 
 static COMMANDS: &[CommandDescriptor] = &[
+    CommandDescriptor {
+        code: TPM_CC_CHANGE_EPS,
+        attributes: tpma_cc(TPM_CC_CHANGE_EPS, true, 1) | TPMA_CC_EXTENSIVE,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Platform,
+            user_auth: true,
+        }],
+        sessions_allowed: true,
+        handler: change_eps::execute,
+    },
     CommandDescriptor {
         code: TPM_CC_HIERARCHY_CHANGE_AUTH,
         attributes: tpma_cc(TPM_CC_HIERARCHY_CHANGE_AUTH, true, 1),
@@ -261,6 +275,10 @@ mod tests {
     #[test]
     fn lookup_finds_every_registered_command() {
         assert_eq!(
+            find(TPM_CC_CHANGE_EPS).map(|d| d.code),
+            Some(TPM_CC_CHANGE_EPS)
+        );
+        assert_eq!(
             find(TPM_CC_HIERARCHY_CHANGE_AUTH).map(|d| d.code),
             Some(TPM_CC_HIERARCHY_CHANGE_AUTH)
         );
@@ -306,8 +324,16 @@ mod tests {
     fn lookup_rejects_unregistered_command_codes() {
         assert!(find(0x0000_0000).is_none(), "below all entries");
         assert!(
-            find(TPM_CC_HIERARCHY_CHANGE_AUTH - 1).is_none(),
+            find(TPM_CC_CHANGE_EPS - 1).is_none(),
             "just below the first"
+        );
+        assert!(
+            find(TPM_CC_CHANGE_EPS + 1).is_none(),
+            "between ChangeEPS and HierarchyChangeAuth"
+        );
+        assert!(
+            find(TPM_CC_HIERARCHY_CHANGE_AUTH - 1).is_none(),
+            "just below HierarchyChangeAuth"
         );
         assert!(
             find(TPM_CC_HIERARCHY_CHANGE_AUTH + 1).is_none(),
@@ -358,6 +384,7 @@ mod tests {
         assert_eq!(
             codes,
             [
+                TPM_CC_CHANGE_EPS,
                 TPM_CC_HIERARCHY_CHANGE_AUTH,
                 TPM_CC_PCR_ALLOCATE,
                 TPM_CC_PCR_RESET,
@@ -373,6 +400,45 @@ mod tests {
                 TPM_CC_PCR_EXTEND
             ]
         );
+    }
+
+    #[test]
+    fn change_eps_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_CHANGE_EPS).unwrap().attributes, 0x02c0_0124);
+    }
+
+    #[test]
+    fn change_eps_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_CHANGE_EPS)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn change_eps_declares_one_platform_handle_requiring_user_authorization() {
+        let descriptor = find(TPM_CC_CHANGE_EPS).unwrap();
+        assert_eq!(descriptor.handles.len(), 1);
+        assert!(descriptor.handles[0].user_auth);
+        assert!(matches!(descriptor.handles[0].kind, HandleKind::Platform));
+        assert!(descriptor.sessions_allowed);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
+        assert_ne!(descriptor.attributes & (1 << 22), 0, "ChangeEPS updates NV");
+    }
+
+    #[test]
+    fn change_eps_is_the_only_extensive_command() {
+        for descriptor in implemented() {
+            assert_eq!(
+                descriptor.attributes & TPMA_CC_EXTENSIVE != 0,
+                descriptor.code == TPM_CC_CHANGE_EPS,
+                "code {:#x}",
+                descriptor.code
+            );
+        }
     }
 
     #[test]

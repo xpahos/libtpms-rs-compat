@@ -692,6 +692,20 @@ pub(in crate::library::tpm2) struct OwnedUserNvram {
     pub(in crate::library::tpm2) required_capacity: u64,
 }
 
+pub(in crate::library::tpm2) fn user_nvram_required_capacity<'a>(
+    entries: impl IntoIterator<Item = &'a OwnedUserNvramEntry>,
+) -> Option<u64> {
+    let mut required: u64 = 0;
+    for entry in entries {
+        required = required
+            .checked_add(entry.destination_size())
+            .filter(|&needed| needed <= USER_NVRAM_CAPACITY)?;
+    }
+    required
+        .checked_add(4 + 8)
+        .filter(|&needed| needed <= USER_NVRAM_CAPACITY)
+}
+
 fn own_user_nvram(user: &UserNvram<'_>) -> Result<OwnedUserNvram, TpmResult> {
     let entries: Vec<OwnedUserNvramEntry> = user
         .entries
@@ -732,17 +746,7 @@ fn own_user_nvram(user: &UserNvram<'_>) -> Result<OwnedUserNvram, TpmResult> {
         })
         .collect();
 
-    let mut required_capacity: u64 = 0;
-    for entry in &entries {
-        required_capacity = required_capacity
-            .checked_add(entry.destination_size())
-            .filter(|&needed| needed <= USER_NVRAM_CAPACITY)
-            .ok_or(TPM_FAIL)?;
-    }
-    required_capacity = required_capacity
-        .checked_add(4 + 8)
-        .filter(|&needed| needed <= USER_NVRAM_CAPACITY)
-        .ok_or(TPM_FAIL)?;
+    let required_capacity = user_nvram_required_capacity(&entries).ok_or(TPM_FAIL)?;
     if required_capacity != user.required_capacity {
         return Err(TPM_FAIL);
     }

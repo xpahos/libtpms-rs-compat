@@ -19,7 +19,7 @@ pub(super) use attach::{
     OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState, OwnedPublicId, OwnedSecret,
     OwnedStateClearData, OwnedStateResetData, OwnedTpmtPublic, OwnedTpmtSensitive, OwnedUserNvram,
     OwnedUserNvramEntry, materialize_persistent_state, own_any_object, own_orderly_data,
-    own_state_clear, own_state_reset,
+    own_state_clear, own_state_reset, user_nvram_required_capacity,
 };
 pub(super) use compat_tail::{
     CompatTail, SEED_COMPAT_LEVEL_LAST, SEED_COMPAT_LEVEL_ORIGINAL, parse_compat_tail,

@@ -1,7 +1,9 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::TPM_FAIL;
 
-use super::persistent::{PersistentAllError, ProfileComponent, ProfileField};
+use super::persistent::{
+    PersistentAllError, ProfileComponent, ProfileField, SEED_COMPAT_LEVEL_LAST,
+};
 
 pub(super) const STATE_FORMAT_LEVEL_CURRENT: u32 = 7;
 const MAX_PROFILE_NAME_LEN: usize = 32;
@@ -1092,6 +1094,10 @@ impl ValidatedProfile {
                 .split(|&byte| byte == b',')
                 .any(|token| token == name)
         })
+    }
+
+    pub(super) fn seed_compat_level(&self) -> u8 {
+        SEED_COMPAT_LEVEL_LAST
     }
 
     fn null_profile() -> Self {
