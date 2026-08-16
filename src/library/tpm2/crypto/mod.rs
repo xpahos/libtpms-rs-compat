@@ -1,16 +1,27 @@
+mod bignum;
+mod des;
 mod df;
 mod drbg;
 #[cfg(test)]
 mod drbg_vectors;
+mod ecc;
 mod entropy;
 mod hash;
 mod hmac;
+mod prime;
+mod rand_state;
+mod rsa;
 
+pub(super) use bignum::BigUint;
+pub(super) use des::{generate_tdes_key, validate_tdes_key};
 pub(super) use df::df_buffer;
 pub(super) use drbg::{DRBG_MAGIC, Drbg, StirError};
+pub(super) use ecc::{EccKeyError, curve_key_size_bits, generate_ecc_key, is_compiled_curve};
 pub(in crate::library) use entropy::{EntropySource, os_entropy};
 pub(super) use hash::{COMPILED_HASHES, Hasher};
 pub(super) use hmac::HmacState;
+pub(super) use rand_state::SeededRand;
+pub(super) use rsa::{RsaKeyError, generate_rsa_key};
 
 #[cfg(test)]
 pub(super) use drbg::{CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_SEED_SIZE};

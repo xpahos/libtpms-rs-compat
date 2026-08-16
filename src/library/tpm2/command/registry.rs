@@ -4,6 +4,7 @@ use super::super::hierarchy::is_hierarchy_auth_handle;
 use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::change_eps;
+use super::create_primary;
 use super::dispatcher::CommandFrame;
 use super::get_capability;
 use super::get_random;
@@ -23,6 +24,7 @@ use super::stir_random;
 pub(in crate::library::tpm2) const TPM_CC_CHANGE_EPS: u32 = 0x0000_0124;
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 pub(in crate::library::tpm2) const TPM_CC_PCR_ALLOCATE: u32 = 0x0000_012b;
+pub(in crate::library::tpm2) const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
@@ -36,17 +38,22 @@ pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
-use super::super::hierarchy::TPM_RH_PLATFORM;
+use super::super::hierarchy::{TPM_RH_PLATFORM, is_hierarchy_handle};
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
 const TPMA_CC_EXTENSIVE: u32 = 1 << 23;
 const TPMA_CC_C_HANDLES_SHIFT: u32 = 25;
+const TPMA_CC_R_HANDLE: u32 = 1 << 28;
 
 const fn tpma_cc(code: u32, nv: bool, command_handles: u32) -> u32 {
     (code & TPMA_CC_COMMAND_INDEX_MASK)
         | if nv { TPMA_CC_NV } else { 0 }
         | (command_handles << TPMA_CC_C_HANDLES_SHIFT)
+}
+
+const fn tpma_cc_with_response_handle(code: u32, nv: bool, command_handles: u32) -> u32 {
+    tpma_cc(code, nv, command_handles) | TPMA_CC_R_HANDLE
 }
 
 pub(super) type CommandHandler =
@@ -70,6 +77,7 @@ impl CommandLifecycle {
 #[derive(Clone, Copy)]
 pub(super) enum HandleKind {
     HierarchyAuth,
+    Hierarchy,
     Platform,
     Pcr,
     PcrAllowNull,
@@ -79,6 +87,7 @@ impl HandleKind {
     pub(super) fn accepts(self, handle: u32) -> bool {
         match self {
             Self::HierarchyAuth => is_hierarchy_auth_handle(handle),
+            Self::Hierarchy => is_hierarchy_handle(handle),
             Self::Platform => handle == TPM_RH_PLATFORM,
             Self::Pcr => (handle as usize) < IMPLEMENTATION_PCR,
             Self::PcrAllowNull => (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_NULL,
@@ -94,6 +103,10 @@ pub(super) struct HandleSpec {
 pub(in crate::library::tpm2) struct CommandDescriptor {
     pub(in crate::library::tpm2) code: u32,
     pub(in crate::library::tpm2) attributes: u32,
+    // TODO: Consume this when TPM2_PP_Commands and the physical-presence gate
+    // are implemented.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::library::tpm2) physical_presence: bool,
     pub(super) lifecycle: CommandLifecycle,
     pub(super) handles: &'static [HandleSpec],
     pub(super) sessions_allowed: bool,
@@ -104,6 +117,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_CHANGE_EPS,
         attributes: tpma_cc(TPM_CC_CHANGE_EPS, true, 1) | TPMA_CC_EXTENSIVE,
+        physical_presence: true,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
@@ -115,6 +129,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_HIERARCHY_CHANGE_AUTH,
         attributes: tpma_cc(TPM_CC_HIERARCHY_CHANGE_AUTH, true, 1),
+        physical_presence: true,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::HierarchyAuth,
@@ -126,6 +141,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_PCR_ALLOCATE,
         attributes: tpma_cc(TPM_CC_PCR_ALLOCATE, true, 1),
+        physical_presence: true,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
@@ -135,8 +151,21 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: pcr_allocate::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_CREATE_PRIMARY,
+        attributes: tpma_cc_with_response_handle(TPM_CC_CREATE_PRIMARY, false, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Hierarchy,
+            user_auth: true,
+        }],
+        sessions_allowed: true,
+        handler: create_primary::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_PCR_RESET,
         attributes: tpma_cc(TPM_CC_PCR_RESET, false, 1),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Pcr,
@@ -148,6 +177,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_INCREMENTAL_SELF_TEST,
         attributes: tpma_cc(TPM_CC_INCREMENTAL_SELF_TEST, true, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -156,6 +186,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_SELF_TEST,
         attributes: tpma_cc(TPM_CC_SELF_TEST, true, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -164,6 +195,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_STARTUP,
         attributes: tpma_cc(TPM_CC_STARTUP, true, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresNotStarted,
         handles: &[],
         sessions_allowed: false,
@@ -172,6 +204,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_SHUTDOWN,
         attributes: tpma_cc(TPM_CC_SHUTDOWN, true, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -180,6 +213,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_STIR_RANDOM,
         attributes: tpma_cc(TPM_CC_STIR_RANDOM, true, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -188,6 +222,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_GET_CAPABILITY,
         attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -196,6 +231,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_GET_RANDOM,
         attributes: tpma_cc(TPM_CC_GET_RANDOM, false, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -204,6 +240,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_HASH,
         attributes: tpma_cc(TPM_CC_HASH, false, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -212,6 +249,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_PCR_READ,
         attributes: tpma_cc(TPM_CC_PCR_READ, false, 0),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
@@ -220,6 +258,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         code: TPM_CC_PCR_EXTEND,
         attributes: tpma_cc(TPM_CC_PCR_EXTEND, false, 1),
+        physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::PcrAllowNull,
@@ -287,6 +326,10 @@ mod tests {
             Some(TPM_CC_PCR_ALLOCATE)
         );
         assert_eq!(
+            find(TPM_CC_CREATE_PRIMARY).map(|d| d.code),
+            Some(TPM_CC_CREATE_PRIMARY)
+        );
+        assert_eq!(
             find(TPM_CC_PCR_RESET).map(|d| d.code),
             Some(TPM_CC_PCR_RESET)
         );
@@ -345,7 +388,15 @@ mod tests {
         );
         assert!(
             find(TPM_CC_PCR_ALLOCATE + 1).is_none(),
-            "between PCR_Allocate and PCR_Reset"
+            "between PCR_Allocate and CreatePrimary"
+        );
+        assert!(
+            find(TPM_CC_CREATE_PRIMARY - 1).is_none(),
+            "just below CreatePrimary"
+        );
+        assert!(
+            find(TPM_CC_CREATE_PRIMARY + 1).is_none(),
+            "between CreatePrimary and PCR_Reset"
         );
         assert!(find(TPM_CC_PCR_RESET - 1).is_none(), "just below PCR_Reset");
         assert!(
@@ -387,6 +438,7 @@ mod tests {
                 TPM_CC_CHANGE_EPS,
                 TPM_CC_HIERARCHY_CHANGE_AUTH,
                 TPM_CC_PCR_ALLOCATE,
+                TPM_CC_CREATE_PRIMARY,
                 TPM_CC_PCR_RESET,
                 TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
@@ -781,10 +833,28 @@ mod tests {
     }
 
     #[test]
+    fn physical_presence_applicability_matches_the_vendored_attribute_table() {
+        const PP_COMMANDS: [u32; 4] = [
+            TPM_CC_CHANGE_EPS,
+            TPM_CC_HIERARCHY_CHANGE_AUTH,
+            TPM_CC_PCR_ALLOCATE,
+            TPM_CC_CREATE_PRIMARY,
+        ];
+        for descriptor in implemented() {
+            assert_eq!(
+                descriptor.physical_presence,
+                PP_COMMANDS.contains(&descriptor.code),
+                "code {:#x}",
+                descriptor.code
+            );
+        }
+    }
+
+    #[test]
     fn the_handle_count_attribute_matches_the_declared_handles() {
         for descriptor in implemented() {
             assert_eq!(
-                descriptor.attributes >> 25,
+                (descriptor.attributes >> 25) & 0x7,
                 descriptor.handles.len() as u32,
                 "code {:#x}",
                 descriptor.code

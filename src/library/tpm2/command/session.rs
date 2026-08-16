@@ -234,6 +234,7 @@ mod tests {
         CommandDescriptor {
             code: 0x0000_0182,
             attributes: 0,
+            physical_presence: false,
             lifecycle: CommandLifecycle::RequiresStarted,
             handles,
             sessions_allowed: true,

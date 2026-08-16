@@ -1,13 +1,14 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_AUTH_CONTEXT, TPM_RC_AUTH_MISSING, TPM_RC_COMMAND_CODE, TPM_RC_INITIALIZE,
-    TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE,
+    TPM_RC_AUTH_CONTEXT, TPM_RC_AUTH_MISSING, TPM_RC_COMMAND_CODE, TPM_RC_HIERARCHY,
+    TPM_RC_INITIALIZE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
 use super::super::marshal::BlobReader;
+use super::super::object_create::hierarchy_is_enabled;
 use super::super::runtime::Tpm2Runtime;
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
-use super::registry::{self, CommandDescriptor};
+use super::registry::{self, CommandDescriptor, HandleKind};
 use super::session::{authorize_sessions, parse_session_area, password_auth_response};
 
 const TPM_RC_H: TpmResult = 0x000;
@@ -42,17 +43,18 @@ fn run(
     command: &Command<'_>,
 ) -> Result<Response, TpmResult> {
     let (handles, rest) = parse_handles(descriptor, command.payload)?;
+    check_load_status(runtime, descriptor, &handles)?;
     let (session_count, parameters) =
         check_authorization(runtime, descriptor, command, &handles, rest)?;
     let frame = CommandFrame {
         handles,
         parameters,
     };
-    let parameters = (descriptor.handler)(runtime, &frame)?.into_parameters();
+    let (handles, parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
     Ok(if command.tag == TPM_ST_SESSIONS {
-        Response::success_with_sessions(parameters, password_auth_response(session_count))
+        Response::success_with_sessions(handles, parameters, password_auth_response(session_count))
     } else {
-        Response::success(TPM_ST_NO_SESSIONS, parameters)
+        Response::success_with_handles(TPM_ST_NO_SESSIONS, handles, parameters)
     })
 }
 
@@ -73,6 +75,25 @@ fn parse_handles<'a>(
         handles.push(handle);
     }
     Ok((handles, reader.remaining()))
+}
+
+fn check_load_status(
+    runtime: &Tpm2Runtime,
+    descriptor: &CommandDescriptor,
+    handles: &[u32],
+) -> Result<(), TpmResult> {
+    for (index, spec) in descriptor.handles.iter().enumerate() {
+        if !matches!(spec.kind, HandleKind::Hierarchy) {
+            continue;
+        }
+        let Some(&handle) = handles.get(index) else {
+            continue;
+        };
+        if !hierarchy_is_enabled(runtime, handle) {
+            return Err(TPM_RC_HIERARCHY + TPM_RC_H + TPM_RC_1 * (index as u32 + 1));
+        }
+    }
+    Ok(())
 }
 
 fn check_authorization<'a>(

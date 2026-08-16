@@ -431,7 +431,7 @@ pub(in crate::library::tpm2) struct OwnedTpmtPublic {
     pub(in crate::library::tpm2) unique: OwnedPublicId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) enum OwnedPublicId {
     KeyedHash(Vec<u8>),

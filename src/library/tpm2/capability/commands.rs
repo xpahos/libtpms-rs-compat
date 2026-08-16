@@ -55,6 +55,7 @@ mod tests {
     const TPMA_CC_PCR_READ: u32 = 0x0000_017e;
     const TPMA_CC_PCR_EXTEND: u32 = 0x0200_0182;
     const TPMA_CC_PCR_ALLOCATE: u32 = 0x0240_012b;
+    const TPMA_CC_CREATE_PRIMARY: u32 = 0x1200_0131;
 
     #[test]
     fn a_query_from_zero_returns_every_registry_command() {
@@ -65,6 +66,7 @@ mod tests {
                 TPMA_CC_CHANGE_EPS,
                 TPMA_CC_HIERARCHY_CHANGE_AUTH,
                 TPMA_CC_PCR_ALLOCATE,
+                TPMA_CC_CREATE_PRIMARY,
                 TPMA_CC_PCR_RESET,
                 TPMA_CC_INCREMENTAL_SELF_TEST,
                 TPMA_CC_SELF_TEST,
@@ -88,11 +90,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0124, 1000);
-        assert_eq!(page.entries.len(), 14);
+        assert_eq!(page.entries.len(), 15);
         assert_eq!(page.entries[0], TPMA_CC_CHANGE_EPS);
 
         let page = implemented(0x0125, 1000);
-        assert_eq!(page.entries.len(), 13);
+        assert_eq!(page.entries.len(), 14);
         assert!(!page.entries.contains(&TPMA_CC_CHANGE_EPS));
     }
 
@@ -103,11 +105,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0129, 1000);
-        assert_eq!(page.entries.len(), 13);
+        assert_eq!(page.entries.len(), 14);
         assert_eq!(page.entries[0], TPMA_CC_HIERARCHY_CHANGE_AUTH);
 
         let page = implemented(0x012a, 1000);
-        assert_eq!(page.entries.len(), 12);
+        assert_eq!(page.entries.len(), 13);
         assert!(!page.entries.contains(&TPMA_CC_HIERARCHY_CHANGE_AUTH));
     }
 
@@ -118,17 +120,32 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x012b, 1000);
-        assert_eq!(page.entries.len(), 12);
+        assert_eq!(page.entries.len(), 13);
         assert_eq!(page.entries[0], TPMA_CC_PCR_ALLOCATE);
 
         let page = implemented(0x012c, 1000);
-        assert_eq!(page.entries.len(), 11);
+        assert_eq!(page.entries.len(), 12);
         assert!(!page.entries.contains(&TPMA_CC_PCR_ALLOCATE));
     }
 
     #[test]
-    fn pcr_reset_follows_pcr_allocate() {
+    fn create_primary_follows_pcr_allocate() {
         let page = implemented(0x012c, 1);
+        assert_eq!(page.entries, [TPMA_CC_CREATE_PRIMARY]);
+        assert!(page.more_data);
+
+        let page = implemented(0x0131, 1000);
+        assert_eq!(page.entries.len(), 12);
+        assert_eq!(page.entries[0], TPMA_CC_CREATE_PRIMARY);
+
+        let page = implemented(0x0132, 1000);
+        assert_eq!(page.entries.len(), 11);
+        assert!(!page.entries.contains(&TPMA_CC_CREATE_PRIMARY));
+    }
+
+    #[test]
+    fn pcr_reset_follows_create_primary() {
+        let page = implemented(0x0132, 1);
         assert_eq!(page.entries, [TPMA_CC_PCR_RESET]);
         assert!(page.more_data);
 
@@ -269,8 +286,8 @@ mod tests {
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 14);
-        assert_eq!(page.entries.len(), 14);
+        let page = implemented(0, 15);
+        assert_eq!(page.entries.len(), 15);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
@@ -285,14 +302,14 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 14);
+        assert_eq!(page.entries.len(), 15);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 14);
-        assert_eq!(library_count(), 14);
+        assert_eq!(total_count(), 15);
+        assert_eq!(library_count(), 15);
         assert_eq!(vendor_count(), 0);
     }
 

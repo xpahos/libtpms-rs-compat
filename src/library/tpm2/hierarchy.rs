@@ -26,6 +26,13 @@ pub(super) fn is_hierarchy_auth_handle(handle: u32) -> bool {
     )
 }
 
+pub(super) fn is_hierarchy_handle(handle: u32) -> bool {
+    matches!(
+        handle,
+        TPM_RH_OWNER | TPM_RH_ENDORSEMENT | TPM_RH_PLATFORM | TPM_RH_NULL
+    )
+}
+
 pub(super) fn hierarchy_proof(persistent: &OwnedPersistentData, hierarchy: u32) -> Option<&[u8]> {
     match hierarchy {
         TPM_RH_PLATFORM => Some(persistent.ph_proof.as_bytes()),

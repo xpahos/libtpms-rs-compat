@@ -80,6 +80,7 @@ const PARAMETER_SIZE_FIELD: usize = 4;
 pub(in crate::library::tpm2) struct Response {
     tag: u16,
     code: TpmResult,
+    handles: Vec<u8>,
     parameters: Vec<u8>,
     auth_sessions: Vec<u8>,
 }
@@ -90,27 +91,46 @@ impl Response {
         Self {
             tag: TPM_ST_NO_SESSIONS,
             code,
+            handles: Vec::new(),
             parameters: Vec::new(),
             auth_sessions: Vec::new(),
         }
     }
 
+    #[cfg(test)]
     pub(in crate::library::tpm2) fn success(tag: u16, parameters: Vec<u8>) -> Self {
         Self {
             tag,
             code: TPM_SUCCESS,
+            handles: Vec::new(),
+            parameters,
+            auth_sessions: Vec::new(),
+        }
+    }
+
+    pub(in crate::library::tpm2) fn success_with_handles(
+        tag: u16,
+        handles: Vec<u8>,
+        parameters: Vec<u8>,
+    ) -> Self {
+        Self {
+            tag,
+            code: TPM_SUCCESS,
+            handles,
             parameters,
             auth_sessions: Vec::new(),
         }
     }
 
     pub(in crate::library::tpm2) fn success_with_sessions(
+        handles: Vec<u8>,
         parameters: Vec<u8>,
         auth_sessions: Vec<u8>,
     ) -> Self {
         Self {
             tag: TPM_ST_SESSIONS,
             code: TPM_SUCCESS,
+            handles,
             parameters,
             auth_sessions,
         }
@@ -126,13 +146,15 @@ impl Response {
 pub(in crate::library::tpm2) struct ResponseTooLarge;
 
 fn checked_response_size(
+    handles: usize,
     parameter_size_field: usize,
     parameters: usize,
     auth_sessions: usize,
     buffer_size: u32,
 ) -> Result<u32, ResponseTooLarge> {
     HEADER_SIZE
-        .checked_add(parameter_size_field)
+        .checked_add(handles)
+        .and_then(|total| total.checked_add(parameter_size_field))
         .and_then(|total| total.checked_add(parameters))
         .and_then(|total| total.checked_add(auth_sessions))
         .and_then(|total| u32::try_from(total).ok())
@@ -151,14 +173,15 @@ pub(in crate::library::tpm2) fn serialize_response_within(
     response: &Response,
     buffer_size: u32,
 ) -> Result<Vec<u8>, ResponseTooLarge> {
-    let (tag, parameters, auth_sessions) = if response.code == TPM_SUCCESS {
+    let (tag, handles, parameters, auth_sessions) = if response.code == TPM_SUCCESS {
         (
             response.tag,
+            response.handles.as_slice(),
             response.parameters.as_slice(),
             response.auth_sessions.as_slice(),
         )
     } else {
-        (TPM_ST_NO_SESSIONS, &[][..], &[][..])
+        (TPM_ST_NO_SESSIONS, &[][..], &[][..], &[][..])
     };
     debug_assert!(
         tag == TPM_ST_SESSIONS || auth_sessions.is_empty(),
@@ -170,6 +193,7 @@ pub(in crate::library::tpm2) fn serialize_response_within(
         0
     };
     let size = checked_response_size(
+        handles.len(),
         parameter_size_field,
         parameters.len(),
         auth_sessions.len(),
@@ -179,6 +203,7 @@ pub(in crate::library::tpm2) fn serialize_response_within(
     writer.write_u16(tag);
     writer.write_u32(size);
     writer.write_u32(response.code);
+    writer.write_bytes(handles);
     if parameter_size_field != 0 {
         writer.write_u32(u32::try_from(parameters.len()).map_err(|_| ResponseTooLarge)?);
     }
@@ -494,11 +519,12 @@ mod tests {
     #[test]
     fn oversized_response_computations_never_overflow() {
         assert_eq!(
-            checked_response_size(0, usize::MAX, 0, DEFAULT_BUFFER_SIZE),
+            checked_response_size(0, 0, usize::MAX, 0, DEFAULT_BUFFER_SIZE),
             Err(ResponseTooLarge)
         );
         assert_eq!(
             checked_response_size(
+                0,
                 PARAMETER_SIZE_FIELD,
                 usize::MAX - 4,
                 usize::MAX,
@@ -507,7 +533,13 @@ mod tests {
             Err(ResponseTooLarge)
         );
         assert_eq!(
-            checked_response_size(0, MAX_RESPONSE_SIZE - HEADER_SIZE, 0, DEFAULT_BUFFER_SIZE),
+            checked_response_size(
+                0,
+                0,
+                MAX_RESPONSE_SIZE - HEADER_SIZE,
+                0,
+                DEFAULT_BUFFER_SIZE
+            ),
             Ok(MAX_RESPONSE_SIZE as u32)
         );
     }
@@ -593,6 +625,7 @@ mod tests {
         let smuggled = Response {
             tag: TPM_ST_SESSIONS,
             code: TPM_RC_COMMAND_CODE,
+            handles: vec![0x80, 0x00, 0x00, 0x00],
             parameters: vec![0xff; 4],
             auth_sessions: Vec::new(),
         };

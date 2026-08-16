@@ -64,6 +64,33 @@ impl Drbg {
         Ok(drbg)
     }
 
+    pub(in crate::library::tpm2) fn instantiate_seeded(
+        inputs: &[&[u8]],
+        continuous_test: bool,
+    ) -> Result<Self, TpmResult> {
+        let mut concatenated = Vec::new();
+        for input in inputs {
+            concatenated.extend_from_slice(input);
+        }
+        let derived = super::df::df_buffer(&concatenated).ok_or(TPM_FAIL)?;
+        let mut drbg = Self {
+            reseed_counter: 0,
+            seed: [0; DRBG_SEED_SIZE],
+            last_value: [0; 4],
+            continuous_test,
+        };
+        drbg.reseed(&derived)?;
+        Ok(drbg)
+    }
+
+    pub(in crate::library::tpm2) fn additional_data(
+        &mut self,
+        data: &[u8],
+    ) -> Result<(), TpmResult> {
+        let derived = super::df::df_buffer(data).ok_or(TPM_FAIL)?;
+        self.reseed(&derived)
+    }
+
     pub(in crate::library::tpm2) fn restore(
         seed: &[u8],
         reseed_counter: u64,

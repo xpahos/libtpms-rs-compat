@@ -21,6 +21,7 @@ use super::marshal::{BlobReader, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, StateSection, parse_nv_header};
 use super::public::TPM_ALG_NULL;
 use super::state::algs_active;
+use super::volatile::IMPLEMENTATION_PCR;
 
 pub(super) const PCR_MAGIC: u32 = 0xe95f_0387;
 pub(super) const PCR_VERSION: u16 = 2;
@@ -115,6 +116,65 @@ pub(super) fn bank_slot(hash_alg: u16) -> Option<(usize, usize)> {
 
 pub(super) fn pcr_resets_to_ones(pcr: usize) -> bool {
     (17..=22).contains(&pcr)
+}
+
+pub(super) fn filter_selection(
+    selection: &mut super::persistent::OwnedPcrSelection,
+    allocation: &super::persistent::OwnedPcrAllocation,
+) {
+    let allocated = allocation
+        .selections
+        .iter()
+        .find(|entry| entry.hash_alg == selection.hash_alg);
+    for (index, byte) in selection.select.iter_mut().enumerate() {
+        *byte &= allocated
+            .and_then(|entry| entry.select.get(index))
+            .copied()
+            .unwrap_or(0);
+    }
+    for pcr in IMPLEMENTATION_PCR..selection.select.len() * 8 {
+        selection.select[pcr / 8] &= !(1 << (pcr % 8));
+    }
+}
+
+pub(super) fn compute_current_digest(
+    runtime: &super::runtime::Tpm2Runtime,
+    hash_alg: u16,
+    selections: &mut [super::persistent::OwnedPcrSelection],
+) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+    use crate::library::constants::TPM_RC_FAILURE;
+
+    let allocation = runtime
+        .effective_pcr_allocated()
+        .ok_or(TPM_RC_FAILURE)?
+        .clone();
+    let mut hasher = super::crypto::Hasher::new(hash_alg).ok_or(TPM_RC_FAILURE)?;
+    for selection in selections.iter_mut() {
+        filter_selection(selection, &allocation);
+        let Some((slot, digest_size)) = bank_slot(selection.hash_alg) else {
+            continue;
+        };
+        for pcr in 0..IMPLEMENTATION_PCR {
+            if selection
+                .select
+                .get(pcr / 8)
+                .is_some_and(|byte| byte & (1 << (pcr % 8)) != 0)
+            {
+                let digest = runtime
+                    .live
+                    .pcrs
+                    .get(pcr)
+                    .and_then(|entry| entry.banks.get(slot))
+                    .and_then(Option::as_ref)
+                    .ok_or(TPM_RC_FAILURE)?;
+                if digest.len() != digest_size {
+                    return Err(TPM_RC_FAILURE);
+                }
+                hasher.update(digest);
+            }
+        }
+    }
+    Ok(hasher.finalize())
 }
 
 pub(super) fn allocation_selects(

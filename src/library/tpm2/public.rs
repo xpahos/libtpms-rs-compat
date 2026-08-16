@@ -210,6 +210,18 @@ impl StateFormatLimit {
         })
     }
 
+    pub(super) fn key_bits_allowed(self, algorithm: u16, key_bits: u16) -> bool {
+        let required = match algorithm {
+            TPM_ALG_RSA => Self::required_rsa_level(key_bits),
+            _ => Self::required_symmetric_level(algorithm, key_bits),
+        };
+        required <= self.0
+    }
+
+    pub(super) fn ecc_curve_allowed(self, curve: u16) -> bool {
+        Self::required_ecc_level(curve) <= self.0
+    }
+
     fn check_ecc_curve(self, section: StateSection, curve: u16) -> Result<(), PersistentAllError> {
         if Self::required_ecc_level(curve) <= self.0 {
             return Ok(());

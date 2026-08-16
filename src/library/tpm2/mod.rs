@@ -6,6 +6,8 @@ mod clock;
 mod command;
 mod command_bitmap;
 mod compile_constants;
+#[cfg(test)]
+mod create_primary_vectors;
 mod crypto;
 mod dictionary_attack;
 mod failure_mode;
@@ -19,6 +21,7 @@ mod manufacture;
 mod marshal;
 mod nv;
 mod object;
+mod object_create;
 mod orderly;
 mod pcr;
 mod persistent;
@@ -31,6 +34,7 @@ mod runtime;
 mod self_test;
 mod session;
 mod state;
+mod template;
 mod ticket;
 mod tis;
 mod volatile;
@@ -272,6 +276,19 @@ fn decode_volatile_blob(
     .map_err(|error| boundary.map_parse(error))?;
     volatile::materialize_volatile_state(&decoded, seed_tie, context.object_version)
         .map_err(|code| boundary.map_result(code))
+}
+
+#[cfg(test)]
+pub(super) fn restore_permanent_blob_for_test(blob: &[u8]) -> Result<Box<Tpm2Runtime>, TpmResult> {
+    initialize_from_permanent_blob(blob, PermanentCommit::Restore)
+}
+
+#[cfg(test)]
+pub(super) fn attach_volatile_blob_for_test(
+    runtime: &mut Tpm2Runtime,
+    blob: &[u8],
+) -> Result<(), TpmResult> {
+    attach_volatile_blob(runtime, blob, &OsClock, VolatileDecodeBoundary::Restore)
 }
 
 fn attach_volatile_blob(
