@@ -5,7 +5,9 @@ use crate::library::constants::{
     TPM_RC_VALUE,
 };
 
+use super::super::hierarchy::TPM_RH_NULL;
 use super::super::marshal::BlobReader;
+use super::super::nv::{index_is_accessible, is_nv_index_handle};
 use super::super::object_create::{
     find_empty_object_slot, hierarchy_is_enabled, is_transient_object_handle, occupied_object_slot,
     persistent_hierarchy_is_enabled, persistent_object_entry,
@@ -90,11 +92,31 @@ fn check_load_status(
         let Some(&handle) = handles.get(index) else {
             continue;
         };
+        let indexed = TPM_RC_H + TPM_RC_1 * (index as u32 + 1);
         match spec.kind {
             HandleKind::Hierarchy if !hierarchy_is_enabled(runtime, handle) => {
-                return Err(TPM_RC_HIERARCHY + TPM_RC_H + TPM_RC_1 * (index as u32 + 1));
+                return Err(TPM_RC_HIERARCHY + indexed);
             }
             HandleKind::Object => check_object_present(runtime, handle, index)?,
+            HandleKind::ObjectAllowNull if handle != TPM_RH_NULL => {
+                check_object_present(runtime, handle, index)?;
+            }
+            HandleKind::NvIndex => index_is_accessible(runtime, handle).map_err(|code| {
+                if code == TPM_RC_HANDLE {
+                    code + indexed
+                } else {
+                    code
+                }
+            })?,
+            HandleKind::NvAuth if is_nv_index_handle(handle) => {
+                index_is_accessible(runtime, handle).map_err(|code| {
+                    if code == TPM_RC_HANDLE {
+                        code + indexed
+                    } else {
+                        code
+                    }
+                })?;
+            }
             _ => {}
         }
     }

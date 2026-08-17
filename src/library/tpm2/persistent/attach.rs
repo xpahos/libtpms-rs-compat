@@ -642,7 +642,7 @@ pub(in crate::library::tpm2) fn own_any_object(object: &AnyObject<'_>) -> OwnedA
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedNvIndex {
     pub(in crate::library::tpm2) nv_index: u32,
@@ -653,7 +653,7 @@ pub(in crate::library::tpm2) struct OwnedNvIndex {
     pub(in crate::library::tpm2) auth_value: OwnedSecret,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) enum OwnedUserNvramEntry {
     NvIndex {

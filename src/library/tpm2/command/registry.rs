@@ -12,6 +12,13 @@ use super::get_random;
 use super::hash;
 use super::hierarchy_change_auth;
 use super::incremental_self_test;
+use super::nv_certify;
+use super::nv_change_auth;
+use super::nv_define_space;
+use super::nv_lock;
+use super::nv_read;
+use super::nv_undefine_space;
+use super::nv_write;
 use super::output::CommandOutput;
 use super::pcr_allocate;
 use super::pcr_extend;
@@ -22,25 +29,40 @@ use super::shutdown;
 use super::startup;
 use super::stir_random;
 
+pub(in crate::library::tpm2) const TPM_CC_NV_UNDEFINE_SPACE_SPECIAL: u32 = 0x0000_011f;
 pub(in crate::library::tpm2) const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
+pub(in crate::library::tpm2) const TPM_CC_NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
 pub(in crate::library::tpm2) const TPM_CC_CHANGE_EPS: u32 = 0x0000_0124;
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
+pub(in crate::library::tpm2) const TPM_CC_NV_DEFINE_SPACE: u32 = 0x0000_012a;
 pub(in crate::library::tpm2) const TPM_CC_PCR_ALLOCATE: u32 = 0x0000_012b;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
+pub(in crate::library::tpm2) const TPM_CC_NV_GLOBAL_WRITE_LOCK: u32 = 0x0000_0132;
+pub(in crate::library::tpm2) const TPM_CC_NV_INCREMENT: u32 = 0x0000_0134;
+pub(in crate::library::tpm2) const TPM_CC_NV_SET_BITS: u32 = 0x0000_0135;
+pub(in crate::library::tpm2) const TPM_CC_NV_EXTEND: u32 = 0x0000_0136;
+pub(in crate::library::tpm2) const TPM_CC_NV_WRITE: u32 = 0x0000_0137;
+pub(in crate::library::tpm2) const TPM_CC_NV_WRITE_LOCK: u32 = 0x0000_0138;
+pub(in crate::library::tpm2) const TPM_CC_NV_CHANGE_AUTH: u32 = 0x0000_013b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
+pub(in crate::library::tpm2) const TPM_CC_NV_READ: u32 = 0x0000_014e;
+pub(in crate::library::tpm2) const TPM_CC_NV_READ_LOCK: u32 = 0x0000_014f;
+pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
 pub(in crate::library::tpm2) const TPM_CC_HASH: u32 = 0x0000_017d;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
+pub(in crate::library::tpm2) const TPM_CC_NV_CERTIFY: u32 = 0x0000_0184;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
 use super::super::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM, is_hierarchy_handle};
+use super::super::nv::is_nv_index_handle;
 use super::super::object_create::is_object_handle;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
@@ -84,8 +106,11 @@ pub(super) enum HandleKind {
     Platform,
     Provision,
     Object,
+    ObjectAllowNull,
     Pcr,
     PcrAllowNull,
+    NvIndex,
+    NvAuth,
 }
 
 impl HandleKind {
@@ -96,8 +121,13 @@ impl HandleKind {
             Self::Platform => handle == TPM_RH_PLATFORM,
             Self::Provision => matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM),
             Self::Object => is_object_handle(handle),
+            Self::ObjectAllowNull => is_object_handle(handle) || handle == TPM_RH_NULL,
             Self::Pcr => (handle as usize) < IMPLEMENTATION_PCR,
             Self::PcrAllowNull => (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_NULL,
+            Self::NvIndex => is_nv_index_handle(handle),
+            Self::NvAuth => {
+                matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM) || is_nv_index_handle(handle)
+            }
         }
     }
 }
@@ -105,6 +135,14 @@ impl HandleKind {
 pub(super) struct HandleSpec {
     pub(super) kind: HandleKind,
     pub(super) user_auth: bool,
+    pub(super) admin_role: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum NvAccess {
+    Neither,
+    Read,
+    Write,
 }
 
 pub(in crate::library::tpm2) struct CommandDescriptor {
@@ -117,10 +155,32 @@ pub(in crate::library::tpm2) struct CommandDescriptor {
     pub(super) lifecycle: CommandLifecycle,
     pub(super) handles: &'static [HandleSpec],
     pub(super) sessions_allowed: bool,
+    pub(super) nv_access: NvAccess,
     pub(super) handler: CommandHandler,
 }
 
 static COMMANDS: &[CommandDescriptor] = &[
+    CommandDescriptor {
+        code: TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
+        attributes: tpma_cc(TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, true, 2),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: true,
+                admin_role: true,
+            },
+            HandleSpec {
+                kind: HandleKind::Platform,
+                user_auth: true,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: nv_undefine_space::execute_special,
+    },
     CommandDescriptor {
         code: TPM_CC_EVICT_CONTROL,
         attributes: tpma_cc(TPM_CC_EVICT_CONTROL, true, 2),
@@ -130,14 +190,38 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Provision,
                 user_auth: true,
+                admin_role: false,
             },
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: false,
+                admin_role: false,
             },
         ],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: evict_control::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_UNDEFINE_SPACE,
+        attributes: tpma_cc(TPM_CC_NV_UNDEFINE_SPACE, true, 2),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Provision,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: nv_undefine_space::execute,
     },
     CommandDescriptor {
         code: TPM_CC_CHANGE_EPS,
@@ -147,8 +231,10 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
             user_auth: true,
+            admin_role: false,
         }],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: change_eps::execute,
     },
     CommandDescriptor {
@@ -159,9 +245,25 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::HierarchyAuth,
             user_auth: true,
+            admin_role: false,
         }],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: hierarchy_change_auth::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_DEFINE_SPACE,
+        attributes: tpma_cc(TPM_CC_NV_DEFINE_SPACE, true, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Provision,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: nv_define_space::execute,
     },
     CommandDescriptor {
         code: TPM_CC_PCR_ALLOCATE,
@@ -171,8 +273,10 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
             user_auth: true,
+            admin_role: false,
         }],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: pcr_allocate::execute,
     },
     CommandDescriptor {
@@ -183,9 +287,144 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Hierarchy,
             user_auth: true,
+            admin_role: false,
         }],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: create_primary::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_GLOBAL_WRITE_LOCK,
+        attributes: tpma_cc(TPM_CC_NV_GLOBAL_WRITE_LOCK, true, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Provision,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: nv_lock::execute_global_write_lock,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_INCREMENT,
+        attributes: tpma_cc(TPM_CC_NV_INCREMENT, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Write,
+        handler: nv_write::execute_increment,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_SET_BITS,
+        attributes: tpma_cc(TPM_CC_NV_SET_BITS, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Write,
+        handler: nv_write::execute_set_bits,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_EXTEND,
+        attributes: tpma_cc(TPM_CC_NV_EXTEND, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Write,
+        handler: nv_write::execute_extend,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_WRITE,
+        attributes: tpma_cc(TPM_CC_NV_WRITE, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Write,
+        handler: nv_write::execute_write,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_WRITE_LOCK,
+        attributes: tpma_cc(TPM_CC_NV_WRITE_LOCK, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Write,
+        handler: nv_lock::execute_write_lock,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_CHANGE_AUTH,
+        attributes: tpma_cc(TPM_CC_NV_CHANGE_AUTH, true, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::NvIndex,
+            user_auth: true,
+            admin_role: true,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: nv_change_auth::execute,
     },
     CommandDescriptor {
         code: TPM_CC_PCR_RESET,
@@ -195,8 +434,10 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Pcr,
             user_auth: true,
+            admin_role: false,
         }],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: pcr_reset::execute,
     },
     CommandDescriptor {
@@ -206,6 +447,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: incremental_self_test::execute,
     },
     CommandDescriptor {
@@ -215,6 +457,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: self_test::execute,
     },
     CommandDescriptor {
@@ -224,6 +467,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresNotStarted,
         handles: &[],
         sessions_allowed: false,
+        nv_access: NvAccess::Neither,
         handler: startup::execute,
     },
     CommandDescriptor {
@@ -233,6 +477,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: shutdown::execute,
     },
     CommandDescriptor {
@@ -242,7 +487,64 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: stir_random::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_READ,
+        attributes: tpma_cc(TPM_CC_NV_READ, false, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Read,
+        handler: nv_read::execute_read,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_READ_LOCK,
+        attributes: tpma_cc(TPM_CC_NV_READ_LOCK, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Read,
+        handler: nv_lock::execute_read_lock,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_READ_PUBLIC,
+        attributes: tpma_cc(TPM_CC_NV_READ_PUBLIC, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::NvIndex,
+            user_auth: false,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: nv_read::execute_read_public,
     },
     CommandDescriptor {
         code: TPM_CC_GET_CAPABILITY,
@@ -251,6 +553,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: get_capability::execute,
     },
     CommandDescriptor {
@@ -260,6 +563,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: get_random::execute,
     },
     CommandDescriptor {
@@ -269,6 +573,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: hash::execute,
     },
     CommandDescriptor {
@@ -278,6 +583,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: pcr_read::execute,
     },
     CommandDescriptor {
@@ -288,9 +594,37 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::PcrAllowNull,
             user_auth: true,
+            admin_role: false,
         }],
         sessions_allowed: true,
+        nv_access: NvAccess::Neither,
         handler: pcr_extend::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_NV_CERTIFY,
+        attributes: tpma_cc(TPM_CC_NV_CERTIFY, false, 3),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvAuth,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::NvIndex,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Read,
+        handler: nv_certify::execute,
     },
 ];
 
@@ -396,74 +730,19 @@ mod tests {
     fn lookup_rejects_unregistered_command_codes() {
         assert!(find(0x0000_0000).is_none(), "below all entries");
         assert!(
-            find(TPM_CC_EVICT_CONTROL - 1).is_none(),
+            find(TPM_CC_NV_UNDEFINE_SPACE_SPECIAL - 1).is_none(),
             "just below the first"
         );
-        assert!(
-            find(TPM_CC_EVICT_CONTROL + 1).is_none(),
-            "between EvictControl and ChangeEPS"
-        );
-        assert!(
-            find(TPM_CC_CHANGE_EPS - 1).is_none(),
-            "just below ChangeEPS"
-        );
-        assert!(
-            find(TPM_CC_CHANGE_EPS + 1).is_none(),
-            "between ChangeEPS and HierarchyChangeAuth"
-        );
-        assert!(
-            find(TPM_CC_HIERARCHY_CHANGE_AUTH - 1).is_none(),
-            "just below HierarchyChangeAuth"
-        );
-        assert!(
-            find(TPM_CC_HIERARCHY_CHANGE_AUTH + 1).is_none(),
-            "between HierarchyChangeAuth and PCR_Allocate"
-        );
-        assert!(
-            find(TPM_CC_PCR_ALLOCATE - 1).is_none(),
-            "just below PCR_Allocate"
-        );
-        assert!(
-            find(TPM_CC_PCR_ALLOCATE + 1).is_none(),
-            "between PCR_Allocate and CreatePrimary"
-        );
-        assert!(
-            find(TPM_CC_CREATE_PRIMARY - 1).is_none(),
-            "just below CreatePrimary"
-        );
-        assert!(
-            find(TPM_CC_CREATE_PRIMARY + 1).is_none(),
-            "between CreatePrimary and PCR_Reset"
-        );
-        assert!(find(TPM_CC_PCR_RESET - 1).is_none(), "just below PCR_Reset");
-        assert!(
-            find(TPM_CC_PCR_RESET + 1).is_none(),
-            "between PCR_Reset and IncrementalSelfTest"
-        );
-        assert!(
-            find(TPM_CC_INCREMENTAL_SELF_TEST - 1).is_none(),
-            "just below IncrementalSelfTest"
-        );
-        assert!(
-            find(TPM_CC_STIR_RANDOM + 1).is_none(),
-            "between StirRandom and GetCapability"
-        );
-        assert!(
-            find(TPM_CC_GET_CAPABILITY - 1).is_none(),
-            "just below GetCapability"
-        );
-        assert!(
-            find(TPM_CC_GET_RANDOM + 1).is_none(),
-            "between GetRandom and Hash"
-        );
-        assert!(find(TPM_CC_HASH - 1).is_none(), "just below Hash");
-        assert!(
-            find(TPM_CC_PCR_READ + 1).is_none(),
-            "between PCR_Read and PCR_Extend"
-        );
-        assert!(find(TPM_CC_PCR_EXTEND - 1).is_none(), "just below the last");
-        assert!(find(TPM_CC_PCR_EXTEND + 1).is_none(), "just above the last");
         assert!(find(0xffff_ffff).is_none(), "above all entries");
+        assert!(find(TPM_CC_PCR_EXTEND + 1).is_none(), "just above the last");
+        let registered: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
+        for code in 0x0000_011eu32..=0x0000_0185 {
+            assert_eq!(
+                find(code).is_some(),
+                registered.contains(&code),
+                "code {code:#010x}"
+            );
+        }
     }
 
     #[test]
@@ -472,22 +751,36 @@ mod tests {
         assert_eq!(
             codes,
             [
+                TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
                 TPM_CC_EVICT_CONTROL,
+                TPM_CC_NV_UNDEFINE_SPACE,
                 TPM_CC_CHANGE_EPS,
                 TPM_CC_HIERARCHY_CHANGE_AUTH,
+                TPM_CC_NV_DEFINE_SPACE,
                 TPM_CC_PCR_ALLOCATE,
                 TPM_CC_CREATE_PRIMARY,
+                TPM_CC_NV_GLOBAL_WRITE_LOCK,
+                TPM_CC_NV_INCREMENT,
+                TPM_CC_NV_SET_BITS,
+                TPM_CC_NV_EXTEND,
+                TPM_CC_NV_WRITE,
+                TPM_CC_NV_WRITE_LOCK,
+                TPM_CC_NV_CHANGE_AUTH,
                 TPM_CC_PCR_RESET,
                 TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
                 TPM_CC_STARTUP,
                 TPM_CC_SHUTDOWN,
                 TPM_CC_STIR_RANDOM,
+                TPM_CC_NV_READ,
+                TPM_CC_NV_READ_LOCK,
+                TPM_CC_NV_READ_PUBLIC,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
                 TPM_CC_HASH,
                 TPM_CC_PCR_READ,
-                TPM_CC_PCR_EXTEND
+                TPM_CC_PCR_EXTEND,
+                TPM_CC_NV_CERTIFY
             ]
         );
     }
@@ -872,12 +1165,16 @@ mod tests {
 
     #[test]
     fn physical_presence_applicability_matches_the_vendored_attribute_table() {
-        const PP_COMMANDS: [u32; 5] = [
+        const PP_COMMANDS: [u32; 9] = [
+            TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
             TPM_CC_EVICT_CONTROL,
+            TPM_CC_NV_UNDEFINE_SPACE,
             TPM_CC_CHANGE_EPS,
             TPM_CC_HIERARCHY_CHANGE_AUTH,
+            TPM_CC_NV_DEFINE_SPACE,
             TPM_CC_PCR_ALLOCATE,
             TPM_CC_CREATE_PRIMARY,
+            TPM_CC_NV_GLOBAL_WRITE_LOCK,
         ];
         for descriptor in implemented() {
             assert_eq!(

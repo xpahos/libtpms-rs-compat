@@ -22,6 +22,8 @@ mod lockout;
 mod manufacture;
 mod marshal;
 mod nv;
+#[cfg(test)]
+mod nv_vectors;
 mod object;
 mod object_create;
 mod orderly;
@@ -35,6 +37,7 @@ mod random;
 mod runtime;
 mod self_test;
 mod session;
+mod signature;
 mod state;
 mod template;
 mod ticket;

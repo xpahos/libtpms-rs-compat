@@ -15,12 +15,12 @@ mod store;
 pub(super) use attach::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedBnPrime, OwnedCommandBitmap, OwnedDrbgState,
     OwnedHashObjectBody, OwnedHashPayload, OwnedHashState, OwnedIndexOrderlyRam, OwnedNvIndex,
-    OwnedObjectBody, OwnedOrderlyData, OwnedPcrAllocation, OwnedPcrBank, OwnedPcrPolicyEntry,
-    OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState, OwnedPrivateExponent,
-    OwnedPublicId, OwnedSecret, OwnedStateClearData, OwnedStateResetData, OwnedTpmtPublic,
-    OwnedTpmtSensitive, OwnedUserNvram, OwnedUserNvramEntry, materialize_persistent_state,
-    own_any_object, own_orderly_data, own_state_clear, own_state_reset,
-    user_nvram_required_capacity,
+    OwnedObjectBody, OwnedOrderlyData, OwnedOrderlyRamEntry, OwnedPcrAllocation, OwnedPcrBank,
+    OwnedPcrPolicyEntry, OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState,
+    OwnedPrivateExponent, OwnedPublicId, OwnedSecret, OwnedStateClearData, OwnedStateResetData,
+    OwnedTpmtPublic, OwnedTpmtSensitive, OwnedUserNvram, OwnedUserNvramEntry,
+    materialize_persistent_state, own_any_object, own_orderly_data, own_state_clear,
+    own_state_reset, user_nvram_required_capacity,
 };
 pub(super) use compat_tail::{
     CompatTail, SEED_COMPAT_LEVEL_LAST, SEED_COMPAT_LEVEL_ORIGINAL, parse_compat_tail,
@@ -31,8 +31,6 @@ pub(super) use store::{
     marshal_orderly_data, marshal_state_clear, marshal_state_reset, persistent_all_store,
 };
 
-#[cfg(test)]
-pub(super) use attach::OwnedOrderlyRamEntry;
 #[cfg(test)]
 pub(super) use compat_tail::CompatTailFixture;
 #[cfg(test)]

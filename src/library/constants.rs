@@ -53,6 +53,11 @@ pub(in crate::library) const TPM_RC_SYMMETRIC: TpmResult = 0x096;
 pub(in crate::library) const TPM_RC_INSUFFICIENT: TpmResult = 0x09a;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_KEY: TpmResult = 0x09c;
+// TODO: Returned by the upstream physical-presence gate once TPM2_PP_Commands
+// populates the pp-list bitmap; every command's list bit is clear today, so the
+// gate never fires.
+#[allow(dead_code)]
+pub(in crate::library) const TPM_RC_PP: TpmResult = 0x090;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_RESERVED_BITS: TpmResult = 0x0a1;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -66,6 +71,16 @@ pub(in crate::library) const TPM_RC_FAILURE: TpmResult = 0x101;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_COMMAND_SIZE: TpmResult = 0x142;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_NV_RANGE: TpmResult = 0x146;
+// TODO: Returned by TPM2_NV_DefineSpace2 and the external-NV commands, which
+// the vendored v0.10 profile marks unsupported.
+#[allow(dead_code)]
+pub(in crate::library) const TPM_RC_NV_SIZE: TpmResult = 0x147;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_NV_LOCKED: TpmResult = 0x148;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_NV_AUTHORIZATION: TpmResult = 0x149;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NV_UNINITIALIZED: TpmResult = 0x14a;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_COMMAND_CODE: TpmResult = 0x143;
@@ -74,7 +89,11 @@ pub(in crate::library) const TPM_RC_NV_SPACE: TpmResult = 0x14b;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NV_DEFINED: TpmResult = 0x14c;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_AUTH_TYPE: TpmResult = 0x124;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_AUTH_MISSING: TpmResult = 0x125;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_AUTH_UNAVAILABLE: TpmResult = 0x12f;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_PCR: TpmResult = 0x127;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -94,6 +113,10 @@ pub(in crate::library) const TPM_RC_CANCELED: TpmResult = 0x909;
 pub(in crate::library) const TPM_RC_REFERENCE_H0: TpmResult = 0x910;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_REFERENCE_S0: TpmResult = 0x918;
+// TODO: Returned by the upstream NV rate limiter; this port's platform layer
+// never reports NV as rate limited.
+#[allow(dead_code)]
+pub(in crate::library) const TPM_RC_NV_RATE: TpmResult = 0x920;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_LOCKOUT: TpmResult = 0x921;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -122,11 +145,17 @@ mod tests {
     fn the_version_one_codes_match_the_vendored_tpm_types_header() {
         assert_eq!(TPM_RC_INITIALIZE, RC_VER1);
         assert_eq!(TPM_RC_FAILURE, RC_VER1 + 0x001);
+        assert_eq!(TPM_RC_AUTH_TYPE, RC_VER1 + 0x024);
         assert_eq!(TPM_RC_AUTH_MISSING, RC_VER1 + 0x025);
         assert_eq!(TPM_RC_PCR, RC_VER1 + 0x027);
         assert_eq!(TPM_RC_COMMAND_SIZE, RC_VER1 + 0x042);
         assert_eq!(TPM_RC_COMMAND_CODE, RC_VER1 + 0x043);
         assert_eq!(TPM_RC_AUTH_CONTEXT, RC_VER1 + 0x045);
+        assert_eq!(TPM_RC_AUTH_UNAVAILABLE, RC_VER1 + 0x02f);
+        assert_eq!(TPM_RC_NV_RANGE, RC_VER1 + 0x046);
+        assert_eq!(TPM_RC_NV_SIZE, RC_VER1 + 0x047);
+        assert_eq!(TPM_RC_NV_LOCKED, RC_VER1 + 0x048);
+        assert_eq!(TPM_RC_NV_AUTHORIZATION, RC_VER1 + 0x049);
         assert_eq!(TPM_RC_NV_UNINITIALIZED, RC_VER1 + 0x04a);
         assert_eq!(TPM_RC_NV_SPACE, RC_VER1 + 0x04b);
         assert_eq!(TPM_RC_NV_DEFINED, RC_VER1 + 0x04c);
@@ -140,8 +169,30 @@ mod tests {
         assert_eq!(TPM_RC_CANCELED, RC_WARN + 0x009);
         assert_eq!(TPM_RC_REFERENCE_H0, RC_WARN + 0x010);
         assert_eq!(TPM_RC_REFERENCE_S0, RC_WARN + 0x018);
+        assert_eq!(TPM_RC_NV_RATE, RC_WARN + 0x020);
         assert_eq!(TPM_RC_LOCKOUT, RC_WARN + 0x021);
         assert_eq!(TPM_RC_NV_UNAVAILABLE, RC_WARN + 0x023);
+    }
+
+    #[test]
+    fn the_nv_specific_codes_carry_the_expected_format() {
+        for code in [
+            TPM_RC_NV_RANGE,
+            TPM_RC_NV_SIZE,
+            TPM_RC_NV_LOCKED,
+            TPM_RC_NV_AUTHORIZATION,
+            TPM_RC_NV_UNINITIALIZED,
+            TPM_RC_AUTH_UNAVAILABLE,
+            TPM_RC_NV_RATE,
+        ] {
+            assert_eq!(
+                code & RC_FMT1,
+                0,
+                "code {code:#05x} takes no handle or parameter number"
+            );
+        }
+        assert_ne!(TPM_RC_PP & RC_FMT1, 0, "TPM_RC_PP is a format-one code");
+        assert_eq!(TPM_RC_PP, RC_FMT1 + 0x010);
     }
 
     #[test]

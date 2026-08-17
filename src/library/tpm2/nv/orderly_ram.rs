@@ -7,7 +7,7 @@ const INDEX_ORDERLY_RAM_VERSION: u16 = 2;
 pub(in crate::library::tpm2) const RAM_INDEX_SPACE: u64 = 512;
 pub(in crate::library::tpm2) const NV_RAM_HEADER_SIZE: u64 = 12;
 
-const TPMA_NV_RESERVED: u32 = 0x01f0_0300;
+use super::attributes::TPMA_NV_RESERVED;
 
 const BLOCK_SKIP_SINCE_VERSION: u16 = 2;
 

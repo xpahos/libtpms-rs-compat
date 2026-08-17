@@ -2,9 +2,9 @@ use subtle::ConstantTimeEq;
 
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_ATTRIBUTES, TPM_RC_AUTH_FAIL, TPM_RC_AUTH_MISSING, TPM_RC_BAD_AUTH, TPM_RC_FAILURE,
-    TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_NONCE, TPM_RC_REFERENCE_S0, TPM_RC_RESERVED_BITS,
-    TPM_RC_SIZE, TPM_RC_VALUE,
+    TPM_RC_ATTRIBUTES, TPM_RC_AUTH_FAIL, TPM_RC_AUTH_MISSING, TPM_RC_AUTH_TYPE,
+    TPM_RC_AUTH_UNAVAILABLE, TPM_RC_BAD_AUTH, TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_INSUFFICIENT,
+    TPM_RC_NONCE, TPM_RC_REFERENCE_S0, TPM_RC_RESERVED_BITS, TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
 use super::super::dictionary_attack::{
@@ -16,10 +16,14 @@ use super::super::hierarchy::{
     is_hierarchy_auth_handle,
 };
 use super::super::marshal::{BlobReader, Tpm2bError};
+use super::super::nv::{
+    TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_WRITTEN, index_auth_value, is_nv_index_handle,
+    is_pin_index, read_uint64_data, resolve_index,
+};
 use super::super::pcr::pcr_auth_value_group;
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::MAX_ACTIVE_SESSIONS;
-use super::registry::CommandDescriptor;
+use super::registry::{CommandDescriptor, NvAccess};
 
 const TPM_RC_S: TpmResult = 0x800;
 const TPM_RC_1: TpmResult = 0x100;
@@ -144,10 +148,54 @@ fn effective_auth_value(runtime: &Tpm2Runtime, handle: u32) -> Result<&[u8], Tpm
     if is_hierarchy_auth_handle(handle) {
         return hierarchy_auth_value(runtime, handle);
     }
+    if is_nv_index_handle(handle) {
+        return index_auth_value(runtime, handle).ok_or(TPM_RC_FAILURE);
+    }
     match pcr_auth_value_group(handle as usize) {
         Some(group) => auth_value_group(runtime, group),
         None => Ok(&[]),
     }
+}
+
+fn nv_auth_value_is_available(
+    runtime: &Tpm2Runtime,
+    handle: u32,
+    access: NvAccess,
+) -> Result<bool, TpmResult> {
+    let resolved = resolve_index(runtime, handle).ok_or(TPM_RC_FAILURE)?;
+    let attributes = resolved.attributes();
+    if access == NvAccess::Write {
+        return Ok(attributes & TPMA_NV_AUTHWRITE != 0);
+    }
+    if is_pin_index(attributes) {
+        if attributes & TPMA_NV_WRITTEN == 0 {
+            return Ok(false);
+        }
+        let value = read_uint64_data(runtime, &resolved)?;
+        let pin_count = (value >> 32) as u32;
+        let pin_limit = value as u32;
+        return Ok(pin_count < pin_limit);
+    }
+    Ok(attributes & TPMA_NV_AUTHREAD != 0)
+}
+
+fn policy_session_is_required(descriptor: &CommandDescriptor, index: usize, handle: u32) -> bool {
+    descriptor
+        .handles
+        .get(index)
+        .is_some_and(|spec| spec.admin_role)
+        && is_nv_index_handle(handle)
+}
+
+fn auth_value_is_available(
+    runtime: &Tpm2Runtime,
+    handle: u32,
+    access: NvAccess,
+) -> Result<bool, TpmResult> {
+    if is_nv_index_handle(handle) {
+        return nv_auth_value_is_available(runtime, handle, access);
+    }
+    Ok(true)
 }
 
 fn password_matches(expected: &[u8], given: &[u8]) -> bool {
@@ -160,10 +208,10 @@ fn password_matches(expected: &[u8], given: &[u8]) -> bool {
 }
 
 fn failed_password_code(runtime: &mut Tpm2Runtime, handle: u32) -> Result<TpmResult, TpmResult> {
-    if !is_da_protected_handle(handle) {
+    if !is_da_protected_handle(runtime, handle) {
         return Ok(TPM_RC_BAD_AUTH);
     }
-    register_lockout_failure(runtime)?;
+    register_lockout_failure(runtime, handle)?;
     Ok(TPM_RC_AUTH_FAIL)
 }
 
@@ -189,8 +237,14 @@ pub(super) fn authorize_sessions(
         let Some(handle) = associated else {
             return Err(TPM_RC_HANDLE + error_index);
         };
-        if is_da_protected_handle(handle) {
-            check_locked_out(runtime)?;
+        if is_da_protected_handle(runtime, handle) {
+            check_locked_out(runtime, handle)?;
+        }
+        if policy_session_is_required(descriptor, index, handle) {
+            return Err(TPM_RC_AUTH_TYPE);
+        }
+        if !auth_value_is_available(runtime, handle, descriptor.nv_access)? {
+            return Err(TPM_RC_AUTH_UNAVAILABLE);
         }
         let matched = password_matches(effective_auth_value(runtime, handle)?, session.password);
         if !matched {
@@ -238,6 +292,7 @@ mod tests {
             lifecycle: CommandLifecycle::RequiresStarted,
             handles,
             sessions_allowed: true,
+            nv_access: NvAccess::Neither,
             handler: stub_handler,
         }
     }
@@ -245,16 +300,19 @@ mod tests {
     static ONE_AUTH_HANDLE: [HandleSpec; 1] = [HandleSpec {
         kind: HandleKind::PcrAllowNull,
         user_auth: true,
+        admin_role: false,
     }];
 
     static TWO_AUTH_HANDLES: [HandleSpec; 2] = [
         HandleSpec {
             kind: HandleKind::PcrAllowNull,
             user_auth: true,
+            admin_role: false,
         },
         HandleSpec {
             kind: HandleKind::PcrAllowNull,
             user_auth: true,
+            admin_role: false,
         },
     ];
 

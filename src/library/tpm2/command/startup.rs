@@ -6,7 +6,9 @@ use crate::library::constants::{
 
 use super::super::crypto::{DRBG_MAGIC, Drbg};
 use super::super::live::{unoccupied_objects, unoccupied_sessions};
-use super::super::nv::build_nv_image;
+use super::super::nv::{
+    MAX_ORDERLY_COUNT, TPMA_NV_ORDERLY, build_nv_image, is_counter_index, startup_attributes,
+};
 use super::super::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE, is_orderly};
 use super::super::persistent::{
     OwnedDrbgState, OwnedIndexOrderlyRam, OwnedPcrAllocation, OwnedSecret, OwnedStateClearData,
@@ -41,35 +43,8 @@ const COMMIT_NONCE_SIZE: usize = 64;
 
 const SEED_COMPAT_LEVEL_LAST: u8 = 1;
 
-const TPMA_NV_WRITELOCKED: u32 = 1 << 11;
-const TPMA_NV_WRITEDEFINE: u32 = 1 << 13;
-const TPMA_NV_ORDERLY: u32 = 1 << 26;
-const TPMA_NV_CLEAR_STCLEAR: u32 = 1 << 27;
-const TPMA_NV_READLOCKED: u32 = 1 << 28;
-const TPMA_NV_WRITTEN: u32 = 1 << 29;
-
-const TPMA_NV_TPM_NT_SHIFT: u32 = 4;
-const TPMA_NV_TPM_NT_MASK: u32 = 0xf << TPMA_NV_TPM_NT_SHIFT;
-const TPM_NT_COUNTER: u32 = 0x1;
-
-const MAX_ORDERLY_COUNT: u64 = (1 << 8) - 1;
-
-fn nv_is_counter_index(attributes: u32) -> bool {
-    (attributes & TPMA_NV_TPM_NT_MASK) >> TPMA_NV_TPM_NT_SHIFT == TPM_NT_COUNTER
-}
-
-fn nv_startup_attributes(mut attributes: u32, mode: StartupMode) -> u32 {
-    attributes &= !TPMA_NV_READLOCKED;
-    if !nv_is_counter_index(attributes)
-        && (attributes & TPMA_NV_CLEAR_STCLEAR != 0
-            || (attributes & TPMA_NV_ORDERLY != 0 && mode == StartupMode::Reset))
-    {
-        attributes &= !TPMA_NV_WRITTEN;
-    }
-    if attributes & TPMA_NV_WRITTEN == 0 || attributes & TPMA_NV_WRITEDEFINE == 0 {
-        attributes &= !TPMA_NV_WRITELOCKED;
-    }
-    attributes
+fn nv_startup_attributes(attributes: u32, mode: StartupMode) -> u32 {
+    startup_attributes(attributes, mode == StartupMode::Reset)
 }
 
 fn pcr_state_saved(pcr: usize) -> bool {
@@ -256,7 +231,7 @@ fn prepare_startup(runtime: &Tpm2Runtime, startup_type: u16) -> Result<PreparedS
     if mode != StartupMode::Resume {
         for entry in &mut live_orderly_ram.entries {
             entry.attributes = nv_startup_attributes(entry.attributes, mode);
-            if nv_is_counter_index(entry.attributes) && prev_orderly == SU_NONE_VALUE {
+            if is_counter_index(entry.attributes) && prev_orderly == SU_NONE_VALUE {
                 let counter_bytes: &mut [u8] = entry.data.get_mut(..8).ok_or(TPM_RC_FAILURE)?;
                 let counter =
                     u64::from_be_bytes(counter_bytes.try_into().map_err(|_| TPM_RC_FAILURE)?)
@@ -549,6 +524,10 @@ mod tests {
     use crate::library::constants::TPM_FAIL;
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::nv::{IndexOrderlyRamFixture, UserNvramFixture};
+    use crate::library::tpm2::nv::{
+        TPM_NT_COUNTER, TPMA_NV_CLEAR_STCLEAR, TPMA_NV_READLOCKED, TPMA_NV_TPM_NT_SHIFT,
+        TPMA_NV_WRITEDEFINE, TPMA_NV_WRITELOCKED, TPMA_NV_WRITTEN,
+    };
     use crate::library::tpm2::pcr::{PcrAllocationFixture, PcrPoliciesFixture};
     use crate::library::tpm2::persistent::{
         CompatTailFixture, OrderlyFixture, PersistentAllEnvelope, PrefixFixture,

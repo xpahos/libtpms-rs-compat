@@ -57,6 +57,10 @@ This profile requires at least libtpms v0.10.",
 };
 
 pub(in crate::library::tpm2) const ATTRIBUTE_DRBG_CONTINUOUS_TEST: &[u8] = b"drbg-continous-test";
+const ATTRIBUTE_NO_SHA1_SIGNING: &[u8] = b"no-sha1-signing";
+const ATTRIBUTE_NO_SHA1_HMAC_CREATION: &[u8] = b"no-sha1-hmac-creation";
+const ATTRIBUTE_NO_SHA1_HMAC: &[u8] = b"no-sha1-hmac";
+const ATTRIBUTE_FIPS_HOST: &[u8] = b"fips-host";
 
 const ATTRIBUTES: [(&[u8], u32); 10] = [
     (b"no-unpadded-encryption", 7),
@@ -1094,6 +1098,16 @@ impl ValidatedProfile {
                 .split(|&byte| byte == b',')
                 .any(|token| token == name)
         })
+    }
+
+    pub(super) fn forbids_sha1_signing(&self) -> bool {
+        self.attribute_enabled(ATTRIBUTE_NO_SHA1_SIGNING)
+            || self.attribute_enabled(ATTRIBUTE_FIPS_HOST)
+    }
+
+    pub(super) fn forbids_sha1_hmac_creation(&self) -> bool {
+        self.attribute_enabled(ATTRIBUTE_NO_SHA1_HMAC_CREATION)
+            || self.attribute_enabled(ATTRIBUTE_NO_SHA1_HMAC)
     }
 
     pub(super) fn seed_compat_level(&self) -> u8 {

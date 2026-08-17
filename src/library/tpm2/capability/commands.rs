@@ -41,9 +41,22 @@ pub(in crate::library::tpm2) fn vendor_count() -> u32 {
 mod tests {
     use super::*;
 
+    const TPMA_CC_NV_UNDEFINE_SPACE_SPECIAL: u32 = 0x0440_011f;
     const TPMA_CC_EVICT_CONTROL: u32 = 0x0440_0120;
+    const TPMA_CC_NV_UNDEFINE_SPACE: u32 = 0x0440_0122;
     const TPMA_CC_CHANGE_EPS: u32 = 0x02c0_0124;
     const TPMA_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0240_0129;
+    const TPMA_CC_NV_DEFINE_SPACE: u32 = 0x0240_012a;
+    const TPMA_CC_NV_GLOBAL_WRITE_LOCK: u32 = 0x0240_0132;
+    const TPMA_CC_NV_INCREMENT: u32 = 0x0440_0134;
+    const TPMA_CC_NV_SET_BITS: u32 = 0x0440_0135;
+    const TPMA_CC_NV_EXTEND: u32 = 0x0440_0136;
+    const TPMA_CC_NV_WRITE: u32 = 0x0440_0137;
+    const TPMA_CC_NV_WRITE_LOCK: u32 = 0x0440_0138;
+    const TPMA_CC_NV_CHANGE_AUTH: u32 = 0x0240_013b;
+    const TPMA_CC_NV_READ: u32 = 0x0400_014e;
+    const TPMA_CC_NV_READ_LOCK: u32 = 0x0440_014f;
+    const TPMA_CC_NV_READ_PUBLIC: u32 = 0x0200_0169;
     const TPMA_CC_PCR_RESET: u32 = 0x0200_013d;
     const TPMA_CC_INCREMENTAL_SELF_TEST: u32 = 0x0040_0142;
     const TPMA_CC_SELF_TEST: u32 = 0x0040_0143;
@@ -55,6 +68,7 @@ mod tests {
     const TPMA_CC_HASH: u32 = 0x0000_017d;
     const TPMA_CC_PCR_READ: u32 = 0x0000_017e;
     const TPMA_CC_PCR_EXTEND: u32 = 0x0200_0182;
+    const TPMA_CC_NV_CERTIFY: u32 = 0x0600_0184;
     const TPMA_CC_PCR_ALLOCATE: u32 = 0x0240_012b;
     const TPMA_CC_CREATE_PRIMARY: u32 = 0x1200_0131;
 
@@ -64,54 +78,68 @@ mod tests {
         assert_eq!(
             page.entries,
             [
+                TPMA_CC_NV_UNDEFINE_SPACE_SPECIAL,
                 TPMA_CC_EVICT_CONTROL,
+                TPMA_CC_NV_UNDEFINE_SPACE,
                 TPMA_CC_CHANGE_EPS,
                 TPMA_CC_HIERARCHY_CHANGE_AUTH,
+                TPMA_CC_NV_DEFINE_SPACE,
                 TPMA_CC_PCR_ALLOCATE,
                 TPMA_CC_CREATE_PRIMARY,
+                TPMA_CC_NV_GLOBAL_WRITE_LOCK,
+                TPMA_CC_NV_INCREMENT,
+                TPMA_CC_NV_SET_BITS,
+                TPMA_CC_NV_EXTEND,
+                TPMA_CC_NV_WRITE,
+                TPMA_CC_NV_WRITE_LOCK,
+                TPMA_CC_NV_CHANGE_AUTH,
                 TPMA_CC_PCR_RESET,
                 TPMA_CC_INCREMENTAL_SELF_TEST,
                 TPMA_CC_SELF_TEST,
                 TPMA_CC_STARTUP,
                 TPMA_CC_SHUTDOWN,
                 TPMA_CC_STIR_RANDOM,
+                TPMA_CC_NV_READ,
+                TPMA_CC_NV_READ_LOCK,
+                TPMA_CC_NV_READ_PUBLIC,
                 TPMA_CC_GET_CAPABILITY,
                 TPMA_CC_GET_RANDOM,
                 TPMA_CC_HASH,
                 TPMA_CC_PCR_READ,
-                TPMA_CC_PCR_EXTEND
+                TPMA_CC_PCR_EXTEND,
+                TPMA_CC_NV_CERTIFY
             ]
         );
         assert!(!page.more_data);
     }
 
     #[test]
-    fn evict_control_leads_the_registry_because_its_command_code_is_the_lowest() {
+    fn nv_undefine_space_special_leads_the_registry_because_its_command_code_is_the_lowest() {
         let page = implemented(0, 1);
-        assert_eq!(page.entries, [TPMA_CC_EVICT_CONTROL]);
+        assert_eq!(page.entries, [TPMA_CC_NV_UNDEFINE_SPACE_SPECIAL]);
         assert!(page.more_data);
 
         let page = implemented(0x0120, 1000);
-        assert_eq!(page.entries.len(), 16);
+        assert_eq!(page.entries.len(), 29);
         assert_eq!(page.entries[0], TPMA_CC_EVICT_CONTROL);
 
         let page = implemented(0x0121, 1000);
-        assert_eq!(page.entries.len(), 15);
+        assert_eq!(page.entries.len(), 28);
         assert!(!page.entries.contains(&TPMA_CC_EVICT_CONTROL));
     }
 
     #[test]
-    fn change_eps_follows_evict_control() {
+    fn change_eps_follows_nv_undefine_space() {
         let page = implemented(0x0121, 1);
-        assert_eq!(page.entries, [TPMA_CC_CHANGE_EPS]);
+        assert_eq!(page.entries, [TPMA_CC_NV_UNDEFINE_SPACE]);
         assert!(page.more_data);
 
         let page = implemented(0x0124, 1000);
-        assert_eq!(page.entries.len(), 15);
+        assert_eq!(page.entries.len(), 27);
         assert_eq!(page.entries[0], TPMA_CC_CHANGE_EPS);
 
         let page = implemented(0x0125, 1000);
-        assert_eq!(page.entries.len(), 14);
+        assert_eq!(page.entries.len(), 26);
         assert!(!page.entries.contains(&TPMA_CC_CHANGE_EPS));
     }
 
@@ -122,26 +150,26 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0129, 1000);
-        assert_eq!(page.entries.len(), 14);
+        assert_eq!(page.entries.len(), 26);
         assert_eq!(page.entries[0], TPMA_CC_HIERARCHY_CHANGE_AUTH);
 
         let page = implemented(0x012a, 1000);
-        assert_eq!(page.entries.len(), 13);
+        assert_eq!(page.entries.len(), 25);
         assert!(!page.entries.contains(&TPMA_CC_HIERARCHY_CHANGE_AUTH));
     }
 
     #[test]
-    fn pcr_allocate_follows_hierarchy_change_auth() {
+    fn nv_define_space_follows_hierarchy_change_auth() {
         let page = implemented(0x012a, 1);
-        assert_eq!(page.entries, [TPMA_CC_PCR_ALLOCATE]);
+        assert_eq!(page.entries, [TPMA_CC_NV_DEFINE_SPACE]);
         assert!(page.more_data);
 
         let page = implemented(0x012b, 1000);
-        assert_eq!(page.entries.len(), 13);
+        assert_eq!(page.entries.len(), 24);
         assert_eq!(page.entries[0], TPMA_CC_PCR_ALLOCATE);
 
         let page = implemented(0x012c, 1000);
-        assert_eq!(page.entries.len(), 12);
+        assert_eq!(page.entries.len(), 23);
         assert!(!page.entries.contains(&TPMA_CC_PCR_ALLOCATE));
     }
 
@@ -152,27 +180,60 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0131, 1000);
-        assert_eq!(page.entries.len(), 12);
+        assert_eq!(page.entries.len(), 23);
         assert_eq!(page.entries[0], TPMA_CC_CREATE_PRIMARY);
 
         let page = implemented(0x0132, 1000);
-        assert_eq!(page.entries.len(), 11);
+        assert_eq!(page.entries.len(), 22);
         assert!(!page.entries.contains(&TPMA_CC_CREATE_PRIMARY));
     }
 
     #[test]
-    fn pcr_reset_follows_create_primary() {
+    fn nv_global_write_lock_follows_create_primary() {
         let page = implemented(0x0132, 1);
-        assert_eq!(page.entries, [TPMA_CC_PCR_RESET]);
+        assert_eq!(page.entries, [TPMA_CC_NV_GLOBAL_WRITE_LOCK]);
         assert!(page.more_data);
 
         let page = implemented(0x013d, 1000);
-        assert_eq!(page.entries.len(), 11);
+        assert_eq!(page.entries.len(), 15);
         assert_eq!(page.entries[0], TPMA_CC_PCR_RESET);
 
         let page = implemented(0x013e, 1000);
-        assert_eq!(page.entries.len(), 10);
+        assert_eq!(page.entries.len(), 14);
         assert!(!page.entries.contains(&TPMA_CC_PCR_RESET));
+    }
+
+    #[test]
+    fn the_nv_modification_commands_are_advertised_in_command_code_order() {
+        let page = implemented(0x0134, 5);
+        assert_eq!(
+            page.entries,
+            [
+                TPMA_CC_NV_INCREMENT,
+                TPMA_CC_NV_SET_BITS,
+                TPMA_CC_NV_EXTEND,
+                TPMA_CC_NV_WRITE,
+                TPMA_CC_NV_WRITE_LOCK
+            ]
+        );
+        assert!(page.more_data);
+
+        let page = implemented(0x013b, 1);
+        assert_eq!(page.entries, [TPMA_CC_NV_CHANGE_AUTH]);
+    }
+
+    #[test]
+    fn the_nv_read_commands_are_advertised_in_command_code_order() {
+        let page = implemented(0x014e, 3);
+        assert_eq!(
+            page.entries,
+            [
+                TPMA_CC_NV_READ,
+                TPMA_CC_NV_READ_LOCK,
+                TPMA_CC_NV_READ_PUBLIC
+            ]
+        );
+        assert!(page.more_data);
     }
 
     #[test]
@@ -228,15 +289,19 @@ mod tests {
 
     #[test]
     fn a_start_between_entries_skips_to_the_next_command() {
-        let page = implemented(0x0147, 5);
+        let page = implemented(0x0147, 9);
         assert_eq!(
             page.entries,
             [
+                TPMA_CC_NV_READ,
+                TPMA_CC_NV_READ_LOCK,
+                TPMA_CC_NV_READ_PUBLIC,
                 TPMA_CC_GET_CAPABILITY,
                 TPMA_CC_GET_RANDOM,
                 TPMA_CC_HASH,
                 TPMA_CC_PCR_READ,
-                TPMA_CC_PCR_EXTEND
+                TPMA_CC_PCR_EXTEND,
+                TPMA_CC_NV_CERTIFY
             ]
         );
         assert!(!page.more_data);
@@ -278,7 +343,7 @@ mod tests {
 
     #[test]
     fn a_start_above_the_last_command_is_empty() {
-        let page = implemented(0x0183, 10);
+        let page = implemented(0x0185, 10);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
@@ -286,8 +351,19 @@ mod tests {
     #[test]
     fn pcr_extend_is_advertised_from_its_own_command_code() {
         let page = implemented(0x0182, 10);
-        assert_eq!(page.entries, [TPMA_CC_PCR_EXTEND]);
+        assert_eq!(page.entries, [TPMA_CC_PCR_EXTEND, TPMA_CC_NV_CERTIFY]);
         assert!(!page.more_data);
+    }
+
+    #[test]
+    fn nv_certify_is_advertised_last() {
+        let page = implemented(0x0184, 10);
+        assert_eq!(page.entries, [TPMA_CC_NV_CERTIFY]);
+        assert!(!page.more_data);
+        assert_eq!(
+            implemented(0, 1000).entries.last(),
+            Some(&TPMA_CC_NV_CERTIFY)
+        );
     }
 
     #[test]
@@ -296,37 +372,37 @@ mod tests {
         assert!(page.entries.is_empty());
         assert!(page.more_data);
 
-        let page = implemented(0x0183, 0);
+        let page = implemented(0x0185, 0);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 16);
-        assert_eq!(page.entries.len(), 16);
+        let page = implemented(0, 30);
+        assert_eq!(page.entries.len(), 30);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
         assert_eq!(
             page.entries,
             [
+                TPMA_CC_NV_UNDEFINE_SPACE_SPECIAL,
                 TPMA_CC_EVICT_CONTROL,
-                TPMA_CC_CHANGE_EPS,
-                TPMA_CC_HIERARCHY_CHANGE_AUTH
+                TPMA_CC_NV_UNDEFINE_SPACE
             ]
         );
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 16);
+        assert_eq!(page.entries.len(), 30);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 16);
-        assert_eq!(library_count(), 16);
+        assert_eq!(total_count(), 30);
+        assert_eq!(library_count(), 30);
         assert_eq!(vendor_count(), 0);
     }
 

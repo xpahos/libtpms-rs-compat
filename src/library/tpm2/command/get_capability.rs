@@ -461,9 +461,7 @@ mod tests {
         assert_eq!(
             query(&mut runtime, 2, 0, 1000),
             hex(
-                "8001000000530000000000000000020000001004400120 02c00124 02400129 0240012b \
-                 12000131 0200013d 00400142 00400143 00400144 00400145 00400146 0000017a \
-                 0000017b 0000017d 0000017e 02000182"
+                "80010000008b0000000000000000020000001e0440011f044001200440012202c00124024001290240012a0240012b120001310240013204400134044001350440013604400137044001380240013b0200013d00400142004001430040014400400145004001460400014e0440014f020001690000017a0000017b0000017d0000017e0200018206000184"
             )
         );
     }
@@ -477,14 +475,14 @@ mod tests {
             "count zero matches the oracle bytes"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0x0124, 1),
-            hex("80010000001700000000010000000200000001 02c00124"),
-            "ChangeEPS leads the registry"
+            query(&mut runtime, 2, 0, 1),
+            hex("80010000001700000000010000000200000001 0440011f"),
+            "NV_UndefineSpaceSpecial leads the registry"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x0125, 1),
             hex("80010000001700000000010000000200000001 02400129"),
-            "just above ChangeEPS"
+            "HierarchyChangeAuth follows ChangeEPS"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x0129, 1),
@@ -493,8 +491,8 @@ mod tests {
         );
         assert_eq!(
             query(&mut runtime, 2, 0x012a, 1),
-            hex("80010000001700000000010000000200000001 0240012b"),
-            "just above HierarchyChangeAuth"
+            hex("80010000001700000000010000000200000001 0240012a"),
+            "NV_DefineSpace follows HierarchyChangeAuth"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x012b, 1),
@@ -513,13 +511,28 @@ mod tests {
         );
         assert_eq!(
             query(&mut runtime, 2, 0x0132, 1),
-            hex("80010000001700000000010000000200000001 0200013d"),
-            "just above CreatePrimary"
+            hex("80010000001700000000010000000200000001 02400132"),
+            "NV_GlobalWriteLock follows CreatePrimary"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x013d, 1),
             hex("80010000001700000000010000000200000001 0200013d"),
             "PCR_Reset advertises itself through the registry"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x0121, 1),
+            hex("80010000001700000000010000000200000001 04400122"),
+            "NV_UndefineSpace follows EvictControl"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x0133, 1),
+            hex("80010000001700000000010000000200000001 04400134"),
+            "NV_Increment follows NV_GlobalWriteLock"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x0139, 1),
+            hex("80010000001700000000010000000200000001 0240013b"),
+            "NV_ChangeAuth follows NV_WriteLock"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x013e, 1),
@@ -552,12 +565,12 @@ mod tests {
             "StirRandom advertises itself through the registry"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0x0147, 5),
+            query(&mut runtime, 2, 0x0147, 9),
             hex(
-                "80010000002700000000000000000200000005 0000017a 0000017b 0000017d 0000017e \
-                 02000182"
+                "80010000003700000000000000000200000009 0400014e 0440014f 02000169 0000017a \
+                 0000017b 0000017d 0000017e 02000182 06000184"
             ),
-            "between StirRandom and GetCapability"
+            "between StirRandom and NV_Read"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x017a, 3),
@@ -580,14 +593,19 @@ mod tests {
             "Hash advertises itself through the registry"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0x017e, 2),
-            hex("80010000001b000000000000000002000000020000017e 02000182"),
+            query(&mut runtime, 2, 0x017e, 3),
+            hex("80010000001f000000000000000002000000030000017e 02000182 06000184"),
             "PCR_Read advertises itself through the registry"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x0182, 2),
-            hex("80010000001700000000000000000200000001 02000182"),
+            hex("80010000001b00000000000000000200000002 02000182 06000184"),
             "PCR_Extend advertises itself through the registry"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x0184, 1),
+            hex("80010000001700000000000000000200000001 06000184"),
+            "NV_Certify closes the registry"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x2000_0000, 10),
@@ -596,24 +614,20 @@ mod tests {
         );
         assert_eq!(
             query(&mut runtime, 2, 0, 3),
-            hex("80010000001f00000000010000000200000003 04400120 02c00124 02400129"),
+            hex("80010000001f000000000100000002000000030440011f0440012004400122"),
             "an exhausted count leaves more data"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0, 15),
+            query(&mut runtime, 2, 0, 29),
             hex(
-                "80010000004f000000000100000002000000 0f 04400120 02c00124 02400129 0240012b \
-                 12000131 0200013d 00400142 00400143 00400144 00400145 00400146 0000017a \
-                 0000017b 0000017d 0000017e"
+                "8001000000870000000001000000020000001d0440011f044001200440012202c00124024001290240012a0240012b120001310240013204400134044001350440013604400137044001380240013b0200013d00400142004001430040014400400145004001460400014e0440014f020001690000017a0000017b0000017d0000017e02000182"
             ),
             "one short of the registry still leaves more data"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0, 16),
+            query(&mut runtime, 2, 0, 30),
             hex(
-                "8001000000530000000000000000020000001004400120 02c00124 02400129 0240012b \
-                 12000131 0200013d 00400142 00400143 00400144 00400145 00400146 0000017a \
-                 0000017b 0000017d 0000017e 02000182"
+                "80010000008b0000000000000000020000001e0440011f044001200440012202c00124024001290240012a0240012b120001310240013204400134044001350440013604400137044001380240013b0200013d00400142004001430040014400400145004001460400014e0440014f020001690000017a0000017b0000017d0000017e0200018206000184"
             ),
             "an exact count consumes the registry"
         );
@@ -628,8 +642,8 @@ mod tests {
 000d0000011b000000060000011c000001000000011d000000ff0000011e000010000000011f00001\
 00000000120000000400000012100000a8c0000012200000194000001230000000100000124000000\
 00000001250000010600000126000000190000012700000\
-7e800000128000000800000012900000010\
-0000012a000000100000012b000000000000012c000004000000012d000000000000012e00000400";
+7e80000012800000080000001290000001e\
+0000012a0000001e0000012b000000000000012c000004000000012d000000000000012e00000400";
 
     #[test]
     fn the_fixed_property_group_matches_the_oracle_with_registry_command_counts() {

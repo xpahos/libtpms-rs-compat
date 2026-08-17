@@ -4,13 +4,11 @@ use crate::library::tpm2::persistent::{
 };
 use crate::library::tpm2::public::{DIGEST_SIZE, read_hash_alg, read_tpm2b};
 
+use super::attributes::TPMA_NV_RESERVED;
+use super::public_area::{NV_INDEX_FIRST, NV_INDEX_LAST};
+
 pub(in crate::library::tpm2) const NV_INDEX_MAGIC: u32 = 0x2547_265a;
 const NV_INDEX_VERSION: u16 = 2;
-
-const NV_INDEX_FIRST: u32 = 0x0100_0000;
-const NV_INDEX_LAST: u32 = 0x01ff_ffff;
-
-const TPMA_NV_RESERVED: u32 = 0x01f0_0300;
 
 pub(in crate::library::tpm2) const MAX_NV_INDEX_SIZE: u32 = 2048;
 

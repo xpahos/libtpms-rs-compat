@@ -139,6 +139,24 @@ impl PrivateExponent {
     }
 }
 
+pub(in crate::library::tpm2) fn rsa_private_key_op(
+    p: &BigUint,
+    q: &BigUint,
+    d_p: &BigUint,
+    d_q: &BigUint,
+    q_inv: &BigUint,
+    value: &BigUint,
+) -> Option<BigUint> {
+    let mut exponent = PrivateExponent {
+        p: p.clone(),
+        q: q.clone(),
+        d_p: d_p.clone(),
+        d_q: d_q.clone(),
+        q_inv: q_inv.clone(),
+    };
+    exponent.private_key_op(value)
+}
+
 pub(in crate::library::tpm2) fn generate_rsa_key(
     key_bits: u16,
     exponent: u32,
