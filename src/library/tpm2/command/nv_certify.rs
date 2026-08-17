@@ -432,7 +432,7 @@ mod tests {
         NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE, TPMA_NV_READ_STCLEAR,
         marshal_sized_nv_public,
     };
-    use crate::library::tpm2::nv_vectors::certify_vector;
+    use crate::library::tpm2::oracles::nv::certify_vector;
     use crate::library::tpm2::restore_permanent_blob_for_test;
 
     const RC_SIZE: u32 = 0x095;

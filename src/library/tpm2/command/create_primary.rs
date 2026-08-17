@@ -1408,9 +1408,8 @@ mod tests {
     }
 
     fn oracle_runtime() -> Box<Tpm2Runtime> {
-        use crate::library::tpm2::create_primary_vectors::{ORACLE_PERMALL, unhex};
-        let permall = unhex(ORACLE_PERMALL);
-        let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(&permall)
+        use crate::library::tpm2::oracles::create_primary::vector;
+        let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL"))
             .expect("the oracle permanent state restores");
         let startup = vec![
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
@@ -1424,11 +1423,11 @@ mod tests {
 
     #[test]
     fn every_swtpm_setup_template_matches_the_libtpms_oracle_byte_for_byte() {
-        use crate::library::tpm2::create_primary_vectors::{oracle_cases, unhex};
+        use crate::library::tpm2::oracles::create_primary::oracle_cases;
         for (label, hierarchy, template, expected) in oracle_cases() {
             let mut runtime = oracle_runtime();
-            let response = create(&mut runtime, hierarchy, &unhex(&template));
-            assert_eq!(response, unhex(expected), "{label}");
+            let response = create(&mut runtime, hierarchy, &template);
+            assert_eq!(response, expected, "{label}");
         }
     }
 
@@ -1456,16 +1455,10 @@ mod tests {
 
     #[test]
     fn the_null_hierarchy_key_has_the_oracle_shape_but_a_per_boot_value() {
-        use crate::library::tpm2::create_primary_vectors::{
-            ORACLE_NULL_RSA1024, null_hierarchy_template, unhex,
-        };
-        let expected = unhex(ORACLE_NULL_RSA1024);
+        use crate::library::tpm2::oracles::create_primary::{null_hierarchy_template, vector};
+        let expected = vector("NULL_RSA1024");
         let mut runtime = oracle_runtime();
-        let response = create(
-            &mut runtime,
-            TPM_RH_NULL,
-            &unhex(&null_hierarchy_template()),
-        );
+        let response = create(&mut runtime, TPM_RH_NULL, &null_hierarchy_template());
         assert_eq!(response.len(), expected.len());
         assert_eq!(
             response[..46],
@@ -1496,10 +1489,10 @@ mod tests {
     }
 
     fn sym_permall_runtime() -> Box<Tpm2Runtime> {
-        use crate::library::tpm2::create_primary_vectors::{ORACLE_SYM_PERMALL, unhex};
-        let permall = unhex(ORACLE_SYM_PERMALL);
-        let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(&permall)
-            .expect("the oracle permanent state restores");
+        use crate::library::tpm2::oracles::create_primary::vector;
+        let mut runtime =
+            crate::library::tpm2::restore_permanent_blob_for_test(vector("SYM_PERMALL"))
+                .expect("the oracle permanent state restores");
         let startup = vec![
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
         ];
@@ -1541,9 +1534,8 @@ mod tests {
 
     #[test]
     fn the_profile_minimum_key_sizes_match_the_libtpms_oracle_codes() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
-        let cases: [(&str, String, u32); 9] = [
+        use crate::library::tpm2::oracles::create_primary as vectors;
+        let cases: [(&str, Vec<u8>, u32); 9] = [
             (
                 "rsa1024",
                 vectors::asym_rsa_template(1024, 256),
@@ -1592,7 +1584,7 @@ mod tests {
         ];
         for (label, template, expected) in cases {
             let mut runtime = profile_runtime(vectors::MIN_SIZE_PROFILE);
-            let response = create(&mut runtime, TPM_RH_OWNER, &unhex(&template));
+            let response = create(&mut runtime, TPM_RH_OWNER, &template);
             assert_eq!(response_code(&response), expected, "{label}");
             assert!(
                 runtime
@@ -1607,9 +1599,8 @@ mod tests {
 
     #[test]
     fn a_template_at_or_above_the_profile_minimum_is_accepted() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
-        let cases: [(&str, String); 3] = [
+        use crate::library::tpm2::oracles::create_primary as vectors;
+        let cases: [(&str, Vec<u8>); 3] = [
             ("rsa3072", vectors::asym_rsa_template(3072, 256)),
             ("ecc_p384", vectors::asym_ecc_template(0x0004, 256)),
             (
@@ -1619,18 +1610,17 @@ mod tests {
         ];
         for (label, template) in cases {
             let mut runtime = profile_runtime(vectors::MIN_SIZE_PROFILE);
-            let response = create(&mut runtime, TPM_RH_OWNER, &unhex(&template));
+            let response = create(&mut runtime, TPM_RH_OWNER, &template);
             assert_eq!(response_code(&response), 0, "{label}");
         }
     }
 
     #[test]
     fn the_symmetric_parameter_of_a_storage_key_is_checked_against_the_profile() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
+        use crate::library::tpm2::oracles::create_primary as vectors;
         let mut runtime = profile_runtime(vectors::MIN_SIZE_PROFILE);
         let template = vectors::asym_rsa_template(3072, 128);
-        let response = create(&mut runtime, TPM_RH_OWNER, &unhex(&template));
+        let response = create(&mut runtime, TPM_RH_OWNER, &template);
         assert_eq!(
             response_code(&response),
             vectors::RC_MIN_RSA3072_AES128_PARM
@@ -1639,21 +1629,20 @@ mod tests {
 
     #[test]
     fn a_disabled_curve_family_is_rejected_with_the_oracle_code() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
+        use crate::library::tpm2::oracles::create_primary as vectors;
         for (label, curve, expected) in [
             ("bn_p256", 0x0010u16, vectors::RC_NOBN_ECC_BN_P256),
             ("sm2_p256", 0x0020, vectors::RC_NOBN_ECC_SM2_P256),
         ] {
             let mut runtime = profile_runtime(vectors::NO_BN_CURVE_PROFILE);
             let template = vectors::asym_ecc_template(curve, 128);
-            let response = create(&mut runtime, TPM_RH_OWNER, &unhex(&template));
+            let response = create(&mut runtime, TPM_RH_OWNER, &template);
             assert_eq!(response_code(&response), expected, "{label}");
         }
         let mut runtime = profile_runtime(vectors::NO_BN_CURVE_PROFILE);
         let template = vectors::asym_ecc_template(0x0004, 128);
         assert_eq!(
-            response_code(&create(&mut runtime, TPM_RH_OWNER, &unhex(&template))),
+            response_code(&create(&mut runtime, TPM_RH_OWNER, &template)),
             0,
             "the enabled family still works"
         );
@@ -1661,22 +1650,21 @@ mod tests {
 
     #[test]
     fn an_individually_disabled_curve_is_rejected_with_the_oracle_code() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
+        use crate::library::tpm2::oracles::create_primary as vectors;
         for (label, curve, expected) in [
             ("p192", 0x0001u16, vectors::RC_ONECURVE_ECC_P192),
             ("p521", 0x0005, vectors::RC_ONECURVE_ECC_P521),
         ] {
             let mut runtime = profile_runtime(vectors::TWO_CURVE_PROFILE);
             let template = vectors::asym_ecc_template(curve, 128);
-            let response = create(&mut runtime, TPM_RH_OWNER, &unhex(&template));
+            let response = create(&mut runtime, TPM_RH_OWNER, &template);
             assert_eq!(response_code(&response), expected, "{label}");
         }
         for curve in [0x0003u16, 0x0004] {
             let mut runtime = profile_runtime(vectors::TWO_CURVE_PROFILE);
             let template = vectors::asym_ecc_template(curve, 128);
             assert_eq!(
-                response_code(&create(&mut runtime, TPM_RH_OWNER, &unhex(&template))),
+                response_code(&create(&mut runtime, TPM_RH_OWNER, &template)),
                 0,
                 "curve {curve:#06x}"
             );
@@ -1685,116 +1673,111 @@ mod tests {
 
     #[test]
     fn a_disabled_symmetric_algorithm_is_rejected_before_its_key_size() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
+        use crate::library::tpm2::oracles::create_primary as vectors;
         let mut runtime = profile_runtime(vectors::NO_TDES_PROFILE);
         let template = vectors::symcipher_template(0x0003, 128, vectors::SYM_GENERATED_ATTRIBUTES);
-        let response = create(&mut runtime, TPM_RH_OWNER, &unhex(&template));
+        let response = create(&mut runtime, TPM_RH_OWNER, &template);
         assert_eq!(response_code(&response), vectors::RC_NOTDES_TDES128);
     }
 
     #[test]
     fn generated_symmetric_primaries_match_the_libtpms_oracle_byte_for_byte() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
-        let cases: [(&str, u16, u16, &str); 3] = [
-            ("tdes128", 0x0003, 128, vectors::ORACLE_TDES128_GENERATED),
-            ("tdes192", 0x0003, 192, vectors::ORACLE_TDES192_GENERATED),
-            ("aes128", 0x0006, 128, vectors::ORACLE_AES128_GENERATED),
+        use crate::library::tpm2::oracles::create_primary as vectors;
+        let cases: [(&str, u16, u16, &[u8]); 3] = [
+            ("tdes128", 0x0003, 128, vectors::vector("TDES128_GENERATED")),
+            ("tdes192", 0x0003, 192, vectors::vector("TDES192_GENERATED")),
+            ("aes128", 0x0006, 128, vectors::vector("AES128_GENERATED")),
         ];
         for (label, symmetric, key_bits, expected) in cases {
             let mut runtime = sym_permall_runtime();
             let template =
                 vectors::symcipher_template(symmetric, key_bits, vectors::SYM_GENERATED_ATTRIBUTES);
-            let response = create(&mut runtime, TPM_RH_OWNER, &unhex(&template));
-            assert_eq!(response, unhex(expected), "{label}");
+            let response = create(&mut runtime, TPM_RH_OWNER, &template);
+            assert_eq!(response, expected, "{label}");
         }
     }
 
     #[test]
     fn supplied_symmetric_primaries_match_the_libtpms_oracle_byte_for_byte() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
-        let cases: [(&str, u16, u16, &str, &str); 5] = [
+        use crate::library::tpm2::oracles::create_primary as vectors;
+        let cases: [(&str, u16, u16, &[u8], &[u8]); 5] = [
             (
                 "tdes128",
                 0x0003,
                 128,
-                vectors::TDES_TWO_KEY,
-                vectors::ORACLE_TDES128_SUPPLIED_OK,
+                &vectors::TDES_TWO_KEY,
+                vectors::vector("TDES128_SUPPLIED_OK"),
             ),
             (
                 "tdes192",
                 0x0003,
                 192,
-                vectors::TDES_THREE_KEY,
-                vectors::ORACLE_TDES192_SUPPLIED_OK,
+                &vectors::TDES_THREE_KEY,
+                vectors::vector("TDES192_SUPPLIED_OK"),
             ),
             (
                 "tdes128_no_parity",
                 0x0003,
                 128,
-                vectors::TDES_TWO_KEY_NO_PARITY,
-                vectors::ORACLE_TDES128_SUPPLIED_BAD_PARITY,
+                &vectors::TDES_TWO_KEY_NO_PARITY,
+                vectors::vector("TDES128_SUPPLIED_BAD_PARITY"),
             ),
             (
                 "tdes192_repeated_ends",
                 0x0003,
                 192,
-                vectors::TDES_THREE_KEY_REPEATED_ENDS,
-                vectors::ORACLE_TDES192_SUPPLIED_SAME13,
+                &vectors::TDES_THREE_KEY_REPEATED_ENDS,
+                vectors::vector("TDES192_SUPPLIED_SAME13"),
             ),
             (
                 "aes128",
                 0x0006,
                 128,
-                vectors::AES_SUPPLIED_KEY,
-                vectors::ORACLE_AES128_SUPPLIED_OK,
+                &vectors::AES_SUPPLIED_KEY,
+                vectors::vector("AES128_SUPPLIED_OK"),
             ),
         ];
         for (label, symmetric, key_bits, key, expected) in cases {
             let mut runtime = sym_permall_runtime();
             let template =
                 vectors::symcipher_template(symmetric, key_bits, vectors::SYM_SUPPLIED_ATTRIBUTES);
-            let response =
-                create_with_sensitive(&mut runtime, TPM_RH_OWNER, &unhex(&template), &unhex(key));
-            assert_eq!(response, unhex(expected), "{label}");
+            let response = create_with_sensitive(&mut runtime, TPM_RH_OWNER, &template, key);
+            assert_eq!(response, expected, "{label}");
         }
     }
 
     #[test]
     fn a_rejected_supplied_tdes_key_matches_the_libtpms_oracle_code() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
-        let cases: [(&str, u16, &str, u32); 5] = [
+        use crate::library::tpm2::oracles::create_primary as vectors;
+        let cases: [(&str, u16, &[u8], u32); 5] = [
             (
                 "wrong_size_long",
                 128,
-                vectors::TDES_THREE_KEY,
+                &vectors::TDES_THREE_KEY,
                 vectors::RC_TDES128_SUPPLIED_SHORT,
             ),
             (
                 "wrong_size_short",
                 192,
-                vectors::TDES_TWO_KEY,
+                &vectors::TDES_TWO_KEY,
                 vectors::RC_TDES192_SUPPLIED_SHORT,
             ),
             (
                 "weak_component",
                 128,
-                vectors::TDES_TWO_KEY_WEAK,
+                &vectors::TDES_TWO_KEY_WEAK,
                 vectors::RC_TDES128_SUPPLIED_WEAK,
             ),
             (
                 "repeated_components",
                 128,
-                vectors::TDES_TWO_KEY_REPEATED,
+                &vectors::TDES_TWO_KEY_REPEATED,
                 vectors::RC_TDES128_SUPPLIED_SAME,
             ),
             (
                 "repeated_tail",
                 192,
-                vectors::TDES_THREE_KEY_REPEATED_TAIL,
+                &vectors::TDES_THREE_KEY_REPEATED_TAIL,
                 vectors::RC_TDES192_SUPPLIED_SAME23,
             ),
         ];
@@ -1802,8 +1785,7 @@ mod tests {
             let mut runtime = sym_permall_runtime();
             let template =
                 vectors::symcipher_template(0x0003, key_bits, vectors::SYM_SUPPLIED_ATTRIBUTES);
-            let response =
-                create_with_sensitive(&mut runtime, TPM_RH_OWNER, &unhex(&template), &unhex(key));
+            let response = create_with_sensitive(&mut runtime, TPM_RH_OWNER, &template, key);
             assert_eq!(response_code(&response), expected, "{label}");
             assert!(
                 runtime
@@ -1818,13 +1800,8 @@ mod tests {
 
     #[test]
     fn a_generated_tdes_primary_derives_deterministically_from_the_hierarchy_seed() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
-        let template = unhex(&vectors::symcipher_template(
-            0x0003,
-            192,
-            vectors::SYM_GENERATED_ATTRIBUTES,
-        ));
+        use crate::library::tpm2::oracles::create_primary as vectors;
+        let template = vectors::symcipher_template(0x0003, 192, vectors::SYM_GENERATED_ATTRIBUTES);
         let mut first = started_runtime();
         let mut second = started_runtime();
         let left = decode(&create(&mut first, TPM_RH_OWNER, &template));
@@ -1842,15 +1819,11 @@ mod tests {
 
     #[test]
     fn a_generated_tdes_key_carries_odd_parity_and_distinct_components() {
-        use crate::library::tpm2::create_primary_vectors as vectors;
-        use crate::library::tpm2::create_primary_vectors::unhex;
+        use crate::library::tpm2::oracles::create_primary as vectors;
         for key_bits in [128u16, 192] {
             let mut runtime = started_runtime();
-            let template = unhex(&vectors::symcipher_template(
-                0x0003,
-                key_bits,
-                vectors::SYM_GENERATED_ATTRIBUTES,
-            ));
+            let template =
+                vectors::symcipher_template(0x0003, key_bits, vectors::SYM_GENERATED_ATTRIBUTES);
             assert_eq!(
                 response_code(&create(&mut runtime, TPM_RH_OWNER, &template)),
                 0

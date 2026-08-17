@@ -277,12 +277,6 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::constants::TPM_RC_INITIALIZE;
     use crate::library::tpm2::command::registry::{CommandLifecycle, HandleKind};
-    use crate::library::tpm2::create_primary_vectors::unhex;
-    use crate::library::tpm2::evict_control_vectors::{
-        ORACLE_OWNER_PRIMARY_RESPONSE, ORACLE_PERMALL, ORACLE_PERMALL_AFTER_DELETE,
-        ORACLE_PERMALL_ALL_DELETED, ORACLE_PERMALL_OWNER_PERSIST, ORACLE_PERMALL_PLATFORM_PERSIST,
-        ORACLE_PERMALL_STARTED, ORACLE_PERMALL_TWO_EVICTS, ORACLE_PLATFORM_PRIMARY_RESPONSE,
-    };
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_PLATFORM_NV,
     };
@@ -290,6 +284,7 @@ mod tests {
     use crate::library::tpm2::nv::USER_NVRAM_CAPACITY;
     use crate::library::tpm2::object::{ATTR_OCCUPIED, ATTR_SPS_HIERARCHY};
     use crate::library::tpm2::object_create::find_empty_object_slot;
+    use crate::library::tpm2::oracles::evict_control::vector;
     use crate::library::tpm2::persistent::{
         OwnedNvIndex, OwnedSecret, persistent_all_store, user_nvram_required_capacity,
     };
@@ -328,7 +323,12 @@ mod tests {
     const TPMA_OBJECT_ST_CLEAR: u32 = 0x0000_0004;
 
     fn hex(value: &str) -> Vec<u8> {
-        unhex(value)
+        let digits: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(digits.len().is_multiple_of(2));
+        (0..digits.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).expect("hex digits"))
+            .collect()
     }
 
     fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
@@ -376,7 +376,7 @@ mod tests {
 
     #[track_caller]
     fn oracle_runtime() -> Box<Tpm2Runtime> {
-        let mut runtime = restore_permanent_blob_for_test(&hex(ORACLE_PERMALL))
+        let mut runtime = restore_permanent_blob_for_test(vector("PERMALL"))
             .expect("the oracle permanent state restores");
         start(&mut runtime);
         runtime
@@ -1641,10 +1641,10 @@ mod tests {
 
     #[test]
     fn the_oracle_permanent_state_survives_startup_unchanged_apart_from_the_time_epoch() {
-        let runtime = restore_permanent_blob_for_test(&hex(ORACLE_PERMALL)).expect("restores");
+        let runtime = restore_permanent_blob_for_test(vector("PERMALL")).expect("restores");
         assert_eq!(
             persistent_all_store(runtime.state()).expect("the state serializes"),
-            hex(ORACLE_PERMALL),
+            vector("PERMALL"),
             "the manufactured blob round-trips byte for byte"
         );
         assert_eq!(startup_divergence(), [TIME_EPOCH_BYTE]);
@@ -1663,7 +1663,7 @@ mod tests {
         let runtime = oracle_runtime();
         divergence(
             &persistent_all_store(runtime.state()).expect("the state serializes"),
-            &hex(ORACLE_PERMALL_STARTED),
+            vector("PERMALL_STARTED"),
         )
     }
 
@@ -1671,7 +1671,7 @@ mod tests {
     fn assert_matches_oracle(runtime: &Tpm2Runtime, expected: &str, label: &str) {
         let actual = persistent_all_store(runtime.state()).expect("the state serializes");
         assert_eq!(
-            divergence(&actual, &hex(expected)),
+            divergence(&actual, vector(expected)),
             [TIME_EPOCH_BYTE],
             "{label} diverges from the oracle beyond the known time-epoch gap"
         );
@@ -1680,12 +1680,12 @@ mod tests {
     #[test]
     fn the_whole_oracle_sequence_reproduces_the_libtpms_permanent_state() {
         let mut runtime = oracle_runtime();
-        assert_matches_oracle(&runtime, ORACLE_PERMALL_STARTED, "startup");
+        assert_matches_oracle(&runtime, "PERMALL_STARTED", "startup");
 
         let (owner, response) = create_primary(&mut runtime, TPM_RH_OWNER, STORAGE_ATTRIBUTES);
         assert_eq!(
             response,
-            hex(ORACLE_OWNER_PRIMARY_RESPONSE),
+            vector("OWNER_PRIMARY_RESPONSE"),
             "the owner primary matches the oracle byte for byte"
         );
 
@@ -1693,36 +1693,32 @@ mod tests {
             evict(&mut runtime, TPM_RH_OWNER, owner, OWNER_HANDLE),
             success_response()
         );
-        assert_matches_oracle(&runtime, ORACLE_PERMALL_OWNER_PERSIST, "owner persist");
+        assert_matches_oracle(&runtime, "PERMALL_OWNER_PERSIST", "owner persist");
 
         assert_eq!(
             evict(&mut runtime, TPM_RH_OWNER, owner, SECOND_OWNER_HANDLE),
             success_response()
         );
-        assert_matches_oracle(&runtime, ORACLE_PERMALL_TWO_EVICTS, "second evict");
+        assert_matches_oracle(&runtime, "PERMALL_TWO_EVICTS", "second evict");
 
         assert_eq!(
             evict(&mut runtime, TPM_RH_OWNER, OWNER_HANDLE, OWNER_HANDLE),
             success_response()
         );
-        assert_matches_oracle(&runtime, ORACLE_PERMALL_AFTER_DELETE, "delete");
+        assert_matches_oracle(&runtime, "PERMALL_AFTER_DELETE", "delete");
 
         let (platform, response) =
             create_primary(&mut runtime, TPM_RH_PLATFORM, STORAGE_ATTRIBUTES);
         assert_eq!(
             response,
-            hex(ORACLE_PLATFORM_PRIMARY_RESPONSE),
+            vector("PLATFORM_PRIMARY_RESPONSE"),
             "the platform primary matches the oracle byte for byte"
         );
         assert_eq!(
             evict(&mut runtime, TPM_RH_PLATFORM, platform, PLATFORM_HANDLE),
             success_response()
         );
-        assert_matches_oracle(
-            &runtime,
-            ORACLE_PERMALL_PLATFORM_PERSIST,
-            "platform persist",
-        );
+        assert_matches_oracle(&runtime, "PERMALL_PLATFORM_PERSIST", "platform persist");
 
         assert_eq!(
             evict(
@@ -1742,7 +1738,7 @@ mod tests {
             ),
             success_response()
         );
-        assert_matches_oracle(&runtime, ORACLE_PERMALL_ALL_DELETED, "all deleted");
+        assert_matches_oracle(&runtime, "PERMALL_ALL_DELETED", "all deleted");
         assert!(nvram_handles(&runtime).is_empty());
     }
 

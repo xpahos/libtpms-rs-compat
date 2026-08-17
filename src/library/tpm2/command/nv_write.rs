@@ -240,7 +240,7 @@ mod tests {
         TPMA_NV_POLICYWRITE, TPMA_NV_PPREAD, TPMA_NV_PPWRITE, TPMA_NV_WRITE_STCLEAR,
         marshal_sized_nv_public, resolve_index,
     };
-    use crate::library::tpm2::nv_vectors::nv_vector;
+    use crate::library::tpm2::oracles::nv::nv_vector;
 
     const RC_SIZE: u32 = 0x095;
     const RC_ATTRIBUTES: u32 = 0x082;

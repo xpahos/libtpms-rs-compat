@@ -139,7 +139,7 @@ mod tests {
         NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE,
         TPMA_NV_PPREAD, marshal_sized_nv_public,
     };
-    use crate::library::tpm2::nv_vectors::nv_vector;
+    use crate::library::tpm2::oracles::nv::nv_vector;
 
     const RC_SIZE: u32 = 0x095;
     const RC_NV_LOCKED: u32 = 0x148;

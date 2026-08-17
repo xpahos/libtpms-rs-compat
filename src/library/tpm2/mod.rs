@@ -6,12 +6,8 @@ mod clock;
 mod command;
 mod command_bitmap;
 mod compile_constants;
-#[cfg(test)]
-mod create_primary_vectors;
 mod crypto;
 mod dictionary_attack;
-#[cfg(test)]
-mod evict_control_vectors;
 mod failure_mode;
 #[cfg(test)]
 mod hash_vectors;
@@ -22,10 +18,10 @@ mod lockout;
 mod manufacture;
 mod marshal;
 mod nv;
-#[cfg(test)]
-mod nv_vectors;
 mod object;
 mod object_create;
+#[cfg(test)]
+mod oracles;
 mod orderly;
 mod pcr;
 mod persistent;
