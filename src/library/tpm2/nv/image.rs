@@ -707,6 +707,18 @@ pub(in crate::library::tpm2) fn any_object_image(
     Ok(w.out)
 }
 
+pub(in crate::library::tpm2) fn persistent_object_image(
+    object: &OwnedAnyObject,
+    object_format: PersistentObjectFormat,
+) -> Result<Vec<u8>, TpmResult> {
+    match object_format {
+        PersistentObjectFormat::LegacyRsa3072 => rsa3072_object_image(object),
+        PersistentObjectFormat::AnyObject { object_version } => {
+            any_object_image(object, object_version)
+        }
+    }
+}
+
 pub(in crate::library::tpm2) fn rsa3072_object_image(
     object: &OwnedAnyObject,
 ) -> Result<Vec<u8>, TpmResult> {
@@ -894,12 +906,7 @@ fn write_user_nvram(
                 object_destination_size,
                 ..
             } => {
-                let image = match object_format {
-                    PersistentObjectFormat::LegacyRsa3072 => rsa3072_object_image(object)?,
-                    PersistentObjectFormat::AnyObject { object_version } => {
-                        any_object_image(object, object_version)?
-                    }
-                };
+                let image = persistent_object_image(object, object_format)?;
                 if image.len() as u64 != *object_destination_size {
                     return Err(TPM_FAIL);
                 }

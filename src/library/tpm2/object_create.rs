@@ -28,10 +28,62 @@ use super::template::{
 use super::volatile::{CURRENT_OBJECT_VERSION, MAX_LOADED_OBJECTS};
 
 pub(super) const TRANSIENT_FIRST: u32 = 0x8000_0000;
+pub(super) const TRANSIENT_LAST: u32 = TRANSIENT_FIRST + MAX_LOADED_OBJECTS as u32 - 1;
+pub(super) const PERSISTENT_FIRST: u32 = 0x8100_0000;
+pub(super) const PLATFORM_PERSISTENT: u32 = 0x8180_0000;
+pub(super) const PERSISTENT_LAST: u32 = 0x81ff_ffff;
 
 pub(super) const PRIMARY_OBJECT_CREATION: &[u8] = b"Primary Object Creation\0";
 
 const SYMMETRIC_KEY_RADIX_BITS: u16 = 64;
+
+pub(super) fn is_object_handle(handle: u32) -> bool {
+    is_transient_object_handle(handle) || is_persistent_object_handle(handle)
+}
+
+pub(super) fn is_transient_object_handle(handle: u32) -> bool {
+    (TRANSIENT_FIRST..=TRANSIENT_LAST).contains(&handle)
+}
+
+pub(super) fn is_persistent_object_handle(handle: u32) -> bool {
+    (PERSISTENT_FIRST..=PERSISTENT_LAST).contains(&handle)
+}
+
+pub(super) fn occupied_object_slot(runtime: &Tpm2Runtime, handle: u32) -> Option<usize> {
+    let slot = usize::try_from(handle.checked_sub(TRANSIENT_FIRST)?).ok()?;
+    runtime
+        .live
+        .objects
+        .get(slot)
+        .filter(|object| object.attributes & ATTR_OCCUPIED != 0)
+        .map(|_| slot)
+}
+
+pub(super) fn persistent_object_entry(runtime: &Tpm2Runtime, handle: u32) -> Option<usize> {
+    runtime
+        .state
+        .as_ref()?
+        .user_nvram
+        .entries
+        .iter()
+        .position(|entry| {
+            matches!(entry, super::persistent::OwnedUserNvramEntry::Persistent {
+                handle: stored, ..
+            } if *stored == handle)
+        })
+}
+
+pub(super) fn persistent_hierarchy_is_enabled(runtime: &Tpm2Runtime, handle: u32) -> bool {
+    if handle >= PLATFORM_PERSISTENT {
+        runtime.live.ph_enable
+    } else {
+        runtime
+            .live
+            .state_clear
+            .as_ref()
+            .is_some_and(|clear| clear.sh_enable)
+    }
+}
 
 pub(super) fn find_empty_object_slot(runtime: &Tpm2Runtime) -> Option<(usize, u32)> {
     runtime

@@ -30,9 +30,11 @@ pub(super) const BN_PRIME_T_VERSION: u16 = 2;
 const BN_PRIME_WORDS: usize = 24;
 const CRYPT_UWORD_BYTES: usize = 8;
 
+pub(super) const ATTR_PUBLIC_ONLY: u32 = 1 << 0;
 pub(super) const ATTR_EPS_HIERARCHY: u32 = 1 << 1;
 pub(super) const ATTR_PPS_HIERARCHY: u32 = 1 << 2;
 pub(super) const ATTR_SPS_HIERARCHY: u32 = 1 << 3;
+pub(super) const ATTR_EVICT: u32 = 1 << 4;
 pub(super) const ATTR_PRIMARY: u32 = 1 << 5;
 pub(super) const ATTR_TEMPORARY: u32 = 1 << 6;
 pub(super) const ATTR_ST_CLEAR: u32 = 1 << 7;

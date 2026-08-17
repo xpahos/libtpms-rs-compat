@@ -1,11 +1,15 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_AUTH_CONTEXT, TPM_RC_AUTH_MISSING, TPM_RC_COMMAND_CODE, TPM_RC_HIERARCHY,
-    TPM_RC_INITIALIZE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE,
+    TPM_RC_AUTH_CONTEXT, TPM_RC_AUTH_MISSING, TPM_RC_COMMAND_CODE, TPM_RC_HANDLE, TPM_RC_HIERARCHY,
+    TPM_RC_INITIALIZE, TPM_RC_INSUFFICIENT, TPM_RC_OBJECT_MEMORY, TPM_RC_REFERENCE_H0, TPM_RC_SIZE,
+    TPM_RC_VALUE,
 };
 
 use super::super::marshal::BlobReader;
-use super::super::object_create::hierarchy_is_enabled;
+use super::super::object_create::{
+    find_empty_object_slot, hierarchy_is_enabled, is_transient_object_handle, occupied_object_slot,
+    persistent_hierarchy_is_enabled, persistent_object_entry,
+};
 use super::super::runtime::Tpm2Runtime;
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
@@ -83,15 +87,36 @@ fn check_load_status(
     handles: &[u32],
 ) -> Result<(), TpmResult> {
     for (index, spec) in descriptor.handles.iter().enumerate() {
-        if !matches!(spec.kind, HandleKind::Hierarchy) {
-            continue;
-        }
         let Some(&handle) = handles.get(index) else {
             continue;
         };
-        if !hierarchy_is_enabled(runtime, handle) {
-            return Err(TPM_RC_HIERARCHY + TPM_RC_H + TPM_RC_1 * (index as u32 + 1));
+        match spec.kind {
+            HandleKind::Hierarchy if !hierarchy_is_enabled(runtime, handle) => {
+                return Err(TPM_RC_HIERARCHY + TPM_RC_H + TPM_RC_1 * (index as u32 + 1));
+            }
+            HandleKind::Object => check_object_present(runtime, handle, index)?,
+            _ => {}
         }
+    }
+    Ok(())
+}
+
+fn check_object_present(runtime: &Tpm2Runtime, handle: u32, index: usize) -> Result<(), TpmResult> {
+    let indexed_handle = TPM_RC_HANDLE + TPM_RC_H + TPM_RC_1 * (index as u32 + 1);
+    if is_transient_object_handle(handle) {
+        return match occupied_object_slot(runtime, handle) {
+            Some(_) => Ok(()),
+            None => Err(TPM_RC_REFERENCE_H0 + index as u32),
+        };
+    }
+    if !persistent_hierarchy_is_enabled(runtime, handle) {
+        return Err(indexed_handle);
+    }
+    if find_empty_object_slot(runtime).is_none() {
+        return Err(TPM_RC_OBJECT_MEMORY);
+    }
+    if persistent_object_entry(runtime, handle).is_none() {
+        return Err(indexed_handle);
     }
     Ok(())
 }

@@ -6,6 +6,7 @@ use super::super::volatile::IMPLEMENTATION_PCR;
 use super::change_eps;
 use super::create_primary;
 use super::dispatcher::CommandFrame;
+use super::evict_control;
 use super::get_capability;
 use super::get_random;
 use super::hash;
@@ -21,6 +22,7 @@ use super::shutdown;
 use super::startup;
 use super::stir_random;
 
+pub(in crate::library::tpm2) const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
 pub(in crate::library::tpm2) const TPM_CC_CHANGE_EPS: u32 = 0x0000_0124;
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 pub(in crate::library::tpm2) const TPM_CC_PCR_ALLOCATE: u32 = 0x0000_012b;
@@ -38,7 +40,8 @@ pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
-use super::super::hierarchy::{TPM_RH_PLATFORM, is_hierarchy_handle};
+use super::super::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM, is_hierarchy_handle};
+use super::super::object_create::is_object_handle;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
@@ -79,6 +82,8 @@ pub(super) enum HandleKind {
     HierarchyAuth,
     Hierarchy,
     Platform,
+    Provision,
+    Object,
     Pcr,
     PcrAllowNull,
 }
@@ -89,6 +94,8 @@ impl HandleKind {
             Self::HierarchyAuth => is_hierarchy_auth_handle(handle),
             Self::Hierarchy => is_hierarchy_handle(handle),
             Self::Platform => handle == TPM_RH_PLATFORM,
+            Self::Provision => matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM),
+            Self::Object => is_object_handle(handle),
             Self::Pcr => (handle as usize) < IMPLEMENTATION_PCR,
             Self::PcrAllowNull => (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_NULL,
         }
@@ -114,6 +121,24 @@ pub(in crate::library::tpm2) struct CommandDescriptor {
 }
 
 static COMMANDS: &[CommandDescriptor] = &[
+    CommandDescriptor {
+        code: TPM_CC_EVICT_CONTROL,
+        attributes: tpma_cc(TPM_CC_EVICT_CONTROL, true, 2),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Provision,
+                user_auth: true,
+            },
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: false,
+            },
+        ],
+        sessions_allowed: true,
+        handler: evict_control::execute,
+    },
     CommandDescriptor {
         code: TPM_CC_CHANGE_EPS,
         attributes: tpma_cc(TPM_CC_CHANGE_EPS, true, 1) | TPMA_CC_EXTENSIVE,
@@ -314,6 +339,10 @@ mod tests {
     #[test]
     fn lookup_finds_every_registered_command() {
         assert_eq!(
+            find(TPM_CC_EVICT_CONTROL).map(|d| d.code),
+            Some(TPM_CC_EVICT_CONTROL)
+        );
+        assert_eq!(
             find(TPM_CC_CHANGE_EPS).map(|d| d.code),
             Some(TPM_CC_CHANGE_EPS)
         );
@@ -367,8 +396,16 @@ mod tests {
     fn lookup_rejects_unregistered_command_codes() {
         assert!(find(0x0000_0000).is_none(), "below all entries");
         assert!(
-            find(TPM_CC_CHANGE_EPS - 1).is_none(),
+            find(TPM_CC_EVICT_CONTROL - 1).is_none(),
             "just below the first"
+        );
+        assert!(
+            find(TPM_CC_EVICT_CONTROL + 1).is_none(),
+            "between EvictControl and ChangeEPS"
+        );
+        assert!(
+            find(TPM_CC_CHANGE_EPS - 1).is_none(),
+            "just below ChangeEPS"
         );
         assert!(
             find(TPM_CC_CHANGE_EPS + 1).is_none(),
@@ -435,6 +472,7 @@ mod tests {
         assert_eq!(
             codes,
             [
+                TPM_CC_EVICT_CONTROL,
                 TPM_CC_CHANGE_EPS,
                 TPM_CC_HIERARCHY_CHANGE_AUTH,
                 TPM_CC_PCR_ALLOCATE,
@@ -834,7 +872,8 @@ mod tests {
 
     #[test]
     fn physical_presence_applicability_matches_the_vendored_attribute_table() {
-        const PP_COMMANDS: [u32; 4] = [
+        const PP_COMMANDS: [u32; 5] = [
+            TPM_CC_EVICT_CONTROL,
             TPM_CC_CHANGE_EPS,
             TPM_CC_HIERARCHY_CHANGE_AUTH,
             TPM_CC_PCR_ALLOCATE,

@@ -41,6 +41,7 @@ pub(in crate::library::tpm2) fn vendor_count() -> u32 {
 mod tests {
     use super::*;
 
+    const TPMA_CC_EVICT_CONTROL: u32 = 0x0440_0120;
     const TPMA_CC_CHANGE_EPS: u32 = 0x02c0_0124;
     const TPMA_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0240_0129;
     const TPMA_CC_PCR_RESET: u32 = 0x0200_013d;
@@ -63,6 +64,7 @@ mod tests {
         assert_eq!(
             page.entries,
             [
+                TPMA_CC_EVICT_CONTROL,
                 TPMA_CC_CHANGE_EPS,
                 TPMA_CC_HIERARCHY_CHANGE_AUTH,
                 TPMA_CC_PCR_ALLOCATE,
@@ -84,8 +86,23 @@ mod tests {
     }
 
     #[test]
-    fn change_eps_leads_the_registry_because_its_command_code_is_the_lowest() {
+    fn evict_control_leads_the_registry_because_its_command_code_is_the_lowest() {
         let page = implemented(0, 1);
+        assert_eq!(page.entries, [TPMA_CC_EVICT_CONTROL]);
+        assert!(page.more_data);
+
+        let page = implemented(0x0120, 1000);
+        assert_eq!(page.entries.len(), 16);
+        assert_eq!(page.entries[0], TPMA_CC_EVICT_CONTROL);
+
+        let page = implemented(0x0121, 1000);
+        assert_eq!(page.entries.len(), 15);
+        assert!(!page.entries.contains(&TPMA_CC_EVICT_CONTROL));
+    }
+
+    #[test]
+    fn change_eps_follows_evict_control() {
+        let page = implemented(0x0121, 1);
         assert_eq!(page.entries, [TPMA_CC_CHANGE_EPS]);
         assert!(page.more_data);
 
@@ -286,30 +303,30 @@ mod tests {
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 15);
-        assert_eq!(page.entries.len(), 15);
+        let page = implemented(0, 16);
+        assert_eq!(page.entries.len(), 16);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
         assert_eq!(
             page.entries,
             [
+                TPMA_CC_EVICT_CONTROL,
                 TPMA_CC_CHANGE_EPS,
-                TPMA_CC_HIERARCHY_CHANGE_AUTH,
-                TPMA_CC_PCR_ALLOCATE
+                TPMA_CC_HIERARCHY_CHANGE_AUTH
             ]
         );
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 15);
+        assert_eq!(page.entries.len(), 16);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 15);
-        assert_eq!(library_count(), 15);
+        assert_eq!(total_count(), 16);
+        assert_eq!(library_count(), 16);
         assert_eq!(vendor_count(), 0);
     }
 

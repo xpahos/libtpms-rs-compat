@@ -10,6 +10,8 @@ mod compile_constants;
 mod create_primary_vectors;
 mod crypto;
 mod dictionary_attack;
+#[cfg(test)]
+mod evict_control_vectors;
 mod failure_mode;
 #[cfg(test)]
 mod hash_vectors;

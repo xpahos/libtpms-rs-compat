@@ -70,6 +70,10 @@ pub(in crate::library) const TPM_RC_NV_UNINITIALIZED: TpmResult = 0x14a;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_COMMAND_CODE: TpmResult = 0x143;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_NV_SPACE: TpmResult = 0x14b;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_NV_DEFINED: TpmResult = 0x14c;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_AUTH_MISSING: TpmResult = 0x125;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_PCR: TpmResult = 0x127;
@@ -87,6 +91,8 @@ pub(in crate::library) const TPM_RC_LOCALITY: TpmResult = 0x907;
 #[allow(dead_code)]
 pub(in crate::library) const TPM_RC_CANCELED: TpmResult = 0x909;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_REFERENCE_H0: TpmResult = 0x910;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_REFERENCE_S0: TpmResult = 0x918;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_LOCKOUT: TpmResult = 0x921;
@@ -103,3 +109,60 @@ pub(in crate::library) const TPMPROP_TPM_BUFFER_MAX: TpmlibTpmProperty = 2;
 pub(in crate::library) const TPMPROP_TPM_KEY_HANDLES: TpmlibTpmProperty = 3;
 
 pub const TPM_BUFFER_MAX: c_int = 4096;
+
+#[cfg(all(test, feature = "tpm2"))]
+mod tests {
+    use super::*;
+
+    const RC_VER1: TpmResult = 0x100;
+    const RC_WARN: TpmResult = 0x900;
+    const RC_FMT1: TpmResult = 0x080;
+
+    #[test]
+    fn the_version_one_codes_match_the_vendored_tpm_types_header() {
+        assert_eq!(TPM_RC_INITIALIZE, RC_VER1);
+        assert_eq!(TPM_RC_FAILURE, RC_VER1 + 0x001);
+        assert_eq!(TPM_RC_AUTH_MISSING, RC_VER1 + 0x025);
+        assert_eq!(TPM_RC_PCR, RC_VER1 + 0x027);
+        assert_eq!(TPM_RC_COMMAND_SIZE, RC_VER1 + 0x042);
+        assert_eq!(TPM_RC_COMMAND_CODE, RC_VER1 + 0x043);
+        assert_eq!(TPM_RC_AUTH_CONTEXT, RC_VER1 + 0x045);
+        assert_eq!(TPM_RC_NV_UNINITIALIZED, RC_VER1 + 0x04a);
+        assert_eq!(TPM_RC_NV_SPACE, RC_VER1 + 0x04b);
+        assert_eq!(TPM_RC_NV_DEFINED, RC_VER1 + 0x04c);
+        assert_eq!(TPM_RC_NO_RESULT, RC_VER1 + 0x054);
+    }
+
+    #[test]
+    fn the_warning_codes_match_the_vendored_tpm_types_header() {
+        assert_eq!(TPM_RC_OBJECT_MEMORY, RC_WARN + 0x002);
+        assert_eq!(TPM_RC_LOCALITY, RC_WARN + 0x007);
+        assert_eq!(TPM_RC_CANCELED, RC_WARN + 0x009);
+        assert_eq!(TPM_RC_REFERENCE_H0, RC_WARN + 0x010);
+        assert_eq!(TPM_RC_REFERENCE_S0, RC_WARN + 0x018);
+        assert_eq!(TPM_RC_LOCKOUT, RC_WARN + 0x021);
+        assert_eq!(TPM_RC_NV_UNAVAILABLE, RC_WARN + 0x023);
+    }
+
+    #[test]
+    fn only_format_one_codes_carry_a_handle_or_parameter_number() {
+        for code in [
+            TPM_RC_NV_SPACE,
+            TPM_RC_NV_DEFINED,
+            TPM_RC_OBJECT_MEMORY,
+            TPM_RC_NV_UNAVAILABLE,
+            TPM_RC_REFERENCE_H0,
+        ] {
+            assert_eq!(code & RC_FMT1, 0, "code {code:#05x} is undecorated");
+        }
+        for code in [
+            TPM_RC_ATTRIBUTES,
+            TPM_RC_HIERARCHY,
+            TPM_RC_HANDLE,
+            TPM_RC_RANGE,
+            TPM_RC_VALUE,
+        ] {
+            assert_ne!(code & RC_FMT1, 0, "code {code:#05x} takes a modifier");
+        }
+    }
+}
