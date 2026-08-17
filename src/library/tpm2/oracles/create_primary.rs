@@ -111,10 +111,41 @@ pub(in crate::library::tpm2) fn oracle_cases() -> Vec<(&'static str, u32, Vec<u8
             vector("EK_RSA3072"),
         ),
         (
+            "ek_rsa3072_decrypt",
+            0x4000_000b,
+            rsa_template(
+                3072,
+                0x000c,
+                0x0003_00f2,
+                &EK_POLICY_SHA384,
+                &SYM_AES256_CFB,
+                0,
+            ),
+            vector("EK_RSA3072_DECRYPT"),
+        ),
+        (
+            "ek_rsa3072_sign",
+            0x4000_000b,
+            rsa_template(3072, 0x000c, 0x0004_00f2, &EK_POLICY_SHA384, &SYM_NULL, 0),
+            vector("EK_RSA3072_SIGN"),
+        ),
+        (
+            "ek_rsa3072_sign_decrypt",
+            0x4000_000b,
+            rsa_template(3072, 0x000c, 0x0006_00f2, &EK_POLICY_SHA384, &SYM_NULL, 0),
+            vector("EK_RSA3072_SIGN_DECRYPT"),
+        ),
+        (
             "ek_ecc_p384",
             0x4000_000b,
             ecc_template(0x000c, 0x0003_00f2, &EK_POLICY_SHA384, &SYM_AES256_CFB, 0),
             vector("EK_ECC_P384"),
+        ),
+        (
+            "spk_rsa3072",
+            0x4000_0001,
+            rsa_template(3072, 0x000c, 0x0003_0472, &[], &SYM_AES256_CFB, 0x180),
+            vector("SPK_RSA3072"),
         ),
         (
             "spk_rsa2048",
@@ -269,7 +300,7 @@ mod tests {
     use super::*;
     use crate::library::tpm2::oracles;
 
-    const EXPECTED: [(&str, usize, &str); 17] = [
+    const EXPECTED: [(&str, usize, &str); 21] = [
         (
             "AES128_GENERATED",
             274,
@@ -296,6 +327,21 @@ mod tests {
             "e9509fc89aa5755a7d8a21ab246c0113ed8a269aa5ad5d65b013b51728782023",
         ),
         (
+            "EK_RSA3072_DECRYPT",
+            730,
+            "65340e17a17e9646956308e8fcc5941e185f298bf847b59a28eae591f58b67d2",
+        ),
+        (
+            "EK_RSA3072_SIGN",
+            726,
+            "52401c1dcea50468ac8f7ef466a006fadcf490f3db9a9cb9c8b76c3c2f083f63",
+        ),
+        (
+            "EK_RSA3072_SIGN_DECRYPT",
+            726,
+            "a4221b634499ec4199720a1e71cd8b832a03c5e01ed6825ad80a0f9ee678d9b3",
+        ),
+        (
             "NULL_RSA1024",
             378,
             "739365e5f0217521401df8309e9579460e010e3c3a2d8f33cec75bcb2fcaf846",
@@ -319,6 +365,11 @@ mod tests {
             "SPK_RSA2048",
             506,
             "b5f5e1f22e8f393e329a32fc1e1352028ebec18aece7b27458532dc72e98c782",
+        ),
+        (
+            "SPK_RSA3072",
+            682,
+            "c7720f884928b93b507c363c53624bc9f0b753b9bb1d12faffb7ce42f18c44d9",
         ),
         (
             "SYM_PERMALL",

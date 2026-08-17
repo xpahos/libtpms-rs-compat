@@ -193,6 +193,8 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
     };
 
     for _ in 1..MAX_GENERATION_ATTEMPTS {
+        #[cfg(test)]
+        super::work::count_generation_attempt();
         z.p = generate_prime_for_rsa(prime_bits, effective_exponent, rand)
             .map_err(|_| RsaKeyError::Failure)?;
 
@@ -262,6 +264,7 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::tpm2::crypto::work;
 
     fn rand(label: &[u8]) -> SeededRand {
         SeededRand::instantiate(&[0x21; 64], b"RSA", label, &[], 1, false)
@@ -458,6 +461,166 @@ mod tests {
     fn a_larger_prime_exponent_produces_a_usable_key() {
         let key = generate_rsa_key(1024, 65539, false, &mut rand(b"bigexp")).expect("a key");
         assert_key_is_consistent(&key, 1024, 65539);
+    }
+
+    const THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS: [&[u8]; 5] =
+        [b"ek3072", b"spk3072", b"sign3072", b"seed-a", b"seed-b"];
+
+    #[test]
+    fn a_three_thousand_seventy_two_bit_key_is_internally_consistent() {
+        let key = generate_rsa_key(3072, 0, false, &mut rand(b"ek3072")).expect("a key");
+        assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
+    }
+
+    #[test]
+    fn a_three_thousand_seventy_two_bit_signing_key_passes_its_own_trial_decryption() {
+        let key = generate_rsa_key(3072, 0, true, &mut rand(b"sign3072")).expect("a key");
+        assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
+    }
+
+    #[test]
+    fn every_three_thousand_seventy_two_bit_seed_yields_a_consistent_key() {
+        for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
+            let key = generate_rsa_key(3072, 0, false, &mut rand(label)).expect("a key");
+            assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
+            let p = BigUint::from_be_bytes(&key.prime);
+            let difference = if p > key.q {
+                p.sub(&key.q).unwrap()
+            } else {
+                key.q.sub(&p).unwrap()
+            };
+            assert!(
+                difference.bit_len() >= 101,
+                "{} keeps the minimum prime distance",
+                core::str::from_utf8(label).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn the_chosen_seeds_exercise_different_prime_search_paths() {
+        let mut lengths = Vec::new();
+        for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
+            let (key, counters) =
+                work::measure(|| generate_rsa_key(3072, 0, false, &mut rand(label)));
+            key.expect("a key");
+            lengths.push(counters.sieved_candidates);
+        }
+        lengths.sort_unstable();
+        lengths.dedup();
+        assert_eq!(
+            lengths.len(),
+            THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS.len(),
+            "each seed walks a different number of sieved candidates"
+        );
+        assert!(
+            lengths[0] >= 3,
+            "the shortest search still tests candidates"
+        );
+    }
+
+    #[test]
+    fn a_three_thousand_seventy_two_bit_key_is_deterministic_in_the_generator_state() {
+        for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
+            let (first, left) = work::measure(|| {
+                generate_rsa_key(3072, 0, false, &mut rand(label)).expect("a key")
+            });
+            let (second, right) = work::measure(|| {
+                generate_rsa_key(3072, 0, false, &mut rand(label)).expect("a key")
+            });
+            let name = core::str::from_utf8(label).unwrap();
+            assert_eq!(first.modulus, second.modulus, "{name} modulus");
+            assert_eq!(first.prime, second.prime, "{name} prime");
+            assert_eq!(first.q, second.q, "{name} q");
+            assert_eq!(first.d_p, second.d_p, "{name} dP");
+            assert_eq!(first.d_q, second.d_q, "{name} dQ");
+            assert_eq!(first.q_inv, second.q_inv, "{name} qInv");
+            assert_eq!(left, right, "{name} work");
+        }
+    }
+
+    #[test]
+    fn different_seeds_produce_different_three_thousand_seventy_two_bit_keys() {
+        let mut moduli = Vec::new();
+        for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
+            moduli.push(
+                generate_rsa_key(3072, 0, false, &mut rand(label))
+                    .expect("a key")
+                    .modulus,
+            );
+        }
+        moduli.sort_unstable();
+        moduli.dedup();
+        assert_eq!(moduli.len(), THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS.len());
+    }
+
+    #[test]
+    fn the_three_thousand_seventy_two_bit_search_does_the_pinned_amount_of_work() {
+        let expected = [
+            (b"ek3072".as_slice(), 46433u64, 19u64, 5184u64),
+            (b"spk3072", 210178, 107, 25152),
+            (b"sign3072", 42775, 17, 5952),
+            (b"seed-a", 152548, 76, 16704),
+            (b"seed-b", 295526, 153, 32640),
+        ];
+        for (label, multiplications, candidates, generator_bytes) in expected {
+            let (key, counters) =
+                work::measure(|| generate_rsa_key(3072, 0, false, &mut rand(label)));
+            key.expect("a key");
+            let name = core::str::from_utf8(label).unwrap();
+            assert_eq!(counters.sieved_candidates, candidates, "{name} candidates");
+            assert_eq!(counters.primality_tests, candidates, "{name} rounds");
+            assert_eq!(counters.sieve_passes, 2, "{name} sieve passes");
+            assert_eq!(counters.generation_attempts, 2, "{name} attempts");
+            assert_eq!(counters.generator_bytes, generator_bytes, "{name} entropy");
+            assert_eq!(
+                counters.modular_multiplications, multiplications,
+                "{name} modular multiplications"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_thousand_forty_eight_bit_search_does_the_pinned_amount_of_work() {
+        let (key, counters) =
+            work::measure(|| generate_rsa_key(2048, 0, false, &mut rand(b"rsa2048")));
+        let key = key.expect("a key");
+        assert_key_is_consistent(&key, 2048, RSA_DEFAULT_PUBLIC_EXPONENT);
+        assert_eq!(counters.sieved_candidates, 61);
+        assert_eq!(counters.primality_tests, 61);
+        assert_eq!(counters.sieve_passes, 2);
+        assert_eq!(counters.generation_attempts, 2);
+        assert_eq!(counters.generator_bytes, 10368);
+        assert_eq!(counters.modular_multiplications, 88014);
+    }
+
+    #[test]
+    fn the_generation_attempt_budget_bounds_every_supported_key_size() {
+        assert_eq!(MAX_GENERATION_ATTEMPTS, 100);
+        for key_bits in [1024u16, 2048, 3072] {
+            let (key, counters) =
+                work::measure(|| generate_rsa_key(key_bits, 0, false, &mut rand(b"budget")));
+            key.expect("a key");
+            assert!(
+                counters.generation_attempts < u64::from(MAX_GENERATION_ATTEMPTS),
+                "keyBits {key_bits}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rejected_request_costs_no_arithmetic_at_all() {
+        for (key_bits, exponent, error) in [
+            (3072u16, 3u32, RsaKeyError::Range),
+            (3072, 65538, RsaKeyError::Range),
+            (4096, 0, RsaKeyError::Value),
+            (1536, 0, RsaKeyError::Value),
+        ] {
+            let (result, counters) =
+                work::measure(|| generate_rsa_key(key_bits, exponent, false, &mut rand(b"bad")));
+            assert_eq!(result.err(), Some(error), "keyBits {key_bits}");
+            assert_eq!(counters, work::Counters::default(), "keyBits {key_bits}");
+        }
     }
 
     #[test]

@@ -45,6 +45,8 @@ impl SeededRand {
 
     pub(in crate::library::tpm2) fn generate(&mut self, out: &mut [u8]) -> Result<(), TpmResult> {
         debug_assert!(out.len() <= CTR_DRBG_MAX_BYTES_PER_REQUEST);
+        #[cfg(test)]
+        super::work::count_generator_bytes(out.len());
         self.drbg.generate(out)
     }
 

@@ -485,6 +485,39 @@ mod tests {
         create_primary(runtime, hierarchy, STORAGE_ATTRIBUTES).0
     }
 
+    fn rsa_storage_template(key_bits: u16, name_alg: u16, sym_key_bits: u16) -> Vec<u8> {
+        let mut out = 0x0001u16.to_be_bytes().to_vec();
+        out.extend_from_slice(&name_alg.to_be_bytes());
+        out.extend_from_slice(&STORAGE_ATTRIBUTES.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&0x0006u16.to_be_bytes());
+        out.extend_from_slice(&sym_key_bits.to_be_bytes());
+        out.extend_from_slice(&0x0043u16.to_be_bytes());
+        out.extend_from_slice(&0x0010u16.to_be_bytes());
+        out.extend_from_slice(&key_bits.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out
+    }
+
+    #[track_caller]
+    fn rsa_primary(runtime: &mut Tpm2Runtime, key_bits: u16) -> (u32, Vec<u8>) {
+        let template = match key_bits {
+            3072 => rsa_storage_template(3072, 0x000c, 256),
+            _ => rsa_storage_template(key_bits, 0x000b, 128),
+        };
+        let response = dispatch_bytes(runtime, &create_primary_command(TPM_RH_OWNER, &template));
+        assert_eq!(response_code(&response), RC_SUCCESS, "keyBits {key_bits}");
+        let handle = u32::from_be_bytes(response[10..14].try_into().expect("a response handle"));
+        let public_size = usize::from(u16::from_be_bytes(
+            response[18..20].try_into().expect("the outPublic size"),
+        ));
+        let public = response[20..20 + public_size].to_vec();
+        let modulus = public[public.len() - usize::from(key_bits) / 8..].to_vec();
+        assert_ne!(modulus[0] & 0x80, 0, "a full-length modulus");
+        (handle, modulus)
+    }
+
     fn response_code(response: &[u8]) -> u32 {
         u32::from_be_bytes(response[6..10].try_into().expect("a response code"))
     }
@@ -1092,6 +1125,88 @@ mod tests {
             runtime.state().user_nvram.required_capacity,
             user_nvram_required_capacity(&runtime.state().user_nvram.entries).unwrap()
         );
+    }
+
+    #[track_caller]
+    fn persistent_image(runtime: &Tpm2Runtime, handle: u32) -> Vec<u8> {
+        let OwnedUserNvramEntry::Persistent { object, .. } = persistent_entry(runtime, handle)
+        else {
+            panic!("an evict object");
+        };
+        persistent_object_image(object, runtime.state().profile.object_format())
+            .expect("the evict object serializes")
+    }
+
+    #[test]
+    fn an_rsa_three_thousand_seventy_two_bit_persistent_object_survives_a_state_round_trip() {
+        let mut runtime = oracle_runtime();
+        let (object, modulus) = rsa_primary(&mut runtime, 3072);
+        assert_eq!(modulus.len(), 384);
+        assert_eq!(
+            evict(&mut runtime, TPM_RH_OWNER, object, OWNER_HANDLE),
+            success_response()
+        );
+
+        let image = persistent_image(&runtime, OWNER_HANDLE);
+        assert!(
+            image.windows(modulus.len()).any(|window| window == modulus),
+            "the stored object carries the RSA-3072 modulus"
+        );
+        let blob = persistent_all_store(runtime.state()).expect("the state serializes");
+
+        let mut restarted = restore_permanent_blob_for_test(&blob).expect("the blob restores");
+        start(&mut restarted);
+
+        assert_eq!(nvram_handles(&restarted), [OWNER_HANDLE]);
+        assert_eq!(
+            persistent_image(&restarted, OWNER_HANDLE),
+            image,
+            "the evict object is restored byte for byte"
+        );
+        assert!(
+            persistent_image(&restarted, OWNER_HANDLE)
+                .windows(modulus.len())
+                .any(|window| window == modulus),
+            "the restored object still carries the RSA-3072 modulus"
+        );
+        assert_eq!(
+            restarted.state().user_nvram.required_capacity,
+            runtime.state().user_nvram.required_capacity
+        );
+
+        assert_eq!(
+            evict(&mut restarted, TPM_RH_OWNER, OWNER_HANDLE, OWNER_HANDLE),
+            success_response(),
+            "the restored object is still evictable by its own handle"
+        );
+        assert!(nvram_handles(&restarted).is_empty());
+    }
+
+    #[test]
+    fn a_persistent_rsa_object_grows_with_the_key_size() {
+        let mut owner = oracle_runtime();
+        let (small, small_modulus) = rsa_primary(&mut owner, 2048);
+        assert_eq!(small_modulus.len(), 256);
+        assert_eq!(
+            evict(&mut owner, TPM_RH_OWNER, small, OWNER_HANDLE),
+            success_response()
+        );
+        let small_image = persistent_image(&owner, OWNER_HANDLE);
+
+        let mut larger = oracle_runtime();
+        let (big, big_modulus) = rsa_primary(&mut larger, 3072);
+        assert_eq!(big_modulus.len(), 384);
+        assert_eq!(
+            evict(&mut larger, TPM_RH_OWNER, big, OWNER_HANDLE),
+            success_response()
+        );
+        let big_image = persistent_image(&larger, OWNER_HANDLE);
+
+        assert!(
+            big_image.len() > small_image.len(),
+            "an RSA-3072 evict object is larger than an RSA-2048 one"
+        );
+        assert_ne!(small_modulus, big_modulus);
     }
 
     #[test]

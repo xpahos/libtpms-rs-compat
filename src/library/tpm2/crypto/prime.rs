@@ -298,6 +298,8 @@ pub(in crate::library::tpm2) fn miller_rabin(
     witness: &BigUint,
     rand: &mut SeededRand,
 ) -> Result<bool, TpmResult> {
+    #[cfg(test)]
+    super::work::count_primality_test();
     let iterations = miller_rabin_rounds(witness.bit_len());
     let Some(minus_one) = witness.sub_u64(1) else {
         return Ok(false);
@@ -368,9 +370,13 @@ pub(in crate::library::tpm2) fn prime_select_with_sieve(
     let first = candidate.low_u32() | 0x8000_0000;
 
     let mut field = [0u8; MAX_FIELD_SIZE];
+    #[cfg(test)]
+    super::work::count_sieve_pass();
     let mut ones = prime_sieve(candidate, &mut field, prime_limit);
 
     while ones > 0 {
+        #[cfg(test)]
+        super::work::count_sieved_candidate();
         let chosen = find_nth_set_bit(&field, (first % ones) + 1);
         if chosen < 0 || chosen >= (MAX_FIELD_SIZE * 8) as i32 {
             return Err(crate::library::constants::TPM_RC_FAILURE);

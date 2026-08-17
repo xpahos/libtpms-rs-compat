@@ -466,10 +466,10 @@ impl PartialOrd for BigUint {
 }
 
 struct Montgomery {
-    modulus: BigUint,
+    modulus_limbs: Vec<u64>,
     n0inv: u64,
     limbs: usize,
-    r_squared: BigUint,
+    r_squared: Vec<u64>,
 }
 
 fn inverse_mod_2_64(value: u64) -> u64 {
@@ -478,6 +478,39 @@ fn inverse_mod_2_64(value: u64) -> u64 {
         inverse = inverse.wrapping_mul(2u64.wrapping_sub(value.wrapping_mul(inverse)));
     }
     inverse
+}
+
+fn padded_limbs(value: &BigUint, count: usize) -> Option<Vec<u64>> {
+    if value.limbs.len() > count {
+        return None;
+    }
+    let mut limbs = value.limbs.clone();
+    limbs.resize(count, 0);
+    Some(limbs)
+}
+
+fn limbs_are_below(value: &[u64], bound: &[u64]) -> bool {
+    value.iter().rev().cmp(bound.iter().rev()) == core::cmp::Ordering::Less
+}
+
+fn subtract_limbs_in_place(target: &mut [u64], value: &[u64]) {
+    let mut borrow = 0u64;
+    for index in 0..target.len() {
+        let right = value.get(index).copied().unwrap_or(0);
+        let (difference, first) = target[index].overflowing_sub(right);
+        let (difference, second) = difference.overflowing_sub(borrow);
+        borrow = u64::from(first) + u64::from(second);
+        target[index] = difference;
+    }
+}
+
+fn window_width(exponent_bits: usize) -> usize {
+    match exponent_bits {
+        0..64 => 1,
+        64..256 => 3,
+        256..1024 => 4,
+        _ => 5,
+    }
 }
 
 impl Montgomery {
@@ -491,69 +524,108 @@ impl Montgomery {
             .shl(2 * limbs * LIMB_BITS)
             .rem(modulus)?;
         Some(Self {
-            modulus: modulus.clone(),
+            modulus_limbs: padded_limbs(modulus, limbs)?,
             n0inv,
             limbs,
-            r_squared,
+            r_squared: padded_limbs(&r_squared, limbs)?,
         })
     }
 
-    fn mul(&self, left: &BigUint, right: &BigUint) -> BigUint {
+    fn multiply(&self, left: &[u64], right: &[u64], product: &mut [u64], accumulator: &mut [u64]) {
+        #[cfg(test)]
+        super::work::count_modular_multiplication();
         let n = self.limbs;
-        let mut accumulator = vec![0u64; n + 2];
+        let modulus = &self.modulus_limbs;
+        accumulator[..=n].fill(0);
         for index in 0..n {
-            let right_limb = right.limbs.get(index).copied().unwrap_or(0);
-            let mut carry = 0u128;
-            for position in 0..n {
-                let left_limb = left.limbs.get(position).copied().unwrap_or(0);
+            let multiplier = right[index];
+            let opening = u128::from(accumulator[0]) + u128::from(left[0]) * u128::from(multiplier);
+            let mut carry = opening >> LIMB_BITS;
+            let low = opening as u64;
+            let factor = low.wrapping_mul(self.n0inv);
+            let mut reduction =
+                (u128::from(low) + u128::from(factor) * u128::from(modulus[0])) >> LIMB_BITS;
+            for position in 1..n {
                 let value = u128::from(accumulator[position])
-                    + u128::from(left_limb) * u128::from(right_limb)
+                    + u128::from(left[position]) * u128::from(multiplier)
                     + carry;
-                accumulator[position] = value as u64;
                 carry = value >> LIMB_BITS;
+                let reduced = u128::from(value as u64)
+                    + u128::from(factor) * u128::from(modulus[position])
+                    + reduction;
+                reduction = reduced >> LIMB_BITS;
+                accumulator[position - 1] = reduced as u64;
             }
-            let value = u128::from(accumulator[n]) + carry;
-            accumulator[n] = value as u64;
-            accumulator[n + 1] = (value >> LIMB_BITS) as u64;
-
-            let m = accumulator[0].wrapping_mul(self.n0inv);
-            let mut carry = 0u128;
-            for position in 0..n {
-                let value = u128::from(accumulator[position])
-                    + u128::from(m) * u128::from(self.modulus.limbs[position])
-                    + carry;
-                accumulator[position] = value as u64;
-                carry = value >> LIMB_BITS;
-            }
-            let value = u128::from(accumulator[n]) + carry;
-            accumulator[n] = value as u64;
-            accumulator[n + 1] = accumulator[n + 1].wrapping_add((value >> LIMB_BITS) as u64);
-
-            accumulator.copy_within(1..n + 2, 0);
-            accumulator[n + 1] = 0;
+            let tail = u128::from(accumulator[n]) + carry + reduction;
+            accumulator[n - 1] = tail as u64;
+            accumulator[n] = (tail >> LIMB_BITS) as u64;
         }
-
-        let mut result = BigUint {
-            limbs: accumulator[..n + 1].to_vec(),
-        };
-        result.normalize();
-        if result >= self.modulus {
-            result = result.sub(&self.modulus).expect("the value exceeds it");
+        if accumulator[n] != 0 || !limbs_are_below(&accumulator[..n], modulus) {
+            subtract_limbs_in_place(&mut accumulator[..=n], modulus);
         }
-        result
+        product.copy_from_slice(&accumulator[..n]);
     }
 
     fn exp(&self, base: &BigUint, exponent: &BigUint) -> Option<BigUint> {
-        let one = BigUint::from_u64(1);
-        let base_montgomery = self.mul(base, &self.r_squared);
-        let mut result = self.mul(&one, &self.r_squared);
-        for bit in (0..exponent.bit_len()).rev() {
-            result = self.mul(&result, &result);
-            if exponent.test_bit(bit) {
-                result = self.mul(&result, &base_montgomery);
-            }
+        let n = self.limbs;
+        let mut accumulator = vec![0u64; n + 1];
+        let mut unit = vec![0u64; n];
+        unit[0] = 1;
+
+        let width = window_width(exponent.bit_len());
+        let mut table: Vec<Vec<u64>> = Vec::with_capacity(1usize << width);
+        let mut residue = vec![0u64; n];
+        self.multiply(&unit, &self.r_squared, &mut residue, &mut accumulator);
+        table.push(residue);
+        let mut montgomery_base = vec![0u64; n];
+        self.multiply(
+            &padded_limbs(base, n)?,
+            &self.r_squared,
+            &mut montgomery_base,
+            &mut accumulator,
+        );
+        table.push(montgomery_base.clone());
+        for index in 2..(1usize << width) {
+            let mut entry = vec![0u64; n];
+            self.multiply(
+                &table[index - 1],
+                &montgomery_base,
+                &mut entry,
+                &mut accumulator,
+            );
+            table.push(entry);
         }
-        Some(self.mul(&result, &one))
+
+        let mut result = table[0].clone();
+        let mut scratch = vec![0u64; n];
+        let mut remaining = exponent.bit_len();
+        let mut started = false;
+        while remaining > 0 {
+            let take = width.min(remaining);
+            let mut digit = 0usize;
+            for offset in 0..take {
+                digit = (digit << 1) | usize::from(exponent.test_bit(remaining - 1 - offset));
+            }
+            if started {
+                for _ in 0..take {
+                    self.multiply(&result, &result, &mut scratch, &mut accumulator);
+                    result.copy_from_slice(&scratch);
+                }
+                if digit != 0 {
+                    self.multiply(&result, &table[digit], &mut scratch, &mut accumulator);
+                    result.copy_from_slice(&scratch);
+                }
+            } else {
+                result.copy_from_slice(&table[digit]);
+                started = true;
+            }
+            remaining -= take;
+        }
+
+        self.multiply(&result, &unit, &mut scratch, &mut accumulator);
+        let mut value = BigUint { limbs: scratch };
+        value.normalize();
+        Some(value)
     }
 }
 
@@ -804,6 +876,21 @@ mod tests {
         }
     }
 
+    fn montgomery_product(montgomery: &Montgomery, left: &BigUint, right: &BigUint) -> BigUint {
+        let limbs = montgomery.limbs;
+        let mut accumulator = vec![0u64; limbs + 1];
+        let mut product = vec![0u64; limbs];
+        montgomery.multiply(
+            &padded_limbs(left, limbs).expect("a reduced factor"),
+            &padded_limbs(right, limbs).expect("a reduced factor"),
+            &mut product,
+            &mut accumulator,
+        );
+        let mut value = BigUint { limbs: product };
+        value.normalize();
+        value
+    }
+
     #[test]
     fn montgomery_multiplication_agrees_with_the_division_based_product() {
         let modulus = mersenne_521();
@@ -821,7 +908,147 @@ mod tests {
             .unwrap()
             .mod_mul(&radix_inverse, &modulus)
             .unwrap();
-        assert_eq!(montgomery.mul(&left, &right), expected);
+        assert_eq!(montgomery_product(&montgomery, &left, &right), expected);
+    }
+
+    #[test]
+    fn the_montgomery_kernel_reduces_every_product_below_the_modulus() {
+        for length in [1usize, 2, 3, 8, 17, 24] {
+            let modulus = BigUint::from_be_bytes(
+                &(0..length * 8)
+                    .map(|index| (index as u8).wrapping_mul(53) | 0x81)
+                    .collect::<Vec<u8>>(),
+            );
+            let montgomery = Montgomery::new(&modulus).expect("an odd modulus");
+            assert_eq!(montgomery.limbs, length);
+            let radix = BigUint::from_u64(1).shl(length * LIMB_BITS);
+            let radix_inverse = radix.mod_inverse(&modulus).expect("a coprime radix");
+            for seed in 0..8u8 {
+                let left = BigUint::from_be_bytes(
+                    &(0..length * 8)
+                        .map(|index| (index as u8).wrapping_mul(29).wrapping_add(seed))
+                        .collect::<Vec<u8>>(),
+                )
+                .rem(&modulus)
+                .unwrap();
+                let right = BigUint::from_be_bytes(
+                    &(0..length * 8)
+                        .map(|index| (index as u8).wrapping_mul(97).wrapping_sub(seed))
+                        .collect::<Vec<u8>>(),
+                )
+                .rem(&modulus)
+                .unwrap();
+                let expected = left
+                    .mod_mul(&right, &modulus)
+                    .unwrap()
+                    .mod_mul(&radix_inverse, &modulus)
+                    .unwrap();
+                let product = montgomery_product(&montgomery, &left, &right);
+                assert!(product < modulus, "length {length} seed {seed}");
+                assert_eq!(product, expected, "length {length} seed {seed}");
+                assert_eq!(
+                    montgomery_product(&montgomery, &left, &left),
+                    left.mod_mul(&left, &modulus)
+                        .unwrap()
+                        .mod_mul(&radix_inverse, &modulus)
+                        .unwrap(),
+                    "squaring, length {length} seed {seed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_prime_sized_exponentiation_stays_below_the_binary_ladder_cost() {
+        use crate::library::tpm2::crypto::work;
+        let modulus = BigUint::from_be_bytes(
+            &(0..192u16)
+                .map(|index| (index as u8) | 0x81)
+                .collect::<Vec<u8>>(),
+        );
+        assert_eq!(modulus.bit_len(), 1536);
+        let exponent = modulus.sub_u64(4).unwrap();
+        let set_bits: usize = (0..exponent.bit_len())
+            .filter(|bit| exponent.test_bit(*bit))
+            .count();
+        let binary_ladder = 3 + (exponent.bit_len() - 1) + (set_bits - 1);
+        let (result, counters) =
+            work::measure(|| BigUint::from_u64(3).mod_exp(&exponent, &modulus).unwrap());
+        assert!(!result.is_zero());
+        assert_eq!(counters.modular_multiplications, 1868);
+        assert!(
+            counters.modular_multiplications + 400 < binary_ladder as u64,
+            "{} multiplications against a {binary_ladder}-multiplication binary ladder",
+            counters.modular_multiplications
+        );
+    }
+
+    #[test]
+    fn a_short_exponent_keeps_the_binary_ladder_cost() {
+        use crate::library::tpm2::crypto::work;
+        let modulus = BigUint::from_be_bytes(
+            &(0..192u16)
+                .map(|index| (index as u8) | 0x81)
+                .collect::<Vec<u8>>(),
+        );
+        let (result, counters) = work::measure(|| {
+            BigUint::from_u64(3)
+                .mod_exp(&BigUint::from_u64(65537), &modulus)
+                .unwrap()
+        });
+        assert!(!result.is_zero());
+        assert_eq!(
+            counters.modular_multiplications, 20,
+            "a seventeen-bit public exponent builds no window table"
+        );
+    }
+
+    #[test]
+    fn the_window_width_grows_with_the_exponent_length() {
+        assert_eq!(window_width(0), 1);
+        assert_eq!(window_width(63), 1);
+        assert_eq!(window_width(64), 3);
+        assert_eq!(window_width(255), 3);
+        assert_eq!(window_width(256), 4);
+        assert_eq!(window_width(1023), 4);
+        assert_eq!(window_width(1024), 5);
+        assert_eq!(window_width(1536), 5);
+    }
+
+    #[test]
+    fn every_exponent_length_agrees_with_the_binary_ladder() {
+        let modulus = BigUint::from_be_bytes(
+            &(0..40u8)
+                .map(|index| index.wrapping_mul(61) | 0x81)
+                .collect::<Vec<u8>>(),
+        );
+        let base = BigUint::from_be_bytes(&(1..=40u8).collect::<Vec<u8>>())
+            .rem(&modulus)
+            .unwrap();
+        let binary = |exponent: &BigUint| {
+            let mut result = BigUint::from_u64(1);
+            for bit in (0..exponent.bit_len()).rev() {
+                result = result.mod_mul(&result, &modulus).unwrap();
+                if exponent.test_bit(bit) {
+                    result = result.mod_mul(&base, &modulus).unwrap();
+                }
+            }
+            result
+        };
+        for bits in [1usize, 2, 3, 7, 17, 63, 64, 65, 127, 255, 256, 257, 319] {
+            for offset in [0u64, 1, 3] {
+                let exponent = BigUint::from_u64(1)
+                    .shl(bits - 1)
+                    .add_u64(offset)
+                    .rem(&modulus)
+                    .unwrap();
+                assert_eq!(
+                    base.mod_exp(&exponent, &modulus).unwrap(),
+                    binary(&exponent),
+                    "bits {bits} offset {offset}"
+                );
+            }
+        }
     }
 
     #[test]
