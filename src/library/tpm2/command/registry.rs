@@ -7,6 +7,7 @@ use super::change_eps;
 use super::create_primary;
 use super::dispatcher::CommandFrame;
 use super::evict_control;
+use super::flush_context;
 use super::get_capability;
 use super::get_random;
 use super::hash;
@@ -52,6 +53,7 @@ pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ: u32 = 0x0000_014e;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_LOCK: u32 = 0x0000_014f;
+pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
@@ -533,6 +535,16 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: nv_lock::execute_read_lock,
     },
     CommandDescriptor {
+        code: TPM_CC_FLUSH_CONTEXT,
+        attributes: tpma_cc(TPM_CC_FLUSH_CONTEXT, false, 0),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: false,
+        nv_access: NvAccess::Neither,
+        handler: flush_context::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_NV_READ_PUBLIC,
         attributes: tpma_cc(TPM_CC_NV_READ_PUBLIC, false, 1),
         physical_presence: false,
@@ -774,6 +786,7 @@ mod tests {
                 TPM_CC_STIR_RANDOM,
                 TPM_CC_NV_READ,
                 TPM_CC_NV_READ_LOCK,
+                TPM_CC_FLUSH_CONTEXT,
                 TPM_CC_NV_READ_PUBLIC,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
@@ -1199,15 +1212,49 @@ mod tests {
     }
 
     #[test]
-    fn only_startup_forbids_an_authorization_area() {
+    fn only_startup_and_flush_context_forbid_an_authorization_area() {
         for descriptor in implemented() {
             assert_eq!(
                 descriptor.sessions_allowed,
-                descriptor.code != TPM_CC_STARTUP,
+                !matches!(descriptor.code, TPM_CC_STARTUP | TPM_CC_FLUSH_CONTEXT),
                 "code {:#x}",
                 descriptor.code
             );
         }
+    }
+
+    #[test]
+    fn flush_context_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_FLUSH_CONTEXT).unwrap().attributes, 0x0000_0165);
+    }
+
+    #[test]
+    fn flush_context_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_FLUSH_CONTEXT)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn flush_context_declares_no_handles_and_no_sessions() {
+        let descriptor = find(TPM_CC_FLUSH_CONTEXT).unwrap();
+        assert!(descriptor.handles.is_empty());
+        assert!(!descriptor.sessions_allowed);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
+        assert_eq!(
+            descriptor.attributes & (1 << 22),
+            0,
+            "FlushContext does not update NV"
+        );
+        assert_eq!(
+            descriptor.attributes & (1 << 28),
+            0,
+            "FlushContext has no response handle"
+        );
     }
 
     #[test]

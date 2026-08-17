@@ -1,8 +1,11 @@
+use super::live::LiveState;
 use super::marshal::{BlobReader, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, PersistentField, StateSection, parse_nv_header};
 use super::public::{
     DIGEST_SIZE, NAME_SIZE, StateFormatLimit, SymDefObject, parse_sym_def, read_tpm2b,
 };
+use super::state::MAX_ACTIVE_SESSIONS;
+use super::volatile::MAX_LOADED_SESSIONS;
 
 pub(super) const SESSION_MAGIC: u32 = 0x44be_9f45;
 pub(super) const SESSION_VERSION: u16 = 2;
@@ -11,7 +14,81 @@ pub(super) const SESSION_SLOT_VERSION: u16 = 2;
 
 pub(super) const EPOCH_CLOCK_SIZE: u8 = 4;
 
+const HMAC_SESSION_FIRST: u32 = 0x0200_0000;
+const HMAC_SESSION_LAST: u32 = HMAC_SESSION_FIRST + MAX_ACTIVE_SESSIONS as u32 - 1;
+const POLICY_SESSION_FIRST: u32 = 0x0300_0000;
+const POLICY_SESSION_LAST: u32 = POLICY_SESSION_FIRST + MAX_ACTIVE_SESSIONS as u32 - 1;
+
+const HR_HANDLE_MASK: u32 = 0x00ff_ffff;
+
 const BLOCK_SKIP_SINCE_VERSION: u16 = 2;
+
+pub(super) fn is_session_handle(handle: u32) -> bool {
+    (HMAC_SESSION_FIRST..=HMAC_SESSION_LAST).contains(&handle)
+        || (POLICY_SESSION_FIRST..=POLICY_SESSION_LAST).contains(&handle)
+}
+
+fn context_slot(live: &LiveState, handle: u32) -> Option<(usize, u16)> {
+    let slot = usize::try_from(handle & HR_HANDLE_MASK).ok()?;
+    let context = *live.state_reset.as_ref()?.context_array.get(slot)?;
+    Some((slot, context))
+}
+
+pub(super) fn session_is_loaded(live: &LiveState, handle: u32) -> bool {
+    context_slot(live, handle)
+        .is_some_and(|(_, context)| context != 0 && usize::from(context) <= MAX_LOADED_SESSIONS)
+}
+
+pub(super) fn session_is_saved(live: &LiveState, handle: u32) -> bool {
+    context_slot(live, handle)
+        .is_some_and(|(_, context)| usize::from(context) > MAX_LOADED_SESSIONS)
+}
+
+pub(super) const NO_OLDEST_SAVED_SESSION: u32 = MAX_ACTIVE_SESSIONS as u32 + 1;
+
+fn set_oldest_saved_session(live: &mut LiveState) {
+    let mask = live.context_slot_mask;
+    let mut smallest = mask;
+    let mut oldest = NO_OLDEST_SAVED_SESSION;
+    if let Some(reset) = live.state_reset.as_ref() {
+        let low_bits = (reset.context_counter as u16) & mask;
+        for (slot, &entry) in reset.context_array.iter().enumerate() {
+            if usize::from(entry) <= MAX_LOADED_SESSIONS {
+                continue;
+            }
+            let age = entry.wrapping_sub(low_bits) & mask;
+            if age <= smallest {
+                smallest = age;
+                oldest = slot as u32;
+            }
+        }
+    }
+    live.oldest_saved_session = oldest;
+}
+
+pub(super) fn flush_session(live: &mut LiveState, handle: u32) {
+    let Some((slot, context)) = context_slot(live, handle) else {
+        return;
+    };
+    if let Some(reset) = live.state_reset.as_mut() {
+        reset.context_array[slot] = 0;
+    }
+    if usize::from(context) > MAX_LOADED_SESSIONS {
+        if slot as u32 == live.oldest_saved_session {
+            set_oldest_saved_session(live);
+        }
+        return;
+    }
+    let Some(ram_slot) = usize::from(context)
+        .checked_sub(1)
+        .and_then(|index| live.sessions.get_mut(index))
+    else {
+        return;
+    };
+    ram_slot.occupied = false;
+    ram_slot.session = None;
+    live.free_session_slots += 1;
+}
 
 fn truncated(section: StateSection) -> PersistentAllError {
     PersistentAllError::Truncated { section }

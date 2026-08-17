@@ -2,6 +2,7 @@ mod change_eps;
 mod create_primary;
 mod dispatcher;
 mod evict_control;
+mod flush_context;
 mod get_capability;
 mod get_random;
 mod hash;

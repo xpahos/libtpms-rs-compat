@@ -6,6 +6,7 @@ magic; the reader lives in ``src/library/tpm2/oracles``:
 
     create-primary  CPORACLE  testdata/oracles/create_primary.bin
     evict-control   ECORACLE  testdata/oracles/evict_control.bin
+    flush-context   FCORACLE  testdata/oracles/flush_context.bin
     nv-commands     NVORACLE  testdata/oracles/nv_commands.bin
     nv-certify      NVORACLE  testdata/oracles/nv_certify.bin
 
@@ -51,6 +52,7 @@ TESTDATA = (
 FAMILIES = {
     "create-primary": (b"CPORACLE", "create_primary.bin"),
     "evict-control": (b"ECORACLE", "evict_control.bin"),
+    "flush-context": (b"FCORACLE", "flush_context.bin"),
     "nv-commands": (b"NVORACLE", "nv_commands.bin"),
     "nv-certify": (b"NVORACLE", "nv_certify.bin"),
 }
