@@ -423,7 +423,10 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
             nv_commit(&host_nvram, &runtime);
             Ok(runtime)
         }
-        PermanentStateSource::Backend => match host_nvram.load(StateBlobKind::Permanent)? {
+        PermanentStateSource::Backend => match host_nvram
+            .load(StateBlobKind::Permanent)
+            .map_err(|_| TPM_RC_FAILURE)?
+        {
             NvramLoad::Data(blob) => {
                 let mut runtime = initialize_from_permanent_blob(&blob, PermanentCommit::Restore)?;
                 volatile_phase(
@@ -1539,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_load_error_propagates_the_host_code() {
+    fn backend_load_error_collapses_to_the_restore_failure_code() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1551,7 +1554,7 @@ mod tests {
             PreloadedBlob::Missing,
         ))
         .unwrap_err();
-        assert_eq!(error, 77);
+        assert_eq!(error, TPM_RC_FAILURE);
     }
 
     #[test]
