@@ -31,7 +31,6 @@ pub(super) const TPMA_OBJECT_USER_WITH_AUTH: u32 = 1 << 6;
 pub(super) const TPMA_OBJECT_ADMIN_WITH_POLICY: u32 = 1 << 7;
 pub(super) const TPMA_OBJECT_FIRMWARE_LIMITED: u32 = 1 << 8;
 pub(super) const TPMA_OBJECT_SVN_LIMITED: u32 = 1 << 9;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const TPMA_OBJECT_NO_DA: u32 = 1 << 10;
 pub(super) const TPMA_OBJECT_ENCRYPTED_DUPLICATION: u32 = 1 << 11;
 pub(super) const TPMA_OBJECT_RESTRICTED: u32 = 1 << 16;
@@ -309,7 +308,7 @@ impl AlgorithmPolicy<'_> {
     }
 }
 
-pub(super) fn parse_public_area(
+fn parse_public_head(
     reader: &mut TemplateReader<'_>,
     policy: &AlgorithmPolicy<'_>,
     allow_null_name_alg: bool,
@@ -327,8 +326,94 @@ pub(super) fn parse_public_area(
         return Err(TPM_RC_RESERVED_BITS);
     }
     let auth_policy = reader.tpm2b(DIGEST_SIZE)?.to_vec();
+    let parameters = parse_public_parms(reader, policy, object_type)?;
+    Ok(OwnedTpmtPublic {
+        object_type,
+        name_alg,
+        object_attributes,
+        auth_policy,
+        parameters,
+        unique: empty_unique(object_type),
+    })
+}
 
-    let parameters = match object_type {
+pub(super) fn parse_public_area(
+    reader: &mut TemplateReader<'_>,
+    policy: &AlgorithmPolicy<'_>,
+    allow_null_name_alg: bool,
+) -> Result<OwnedTpmtPublic, TpmResult> {
+    let mut public = parse_public_head(reader, policy, allow_null_name_alg)?;
+    let object_type = public.object_type;
+
+    let unique = match object_type {
+        TPM_ALG_KEYEDHASH => OwnedPublicId::KeyedHash(reader.tpm2b(DIGEST_SIZE)?.to_vec()),
+        TPM_ALG_SYMCIPHER => OwnedPublicId::Sym(reader.tpm2b(DIGEST_SIZE)?.to_vec()),
+        TPM_ALG_RSA => OwnedPublicId::Rsa(reader.tpm2b(MAX_RSA_KEY_BYTES)?.to_vec()),
+        _ => OwnedPublicId::Ecc {
+            x: reader.tpm2b(MAX_ECC_KEY_BYTES)?.to_vec(),
+            y: reader.tpm2b(MAX_ECC_KEY_BYTES)?.to_vec(),
+        },
+    };
+    public.unique = unique;
+    Ok(public)
+}
+
+pub(super) const LABEL_MAX_BUFFER: usize = 32;
+
+#[derive(Clone, Default)]
+pub(super) struct DeriveLabelContext {
+    pub(super) label: Vec<u8>,
+    pub(super) context: Vec<u8>,
+}
+
+pub(super) fn parse_derive(
+    reader: &mut TemplateReader<'_>,
+) -> Result<DeriveLabelContext, TpmResult> {
+    let label = reader.tpm2b(LABEL_MAX_BUFFER)?.to_vec();
+    let context = reader.tpm2b(LABEL_MAX_BUFFER)?.to_vec();
+    Ok(DeriveLabelContext { label, context })
+}
+
+fn empty_unique(object_type: u16) -> OwnedPublicId {
+    match object_type {
+        TPM_ALG_KEYEDHASH => OwnedPublicId::KeyedHash(Vec::new()),
+        TPM_ALG_SYMCIPHER => OwnedPublicId::Sym(Vec::new()),
+        TPM_ALG_RSA => OwnedPublicId::Rsa(Vec::new()),
+        _ => OwnedPublicId::Ecc {
+            x: Vec::new(),
+            y: Vec::new(),
+        },
+    }
+}
+
+pub(super) fn parse_template_to_public(
+    template: &[u8],
+    policy: &AlgorithmPolicy<'_>,
+    derivation: bool,
+) -> Result<(OwnedTpmtPublic, DeriveLabelContext), TpmResult> {
+    let mut reader = TemplateReader::new(template);
+    let (public, label_context) = if derivation {
+        let public = parse_public_head(&mut reader, policy, false)?;
+        let label_context = parse_derive(&mut reader)?;
+        (public, label_context)
+    } else {
+        (
+            parse_public_area(&mut reader, policy, false)?,
+            DeriveLabelContext::default(),
+        )
+    };
+    if !reader.remaining().is_empty() {
+        return Err(TPM_RC_SIZE);
+    }
+    Ok((public, label_context))
+}
+
+fn parse_public_parms(
+    reader: &mut TemplateReader<'_>,
+    policy: &AlgorithmPolicy<'_>,
+    object_type: u16,
+) -> Result<PublicParms, TpmResult> {
+    Ok(match object_type {
         TPM_ALG_KEYEDHASH => PublicParms::KeyedHash(policy.keyedhash_scheme(reader)?),
         TPM_ALG_SYMCIPHER => PublicParms::SymCipher(policy.sym_object(reader, false)?),
         TPM_ALG_RSA => {
@@ -363,25 +448,6 @@ pub(super) fn parse_public_area(
                 kdf,
             }
         }
-    };
-
-    let unique = match object_type {
-        TPM_ALG_KEYEDHASH => OwnedPublicId::KeyedHash(reader.tpm2b(DIGEST_SIZE)?.to_vec()),
-        TPM_ALG_SYMCIPHER => OwnedPublicId::Sym(reader.tpm2b(DIGEST_SIZE)?.to_vec()),
-        TPM_ALG_RSA => OwnedPublicId::Rsa(reader.tpm2b(MAX_RSA_KEY_BYTES)?.to_vec()),
-        _ => OwnedPublicId::Ecc {
-            x: reader.tpm2b(MAX_ECC_KEY_BYTES)?.to_vec(),
-            y: reader.tpm2b(MAX_ECC_KEY_BYTES)?.to_vec(),
-        },
-    };
-
-    Ok(OwnedTpmtPublic {
-        object_type,
-        name_alg,
-        object_attributes,
-        auth_policy,
-        parameters,
-        unique,
     })
 }
 
@@ -490,12 +556,55 @@ fn has(attributes: u32, bit: u32) -> bool {
     attributes & bit != 0
 }
 
+pub(super) struct ParentPublicInfo {
+    pub(super) attributes: u32,
+    pub(super) name_alg: u16,
+    pub(super) symmetric: [u16; 3],
+    pub(super) derivation_parent: bool,
+}
+
+pub(super) fn parent_public_info(
+    public: &OwnedTpmtPublic,
+    derivation_parent: bool,
+) -> ParentPublicInfo {
+    let symmetric = match &public.parameters {
+        PublicParms::Rsa { symmetric, .. } | PublicParms::Ecc { symmetric, .. } => [
+            symmetric.algorithm,
+            symmetric.key_bits.unwrap_or(0),
+            symmetric.mode.unwrap_or(0),
+        ],
+        PublicParms::SymCipher(sym) => [
+            sym.algorithm,
+            sym.key_bits.unwrap_or(0),
+            sym.mode.unwrap_or(0),
+        ],
+        PublicParms::KeyedHash(scheme) => [
+            scheme.scheme,
+            scheme.hash_alg.unwrap_or(0),
+            scheme.kdf.unwrap_or(0),
+        ],
+    };
+    ParentPublicInfo {
+        attributes: public.object_attributes,
+        name_alg: public.name_alg,
+        symmetric,
+        derivation_parent,
+    }
+}
+
 pub(super) fn create_checks(
+    parent: Option<&ParentPublicInfo>,
     public: &OwnedTpmtPublic,
     sensitive_data_size: usize,
 ) -> Result<(), TpmResult> {
     let attributes = public.object_attributes;
     if !has(attributes, TPMA_OBJECT_SENSITIVE_DATA_ORIGIN) && sensitive_data_size == 0 {
+        return Err(TPM_RC_ATTRIBUTES);
+    }
+    if parent.is_some()
+        && has(attributes, TPMA_OBJECT_SENSITIVE_DATA_ORIGIN)
+        && sensitive_data_size != 0
+    {
         return Err(TPM_RC_ATTRIBUTES);
     }
     match public.object_type {
@@ -515,7 +624,7 @@ pub(super) fn create_checks(
             }
         }
     }
-    public_attributes_validation(public)
+    public_attributes_validation(parent, public)
 }
 
 fn restricted_symmetric_check(attributes: u32) -> Result<(), TpmResult> {
@@ -528,8 +637,12 @@ fn restricted_symmetric_check(attributes: u32) -> Result<(), TpmResult> {
     Ok(())
 }
 
-pub(super) fn public_attributes_validation(public: &OwnedTpmtPublic) -> Result<(), TpmResult> {
+pub(super) fn public_attributes_validation(
+    parent: Option<&ParentPublicInfo>,
+    public: &OwnedTpmtPublic,
+) -> Result<(), TpmResult> {
     let attributes = public.object_attributes;
+    let parent_attributes = parent.map_or(0, |info| info.attributes);
     if public.name_alg == TPM_ALG_NULL {
         return Err(TPM_RC_HASH);
     }
@@ -538,7 +651,11 @@ pub(super) fn public_attributes_validation(public: &OwnedTpmtPublic) -> Result<(
     {
         return Err(TPM_RC_SIZE);
     }
-    if has(attributes, TPMA_OBJECT_FIXED_PARENT) != has(attributes, TPMA_OBJECT_FIXED_TPM) {
+    if parent.is_none() || has(parent_attributes, TPMA_OBJECT_FIXED_TPM) {
+        if has(attributes, TPMA_OBJECT_FIXED_PARENT) != has(attributes, TPMA_OBJECT_FIXED_TPM) {
+            return Err(TPM_RC_ATTRIBUTES);
+        }
+    } else if has(attributes, TPMA_OBJECT_FIXED_TPM) {
         return Err(TPM_RC_ATTRIBUTES);
     }
     if has(attributes, TPMA_OBJECT_SIGN) == has(attributes, TPMA_OBJECT_DECRYPT) {
@@ -553,13 +670,33 @@ pub(super) fn public_attributes_validation(public: &OwnedTpmtPublic) -> Result<(
     {
         return Err(TPM_RC_ATTRIBUTES);
     }
+    if parent.is_some()
+        && !has(parent_attributes, TPMA_OBJECT_FIXED_TPM)
+        && has(attributes, TPMA_OBJECT_ENCRYPTED_DUPLICATION)
+            != has(parent_attributes, TPMA_OBJECT_ENCRYPTED_DUPLICATION)
+    {
+        return Err(TPM_RC_ATTRIBUTES);
+    }
     if has(attributes, TPMA_OBJECT_FIRMWARE_LIMITED) || has(attributes, TPMA_OBJECT_SVN_LIMITED) {
         return Err(TPM_RC_ATTRIBUTES);
     }
-    scheme_checks(public)
+    if let Some(info) = parent
+        && info.derivation_parent
+    {
+        if has(attributes, TPMA_OBJECT_FIXED_TPM) != has(info.attributes, TPMA_OBJECT_FIXED_TPM) {
+            return Err(TPM_RC_ATTRIBUTES);
+        }
+        if !has(attributes, TPMA_OBJECT_FIXED_PARENT) {
+            return Err(TPM_RC_ATTRIBUTES);
+        }
+    }
+    scheme_checks(parent, public)
 }
 
-pub(super) fn scheme_checks(public: &OwnedTpmtPublic) -> Result<(), TpmResult> {
+pub(super) fn scheme_checks(
+    parent: Option<&ParentPublicInfo>,
+    public: &OwnedTpmtPublic,
+) -> Result<(), TpmResult> {
     let attributes = public.object_attributes;
     let symmetric = match &public.parameters {
         PublicParms::SymCipher(sym) => {
@@ -620,9 +757,43 @@ pub(super) fn scheme_checks(public: &OwnedTpmtPublic) -> Result<(), TpmResult> {
     if let Some(symmetric) = symmetric
         && has(attributes, TPMA_OBJECT_RESTRICTED)
         && has(attributes, TPMA_OBJECT_DECRYPT)
-        && symmetric.algorithm == TPM_ALG_NULL
     {
-        return Err(TPM_RC_SYMMETRIC);
+        if symmetric.algorithm == TPM_ALG_NULL {
+            return Err(TPM_RC_SYMMETRIC);
+        }
+        if has(attributes, TPMA_OBJECT_FIXED_PARENT)
+            && let Some(info) = parent
+        {
+            if public.name_alg != info.name_alg {
+                return Err(TPM_RC_HASH);
+            }
+            let child = [
+                symmetric.algorithm,
+                symmetric.key_bits.unwrap_or(0),
+                symmetric.mode.unwrap_or(0),
+            ];
+            if child != info.symmetric {
+                return Err(TPM_RC_SYMMETRIC);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn set_label_and_context(
+    label_context: &mut DeriveLabelContext,
+    sensitive_data: &[u8],
+) -> Result<(), TpmResult> {
+    if sensitive_data.is_empty() {
+        return Ok(());
+    }
+    let mut reader = TemplateReader::new(sensitive_data);
+    let sensitive_value = parse_derive(&mut reader)?;
+    if label_context.label.is_empty() {
+        label_context.label = sensitive_value.label;
+    }
+    if label_context.context.is_empty() {
+        label_context.context = sensitive_value.context;
     }
     Ok(())
 }
@@ -977,9 +1148,9 @@ mod tests {
     #[test]
     fn a_storage_template_passes_the_creation_checks() {
         let public = parse(&rsa_storage_template(2048, TPM_ALG_SHA256)).unwrap();
-        assert_eq!(create_checks(&public, 0), Ok(()));
+        assert_eq!(create_checks(None, &public, 0), Ok(()));
         let public = parse(&ecc_storage_template(0x0004, TPM_ALG_SHA384)).unwrap();
-        assert_eq!(create_checks(&public, 0), Ok(()));
+        assert_eq!(create_checks(None, &public, 0), Ok(()));
     }
 
     #[test]
@@ -989,8 +1160,8 @@ mod tests {
             & !TPMA_OBJECT_SENSITIVE_DATA_ORIGIN;
         bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
         let public = parse(&bytes).unwrap();
-        assert_eq!(create_checks(&public, 0), Err(TPM_RC_ATTRIBUTES));
-        assert_eq!(create_checks(&public, 16), Err(TPM_RC_ATTRIBUTES));
+        assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_ATTRIBUTES));
+        assert_eq!(create_checks(None, &public, 16), Err(TPM_RC_ATTRIBUTES));
     }
 
     #[test]
@@ -1000,7 +1171,7 @@ mod tests {
             let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) & !attribute;
             bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
             let public = parse(&bytes).unwrap();
-            assert_eq!(create_checks(&public, 0), Err(TPM_RC_ATTRIBUTES));
+            assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_ATTRIBUTES));
         }
     }
 
@@ -1010,7 +1181,7 @@ mod tests {
         let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) | TPMA_OBJECT_SIGN;
         bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
         let public = parse(&bytes).unwrap();
-        assert_eq!(create_checks(&public, 0), Err(TPM_RC_ATTRIBUTES));
+        assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_ATTRIBUTES));
     }
 
     #[test]
@@ -1020,7 +1191,7 @@ mod tests {
             u32::from_be_bytes(bytes[4..8].try_into().unwrap()) | TPMA_OBJECT_ENCRYPTED_DUPLICATION;
         bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
         let public = parse(&bytes).unwrap();
-        assert_eq!(create_checks(&public, 0), Err(TPM_RC_ATTRIBUTES));
+        assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_ATTRIBUTES));
     }
 
     #[test]
@@ -1030,7 +1201,7 @@ mod tests {
             let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) | attribute;
             bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
             let public = parse(&bytes).unwrap();
-            assert_eq!(create_checks(&public, 0), Err(TPM_RC_ATTRIBUTES));
+            assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_ATTRIBUTES));
         }
     }
 
@@ -1041,7 +1212,7 @@ mod tests {
         bytes.splice(10..10, core::iter::repeat_n(0xaau8, 20));
         let public = parse(&bytes).unwrap();
         assert_eq!(public.auth_policy.len(), 20);
-        assert_eq!(create_checks(&public, 0), Err(TPM_RC_SIZE));
+        assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_SIZE));
     }
 
     #[test]
@@ -1049,7 +1220,7 @@ mod tests {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         bytes.splice(10..16, TPM_ALG_NULL.to_be_bytes().iter().copied());
         let public = parse(&bytes).unwrap();
-        assert_eq!(create_checks(&public, 0), Err(TPM_RC_SYMMETRIC));
+        assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_SYMMETRIC));
     }
 
     #[test]
@@ -1060,7 +1231,7 @@ mod tests {
             | TPMA_OBJECT_SIGN;
         bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
         let public = parse(&bytes).unwrap();
-        assert_eq!(create_checks(&public, 0), Err(TPM_RC_SYMMETRIC));
+        assert_eq!(create_checks(None, &public, 0), Err(TPM_RC_SYMMETRIC));
     }
 
     #[test]
@@ -1072,7 +1243,7 @@ mod tests {
         bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
         bytes.splice(10..16, TPM_ALG_NULL.to_be_bytes().iter().copied());
         let public = parse(&bytes).unwrap();
-        assert_eq!(create_checks(&public, 0), Ok(()));
+        assert_eq!(create_checks(None, &public, 0), Ok(()));
     }
 
     #[test]

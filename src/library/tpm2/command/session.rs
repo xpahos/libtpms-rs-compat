@@ -20,6 +20,7 @@ use super::super::nv::{
     TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_WRITTEN, index_auth_value, is_nv_index_handle,
     is_pin_index, read_uint64_data, resolve_index,
 };
+use super::super::object_create::{is_object_handle, object_auth_value};
 use super::super::pcr::pcr_auth_value_group;
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::MAX_ACTIVE_SESSIONS;
@@ -154,6 +155,9 @@ fn effective_auth_value(runtime: &Tpm2Runtime, handle: u32) -> Result<&[u8], Tpm
     }
     if is_nv_index_handle(handle) {
         return index_auth_value(runtime, handle).ok_or(TPM_RC_FAILURE);
+    }
+    if is_object_handle(handle) {
+        return object_auth_value(runtime, handle).ok_or(TPM_RC_FAILURE);
     }
     match pcr_auth_value_group(handle as usize) {
         Some(group) => auth_value_group(runtime, group),

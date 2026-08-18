@@ -1,4 +1,5 @@
 mod bignum;
+mod cfb;
 mod des;
 mod df;
 mod drbg;
@@ -16,6 +17,7 @@ mod rsa;
 pub(in crate::library::tpm2) mod work;
 
 pub(super) use bignum::BigUint;
+pub(super) use cfb::{sym_block_size, sym_cfb_encrypt};
 pub(super) use des::{generate_tdes_key, validate_tdes_key};
 pub(super) use df::df_buffer;
 pub(super) use drbg::{DRBG_MAGIC, Drbg, StirError};

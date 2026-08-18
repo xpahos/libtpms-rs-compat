@@ -446,10 +446,9 @@ mod tests {
     const RC_NV_AUTHORIZATION: u32 = 0x149;
     const RC_NV_UNINITIALIZED: u32 = 0x14a;
     const RC_AUTH_MISSING: u32 = 0x125;
+    const RC_RETRY: u32 = 0x922;
 
     const INDEX: u32 = 0x0100_0001;
-
-    const ORDERLY_CLOCK_LOW_BYTE: usize = 1696;
 
     const TPM_ALG_RSASSA: u16 = 0x0014;
     const TPM_ALG_RSAPSS: u16 = 0x0016;
@@ -496,6 +495,7 @@ mod tests {
             )),
             RC_SUCCESS
         );
+        mark_da_cycle_used(&mut runtime);
         runtime.nv_update_pending = false;
         runtime
     }
@@ -626,6 +626,28 @@ mod tests {
 
     #[track_caller]
     fn oracle_runtime_with_owner(with_owner: bool) -> (Box<Tpm2Runtime>, u32, u32) {
+        let (mut runtime, endorsement, owner) = oracle_runtime_before_da_transition(with_owner);
+        assert_eq!(
+            response_code(&certify(
+                &mut runtime,
+                endorsement,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                0x0010,
+                0,
+                32,
+                0
+            )),
+            RC_RETRY,
+            "the first DA-protected signer authorization records the DA-used \
+             transition through the production path"
+        );
+        (runtime, endorsement, owner)
+    }
+
+    #[track_caller]
+    fn oracle_runtime_before_da_transition(with_owner: bool) -> (Box<Tpm2Runtime>, u32, u32) {
         let mut runtime = restore_permanent_blob_for_test(&certify_vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
         assert_eq!(
@@ -667,6 +689,53 @@ mod tests {
         );
         write(&mut runtime, INDEX, &DATA32);
         (runtime, endorsement, owner)
+    }
+
+    fn mark_da_cycle_used(runtime: &mut Tpm2Runtime) {
+        use crate::library::tpm2::dictionary_attack::record_da_used;
+        record_da_used(runtime).expect(
+            "the certify fixtures were captured from a libtpms build with the \
+             reverted first-use return, which proceeds after recording the \
+             DA-used transition; under the repository's pre-revert \
+             TPM_RC_RETRY contract those bytes correspond to the \
+             post-transition cycle state, so the harness performs the \
+             production transition up front",
+        );
+    }
+
+    fn certify_runtime() -> Box<Tpm2Runtime> {
+        let mut runtime = started_runtime();
+        mark_da_cycle_used(&mut runtime);
+        runtime.nv_update_pending = false;
+        runtime
+    }
+
+    #[test]
+    fn the_harness_enters_the_complete_post_transition_state() {
+        use crate::library::tpm2::nv::build_nv_image;
+
+        let (oracle, _) = oracle_runtime();
+        assert!(oracle.live.da_used);
+        assert_eq!(oracle.state().persistent.orderly_state, 0xfffe);
+        assert!(
+            oracle.nv_update_pending,
+            "the production retry path scheduled the NV commit"
+        );
+        assert_eq!(
+            oracle.nv_memory,
+            build_nv_image(oracle.state()).expect("the state serializes"),
+            "the committed NV image carries the DA-used marker"
+        );
+
+        let synthetic = certify_runtime();
+        assert!(synthetic.live.da_used);
+        assert_eq!(synthetic.state().persistent.orderly_state, 0xfffe);
+        assert_eq!(
+            synthetic.nv_memory,
+            build_nv_image(synthetic.state()).expect("the state serializes"),
+            "the helper leaves the serialized state consistent with the \
+             in-memory transition"
+        );
     }
 
     struct ClockInfo {
@@ -766,8 +835,8 @@ mod tests {
         assert!(all.entries.contains(&0x0600_0184));
         assert_eq!(
             all.entries.last(),
-            Some(&0x0600_0184),
-            "TPM2_NV_Certify has the highest command code in the registry"
+            Some(&0x1200_0191),
+            "TPM2_CreateLoaded has the highest command code in the registry"
         );
     }
 
@@ -949,7 +1018,6 @@ mod tests {
     #[test]
     fn the_index_may_authorize_its_own_certification() {
         let (mut runtime, endorsement) = oracle_runtime();
-        runtime.live.da_used = true;
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_INDEX_AUTH"));
         assert_eq!(
             certify(
@@ -1292,7 +1360,7 @@ mod tests {
 
     #[test]
     fn the_permanent_state_around_certification_matches_the_oracle() {
-        let (mut runtime, endorsement) = oracle_runtime();
+        let (mut runtime, endorsement, _) = oracle_runtime_before_da_transition(false);
         assert_matches_oracle(
             &runtime,
             certify_vector("PERMALL_READY"),
@@ -1311,13 +1379,30 @@ mod tests {
                 32,
                 0
             )),
+            RC_RETRY,
+            "the first DA-protected signer authorization records the DA-used \
+             marker exactly as the capture's first certification did"
+        );
+        runtime.nv_update_pending = false;
+        assert_eq!(
+            response_code(&certify(
+                &mut runtime,
+                endorsement,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                0x0010,
+                0,
+                32,
+                0
+            )),
             RC_SUCCESS
         );
         assert_matches_oracle_except(
             &runtime,
             certify_vector("PERMALL_AFTER_CERTIFY"),
             "after certification",
-            &[ORDERLY_CLOCK_LOW_BYTE],
+            &[],
         );
     }
 
@@ -1352,7 +1437,7 @@ mod tests {
 
     #[test]
     fn a_key_that_cannot_sign_is_a_key_error() {
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         define(
             &mut runtime,
             &nv_public(INDEX, TPMA_NV_OWNERWRITE | TPMA_NV_OWNERREAD, 32),
@@ -1381,7 +1466,7 @@ mod tests {
 
     #[test]
     fn a_key_without_a_default_scheme_needs_an_explicit_one() {
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         define(
             &mut runtime,
             &nv_public(INDEX, TPMA_NV_OWNERWRITE | TPMA_NV_OWNERREAD, 32),
@@ -1594,7 +1679,7 @@ mod tests {
 
     #[test]
     fn every_ecc_scheme_reaches_the_oracle_return_code() {
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
             &mut runtime,
@@ -1643,7 +1728,7 @@ mod tests {
 
     #[test]
     fn an_sm2_curve_key_signs_with_the_sm2_scheme() {
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
             &mut runtime,
@@ -1668,7 +1753,7 @@ mod tests {
 
     #[test]
     fn a_keyed_hash_key_signs_with_hmac() {
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
             &mut runtime,
@@ -1697,7 +1782,7 @@ mod tests {
     #[test]
     fn the_ecc_signatures_satisfy_their_signing_equations() {
         use crate::library::tpm2::crypto::{BigUint, curve_parameters};
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
             &mut runtime,
@@ -1766,7 +1851,7 @@ mod tests {
 
     #[test]
     fn a_committed_ecdaa_signature_consumes_its_commitment() {
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
             &mut runtime,
@@ -1805,7 +1890,7 @@ mod tests {
 
     #[test]
     fn an_anonymous_scheme_drops_the_signer_and_qualifying_data() {
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
             &mut runtime,
@@ -2065,7 +2150,7 @@ mod tests {
     #[test]
     fn an_rsapss_signature_verifies_against_the_public_key() {
         use crate::library::tpm2::crypto::{BigUint, mgf1};
-        let mut runtime = started_runtime();
+        let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, create) = create_primary(
             &mut runtime,
@@ -2336,8 +2421,8 @@ mod tests {
         );
         assert_eq!(
             runtime.state().persistent.orderly_state,
-            0xffff,
-            "a successful certification clears the orderly state"
+            0xfffe,
+            "a successful certification records the DA-used orderly marker"
         );
         assert!(runtime.nv_update_pending, "the NV image was queued");
 
@@ -2360,8 +2445,8 @@ mod tests {
         );
         assert_eq!(
             runtime.state().persistent.orderly_state,
-            0xffff,
-            "the orderly state is cleared again"
+            0xfffe,
+            "the DA-used orderly marker is recorded again"
         );
     }
 
@@ -2385,7 +2470,7 @@ mod tests {
         );
         assert_eq!(
             runtime.state().persistent.orderly_state,
-            0xffff,
+            0xfffe,
             "the attestation uses the clock, so the TPM is no longer orderly"
         );
     }

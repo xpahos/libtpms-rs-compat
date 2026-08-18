@@ -4,6 +4,7 @@
 Each family owns one fixture under ``src/library/tpm2/testdata/oracles`` and one
 magic; the reader lives in ``src/library/tpm2/oracles``:
 
+    create-loaded      CLORACLE  testdata/oracles/create_loaded.bin
     create-primary     CPORACLE  testdata/oracles/create_primary.bin
     dictionary-attack  DAORACLE  testdata/oracles/dictionary_attack.bin
     evict-control      ECORACLE  testdata/oracles/evict_control.bin
@@ -22,6 +23,23 @@ permanent-state blob, ``VOLATILE_*`` records hold a captured volatile-state
 blob (each paired with the ``PERMALL_*`` record of the same boundary), and
 every other record holds a TPM response packet.  The Rust readers validate
 each record against its declared type.
+
+Dictionary-attack compatibility contract: every fixture that touches a
+DA-protected authorization is captured from the ``target/c-oracle`` build of
+the vendored libtpms v0.10.1 sources with SessionProcess.c restored to the
+pre-revert ``return TPM_RC_RETRY`` (upstream commit 37779b49 changed it to
+TPM_RC_SUCCESS; swtpm's test_tpm2_avoid_da_lockout still expects 0x922).
+Under that contract the first authorization of a startup cycle against a
+non-lockout DA-protected entity (an NV index or a transient or persistent
+object) records the SU_DA_USED marker, rebuilds the NV image and answers
+TPM_RC_RETRY.  Lockout authorization takes the separate CheckLockedOut(TRUE)
+path: it only checks lockoutAuthEnabled, performs no daUsed transition, and
+never answers TPM_RC_RETRY merely because daUsed is clear.  Fixtures captured
+before that patch (nv_certify.bin) carry responses from the post-transition
+cycle state; their Rust harnesses enter that complete state (daUsed flag,
+SU_DA_USED orderly marker and the rebuilt NV image) through the production
+transition before the first DA-protected authorization instead of encoding
+per-handle behavior.
 
 Regenerate a fixture from a ``NAME <hex>`` listing:
 
@@ -57,6 +75,7 @@ TESTDATA = (
 )
 
 FAMILIES = {
+    "create-loaded": (b"CLORACLE", "create_loaded.bin"),
     "create-primary": (b"CPORACLE", "create_primary.bin"),
     "dictionary-attack": (b"DAORACLE", "dictionary_attack.bin"),
     "evict-control": (b"ECORACLE", "evict_control.bin"),

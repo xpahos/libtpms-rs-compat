@@ -1,7 +1,7 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
     TPM_RC_CURVE, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY, TPM_RC_KEY_SIZE, TPM_RC_NO_RESULT,
-    TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
+    TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_SYMMETRIC, TPM_RC_VALUE,
 };
 
 use super::crypto::{
@@ -86,14 +86,52 @@ pub(super) fn persistent_hierarchy_is_enabled(runtime: &Tpm2Runtime, handle: u32
 }
 
 pub(super) fn find_empty_object_slot(runtime: &Tpm2Runtime) -> Option<(usize, u32)> {
+    empty_object_slots(runtime).next()
+}
+
+pub(super) fn empty_object_slots(runtime: &Tpm2Runtime) -> impl Iterator<Item = (usize, u32)> + '_ {
     runtime
         .live
         .objects
         .iter()
         .enumerate()
         .take(MAX_LOADED_OBJECTS)
-        .find(|(_, object)| object.attributes & ATTR_OCCUPIED == 0)
+        .filter(|(_, object)| object.attributes & ATTR_OCCUPIED == 0)
         .map(|(index, _)| (index, TRANSIENT_FIRST + index as u32))
+}
+
+pub(super) fn resolve_any_object<'a>(
+    runtime: &'a Tpm2Runtime,
+    handle: u32,
+) -> Option<&'a OwnedAnyObject> {
+    if is_transient_object_handle(handle) {
+        let slot = occupied_object_slot(runtime, handle)?;
+        return runtime.live.objects.get(slot);
+    }
+    if is_persistent_object_handle(handle) {
+        let entry = persistent_object_entry(runtime, handle)?;
+        match runtime.state.as_ref()?.user_nvram.entries.get(entry)? {
+            super::persistent::OwnedUserNvramEntry::Persistent { object, .. } => {
+                return Some(object);
+            }
+            super::persistent::OwnedUserNvramEntry::NvIndex { .. } => return None,
+        }
+    }
+    None
+}
+
+pub(super) fn object_auth_value<'a>(runtime: &'a Tpm2Runtime, handle: u32) -> Option<&'a [u8]> {
+    match &resolve_any_object(runtime, handle)?.body {
+        OwnedAnyObjectBody::Object(body) => Some(body.sensitive.auth_value.as_bytes()),
+        _ => None,
+    }
+}
+
+pub(super) fn object_public_attributes(runtime: &Tpm2Runtime, handle: u32) -> Option<u32> {
+    match &resolve_any_object(runtime, handle)?.body {
+        OwnedAnyObjectBody::Object(body) => Some(body.public.object_attributes),
+        _ => None,
+    }
 }
 
 pub(super) struct CreatedObject {
@@ -281,13 +319,35 @@ pub(super) fn compute_qualified_name(
     name_alg: u16,
     name: &[u8],
 ) -> Result<Vec<u8>, TpmResult> {
-    let parent_name = parent_handle.to_be_bytes();
+    compute_qualified_name_from(&parent_handle.to_be_bytes(), name_alg, name)
+}
+
+pub(super) fn compute_qualified_name_from(
+    parent_name: &[u8],
+    name_alg: u16,
+    name: &[u8],
+) -> Result<Vec<u8>, TpmResult> {
     let mut hasher = Hasher::new(name_alg).ok_or(TPM_RC_HASH)?;
-    hasher.update(&parent_name);
+    hasher.update(parent_name);
     hasher.update(name);
     let mut qualified = name_alg.to_be_bytes().to_vec();
     qualified.extend_from_slice(&hasher.finalize());
     Ok(qualified)
+}
+
+fn parent_kind_attributes(public: &OwnedTpmtPublic) -> u32 {
+    if public.object_attributes & TPMA_OBJECT_RESTRICTED != 0
+        && public.object_attributes & TPMA_OBJECT_DECRYPT != 0
+        && public.name_alg != TPM_ALG_NULL
+    {
+        if public.object_type == TPM_ALG_KEYEDHASH {
+            ATTR_DERIVATION
+        } else {
+            ATTR_IS_PARENT
+        }
+    } else {
+        0
+    }
 }
 
 pub(super) fn loaded_object_attributes(public: &OwnedTpmtPublic, hierarchy: u32) -> u32 {
@@ -301,17 +361,56 @@ pub(super) fn loaded_object_attributes(public: &OwnedTpmtPublic, hierarchy: u32)
         TPM_RH_PLATFORM => attributes |= ATTR_PRIMARY | ATTR_PPS_HIERARCHY,
         _ => attributes |= ATTR_TEMPORARY,
     }
-    if public.object_attributes & TPMA_OBJECT_RESTRICTED != 0
-        && public.object_attributes & TPMA_OBJECT_DECRYPT != 0
-        && public.name_alg != TPM_ALG_NULL
+    attributes | parent_kind_attributes(public)
+}
+
+pub(super) struct ParentSnapshot {
+    pub(super) slot_attributes: u32,
+    pub(super) hierarchy: u32,
+    pub(super) qualified_name: Vec<u8>,
+}
+
+pub(super) fn store_loaded_child_object(
+    runtime: &mut Tpm2Runtime,
+    slot: usize,
+    parent: &ParentSnapshot,
+    seed_compat_level: u8,
+    created: CreatedObject,
+) -> Result<(), TpmResult> {
+    let qualified_name = compute_qualified_name_from(
+        &parent.qualified_name,
+        created.public.name_alg,
+        &created.name,
+    )?;
+    let mut attributes = ATTR_OCCUPIED;
+    if created.public.object_attributes & TPMA_OBJECT_ST_CLEAR != 0
+        || parent.slot_attributes & ATTR_ST_CLEAR != 0
     {
-        if public.object_type == TPM_ALG_KEYEDHASH {
-            attributes |= ATTR_DERIVATION;
-        } else {
-            attributes |= ATTR_IS_PARENT;
-        }
+        attributes |= ATTR_ST_CLEAR;
     }
-    attributes
+    attributes |= parent.slot_attributes
+        & (ATTR_EPS_HIERARCHY | ATTR_SPS_HIERARCHY | ATTR_PPS_HIERARCHY | ATTR_TEMPORARY);
+    attributes |= parent_kind_attributes(&created.public);
+    if created.private_exponent.is_some() {
+        attributes |= ATTR_PRIVATE_EXP;
+    }
+    let hierarchy = parent.hierarchy;
+    let slot_entry = runtime.live.objects.get_mut(slot).ok_or(TPM_RC_FAILURE)?;
+    *slot_entry = OwnedAnyObject {
+        attributes,
+        body: OwnedAnyObjectBody::Object(Box::new(OwnedObjectBody {
+            section_version: CURRENT_OBJECT_VERSION,
+            public: created.public,
+            sensitive: created.sensitive,
+            private_exponent: created.private_exponent,
+            qualified_name,
+            evict_handle: 0,
+            name: created.name,
+            seed_compat_level,
+            hierarchy: Some(hierarchy),
+        })),
+    };
+    Ok(())
 }
 
 pub(super) fn store_created_object(
@@ -342,6 +441,96 @@ pub(super) fn store_created_object(
         })),
     };
     Ok(())
+}
+
+const STORAGE_KEY_LABEL: &[u8] = b"STORAGE\0";
+const INTEGRITY_KEY_LABEL: &[u8] = b"INTEGRITY\0";
+
+fn parent_storage_symmetric(parent_public: &OwnedTpmtPublic) -> Result<(u16, u16), TpmResult> {
+    let symmetric = match &parent_public.parameters {
+        PublicParms::Rsa { symmetric, .. } | PublicParms::Ecc { symmetric, .. } => symmetric,
+        PublicParms::SymCipher(sym) => sym,
+        PublicParms::KeyedHash(_) => return Err(TPM_RC_FAILURE),
+    };
+    Ok((symmetric.algorithm, symmetric.key_bits.unwrap_or(0)))
+}
+
+fn marshal_sensitive(sensitive: &OwnedTpmtSensitive, name_alg: u16) -> Result<Vec<u8>, TpmResult> {
+    let digest = digest_size(name_alg).ok_or(TPM_RC_FAILURE)?;
+    let mut auth_value = sensitive.auth_value.as_bytes().to_vec();
+    if auth_value.len() < digest {
+        auth_value.resize(digest, 0);
+    }
+    let mut writer = super::marshal::BlobWriter::new();
+    writer.write_u16(sensitive.sensitive_type);
+    writer
+        .write_tpm2b(&auth_value)
+        .map_err(|_| TPM_RC_FAILURE)?;
+    writer
+        .write_tpm2b(sensitive.seed_value.as_bytes())
+        .map_err(|_| TPM_RC_FAILURE)?;
+    writer
+        .write_tpm2b(
+            sensitive
+                .sensitive
+                .as_ref()
+                .map_or(&[][..], |secret| secret.as_bytes()),
+        )
+        .map_err(|_| TPM_RC_FAILURE)?;
+    let body = writer.into_bytes();
+    let mut out = (body.len() as u16).to_be_bytes().to_vec();
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+pub(super) fn sensitive_to_private(
+    sensitive: &OwnedTpmtSensitive,
+    name: &[u8],
+    parent_public: &OwnedTpmtPublic,
+    parent_seed_value: &[u8],
+    name_alg: u16,
+    rand: &mut SeededRand,
+) -> Result<Vec<u8>, TpmResult> {
+    let hash_alg = parent_public.name_alg;
+    let integrity_len = digest_size(hash_alg).ok_or(TPM_RC_FAILURE)?;
+    let (sym_alg, key_bits) = parent_storage_symmetric(parent_public)?;
+    let block_size = super::crypto::sym_block_size(sym_alg).ok_or(TPM_RC_SYMMETRIC)?;
+    let iv = rand.random_bytes(block_size)?;
+
+    let mut encrypted = marshal_sensitive(sensitive, name_alg)?;
+    let sym_key = super::crypto::kdfa(
+        hash_alg,
+        parent_seed_value,
+        STORAGE_KEY_LABEL,
+        name,
+        &[],
+        u32::from(key_bits),
+    )
+    .ok_or(TPM_RC_FAILURE)?;
+    super::crypto::sym_cfb_encrypt(sym_alg, &sym_key, &iv, &mut encrypted)?;
+
+    let hmac_key = super::crypto::kdfa(
+        hash_alg,
+        parent_seed_value,
+        INTEGRITY_KEY_LABEL,
+        &[],
+        &[],
+        (integrity_len * 8) as u32,
+    )
+    .ok_or(TPM_RC_FAILURE)?;
+    let mut hmac = HmacState::new(hash_alg, &hmac_key).ok_or(TPM_RC_FAILURE)?;
+    hmac.update(&(iv.len() as u16).to_be_bytes());
+    hmac.update(&iv);
+    hmac.update(&encrypted);
+    hmac.update(name);
+    let integrity = hmac.finalize();
+
+    let mut out = (integrity.len() as u16).to_be_bytes().to_vec();
+    out.extend_from_slice(&integrity);
+    out.extend_from_slice(&(iv.len() as u16).to_be_bytes());
+    out.extend_from_slice(&iv);
+    out.extend_from_slice(&encrypted);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -833,5 +1022,101 @@ mod tests {
         assert_eq!(hash_block_size(TPM_ALG_SHA384), Some(128));
         assert_eq!(hash_block_size(TPM_ALG_SHA512), Some(128));
         assert_eq!(hash_block_size(TPM_ALG_NULL), None);
+    }
+
+    mod private_wrap {
+        use super::*;
+        use crate::library::tpm2::public::TPM_ALG_TDES as ALG_TDES;
+
+        fn parent(sym_algorithm: u16) -> OwnedTpmtPublic {
+            let mut tail = Vec::new();
+            tail.extend_from_slice(&sym_algorithm.to_be_bytes());
+            tail.extend_from_slice(&128u16.to_be_bytes());
+            tail.extend_from_slice(&TPM_ALG_CFB.to_be_bytes());
+            tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
+            tail.extend_from_slice(&2048u16.to_be_bytes());
+            tail.extend_from_slice(&0u32.to_be_bytes());
+            tail.extend_from_slice(&0u16.to_be_bytes());
+            template(
+                TPM_ALG_RSA,
+                TPMA_OBJECT_FIXED_TPM
+                    | TPMA_OBJECT_FIXED_PARENT
+                    | TPMA_OBJECT_SENSITIVE_DATA_ORIGIN
+                    | TPMA_OBJECT_USER_WITH_AUTH
+                    | TPMA_OBJECT_RESTRICTED
+                    | TPMA_OBJECT_DECRYPT,
+                &tail,
+            )
+        }
+
+        fn child_sensitive() -> OwnedTpmtSensitive {
+            OwnedTpmtSensitive {
+                sensitive_type: TPM_ALG_SYMCIPHER,
+                auth_value: OwnedSecret::from_vec(vec![0u8; 32]),
+                seed_value: OwnedSecret::from_vec(vec![0x44; 32]),
+                sensitive: Some(OwnedSecret::from_vec(vec![0x55; 16])),
+            }
+        }
+
+        fn wrap(sym_algorithm: u16, name: &[u8], seed: &[u8], rand_label: &[u8]) -> Vec<u8> {
+            sensitive_to_private(
+                &child_sensitive(),
+                name,
+                &parent(sym_algorithm),
+                seed,
+                TPM_ALG_SHA256,
+                &mut rand(rand_label),
+            )
+            .expect("the wrap succeeds")
+        }
+
+        const NAME: [u8; 34] = [0x11; 34];
+        const SEED: [u8; 32] = [0x22; 32];
+
+        #[test]
+        fn the_iv_length_follows_the_parent_block_size() {
+            use crate::library::tpm2::public::TPM_ALG_CAMELLIA as ALG_CAMELLIA;
+            for (algorithm, iv_len) in [(TPM_ALG_AES, 16u16), (ALG_TDES, 8), (ALG_CAMELLIA, 16)] {
+                let blob = wrap(algorithm, &NAME, &SEED, b"iv");
+                let declared = u16::from_be_bytes(blob[34..36].try_into().unwrap());
+                assert_eq!(declared, iv_len, "algorithm {algorithm:#06x}");
+            }
+        }
+
+        #[test]
+        fn the_child_name_and_parent_seed_bind_the_wrap() {
+            let baseline = wrap(TPM_ALG_AES, &NAME, &SEED, b"bind");
+            assert_eq!(baseline, wrap(TPM_ALG_AES, &NAME, &SEED, b"bind"));
+            assert_ne!(baseline, wrap(TPM_ALG_AES, &[0x12; 34], &SEED, b"bind"));
+            assert_ne!(baseline, wrap(TPM_ALG_AES, &NAME, &[0x23; 32], b"bind"));
+            assert_ne!(baseline, wrap(ALG_TDES, &NAME, &SEED, b"bind"));
+        }
+
+        #[test]
+        fn a_keyed_hash_parent_cannot_wrap() {
+            let mut scheme_tail = Vec::new();
+            scheme_tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
+            scheme_tail.extend_from_slice(&0u16.to_be_bytes());
+            let keyedhash = template(
+                TPM_ALG_KEYEDHASH,
+                TPMA_OBJECT_FIXED_TPM
+                    | TPMA_OBJECT_FIXED_PARENT
+                    | TPMA_OBJECT_USER_WITH_AUTH
+                    | TPMA_OBJECT_SIGN
+                    | TPMA_OBJECT_SENSITIVE_DATA_ORIGIN,
+                &scheme_tail,
+            );
+            assert_eq!(
+                sensitive_to_private(
+                    &child_sensitive(),
+                    &NAME,
+                    &keyedhash,
+                    &SEED,
+                    TPM_ALG_SHA256,
+                    &mut rand(b"kh"),
+                ),
+                Err(TPM_RC_FAILURE)
+            );
+        }
     }
 }

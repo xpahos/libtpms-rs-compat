@@ -48,6 +48,19 @@ fn restore_live_drbg(runtime: &mut Tpm2Runtime) -> Result<(Drbg, u32), TpmResult
     }
 }
 
+pub(super) fn take_live_drbg(runtime: &mut Tpm2Runtime) -> Result<Drbg, TpmResult> {
+    restore_live_drbg(runtime).map(|(drbg, _)| drbg)
+}
+
+pub(super) fn store_live_drbg(runtime: &mut Tpm2Runtime, drbg: &Drbg) {
+    runtime.live.orderly.drbg_state = OwnedDrbgState {
+        reseed_counter: drbg.reseed_counter(),
+        drbg_magic: DRBG_MAGIC,
+        seed: OwnedSecret::copy_of(drbg.seed()),
+        last_value: drbg.last_value(),
+    };
+}
+
 pub(super) fn generate_random(
     runtime: &mut Tpm2Runtime,
     length: usize,

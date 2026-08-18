@@ -57,6 +57,8 @@ This profile requires at least libtpms v0.10.",
 };
 
 pub(in crate::library::tpm2) const ATTRIBUTE_DRBG_CONTINUOUS_TEST: &[u8] = b"drbg-continous-test";
+pub(in crate::library::tpm2) const ATTRIBUTE_NO_ECC_KEY_DERIVATION: &[u8] =
+    b"no-ecc-key-derivation";
 const ATTRIBUTE_NO_SHA1_SIGNING: &[u8] = b"no-sha1-signing";
 const ATTRIBUTE_NO_SHA1_HMAC_CREATION: &[u8] = b"no-sha1-hmac-creation";
 const ATTRIBUTE_NO_SHA1_HMAC: &[u8] = b"no-sha1-hmac";
@@ -72,7 +74,7 @@ const ATTRIBUTES: [(&[u8], u32); 10] = [
     (b"fips-host", 7),
     (ATTRIBUTE_DRBG_CONTINUOUS_TEST, 7),
     (b"pct", 7),
-    (b"no-ecc-key-derivation", 7),
+    (ATTRIBUTE_NO_ECC_KEY_DERIVATION, 7),
 ];
 
 struct KeySize {

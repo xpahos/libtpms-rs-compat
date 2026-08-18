@@ -1,18 +1,99 @@
 use crate::ffi_types::TpmResult;
+use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NO_RESULT};
 
 use super::bignum::BigUint;
 use super::drbg::Drbg;
+use super::entropy::EntropySource;
+use super::hmac::HmacState;
 
 pub(in crate::library::tpm2) const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
 pub(in crate::library::tpm2) const SEED_COMPAT_LEVEL_RSA_PRIME_ADJUST_FIX: u8 = 1;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(in crate::library::tpm2) const SEED_COMPAT_LEVEL_LAST: u8 =
     SEED_COMPAT_LEVEL_RSA_PRIME_ADJUST_FIX;
 
 const CTR_DRBG_MAX_BYTES_PER_REQUEST: usize = 1 << 16;
 
+pub(in crate::library::tpm2) struct KdfState {
+    hash_alg: u16,
+    key: Vec<u8>,
+    label: Vec<u8>,
+    context: Vec<u8>,
+    limit: u32,
+    digest_size: usize,
+    counter: u32,
+    residual: Vec<u8>,
+}
+
+impl KdfState {
+    fn new(
+        hash_alg: u16,
+        key: &[u8],
+        label: &[u8],
+        context: &[u8],
+        limit: u32,
+    ) -> Result<Self, TpmResult> {
+        let digest_size = super::hash::COMPILED_HASHES
+            .iter()
+            .find(|(algorithm, _)| *algorithm == hash_alg)
+            .map(|(_, size)| *size)
+            .ok_or(TPM_RC_FAILURE)?;
+        Ok(Self {
+            hash_alg,
+            key: key.to_vec(),
+            label: label.to_vec(),
+            context: context.to_vec(),
+            limit,
+            digest_size,
+            counter: 0,
+            residual: Vec::new(),
+        })
+    }
+
+    fn next_block(&mut self) -> Result<Vec<u8>, TpmResult> {
+        self.counter = self.counter.checked_add(1).ok_or(TPM_RC_NO_RESULT)?;
+        let mut hmac = HmacState::new(self.hash_alg, &self.key).ok_or(TPM_RC_FAILURE)?;
+        hmac.update(&self.counter.to_be_bytes());
+        hmac.update(&self.label);
+        if self.label.last() != Some(&0) {
+            hmac.update(&[0]);
+        }
+        hmac.update(&self.context);
+        hmac.update(&self.limit.to_be_bytes());
+        Ok(hmac.finalize())
+    }
+
+    fn generate(&mut self, out: &mut [u8]) -> Result<(), TpmResult> {
+        let produced = u64::from(self.counter) * self.digest_size as u64;
+        if (produced + out.len() as u64) * 8 > u64::from(self.limit) {
+            return Err(TPM_RC_NO_RESULT);
+        }
+        let mut position = 0;
+        while position < out.len() {
+            if !self.residual.is_empty() {
+                let take = self.residual.len().min(out.len() - position);
+                out[position..position + take].copy_from_slice(&self.residual[..take]);
+                self.residual.drain(..take);
+                position += take;
+            } else if out.len() - position >= self.digest_size {
+                let block = self.next_block()?;
+                out[position..position + self.digest_size].copy_from_slice(&block);
+                position += self.digest_size;
+            } else {
+                self.residual = self.next_block()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+enum RandSource {
+    Drbg(Drbg),
+    Kdf(KdfState),
+    Live { drbg: Drbg, entropy: EntropySource },
+}
+
 pub(in crate::library::tpm2) struct SeededRand {
-    drbg: Drbg,
+    source: RandSource,
     seed_compat_level: u8,
 }
 
@@ -27,9 +108,37 @@ impl SeededRand {
     ) -> Result<Self, TpmResult> {
         let drbg = Drbg::instantiate_seeded(&[seed, purpose, name, additional], continuous_test)?;
         Ok(Self {
-            drbg,
+            source: RandSource::Drbg(drbg),
             seed_compat_level,
         })
+    }
+
+    pub(in crate::library::tpm2) fn instantiate_seeded_kdf(
+        hash_alg: u16,
+        key: &[u8],
+        label: &[u8],
+        context: &[u8],
+        limit: u32,
+        seed_compat_level: u8,
+    ) -> Result<Self, TpmResult> {
+        Ok(Self {
+            source: RandSource::Kdf(KdfState::new(hash_alg, key, label, context, limit)?),
+            seed_compat_level,
+        })
+    }
+
+    pub(in crate::library::tpm2) fn from_live_drbg(drbg: Drbg, entropy: EntropySource) -> Self {
+        Self {
+            source: RandSource::Live { drbg, entropy },
+            seed_compat_level: SEED_COMPAT_LEVEL_LAST,
+        }
+    }
+
+    pub(in crate::library::tpm2) fn into_live_drbg(self) -> Option<Drbg> {
+        match self.source {
+            RandSource::Live { drbg, .. } => Some(drbg),
+            _ => None,
+        }
     }
 
     pub(in crate::library::tpm2) fn seed_compat_level(&self) -> u8 {
@@ -40,14 +149,27 @@ impl SeededRand {
         &mut self,
         data: &[u8],
     ) -> Result<(), TpmResult> {
-        self.drbg.additional_data(data)
+        match &mut self.source {
+            RandSource::Drbg(drbg) | RandSource::Live { drbg, .. } => drbg.additional_data(data),
+            RandSource::Kdf(_) => Ok(()),
+        }
     }
 
     pub(in crate::library::tpm2) fn generate(&mut self, out: &mut [u8]) -> Result<(), TpmResult> {
         debug_assert!(out.len() <= CTR_DRBG_MAX_BYTES_PER_REQUEST);
         #[cfg(test)]
         super::work::count_generator_bytes(out.len());
-        self.drbg.generate(out)
+        match &mut self.source {
+            RandSource::Drbg(drbg) => drbg.generate(out),
+            RandSource::Kdf(kdf) => kdf.generate(out),
+            RandSource::Live { drbg, entropy } => {
+                if drbg.needs_reseed() {
+                    drbg.reseed_from_entropy(*entropy)
+                        .map_err(|_| TPM_RC_FAILURE)?;
+                }
+                drbg.generate(out)
+            }
+        }
     }
 
     pub(in crate::library::tpm2) fn random_bytes(

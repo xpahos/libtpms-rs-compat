@@ -10,8 +10,8 @@ use super::super::live::RestoredVolatile;
 use super::super::marshal::BlobReader;
 use super::super::nv::{index_is_accessible, is_nv_index_handle};
 use super::super::object_create::{
-    find_empty_object_slot, hierarchy_is_enabled, is_transient_object_handle, occupied_object_slot,
-    persistent_hierarchy_is_enabled, persistent_object_entry,
+    find_empty_object_slot, hierarchy_is_enabled, is_object_handle, is_transient_object_handle,
+    occupied_object_slot, persistent_hierarchy_is_enabled, persistent_object_entry,
 };
 use super::super::runtime::Tpm2Runtime;
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
@@ -126,6 +126,13 @@ fn check_load_status(
             HandleKind::Object => check_object_present(runtime, handle, index)?,
             HandleKind::ObjectAllowNull if handle != TPM_RH_NULL => {
                 check_object_present(runtime, handle, index)?;
+            }
+            HandleKind::Parent => {
+                if is_object_handle(handle) {
+                    check_object_present(runtime, handle, index)?;
+                } else if !hierarchy_is_enabled(runtime, handle) {
+                    return Err(TPM_RC_HIERARCHY + indexed);
+                }
             }
             HandleKind::NvIndex => index_is_accessible(runtime, handle).map_err(|code| {
                 if code == TPM_RC_HANDLE {

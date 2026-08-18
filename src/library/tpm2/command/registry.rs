@@ -4,6 +4,7 @@ use super::super::hierarchy::is_hierarchy_auth_handle;
 use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::change_eps;
+use super::create_loaded;
 use super::create_primary;
 use super::dictionary_attack_parameters;
 use super::dispatcher::CommandFrame;
@@ -63,6 +64,7 @@ pub(in crate::library::tpm2) const TPM_CC_HASH: u32 = 0x0000_017d;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 pub(in crate::library::tpm2) const TPM_CC_NV_CERTIFY: u32 = 0x0000_0184;
+pub(in crate::library::tpm2) const TPM_CC_CREATE_LOADED: u32 = 0x0000_0191;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
 use super::super::hierarchy::{TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM, is_hierarchy_handle};
@@ -112,6 +114,7 @@ pub(super) enum HandleKind {
     Provision,
     Object,
     ObjectAllowNull,
+    Parent,
     Pcr,
     PcrAllowNull,
     NvIndex,
@@ -128,6 +131,7 @@ impl HandleKind {
             Self::Provision => matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM),
             Self::Object => is_object_handle(handle),
             Self::ObjectAllowNull => is_object_handle(handle) || handle == TPM_RH_NULL,
+            Self::Parent => is_hierarchy_handle(handle) || is_object_handle(handle),
             Self::Pcr => (handle as usize) < IMPLEMENTATION_PCR,
             Self::PcrAllowNull => (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_NULL,
             Self::NvIndex => is_nv_index_handle(handle),
@@ -656,6 +660,20 @@ static COMMANDS: &[CommandDescriptor] = &[
         nv_access: NvAccess::Read,
         handler: nv_certify::execute,
     },
+    CommandDescriptor {
+        code: TPM_CC_CREATE_LOADED,
+        attributes: tpma_cc_with_response_handle(TPM_CC_CREATE_LOADED, false, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Parent,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: create_loaded::execute,
+    },
 ];
 
 pub(super) fn find(code: u32) -> Option<&'static CommandDescriptor> {
@@ -764,9 +782,12 @@ mod tests {
             "just below the first"
         );
         assert!(find(0xffff_ffff).is_none(), "above all entries");
-        assert!(find(TPM_CC_PCR_EXTEND + 1).is_none(), "just above the last");
+        assert!(
+            find(TPM_CC_CREATE_LOADED + 1).is_none(),
+            "just above the last"
+        );
         let registered: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
-        for code in 0x0000_011eu32..=0x0000_0185 {
+        for code in 0x0000_011eu32..=0x0000_0192 {
             assert_eq!(
                 find(code).is_some(),
                 registered.contains(&code),
@@ -812,7 +833,8 @@ mod tests {
                 TPM_CC_HASH,
                 TPM_CC_PCR_READ,
                 TPM_CC_PCR_EXTEND,
-                TPM_CC_NV_CERTIFY
+                TPM_CC_NV_CERTIFY,
+                TPM_CC_CREATE_LOADED
             ]
         );
     }
@@ -1259,7 +1281,7 @@ mod tests {
 
     #[test]
     fn physical_presence_applicability_matches_the_vendored_attribute_table() {
-        const PP_COMMANDS: [u32; 9] = [
+        const PP_COMMANDS: [u32; 10] = [
             TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
             TPM_CC_EVICT_CONTROL,
             TPM_CC_NV_UNDEFINE_SPACE,
@@ -1269,6 +1291,7 @@ mod tests {
             TPM_CC_PCR_ALLOCATE,
             TPM_CC_CREATE_PRIMARY,
             TPM_CC_NV_GLOBAL_WRITE_LOCK,
+            TPM_CC_CREATE_LOADED,
         ];
         for descriptor in implemented() {
             assert_eq!(

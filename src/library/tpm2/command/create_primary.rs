@@ -37,7 +37,7 @@ const MAX_OUTSIDE_INFO: usize = 2 + 64;
 
 const TPM_ST_CREATION: u16 = 0x8021;
 
-fn add_modifier(code: TpmResult, modifier: TpmResult) -> TpmResult {
+pub(super) fn add_modifier(code: TpmResult, modifier: TpmResult) -> TpmResult {
     if code & RC_FMT1 != 0 && code & RC_MODIFIER_MASK == 0 {
         code + modifier
     } else {
@@ -83,7 +83,7 @@ fn parse_parameters(
     })
 }
 
-fn parse_sized_sensitive_create(
+pub(super) fn parse_sized_sensitive_create(
     reader: &mut TemplateReader<'_>,
 ) -> Result<(Vec<u8>, Vec<u8>), TpmResult> {
     let declared = usize::from(reader.u16()?);
@@ -227,7 +227,7 @@ pub(super) fn execute(
     let (slot, object_handle) = find_empty_object_slot(runtime).ok_or(TPM_RC_OBJECT_MEMORY)?;
 
     let mut public = parsed.public;
-    create_checks(&public, parsed.sensitive_data.len())
+    create_checks(None, &public, parsed.sensitive_data.len())
         .map_err(|code| add_modifier(code, RC_IN_PUBLIC))?;
     let user_auth = adjusted_auth_value(&parsed.user_auth, public.name_alg)
         .map_err(|_| TPM_RC_SIZE + RC_IN_SENSITIVE)?;

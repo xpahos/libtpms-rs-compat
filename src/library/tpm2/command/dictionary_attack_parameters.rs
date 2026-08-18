@@ -180,6 +180,25 @@ mod tests {
     }
 
     #[test]
+    fn the_first_lockout_authorization_of_a_cycle_is_not_a_retry() {
+        let mut runtime = started_runtime();
+        assert!(!runtime.live.da_used, "the cycle starts before any DA use");
+        let response = dispatch_bytes(
+            &mut runtime,
+            &command(TPM_RH_LOCKOUT, &[], &parameters(9, 8, 7)),
+        );
+        assert_eq!(
+            response_code(&response),
+            RC_SUCCESS,
+            "lockoutAuth skips the first-use DA transition entirely"
+        );
+        assert!(
+            !runtime.live.da_used,
+            "the successful lockout authorization records no DA-used marker"
+        );
+    }
+
+    #[test]
     fn nv_unavailable_preserves_every_field_without_scheduling_a_commit() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;

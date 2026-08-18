@@ -5,15 +5,19 @@ use crate::library::constants::{
 
 use super::hierarchy::TPM_RH_LOCKOUT;
 use super::nv::{TPMA_NV_NO_DA, build_nv_image, is_nv_index_handle, resolve_index};
+use super::object_create::{is_object_handle, object_public_attributes};
 use super::orderly::{SU_DA_USED_VALUE, is_orderly};
 use super::runtime::Tpm2Runtime;
+use super::template::TPMA_OBJECT_NO_DA;
 
-// TODO: transient objects carry their own noDA attribute; extend this once
-// object handles become dispatchable authorization targets.
 pub(super) fn is_da_protected_handle(runtime: &Tpm2Runtime, handle: u32) -> bool {
     if is_nv_index_handle(handle) {
         return resolve_index(runtime, handle)
             .is_some_and(|resolved| resolved.attributes() & TPMA_NV_NO_DA == 0);
+    }
+    if is_object_handle(handle) {
+        return object_public_attributes(runtime, handle)
+            .is_some_and(|attributes| attributes & TPMA_OBJECT_NO_DA == 0);
     }
     handle == TPM_RH_LOCKOUT
 }
@@ -53,7 +57,7 @@ pub(super) fn check_locked_out(runtime: &mut Tpm2Runtime, handle: u32) -> Result
     Ok(())
 }
 
-fn record_da_used(runtime: &mut Tpm2Runtime) -> Result<(), TpmResult> {
+pub(super) fn record_da_used(runtime: &mut Tpm2Runtime) -> Result<(), TpmResult> {
     let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
     let backup = state.persistent.orderly_state;
     state.persistent.orderly_state = SU_DA_USED_VALUE;
@@ -244,6 +248,207 @@ mod tests {
             check_locked_out(&mut runtime, DA_INDEX),
             Ok(()),
             "the retried request follows normal authorization processing"
+        );
+    }
+
+    fn install_symcipher_object(runtime: &mut Tpm2Runtime, slot: usize, no_da: bool) {
+        use crate::library::tpm2::crypto::SeededRand;
+        use crate::library::tpm2::object_create::{
+            ObjectSecrets, PRIMARY_OBJECT_CREATION, create_object, store_created_object,
+        };
+        use crate::library::tpm2::persistent::{OwnedPublicId, OwnedTpmtPublic};
+        use crate::library::tpm2::public::{
+            PublicParms, SymDefObject, TPM_ALG_AES, TPM_ALG_CFB, TPM_ALG_SYMCIPHER,
+        };
+        use crate::library::tpm2::template::{
+            TPMA_OBJECT_DECRYPT, TPMA_OBJECT_NO_DA, TPMA_OBJECT_SENSITIVE_DATA_ORIGIN,
+            TPMA_OBJECT_SIGN, TPMA_OBJECT_USER_WITH_AUTH,
+        };
+
+        let mut public = OwnedTpmtPublic {
+            object_type: TPM_ALG_SYMCIPHER,
+            name_alg: 0x000b,
+            object_attributes: TPMA_OBJECT_SENSITIVE_DATA_ORIGIN
+                | TPMA_OBJECT_USER_WITH_AUTH
+                | TPMA_OBJECT_DECRYPT
+                | TPMA_OBJECT_SIGN
+                | if no_da { TPMA_OBJECT_NO_DA } else { 0 },
+            auth_policy: Vec::new(),
+            parameters: PublicParms::SymCipher(SymDefObject {
+                algorithm: TPM_ALG_AES,
+                key_bits: Some(128),
+                mode: Some(TPM_ALG_CFB),
+            }),
+            unique: OwnedPublicId::Sym(Vec::new()),
+        };
+        let mut rand = SeededRand::instantiate(
+            &[0x5c; 64],
+            PRIMARY_OBJECT_CREATION,
+            &[slot as u8, u8::from(no_da)],
+            &[],
+            1,
+            false,
+        )
+        .expect("a non-empty derivation input");
+        let created = create_object(
+            &mut public,
+            vec![0u8; 32],
+            &[],
+            false,
+            &ObjectSecrets {
+                sh_proof: &[0x11; 64],
+                eh_proof: &[0x22; 64],
+            },
+            &mut rand,
+        )
+        .expect("the fixture object generates");
+        store_created_object(runtime, slot, TPM_RH_OWNER, 1, created)
+            .expect("the fixture object stores");
+    }
+
+    fn persist_object(runtime: &mut Tpm2Runtime, slot: usize, handle: u32) {
+        use crate::library::tpm2::nv::persistent_object_image;
+        use crate::library::tpm2::persistent::{
+            OwnedAnyObjectBody, OwnedUserNvramEntry, user_nvram_required_capacity,
+        };
+
+        let mut object = runtime.live.objects[slot].clone();
+        let OwnedAnyObjectBody::Object(body) = &mut object.body else {
+            panic!("the fixture slot holds an object");
+        };
+        body.evict_handle = handle;
+        let state = runtime.state.as_mut().expect("state present");
+        let object_destination_size =
+            persistent_object_image(&object, state.profile.object_format())
+                .expect("the fixture object serializes")
+                .len() as u64;
+        let entry = OwnedUserNvramEntry::Persistent {
+            declared_entry_size: 0,
+            handle,
+            object,
+            object_destination_size,
+        };
+        state.user_nvram.required_capacity = user_nvram_required_capacity(
+            state
+                .user_nvram
+                .entries
+                .iter()
+                .chain(core::iter::once(&entry)),
+        )
+        .expect("the fixture entries fit");
+        state.user_nvram.entries.push(entry);
+    }
+
+    #[test]
+    fn real_object_da_classification_follows_the_noda_attribute() {
+        use crate::library::tpm2::object_create::resolve_any_object;
+
+        const PROTECTED_TRANSIENT: u32 = 0x8000_0000;
+        const NODA_TRANSIENT: u32 = 0x8000_0001;
+        const PROTECTED_PERSISTENT: u32 = 0x8100_0002;
+        const NODA_PERSISTENT: u32 = 0x8100_0003;
+
+        let mut runtime = manufactured_runtime();
+        install_symcipher_object(&mut runtime, 0, false);
+        install_symcipher_object(&mut runtime, 1, true);
+        persist_object(&mut runtime, 0, PROTECTED_PERSISTENT);
+        persist_object(&mut runtime, 1, NODA_PERSISTENT);
+
+        for handle in [
+            PROTECTED_TRANSIENT,
+            NODA_TRANSIENT,
+            PROTECTED_PERSISTENT,
+            NODA_PERSISTENT,
+        ] {
+            assert!(
+                resolve_any_object(&runtime, handle).is_some(),
+                "the fixture installed an object at {handle:#010x}"
+            );
+        }
+
+        assert!(is_da_protected_handle(&runtime, PROTECTED_TRANSIENT));
+        assert!(is_da_protected_handle(&runtime, PROTECTED_PERSISTENT));
+        assert!(
+            !is_da_protected_handle(&runtime, NODA_TRANSIENT),
+            "a loaded object with TPMA_OBJECT.noDA is exempt, so its \
+             authorization never reaches the first-use transition"
+        );
+        assert!(!is_da_protected_handle(&runtime, NODA_PERSISTENT));
+
+        assert!(
+            !is_da_protected_handle(&runtime, 0x8000_0002),
+            "an empty transient slot is not DA-protected"
+        );
+        assert!(
+            !is_da_protected_handle(&runtime, 0x8100_0099),
+            "an undefined persistent handle is not DA-protected"
+        );
+        assert!(!runtime.live.da_used, "classification records nothing");
+        assert_ne!(runtime.state().persistent.orderly_state, SU_DA_USED_VALUE);
+
+        assert_eq!(
+            check_locked_out(&mut runtime, PROTECTED_PERSISTENT),
+            Err(TPM_RC_RETRY),
+            "the first use of a real DA-protected persistent object retries"
+        );
+        assert!(runtime.live.da_used);
+        assert_eq!(runtime.state().persistent.orderly_state, SU_DA_USED_VALUE);
+        assert_eq!(
+            check_locked_out(&mut runtime, PROTECTED_PERSISTENT),
+            Ok(()),
+            "the retried authorization proceeds normally"
+        );
+        assert_eq!(
+            check_locked_out(&mut runtime, PROTECTED_TRANSIENT),
+            Ok(()),
+            "the transition is per cycle, not per entity"
+        );
+    }
+
+    #[test]
+    fn lockout_authorization_never_performs_the_first_use_transition() {
+        let mut runtime = manufactured_runtime();
+        let orderly_before = runtime.state().persistent.orderly_state;
+        let nv_before = runtime.nv_memory.clone();
+        assert!(!runtime.live.da_used);
+        assert_eq!(
+            check_locked_out(&mut runtime, TPM_RH_LOCKOUT),
+            Ok(()),
+            "a fresh cycle authorizes lockoutAuth without a retry"
+        );
+        assert!(
+            !runtime.live.da_used,
+            "lockout authorization records no DA-used marker"
+        );
+        assert_eq!(runtime.state().persistent.orderly_state, orderly_before);
+        assert_eq!(runtime.nv_memory, nv_before);
+        assert!(!runtime.nv_update_pending);
+
+        runtime
+            .state
+            .as_mut()
+            .unwrap()
+            .persistent
+            .lockout_auth_enabled = false;
+        assert_eq!(
+            check_locked_out(&mut runtime, TPM_RH_LOCKOUT),
+            Err(TPM_RC_LOCKOUT),
+            "lockoutAuthEnabled still gates the lockout hierarchy"
+        );
+        assert!(!runtime.live.da_used);
+    }
+
+    #[test]
+    fn recording_da_use_serializes_the_complete_transition() {
+        let mut runtime = manufactured_runtime();
+        let nv_before = runtime.nv_memory.clone();
+        record_da_used(&mut runtime).expect("the transition commits");
+        assert!(runtime.live.da_used);
+        assert_eq!(runtime.state().persistent.orderly_state, SU_DA_USED_VALUE);
+        assert!(runtime.nv_update_pending);
+        assert_ne!(
+            runtime.nv_memory, nv_before,
+            "the rebuilt NV image carries the DA-used marker"
         );
     }
 
