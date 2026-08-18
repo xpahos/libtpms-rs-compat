@@ -121,6 +121,7 @@ mod tests {
     #[test]
     fn a_password_session_is_refused_like_upstream() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         define(&mut runtime, &auth_read_write());
         assert_eq!(
             dispatch_bytes(
@@ -181,6 +182,7 @@ mod tests {
     #[test]
     fn the_new_secret_authorizes_the_index_afterwards() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         define(&mut runtime, &auth_read_write());
         assert_eq!(change_auth(&mut runtime, b"secret"), Ok(()));
 

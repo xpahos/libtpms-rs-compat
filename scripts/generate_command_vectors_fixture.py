@@ -4,17 +4,24 @@
 Each family owns one fixture under ``src/library/tpm2/testdata/oracles`` and one
 magic; the reader lives in ``src/library/tpm2/oracles``:
 
-    create-primary  CPORACLE  testdata/oracles/create_primary.bin
-    evict-control   ECORACLE  testdata/oracles/evict_control.bin
-    flush-context   FCORACLE  testdata/oracles/flush_context.bin
-    nv-commands     NVORACLE  testdata/oracles/nv_commands.bin
-    nv-certify      NVORACLE  testdata/oracles/nv_certify.bin
+    create-primary     CPORACLE  testdata/oracles/create_primary.bin
+    dictionary-attack  DAORACLE  testdata/oracles/dictionary_attack.bin
+    evict-control      ECORACLE  testdata/oracles/evict_control.bin
+    flush-context      FCORACLE  testdata/oracles/flush_context.bin
+    nv-commands        NVORACLE  testdata/oracles/nv_commands.bin
+    nv-certify         NVORACLE  testdata/oracles/nv_certify.bin
 
 The record format is the 8-byte magic, a big-endian u16 format version, a
 big-endian u16 record count, then one record per vector as a u8 name length, the
 upper-case ASCII name, a big-endian u32 payload length and the payload.  Records
 are sorted by name, so regenerating a fixture from the same input always yields
 byte-identical output.
+
+A record's type follows from its name: ``PERMALL_*`` records hold a captured
+permanent-state blob, ``VOLATILE_*`` records hold a captured volatile-state
+blob (each paired with the ``PERMALL_*`` record of the same boundary), and
+every other record holds a TPM response packet.  The Rust readers validate
+each record against its declared type.
 
 Regenerate a fixture from a ``NAME <hex>`` listing:
 
@@ -51,6 +58,7 @@ TESTDATA = (
 
 FAMILIES = {
     "create-primary": (b"CPORACLE", "create_primary.bin"),
+    "dictionary-attack": (b"DAORACLE", "dictionary_attack.bin"),
     "evict-control": (b"ECORACLE", "evict_control.bin"),
     "flush-context": (b"FCORACLE", "flush_context.bin"),
     "nv-commands": (b"NVORACLE", "nv_commands.bin"),

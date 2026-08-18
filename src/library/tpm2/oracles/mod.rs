@@ -1,4 +1,5 @@
 pub(in crate::library::tpm2) mod create_primary;
+pub(in crate::library::tpm2) mod dictionary_attack;
 pub(in crate::library::tpm2) mod evict_control;
 pub(in crate::library::tpm2) mod flush_context;
 pub(in crate::library::tpm2) mod nv;

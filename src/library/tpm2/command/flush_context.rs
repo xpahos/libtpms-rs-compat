@@ -278,8 +278,6 @@ mod tests {
         u32::from_be_bytes(response[6..10].try_into().expect("a response code"))
     }
 
-    const TIME_EPOCH_BYTE: usize = 1742;
-
     #[track_caller]
     fn assert_matches_oracle(runtime: &Tpm2Runtime, expected: &str, label: &str) {
         let actual = persistent_all_store(runtime.state()).expect("the state serializes");
@@ -290,8 +288,8 @@ mod tests {
             .collect();
         assert_eq!(
             divergence,
-            [TIME_EPOCH_BYTE],
-            "{label} diverges from the oracle beyond the known time-epoch gap"
+            Vec::<usize>::new(),
+            "{label} diverges from the oracle"
         );
     }
 

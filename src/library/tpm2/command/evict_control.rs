@@ -269,6 +269,22 @@ fn remove_persistent(runtime: &mut Tpm2Runtime, entry: usize) -> Result<(), TpmR
 
 #[cfg(test)]
 mod tests {
+    fn process(
+        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
+        locality: u8,
+        command: &crate::library::CommandInput,
+        commit_nv: impl FnOnce(
+            &crate::library::tpm2::runtime::Tpm2Runtime,
+        ) -> Result<(), crate::ffi_types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+        crate::library::tpm2::process(
+            runtime,
+            locality,
+            command,
+            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
+            commit_nv,
+        )
+    }
     use super::super::dispatcher::dispatch;
     use super::super::header::{parse_command, serialize_response};
     use super::super::registry::{TPM_CC_EVICT_CONTROL, find};
@@ -288,7 +304,6 @@ mod tests {
     use crate::library::tpm2::persistent::{
         OwnedNvIndex, OwnedSecret, persistent_all_store, user_nvram_required_capacity,
     };
-    use crate::library::tpm2::process;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::restore_permanent_blob_for_test;
     use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -1755,17 +1770,19 @@ mod tests {
     }
 
     #[test]
-    fn the_oracle_permanent_state_survives_startup_unchanged_apart_from_the_time_epoch() {
+    fn the_oracle_permanent_state_survives_startup_unchanged() {
         let runtime = restore_permanent_blob_for_test(vector("PERMALL")).expect("restores");
         assert_eq!(
             persistent_all_store(runtime.state()).expect("the state serializes"),
             vector("PERMALL"),
             "the manufactured blob round-trips byte for byte"
         );
-        assert_eq!(startup_divergence(), [TIME_EPOCH_BYTE]);
+        assert_eq!(
+            startup_divergence(),
+            Vec::<usize>::new(),
+            "the startup time-epoch increment closes the last known gap"
+        );
     }
-
-    const TIME_EPOCH_BYTE: usize = 1742;
 
     fn divergence(actual: &[u8], expected: &[u8]) -> Vec<usize> {
         assert_eq!(actual.len(), expected.len(), "blob length");
@@ -1787,8 +1804,8 @@ mod tests {
         let actual = persistent_all_store(runtime.state()).expect("the state serializes");
         assert_eq!(
             divergence(&actual, vector(expected)),
-            [TIME_EPOCH_BYTE],
-            "{label} diverges from the oracle beyond the known time-epoch gap"
+            Vec::<usize>::new(),
+            "{label} diverges from the oracle"
         );
     }
 

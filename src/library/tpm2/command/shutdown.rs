@@ -100,6 +100,8 @@ fn perform_shutdown(runtime: &mut Tpm2Runtime, shutdown_type: u16) -> Result<(),
         TPM_SU_CLEAR
     };
 
+    runtime.live.orderly.time = runtime.timer.time_ms;
+
     // TODO: Support runtimes without decoded state after the NVChip fallback
     // is implemented.
     let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;

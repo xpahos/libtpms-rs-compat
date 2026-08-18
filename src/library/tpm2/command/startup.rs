@@ -92,6 +92,7 @@ struct PreparedStartup {
     total_reset_count: u64,
     failed_tries: u32,
     lockout_auth_enabled: bool,
+    time_epoch: Option<u32>,
     live_pcrs: Vec<OwnedPcr>,
     oldest_saved_session: u32,
     live_orderly_ram: OwnedIndexOrderlyRam,
@@ -269,6 +270,11 @@ fn prepare_startup(runtime: &Tpm2Runtime, startup_type: u16) -> Result<PreparedS
         failed_tries += u32::from(da_used);
     }
 
+    let time_epoch = runtime
+        .timer
+        .timer_stopped
+        .then(|| state.persistent.time_epoch.wrapping_add(1));
+
     let clock_safe = if is_orderly(prev_orderly) {
         runtime.live.orderly.clock_safe
     } else {
@@ -310,6 +316,7 @@ fn prepare_startup(runtime: &Tpm2Runtime, startup_type: u16) -> Result<PreparedS
         total_reset_count,
         failed_tries,
         lockout_auth_enabled,
+        time_epoch,
         live_pcrs,
         oldest_saved_session,
         live_orderly_ram,
@@ -326,12 +333,16 @@ fn commit_startup(runtime: &mut Tpm2Runtime, prepared: PreparedStartup) -> Resul
     let backup_total_reset_count = state.persistent.total_reset_count;
     let backup_failed_tries = state.persistent.failed_tries;
     let backup_lockout_auth_enabled = state.persistent.lockout_auth_enabled;
+    let backup_time_epoch = state.persistent.time_epoch;
 
     state.persistent.orderly_state = SU_NONE_VALUE;
     state.persistent.reset_count = prepared.reset_count;
     state.persistent.total_reset_count = prepared.total_reset_count;
     state.persistent.failed_tries = prepared.failed_tries;
     state.persistent.lockout_auth_enabled = prepared.lockout_auth_enabled;
+    if let Some(time_epoch) = prepared.time_epoch {
+        state.persistent.time_epoch = time_epoch;
+    }
     let mut backup_nv_attributes = Vec::with_capacity(prepared.user_nvram_attributes.len());
     for &(index, attributes) in &prepared.user_nvram_attributes {
         let OwnedUserNvramEntry::NvIndex {
@@ -352,6 +363,7 @@ fn commit_startup(runtime: &mut Tpm2Runtime, prepared: PreparedStartup) -> Resul
             state.persistent.total_reset_count = backup_total_reset_count;
             state.persistent.failed_tries = backup_failed_tries;
             state.persistent.lockout_auth_enabled = backup_lockout_auth_enabled;
+            state.persistent.time_epoch = backup_time_epoch;
             for (index, attributes) in backup_nv_attributes {
                 if let OwnedUserNvramEntry::NvIndex {
                     index: nv_index, ..
@@ -368,7 +380,21 @@ fn commit_startup(runtime: &mut Tpm2Runtime, prepared: PreparedStartup) -> Resul
     let null_seed_compat_level = prepared.new_reset.null_seed_compat_level;
     runtime.nv_memory = nv_memory;
 
+    if prepared.time_epoch.is_some() {
+        runtime.timer.timer_stopped = false;
+    }
+    let timer_was_reset = runtime.timer.consume_reset();
     let live = &mut runtime.live;
+    if timer_was_reset {
+        if is_orderly(prepared.prev_orderly) {
+            live.orderly.self_heal_timer =
+                live.orderly.self_heal_timer.wrapping_sub(live.orderly.time);
+            live.orderly.lockout_timer = live.orderly.lockout_timer.wrapping_sub(live.orderly.time);
+        } else {
+            live.orderly.self_heal_timer = 0;
+            live.orderly.lockout_timer = 0;
+        }
+    }
     live.orderly.drbg_state = prepared.new_drbg;
     live.orderly.clock_safe = prepared.clock_safe;
     live.state_reset = Some(prepared.new_reset);
@@ -515,6 +541,22 @@ fn context_id_oldest(
 
 #[cfg(test)]
 mod tests {
+    fn process(
+        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
+        locality: u8,
+        command: &crate::library::CommandInput,
+        commit_nv: impl FnOnce(
+            &crate::library::tpm2::runtime::Tpm2Runtime,
+        ) -> Result<(), crate::ffi_types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+        crate::library::tpm2::process(
+            runtime,
+            locality,
+            command,
+            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
+            commit_nv,
+        )
+    }
     use super::super::dispatcher::dispatch;
     use super::super::header::{parse_command, serialize_response};
     use super::super::registry::TPM_CC_STARTUP;
@@ -537,7 +579,7 @@ mod tests {
     use crate::library::tpm2::runtime::{commit_manufactured_state, commit_restored_state};
     use crate::library::tpm2::state::{PcrSaveFixture, StateClearFixture, StateResetFixture};
     use crate::library::tpm2::{
-        audit, compile_constants, lockout, parse_persistent_all_payload, pp_list, process,
+        audit, compile_constants, lockout, parse_persistent_all_payload, pp_list,
     };
 
     const SUCCESS_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
@@ -1948,15 +1990,11 @@ mod tests {
                 "VolatileLoad() restored the blob's gr"
             );
 
-            let mut stored: Vec<Vec<u8>> = Vec::new();
-            let command = startup_command(TPM_SU_STATE);
-            let input = CommandInput::new(command.len() as u32, command);
-            let response = process(&mut runtime, 0, &input, |runtime| {
-                stored.push(persistent_all_store(runtime.state.as_ref().unwrap()).unwrap());
-                Ok(())
-            })
-            .unwrap();
+            let response = dispatch_bytes(&mut runtime, &startup_command(TPM_SU_STATE));
             assert_eq!(response, SUCCESS_RESPONSE);
+            assert!(runtime.nv_update_pending, "Startup schedules one NV commit");
+            runtime.nv_update_pending = false;
+            let stored = vec![persistent_all_store(runtime.state.as_ref().unwrap()).unwrap()];
 
             assert_eq!(
                 runtime.live.orderly.drbg_state.seed.expose(),

@@ -39,6 +39,22 @@ fn parse_bytes_requested(parameters: &[u8]) -> Result<u16, TpmResult> {
 
 #[cfg(test)]
 mod tests {
+    fn process(
+        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
+        locality: u8,
+        command: &crate::library::CommandInput,
+        commit_nv: impl FnOnce(
+            &crate::library::tpm2::runtime::Tpm2Runtime,
+        ) -> Result<(), crate::ffi_types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+        crate::library::tpm2::process(
+            runtime,
+            locality,
+            command,
+            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
+            commit_nv,
+        )
+    }
     use super::super::dispatcher::dispatch;
     use super::super::header::{parse_command, serialize_response};
     use super::super::registry::TPM_CC_GET_RANDOM;
@@ -51,7 +67,6 @@ mod tests {
     };
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::persistent::{OwnedDrbgState, OwnedSecret};
-    use crate::library::tpm2::process;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
 

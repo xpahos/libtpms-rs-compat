@@ -265,8 +265,6 @@ pub(super) mod harness {
         }
     }
 
-    const TIME_EPOCH_BYTE: usize = 1742;
-
     fn divergence(actual: &[u8], expected: &[u8]) -> Vec<usize> {
         assert_eq!(actual.len(), expected.len(), "blob length");
         (0..actual.len())
@@ -291,8 +289,7 @@ pub(super) mod harness {
         host_supplied: &[usize],
     ) {
         let actual = persistent_all_store(runtime.state()).expect("the state serializes");
-        let mut allowed = vec![TIME_EPOCH_BYTE];
-        allowed.extend_from_slice(host_supplied);
+        let mut allowed = host_supplied.to_vec();
         allowed.sort_unstable();
         assert_eq!(
             divergence(&actual, expected),

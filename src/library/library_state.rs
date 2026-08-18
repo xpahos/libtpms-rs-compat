@@ -693,9 +693,11 @@ impl Tpm2ProcessContext<'_> {
         let mut state = self.library.lock_state();
         let host_nvram = tpm2::HostNvram::new(state.callbacks);
         match state.tpm2_runtime.as_deref_mut() {
-            Some(runtime) => tpm2::process(runtime, self.locality, command, |runtime| {
-                tpm2::host_nv_commit(&host_nvram, runtime)
-            }),
+            Some(runtime) => {
+                tpm2::process(runtime, self.locality, command, &tpm2::OsClock, |runtime| {
+                    tpm2::host_nv_commit(&host_nvram, runtime)
+                })
+            }
             None => Ok(Vec::new()),
         }
     }

@@ -7,6 +7,8 @@ pub(super) use attach::{
     OwnedPcr, OwnedSessionProcess, OwnedSessionSlot, OwnedVolatileState, materialize_volatile_state,
 };
 pub(super) use store::{CURRENT_OBJECT_VERSION, volatile_all_store, volatile_object_version};
+#[cfg(test)]
+pub(super) use store::{capture_volatile_state, marshal_volatile_state};
 
 use sha1::{Digest, Sha1};
 

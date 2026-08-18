@@ -244,6 +244,7 @@ mod tests {
     #[test]
     fn undefine_special_needs_a_policy_session_for_the_index() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         define(
             &mut runtime,
             TPM_RH_PLATFORM,

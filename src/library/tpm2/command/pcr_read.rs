@@ -195,6 +195,22 @@ fn marshal_response(
 
 #[cfg(test)]
 mod tests {
+    fn process(
+        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
+        locality: u8,
+        command: &crate::library::CommandInput,
+        commit_nv: impl FnOnce(
+            &crate::library::tpm2::runtime::Tpm2Runtime,
+        ) -> Result<(), crate::ffi_types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+        crate::library::tpm2::process(
+            runtime,
+            locality,
+            command,
+            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
+            commit_nv,
+        )
+    }
     use super::super::dispatcher::dispatch;
     use super::super::header::{parse_command, serialize_response};
     use super::super::registry::TPM_CC_PCR_READ;
@@ -205,7 +221,7 @@ mod tests {
     use crate::library::tpm2::persistent::OwnedPcrSelection;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
-    use crate::library::tpm2::{process, tis};
+    use crate::library::tpm2::tis;
 
     const TPM_ALG_SHA1: u16 = 0x0004;
     const TPM_ALG_SHA256: u16 = 0x000b;

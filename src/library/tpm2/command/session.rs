@@ -38,6 +38,7 @@ const TPMA_SESSION_CONTINUE_SESSION: u8 = 0x01;
 
 pub(super) struct PasswordSession<'a> {
     password: &'a [u8],
+    pub(super) attributes: u8,
 }
 
 impl core::fmt::Debug for PasswordSession<'_> {
@@ -97,7 +98,10 @@ pub(super) fn parse_session_area<'a>(
         if !nonce.is_empty() {
             return Err(TPM_RC_NONCE + error_index);
         }
-        sessions.push(PasswordSession { password });
+        sessions.push(PasswordSession {
+            password,
+            attributes,
+        });
         index += 1;
     }
     Ok(sessions)
@@ -215,6 +219,43 @@ fn failed_password_code(runtime: &mut Tpm2Runtime, handle: u32) -> Result<TpmRes
     Ok(TPM_RC_AUTH_FAIL)
 }
 
+const UNDEFINED_SESSION_INDEX: u32 = 0xffff;
+
+pub(super) fn record_session_state(
+    runtime: &mut Tpm2Runtime,
+    descriptor: &CommandDescriptor,
+    handles: &[u32],
+    sessions: &[PasswordSession<'_>],
+) {
+    use super::super::hierarchy::TPM_RH_UNASSIGNED;
+    use super::super::live::RestoredVolatile;
+    use super::super::persistent::OwnedSecret;
+
+    let process = &mut runtime
+        .restored_volatile
+        .get_or_insert_with(RestoredVolatile::power_on)
+        .session_process;
+    process.decrypt_session_index = UNDEFINED_SESSION_INDEX;
+    process.encrypt_session_index = UNDEFINED_SESSION_INDEX;
+    process.audit_session_index = UNDEFINED_SESSION_INDEX;
+    for (index, session) in sessions.iter().enumerate() {
+        process.session_handles[index] = TPM_RS_PW;
+        process.nonce_callers[index] = OwnedSecret::from_vec(Vec::new());
+        process.attributes[index] = session.attributes;
+        process.input_auth_values[index] =
+            OwnedSecret::copy_of(strip_trailing_zeros(session.password));
+        process.associated_handles[index] = TPM_RH_UNASSIGNED;
+    }
+    for (index, spec) in descriptor.handles.iter().enumerate() {
+        if spec.user_auth
+            && index < sessions.len()
+            && let Some(&handle) = handles.get(index)
+        {
+            process.associated_handles[index] = handle;
+        }
+    }
+}
+
 pub(super) fn authorize_sessions(
     runtime: &mut Tpm2Runtime,
     descriptor: &CommandDescriptor,
@@ -317,7 +358,10 @@ mod tests {
     ];
 
     fn session(password: &[u8]) -> PasswordSession<'_> {
-        PasswordSession { password }
+        PasswordSession {
+            password,
+            attributes: 0,
+        }
     }
 
     fn runtime_with_auth_values(values: [&[u8]; NUM_AUTHVALUE_PCR_GROUP]) -> Box<Tpm2Runtime> {
@@ -546,7 +590,10 @@ mod tests {
     #[test]
     fn password_session_debug_output_redacts_the_password() {
         let secret = [0x53, 0x65, 0x63, 0x72, 0x65, 0x74];
-        let session = PasswordSession { password: &secret };
+        let session = PasswordSession {
+            password: &secret,
+            attributes: 0,
+        };
         let formatted = format!("{session:?}");
         assert_eq!(formatted, "PasswordSession { .. }");
     }

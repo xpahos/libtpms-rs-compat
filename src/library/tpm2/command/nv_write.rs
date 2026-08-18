@@ -671,9 +671,12 @@ mod tests {
         );
     }
 
+    const RETRY_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x09, 0x22];
+
     #[test]
     fn an_index_may_authorize_its_own_write_but_no_other_index() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         define(
             &mut runtime,
             &nv_public(INDEX, TPMA_NV_AUTHWRITE | TPMA_NV_AUTHREAD, 8),
@@ -708,6 +711,19 @@ mod tests {
                 &command(0x0000_012a, &[TPM_RH_OWNER], &[&[]], &parameters),
             )),
             RC_SUCCESS
+        );
+        assert_eq!(
+            dispatch_bytes(
+                &mut runtime,
+                &command(
+                    TPM_CC_NV_WRITE,
+                    &[INDEX, INDEX],
+                    &[b"wrong"],
+                    &write_parameters(&[], 0),
+                ),
+            ),
+            RETRY_RESPONSE,
+            "the first DA-protected authorization of the cycle asks for a retry"
         );
         assert_eq!(
             response_code(&dispatch_bytes(
@@ -751,6 +767,19 @@ mod tests {
             )),
             RC_SUCCESS
         );
+        assert_eq!(
+            dispatch_bytes(
+                &mut runtime,
+                &command(
+                    TPM_CC_NV_WRITE,
+                    &[0x0100_0000, 0x0100_0000],
+                    &[&[][..]],
+                    &write_parameters(b"A", 0),
+                ),
+            ),
+            RETRY_RESPONSE,
+            "the first DA-protected authorization of the cycle asks for a retry"
+        );
         for password in [&b""[..], &b"nope"[..]] {
             assert_eq!(
                 dispatch_bytes(
@@ -783,6 +812,7 @@ mod tests {
     #[test]
     fn the_index_authorization_gates_match_the_oracle() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         define(&mut runtime, &nv_public(0x0100_0010, READ_WRITE, 8));
         assert_eq!(
             dispatch_bytes(
@@ -814,6 +844,7 @@ mod tests {
     #[test]
     fn a_wrong_password_on_a_dictionary_attack_index_matches_the_oracle() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         let mut parameters = 4u16.to_be_bytes().to_vec();
         parameters.extend_from_slice(b"test");
         let mut public = nv_public(0x0100_0000, TPMA_NV_AUTHWRITE | TPMA_NV_AUTHREAD, 1);

@@ -1,5 +1,6 @@
 mod change_eps;
 mod create_primary;
+mod dictionary_attack_parameters;
 mod dispatcher;
 mod evict_control;
 mod flush_context;

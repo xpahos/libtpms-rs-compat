@@ -5,6 +5,7 @@ use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::change_eps;
 use super::create_primary;
+use super::dictionary_attack_parameters;
 use super::dispatcher::CommandFrame;
 use super::evict_control;
 use super::flush_context;
@@ -44,6 +45,7 @@ pub(in crate::library::tpm2) const TPM_CC_NV_SET_BITS: u32 = 0x0000_0135;
 pub(in crate::library::tpm2) const TPM_CC_NV_EXTEND: u32 = 0x0000_0136;
 pub(in crate::library::tpm2) const TPM_CC_NV_WRITE: u32 = 0x0000_0137;
 pub(in crate::library::tpm2) const TPM_CC_NV_WRITE_LOCK: u32 = 0x0000_0138;
+pub(in crate::library::tpm2) const TPM_CC_DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0000_013a;
 pub(in crate::library::tpm2) const TPM_CC_NV_CHANGE_AUTH: u32 = 0x0000_013b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
@@ -63,7 +65,7 @@ pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 pub(in crate::library::tpm2) const TPM_CC_NV_CERTIFY: u32 = 0x0000_0184;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
-use super::super::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM, is_hierarchy_handle};
+use super::super::hierarchy::{TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM, is_hierarchy_handle};
 use super::super::nv::is_nv_index_handle;
 use super::super::object_create::is_object_handle;
 
@@ -105,6 +107,7 @@ impl CommandLifecycle {
 pub(super) enum HandleKind {
     HierarchyAuth,
     Hierarchy,
+    Lockout,
     Platform,
     Provision,
     Object,
@@ -120,6 +123,7 @@ impl HandleKind {
         match self {
             Self::HierarchyAuth => is_hierarchy_auth_handle(handle),
             Self::Hierarchy => is_hierarchy_handle(handle),
+            Self::Lockout => handle == TPM_RH_LOCKOUT,
             Self::Platform => handle == TPM_RH_PLATFORM,
             Self::Provision => matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM),
             Self::Object => is_object_handle(handle),
@@ -413,6 +417,20 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Write,
         handler: nv_lock::execute_write_lock,
+    },
+    CommandDescriptor {
+        code: TPM_CC_DICTIONARY_ATTACK_PARAMETERS,
+        attributes: tpma_cc(TPM_CC_DICTIONARY_ATTACK_PARAMETERS, true, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Lockout,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: dictionary_attack_parameters::execute,
     },
     CommandDescriptor {
         code: TPM_CC_NV_CHANGE_AUTH,
@@ -777,6 +795,7 @@ mod tests {
                 TPM_CC_NV_EXTEND,
                 TPM_CC_NV_WRITE,
                 TPM_CC_NV_WRITE_LOCK,
+                TPM_CC_DICTIONARY_ATTACK_PARAMETERS,
                 TPM_CC_NV_CHANGE_AUTH,
                 TPM_CC_PCR_RESET,
                 TPM_CC_INCREMENTAL_SELF_TEST,
@@ -834,6 +853,68 @@ mod tests {
                 "code {:#x}",
                 descriptor.code
             );
+        }
+    }
+
+    #[test]
+    fn dictionary_attack_parameters_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(
+            find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS)
+                .unwrap()
+                .attributes,
+            0x0240_013a
+        );
+    }
+
+    #[test]
+    fn dictionary_attack_parameters_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_DICTIONARY_ATTACK_PARAMETERS)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn dictionary_attack_parameters_declares_one_lockout_handle_requiring_user_authorization() {
+        let descriptor = find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS).unwrap();
+        assert_eq!(descriptor.handles.len(), 1);
+        assert!(descriptor.handles[0].user_auth);
+        assert!(!descriptor.handles[0].admin_role);
+        assert!(matches!(descriptor.handles[0].kind, HandleKind::Lockout));
+        assert!(descriptor.sessions_allowed);
+        assert!(!descriptor.physical_presence);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
+        assert_ne!(
+            descriptor.attributes & (1 << 22),
+            0,
+            "DictionaryAttackParameters updates NV"
+        );
+    }
+
+    #[test]
+    fn the_lockout_handle_kind_accepts_only_the_lockout_hierarchy() {
+        use crate::library::tpm2::hierarchy::{
+            TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
+        };
+        let kind = find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS).unwrap().handles[0].kind;
+        assert!(kind.accepts(TPM_RH_LOCKOUT));
+        for handle in [
+            TPM_RH_OWNER,
+            TPM_RH_ENDORSEMENT,
+            TPM_RH_PLATFORM,
+            TPM_RH_NULL,
+            0,
+            23,
+            IMPLEMENTATION_PCR as u32,
+            0x0100_0000,
+            0x4000_0009,
+            0x8000_0000,
+            u32::MAX,
+        ] {
+            assert!(!kind.accepts(handle), "handle {handle:#x}");
         }
     }
 

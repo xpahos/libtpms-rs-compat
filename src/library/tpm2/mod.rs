@@ -439,6 +439,9 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Box<Tpm2Runtime>
             }
         },
     }?;
+    if runtime.restored_volatile.is_none() {
+        clock::time_power_on(&mut runtime, context.clock);
+    }
     runtime.entropy = entropy;
     Ok(runtime)
 }
@@ -3420,7 +3423,7 @@ mod tests {
     }
 
     #[test]
-    fn initialization_without_a_volatile_restore_keeps_the_reset_clock() {
+    fn initialization_without_a_volatile_restore_samples_the_power_on_baseline() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3429,7 +3432,17 @@ mod tests {
             PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
         .expect("the permanent fixture restores without volatile state");
-        assert_eq!(runtime.clock, clock::RuntimeClock::POWER_ON_RESET);
+        assert_eq!(
+            runtime.clock,
+            clock::RuntimeClock {
+                host_monotonic_adjust_ms: 0,
+                suspended_elapsed_ms: 0,
+                last_system_time_ms: TEST_MONOTONIC_MS,
+                last_reported_time_ms: 0,
+            },
+            "TimePowerOn samples the host timer like _TPM_Init"
+        );
+        assert_eq!(runtime.timer, clock::TpmTimer::POWER_ON_RESET);
     }
 
     #[test]

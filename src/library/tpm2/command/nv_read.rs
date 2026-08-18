@@ -344,6 +344,7 @@ mod tests {
     #[test]
     fn an_index_may_authorize_its_own_read_when_auth_read_is_set() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         define(
             &mut runtime,
             &nv_public(INDEX, TPMA_NV_OWNERWRITE | TPMA_NV_AUTHREAD, 8),
@@ -368,6 +369,7 @@ mod tests {
     #[test]
     fn the_read_authorization_gates_match_the_oracle() {
         let mut runtime = started_runtime();
+        runtime.live.da_used = true;
         define(&mut runtime, &nv_public(0x0100_0010, READ_WRITE, 8));
         write(&mut runtime, 0x0100_0010, &[]);
         assert_eq!(

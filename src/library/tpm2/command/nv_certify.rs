@@ -949,6 +949,7 @@ mod tests {
     #[test]
     fn the_index_may_authorize_its_own_certification() {
         let (mut runtime, endorsement) = oracle_runtime();
+        runtime.live.da_used = true;
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_INDEX_AUTH"));
         assert_eq!(
             certify(

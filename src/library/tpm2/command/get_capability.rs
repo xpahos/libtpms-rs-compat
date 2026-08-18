@@ -141,6 +141,22 @@ fn collect_capability(
 
 #[cfg(test)]
 mod tests {
+    fn process(
+        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
+        locality: u8,
+        command: &crate::library::CommandInput,
+        commit_nv: impl FnOnce(
+            &crate::library::tpm2::runtime::Tpm2Runtime,
+        ) -> Result<(), crate::ffi_types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+        crate::library::tpm2::process(
+            runtime,
+            locality,
+            command,
+            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
+            commit_nv,
+        )
+    }
     use super::super::dispatcher::dispatch;
     use super::super::header::{parse_command, serialize_response};
     use super::super::registry::TPM_CC_GET_CAPABILITY;
@@ -152,7 +168,6 @@ mod tests {
     };
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::persistent::{OwnedPcrAllocation, OwnedPcrSelection};
-    use crate::library::tpm2::process;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
 
@@ -461,7 +476,7 @@ mod tests {
         assert_eq!(
             query(&mut runtime, 2, 0, 1000),
             hex(
-                "80010000008f0000000000000000020000001f0440011f044001200440012202c00124024001290240012a0240012b120001310240013204400134044001350440013604400137044001380240013b0200013d00400142004001430040014400400145004001460400014e0440014f00000165020001690000017a0000017b0000017d0000017e0200018206000184"
+                "80010000009300000000000000000200000020 0440011f 04400120 04400122 02c00124 02400129 0240012a 0240012b 12000131 02400132 04400134 04400135 04400136 04400137 04400138 0240013a 0240013b 0200013d 00400142 00400143 00400144 00400145 00400146 0400014e 0440014f 00000165 02000169 0000017a 0000017b 0000017d 0000017e 02000182 06000184"
             )
         );
     }
@@ -531,8 +546,18 @@ mod tests {
         );
         assert_eq!(
             query(&mut runtime, 2, 0x0139, 1),
+            hex("80010000001700000000010000000200000001 0240013a"),
+            "DictionaryAttackParameters follows NV_WriteLock"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x013a, 1),
+            hex("80010000001700000000010000000200000001 0240013a"),
+            "DictionaryAttackParameters advertises itself through the registry"
+        );
+        assert_eq!(
+            query(&mut runtime, 2, 0x013b, 1),
             hex("80010000001700000000010000000200000001 0240013b"),
-            "NV_ChangeAuth follows NV_WriteLock"
+            "NV_ChangeAuth follows DictionaryAttackParameters"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x013e, 1),
@@ -618,16 +643,16 @@ mod tests {
             "an exhausted count leaves more data"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0, 30),
+            query(&mut runtime, 2, 0, 31),
             hex(
-                "80010000008b0000000001000000020000001e0440011f044001200440012202c00124024001290240012a0240012b120001310240013204400134044001350440013604400137044001380240013b0200013d00400142004001430040014400400145004001460400014e0440014f00000165020001690000017a0000017b0000017d0000017e02000182"
+                "80010000008f0000000001000000020000001f 0440011f 04400120 04400122 02c00124 02400129 0240012a 0240012b 12000131 02400132 04400134 04400135 04400136 04400137 04400138 0240013a 0240013b 0200013d 00400142 00400143 00400144 00400145 00400146 0400014e 0440014f 00000165 02000169 0000017a 0000017b 0000017d 0000017e 02000182"
             ),
             "one short of the registry still leaves more data"
         );
         assert_eq!(
-            query(&mut runtime, 2, 0, 31),
+            query(&mut runtime, 2, 0, 32),
             hex(
-                "80010000008f0000000000000000020000001f0440011f044001200440012202c00124024001290240012a0240012b120001310240013204400134044001350440013604400137044001380240013b0200013d00400142004001430040014400400145004001460400014e0440014f00000165020001690000017a0000017b0000017d0000017e0200018206000184"
+                "80010000009300000000000000000200000020 0440011f 04400120 04400122 02c00124 02400129 0240012a 0240012b 12000131 02400132 04400134 04400135 04400136 04400137 04400138 0240013a 0240013b 0200013d 00400142 00400143 00400144 00400145 00400146 0400014e 0440014f 00000165 02000169 0000017a 0000017b 0000017d 0000017e 02000182 06000184"
             ),
             "an exact count consumes the registry"
         );
@@ -642,8 +667,8 @@ mod tests {
 000d0000011b000000060000011c000001000000011d000000ff0000011e000010000000011f00001\
 00000000120000000400000012100000a8c0000012200000194000001230000000100000124000000\
 00000001250000010600000126000000190000012700000\
-7e80000012800000080000001290000001f\
-0000012a0000001f0000012b000000000000012c000004000000012d000000000000012e00000400";
+7e800000128000000800000012900000020\
+0000012a000000200000012b000000000000012c000004000000012d000000000000012e00000400";
 
     #[test]
     fn the_fixed_property_group_matches_the_oracle_with_registry_command_counts() {

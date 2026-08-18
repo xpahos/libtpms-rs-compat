@@ -2,6 +2,7 @@ use crate::ffi_types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
 
+use super::clock::{HostClock, time_update};
 use super::command::{self, Response};
 use super::failure_mode;
 use super::runtime::Tpm2Runtime;
@@ -10,6 +11,7 @@ pub(in crate::library) fn process(
     runtime: &mut Tpm2Runtime,
     locality: u8,
     command: &CommandInput,
+    clock: &dyn HostClock,
     commit_nv: impl FnOnce(&Tpm2Runtime) -> Result<(), TpmResult>,
 ) -> Result<Vec<u8>, TpmResult> {
     if !runtime.power_on {
@@ -28,13 +30,25 @@ pub(in crate::library) fn process(
         return failure_mode::process(runtime, command);
     }
 
+    let buffer_size = runtime.buffer_size;
+
+    if runtime.startup_received && runtime.nv_available && time_update(runtime, clock).is_err() {
+        runtime.failure_mode = true;
+        return serialize(Response::error(TPM_RC_FAILURE), buffer_size);
+    }
+
     super::tis::abort_sequence(runtime);
 
-    let buffer_size = runtime.buffer_size;
+    let was_started = runtime.startup_received;
     let response = match command::parse_command_within(command, buffer_size) {
         Ok(parsed) => command::dispatch(runtime, &parsed),
         Err(error) => Response::error(error.response_code()),
     };
+
+    if !was_started && runtime.startup_received && time_update(runtime, clock).is_err() {
+        runtime.failure_mode = true;
+        return serialize(Response::error(TPM_RC_FAILURE), buffer_size);
+    }
 
     if runtime.nv_update_pending {
         runtime.nv_update_pending = false;
@@ -69,6 +83,19 @@ mod tests {
         let received_size = buffer.len() as u32;
         let prefix_len = CommandInput::required_prefix_len(received_size);
         CommandInput::new(received_size, buffer[..prefix_len].to_vec())
+    }
+
+    fn fixed_clock() -> crate::library::tpm2::clock::RecordingClock {
+        crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000)
+    }
+
+    fn process(
+        runtime: &mut Tpm2Runtime,
+        locality: u8,
+        command: &CommandInput,
+        commit_nv: impl FnOnce(&Tpm2Runtime) -> Result<(), TpmResult>,
+    ) -> Result<Vec<u8>, TpmResult> {
+        super::process(runtime, locality, command, &fixed_clock(), commit_nv)
     }
 
     fn run_process(

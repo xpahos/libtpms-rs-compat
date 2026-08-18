@@ -3,7 +3,7 @@ use crate::ffi_types::TpmResult;
 use crate::library::cancel::CancelSignal;
 
 use super::buffer_size::DEFAULT_BUFFER_SIZE;
-use super::clock::RuntimeClock;
+use super::clock::{RuntimeClock, TpmTimer};
 use super::crypto::{EntropySource, os_entropy};
 use super::live::{LiveState, RestoredVolatile, split_restored_volatile};
 use super::nv::build_nv_image;
@@ -32,8 +32,9 @@ pub struct Tpm2Runtime {
 
     pub(super) nv_update_pending: bool,
 
-    #[allow(dead_code)]
     pub(super) clock: RuntimeClock,
+
+    pub(super) timer: TpmTimer,
 
     pub(super) active_profile_json: String,
 
@@ -84,6 +85,14 @@ pub(super) fn merge_volatile_state(runtime: &mut Tpm2Runtime, volatile: OwnedVol
     runtime.tpm_established = flags.tpm_established;
     runtime.failure_mode = flags.in_failure_mode;
     runtime.clock = flags.resume_clock;
+    runtime.timer = TpmTimer {
+        time_ms: carry.time,
+        real_time_previous: carry.real_time_previous,
+        tpm_time: carry.tpm_time,
+        adjust_rate: carry.adjust_rate,
+        timer_reset: carry.timer_reset,
+        timer_stopped: carry.timer_stopped,
+    };
     runtime.live = live;
     runtime.restored_volatile = Some(carry);
 }
@@ -186,6 +195,7 @@ fn commit_state(
         entropy: os_entropy,
         nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
+        timer: TpmTimer::POWER_ON_RESET,
         active_profile_json,
         active_profile_algorithms,
         drtm_sequence: None,
@@ -218,6 +228,7 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         entropy: os_entropy,
         nv_update_pending: false,
         clock: RuntimeClock::POWER_ON_RESET,
+        timer: TpmTimer::POWER_ON_RESET,
         active_profile_json: String::new(),
         active_profile_algorithms: Vec::new(),
         drtm_sequence: None,
