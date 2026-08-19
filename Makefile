@@ -99,7 +99,7 @@ SWTPM_CONFIGURE_STAMP := $(SWTPM_TARGET_DIR)/.configured
 JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
 .PHONY: all build build-release generate-abi check-generated-inputs check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture check-failure-locations-fixture test-abi cargo-check check clean \
-	prepare-swtpm build-swtpm test-swtpm clean-swtpm verify-swtpm-linkage
+	prepare-swtpm build-swtpm test-swtpm clean-swtpm verify-swtpm-linkage test-swtpm-docker
 
 all: check
 
@@ -441,3 +441,32 @@ test-swtpm: build-swtpm
 # library, the rest of the target directory, and both submodules stay intact.
 clean-swtpm:
 	rm -rf $(SWTPM_TARGET_DIR)
+
+DOCKER                            ?= docker
+DOCKER_PLATFORM                   ?=
+SWTPM_DOCKER_IMAGE                ?= libtpms-rs-compat-test-swtpm
+SWTPM_DOCKER_DOCKERFILE           := Dockerfile.test-swtpm
+SWTPM_DOCKER_RUNNER               := scripts/test-swtpm-docker.sh
+SWTPM_DOCKER_TARGET_VOLUME_PREFIX ?= libtpms-rs-compat-target
+SWTPM_DOCKER_REGISTRY_VOLUME      ?= libtpms-rs-compat-cargo-registry
+SWTPM_DOCKER_GIT_VOLUME           ?= libtpms-rs-compat-cargo-git
+DOCKER_PLATFORM_FLAG              := $(if $(DOCKER_PLATFORM),--platform "$(DOCKER_PLATFORM)")
+
+test-swtpm-docker:
+	$(DOCKER) build $(DOCKER_PLATFORM_FLAG) \
+		--file "$(SWTPM_DOCKER_DOCKERFILE)" \
+		--tag "$(SWTPM_DOCKER_IMAGE)" \
+		"$(CURDIR)"
+	@set -eu; \
+	image_id="$$($(DOCKER) image inspect --format '{{.Id}}' "$(SWTPM_DOCKER_IMAGE)")"; \
+	platform="$$($(DOCKER) image inspect --format '{{.Os}}-{{.Architecture}}' "$(SWTPM_DOCKER_IMAGE)")"; \
+	repository_id="$$(printf '%s' "$(CURDIR)" | cksum | awk '{print $$1}')"; \
+	target_volume="$(SWTPM_DOCKER_TARGET_VOLUME_PREFIX)-$$repository_id-$$platform"; \
+	$(DOCKER) run --rm --init $(DOCKER_PLATFORM_FLAG) \
+		-v "$(CURDIR):/repo:ro" \
+		-v "$$target_volume:/cache/target" \
+		-v "$(SWTPM_DOCKER_REGISTRY_VOLUME):/usr/local/cargo/registry" \
+		-v "$(SWTPM_DOCKER_GIT_VOLUME):/usr/local/cargo/git" \
+		-e "PROFILE=$(PROFILE)" \
+		-e "SWTPM_DOCKER_IMAGE_ID=$$image_id" \
+		"$(SWTPM_DOCKER_IMAGE)" /repo/$(SWTPM_DOCKER_RUNNER)
