@@ -4,7 +4,7 @@ use crate::library::constants::{
     TPM_RC_NV_UNINITIALIZED, TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
-use super::super::crypto::{DRBG_MAGIC, Drbg};
+use super::super::crypto::DRBG_MAGIC;
 use super::super::live::{unoccupied_objects, unoccupied_sessions};
 use super::super::nv::{
     MAX_ORDERLY_COUNT, TPMA_NV_ORDERLY, build_nv_image, is_counter_index, startup_attributes,
@@ -14,7 +14,7 @@ use super::super::persistent::{
     OwnedDrbgState, OwnedIndexOrderlyRam, OwnedPcrAllocation, OwnedSecret, OwnedStateClearData,
     OwnedStateResetData, OwnedUserNvramEntry,
 };
-use super::super::profile::ATTRIBUTE_DRBG_CONTINUOUS_TEST;
+use super::super::random::{startup_live_drbg, startup_secret};
 use super::super::runtime::Tpm2Runtime;
 use super::super::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
 use super::super::volatile::{IMPLEMENTATION_PCR, MAX_LOADED_SESSIONS, OwnedPcr};
@@ -105,7 +105,16 @@ fn perform_startup(runtime: &mut Tpm2Runtime, startup_type: u16) -> Result<(), T
     commit_startup(runtime, prepared)
 }
 
-fn prepare_startup(runtime: &Tpm2Runtime, startup_type: u16) -> Result<PreparedStartup, TpmResult> {
+struct StartupChecks {
+    locality: u8,
+    drtm_pre_startup: bool,
+    startup_locality3: bool,
+    prev_orderly: u16,
+    da_used: bool,
+    mode: StartupMode,
+}
+
+fn startup_checks(runtime: &Tpm2Runtime, startup_type: u16) -> Result<StartupChecks, TpmResult> {
     // TODO: Support runtimes without decoded state after the NVChip fallback
     // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
@@ -157,48 +166,61 @@ fn prepare_startup(runtime: &Tpm2Runtime, startup_type: u16) -> Result<PreparedS
         StartupMode::Reset
     };
 
-    let stored_drbg = &runtime.live.orderly.drbg_state;
-    let continuous_test = state
-        .profile
-        .attribute_enabled(ATTRIBUTE_DRBG_CONTINUOUS_TEST);
-    let mut drbg = if stored_drbg.drbg_magic == DRBG_MAGIC {
-        let mut drbg = Drbg::restore(
-            stored_drbg.seed.as_bytes(),
-            stored_drbg.reseed_counter,
-            stored_drbg.last_value,
-            continuous_test,
-        )
-        .map_err(|_| TPM_RC_FAILURE)?;
-        drbg.reseed_from_entropy(runtime.entropy)
-            .map_err(|_| TPM_RC_FAILURE)?;
-        drbg
+    Ok(StartupChecks {
+        locality,
+        drtm_pre_startup,
+        startup_locality3,
+        prev_orderly,
+        da_used,
+        mode,
+    })
+}
+
+fn prepare_startup(
+    runtime: &mut Tpm2Runtime,
+    startup_type: u16,
+) -> Result<PreparedStartup, TpmResult> {
+    let checks = startup_checks(runtime, startup_type)?;
+    let StartupChecks {
+        locality,
+        drtm_pre_startup,
+        startup_locality3,
+        prev_orderly,
+        da_used,
+        mode,
+    } = checks;
+
+    let mut drbg = startup_live_drbg(runtime)?;
+    let reset_secrets = if mode == StartupMode::Reset {
+        let commit_nonce = startup_secret(runtime, &mut drbg, COMMIT_NONCE_SIZE)?;
+        let null_proof = startup_secret(runtime, &mut drbg, PROOF_SIZE)?;
+        let null_seed = startup_secret(runtime, &mut drbg, PRIMARY_SEED_SIZE)?;
+        Some((commit_nonce, null_proof, null_seed))
     } else {
-        Drbg::instantiate(runtime.entropy, continuous_test).map_err(|_| TPM_RC_FAILURE)?
+        None
     };
 
-    let mut new_reset = match mode {
-        StartupMode::Reset => {
-            let commit_nonce = generate_secret(&mut drbg, COMMIT_NONCE_SIZE)?;
-            let null_proof = generate_secret(&mut drbg, PROOF_SIZE)?;
-            let null_seed = generate_secret(&mut drbg, PRIMARY_SEED_SIZE)?;
-            OwnedStateResetData {
-                null_proof,
-                null_seed,
-                clear_count: 0,
-                object_context_id: 0,
-                context_array: Box::new([0; MAX_ACTIVE_SESSIONS]),
-                context_slot_mask: 0xffff,
-                context_counter: MAX_LOADED_SESSIONS as u64 + 1,
-                command_audit_digest: Vec::new(),
-                restart_count: 0,
-                pcr_counter: 0,
-                commit_counter: 0,
-                commit_nonce,
-                commit_array: [0; COMMIT_ARRAY_SIZE],
-                null_seed_compat_level: SEED_COMPAT_LEVEL_LAST,
-            }
-        }
-        StartupMode::Restart | StartupMode::Resume => {
+    let runtime = &*runtime;
+    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+
+    let mut new_reset = match reset_secrets {
+        Some((commit_nonce, null_proof, null_seed)) => OwnedStateResetData {
+            null_proof,
+            null_seed,
+            clear_count: 0,
+            object_context_id: 0,
+            context_array: Box::new([0; MAX_ACTIVE_SESSIONS]),
+            context_slot_mask: 0xffff,
+            context_counter: MAX_LOADED_SESSIONS as u64 + 1,
+            command_audit_digest: Vec::new(),
+            restart_count: 0,
+            pcr_counter: 0,
+            commit_counter: 0,
+            commit_nonce,
+            commit_array: [0; COMMIT_ARRAY_SIZE],
+            null_seed_compat_level: SEED_COMPAT_LEVEL_LAST,
+        },
+        None => {
             let old = state.state_reset.as_ref().ok_or(TPM_RC_FAILURE)?;
             carried_state_reset(old)
         }
@@ -420,12 +442,6 @@ fn commit_startup(runtime: &mut Tpm2Runtime, prepared: PreparedStartup) -> Resul
     Ok(())
 }
 
-fn generate_secret(drbg: &mut Drbg, len: usize) -> Result<OwnedSecret, TpmResult> {
-    let mut bytes = vec![0u8; len];
-    drbg.generate(&mut bytes).map_err(|_| TPM_RC_FAILURE)?;
-    Ok(OwnedSecret::from_vec(bytes))
-}
-
 fn carried_state_reset(old: &OwnedStateResetData) -> OwnedStateResetData {
     let mut context_array = *old.context_array;
     for slot in context_array.iter_mut() {
@@ -564,6 +580,7 @@ mod tests {
     use crate::ffi_types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_FAIL;
+    use crate::library::tpm2::crypto::Drbg;
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::nv::{IndexOrderlyRamFixture, UserNvramFixture};
     use crate::library::tpm2::nv::{
@@ -2245,8 +2262,12 @@ mod tests {
         );
     }
 
+    fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
+        panic!("the entropy-bad latch must short-circuit the platform callback");
+    }
+
     #[test]
-    fn drbg_entropy_failure_is_transactional_and_retryable() {
+    fn a_startup_entropy_failure_latches_g_entropy_bad_and_never_retries() {
         let mut runtime = manufactured_runtime();
         runtime.entropy = failing_entropy;
         let before = snapshot(&runtime);
@@ -2255,10 +2276,121 @@ mod tests {
             FAILURE_RESPONSE
         );
         assert_unchanged(&runtime, &before);
+        assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
+        assert!(!runtime.failure_mode, "no FAIL() site is reached");
+        assert_eq!(runtime.failure_diagnostics, Default::default());
+        assert!(!runtime.startup_received);
+
+        runtime.entropy = unreachable_entropy;
+        for _ in 0..2 {
+            assert_eq!(
+                dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
+                FAILURE_RESPONSE
+            );
+            assert_unchanged(&runtime, &before);
+            assert!(runtime.entropy_bad);
+            assert!(!runtime.failure_mode);
+        }
+    }
+
+    #[test]
+    fn an_instantiating_startup_entropy_failure_latches_the_same_way() {
+        let mut runtime = manufactured_runtime();
+        runtime.live.orderly.drbg_state.drbg_magic = 0;
+        runtime.entropy = failing_entropy;
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
+            FAILURE_RESPONSE
+        );
+        assert!(runtime.entropy_bad);
+        assert!(!runtime.failure_mode);
+        assert_eq!(
+            runtime.live.orderly.drbg_state.drbg_magic, 0,
+            "no partially instantiated state is stored"
+        );
+
+        runtime.entropy = unreachable_entropy;
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
+            FAILURE_RESPONSE
+        );
+        assert!(!runtime.failure_mode);
+    }
+
+    #[test]
+    fn a_new_tpm_init_lifecycle_starts_with_the_latch_clear() {
+        use crate::library::tpm2::persistent::persistent_all_store;
+
+        let mut runtime = manufactured_runtime();
+        runtime.entropy = failing_entropy;
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
+            FAILURE_RESPONSE
+        );
+        assert!(runtime.entropy_bad);
+
+        let blob =
+            persistent_all_store(runtime.state.as_ref().unwrap()).expect("the state serializes");
+        let envelope = PersistentAllEnvelope::parse(&blob).expect("the envelope parses");
+        let decoded = parse_persistent_all_payload(&envelope).expect("the payload parses");
+        let restored = materialize_persistent_state(decoded).expect("materializes");
+        let mut runtime = commit_restored_state(restored).expect("commits");
+        assert!(!runtime.entropy_bad, "the latch is not part of any state");
         runtime.entropy = deterministic_entropy;
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
             SUCCESS_RESPONSE
+        );
+    }
+
+    const CONTINUOUS_TEST_PROFILE: &[u8] =
+        br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
+
+    fn continuous_test_runtime() -> Box<Tpm2Runtime> {
+        let profile =
+            validate_user_profile(Some(CONTINUOUS_TEST_PROFILE)).expect("the profile validates");
+        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let mut runtime = commit_manufactured_state(state).expect("commits");
+        runtime.entropy = deterministic_entropy;
+        runtime
+    }
+
+    fn colliding_last_value(seed: &[u8]) -> [u32; 4] {
+        let mut probe = Drbg::restore(seed, 1, [0; 4], false).expect("the probe restores");
+        let mut block = [0u8; 16];
+        probe.generate(&mut block).expect("the probe generates");
+        core::array::from_fn(|word| {
+            u32::from_le_bytes(block[word * 4..word * 4 + 4].try_into().unwrap())
+        })
+    }
+
+    #[test]
+    fn a_continuous_test_failure_during_the_startup_reseed_is_the_encrypt_drbg_fatal() {
+        use crate::library::tpm2::failure_mode::FailureLocation;
+
+        let mut runtime = continuous_test_runtime();
+        let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
+        runtime.live.orderly.drbg_state.last_value = colliding_last_value(&seed);
+
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
+            FAILURE_RESPONSE
+        );
+        assert!(runtime.failure_mode, "the repeated block stops the TPM");
+        assert_eq!(
+            runtime.failure_diagnostics,
+            FailureLocation::DrbgEntropy.diagnostics(),
+            "the diagnostics name EncryptDRBG's FATAL_ERROR_ENTROPY site"
+        );
+        assert!(
+            !runtime.entropy_bad,
+            "a continuous-test hit is not an entropy-callback failure"
+        );
+        assert!(!runtime.startup_received);
+        assert_eq!(
+            runtime.live.orderly.drbg_state.seed.expose(),
+            &seed[..],
+            "the failed reseed is not stored"
         );
     }
 }

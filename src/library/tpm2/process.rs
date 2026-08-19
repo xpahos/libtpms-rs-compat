@@ -4,7 +4,7 @@ use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
 
 use super::clock::{HostClock, time_update};
 use super::command::{self, Response};
-use super::failure_mode;
+use super::failure_mode::{self, FailureLocation, enter_failure_mode};
 use super::runtime::Tpm2Runtime;
 
 pub(in crate::library) fn process(
@@ -33,7 +33,7 @@ pub(in crate::library) fn process(
     let buffer_size = runtime.buffer_size;
 
     if runtime.startup_received && runtime.nv_available && time_update(runtime, clock).is_err() {
-        runtime.failure_mode = true;
+        enter_failure_mode(runtime, FailureLocation::NvCommit);
         return serialize(Response::error(TPM_RC_FAILURE), buffer_size);
     }
 
@@ -46,14 +46,14 @@ pub(in crate::library) fn process(
     };
 
     if !was_started && runtime.startup_received && time_update(runtime, clock).is_err() {
-        runtime.failure_mode = true;
+        enter_failure_mode(runtime, FailureLocation::NvCommit);
         return serialize(Response::error(TPM_RC_FAILURE), buffer_size);
     }
 
     if runtime.nv_update_pending {
         runtime.nv_update_pending = false;
         if commit_nv(runtime).is_err() {
-            runtime.failure_mode = true;
+            enter_failure_mode(runtime, FailureLocation::NvCommit);
             return serialize(Response::error(TPM_RC_FAILURE), buffer_size);
         }
     }

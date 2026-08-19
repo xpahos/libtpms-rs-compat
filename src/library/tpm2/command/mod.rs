@@ -7,6 +7,7 @@ mod evict_control;
 mod flush_context;
 mod get_capability;
 mod get_random;
+mod get_test_result;
 mod hash;
 mod header;
 mod hierarchy_change_auth;
@@ -39,5 +40,5 @@ pub(super) use header::{
     HEADER_SIZE, Response, TPM_ST_NO_SESSIONS, parse_command_within, serialize_response_within,
 };
 pub(in crate::library::tpm2) use registry::{
-    TPM_CC_GET_CAPABILITY, implemented as implemented_commands,
+    TPM_CC_GET_CAPABILITY, TPM_CC_GET_TEST_RESULT, implemented as implemented_commands,
 };

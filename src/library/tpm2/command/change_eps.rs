@@ -9,7 +9,7 @@ use super::super::persistent::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedPersistentState, OwnedSecret, OwnedUserNvramEntry,
     user_nvram_required_capacity,
 };
-use super::super::random::generate_random;
+use super::super::random::regenerate_secret;
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
 use super::output::CommandOutput;
@@ -20,15 +20,15 @@ const PRIMARY_SEED_SIZE: usize = 64;
 const PROOF_SIZE: usize = 64;
 
 struct EndorsementSeed {
-    ep_seed: OwnedSecret,
-    eh_proof: OwnedSecret,
+    ep_seed: Option<OwnedSecret>,
+    eh_proof: Option<OwnedSecret>,
     seed_compat_level: u8,
     orderly_state: Option<u16>,
 }
 
 struct Backup {
-    ep_seed: OwnedSecret,
-    eh_proof: OwnedSecret,
+    ep_seed: Option<OwnedSecret>,
+    eh_proof: Option<OwnedSecret>,
     ep_seed_compat_level: u8,
     endorsement_auth: OwnedSecret,
     endorsement_alg: u16,
@@ -73,7 +73,9 @@ fn change_endorsement_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmR
 
     let drbg = runtime.live.orderly.drbg_state.clone();
     reseed_endorsement_hierarchy(runtime, seed_compat_level, orderly_state).inspect_err(|_| {
-        runtime.live.orderly.drbg_state = drbg;
+        if runtime.failure_mode {
+            runtime.live.orderly.drbg_state = drbg;
+        }
     })
 }
 
@@ -83,8 +85,8 @@ fn reseed_endorsement_hierarchy(
     orderly_state: Option<u16>,
 ) -> Result<(), TpmResult> {
     let seed = EndorsementSeed {
-        ep_seed: OwnedSecret::from_vec(generate_random(runtime, PRIMARY_SEED_SIZE)?),
-        eh_proof: OwnedSecret::from_vec(generate_random(runtime, PROOF_SIZE)?),
+        ep_seed: regenerate_secret(runtime, PRIMARY_SEED_SIZE)?.map(OwnedSecret::from_vec),
+        eh_proof: regenerate_secret(runtime, PROOF_SIZE)?.map(OwnedSecret::from_vec),
         seed_compat_level,
         orderly_state,
     };
@@ -128,8 +130,12 @@ fn apply(state: &mut OwnedPersistentState, seed: EndorsementSeed) -> Result<Back
     .ok_or(TPM_RC_FAILURE)?;
 
     let persistent = &mut state.persistent;
-    let ep_seed = core::mem::replace(&mut persistent.ep_seed, seed.ep_seed);
-    let eh_proof = core::mem::replace(&mut persistent.eh_proof, seed.eh_proof);
+    let ep_seed = seed
+        .ep_seed
+        .map(|new| core::mem::replace(&mut persistent.ep_seed, new));
+    let eh_proof = seed
+        .eh_proof
+        .map(|new| core::mem::replace(&mut persistent.eh_proof, new));
     let ep_seed_compat_level =
         core::mem::replace(&mut persistent.ep_seed_compat_level, seed.seed_compat_level);
     let endorsement_auth = core::mem::replace(
@@ -174,8 +180,12 @@ fn apply(state: &mut OwnedPersistentState, seed: EndorsementSeed) -> Result<Back
 
 fn restore(state: &mut OwnedPersistentState, backup: Backup) {
     let persistent = &mut state.persistent;
-    persistent.ep_seed = backup.ep_seed;
-    persistent.eh_proof = backup.eh_proof;
+    if let Some(ep_seed) = backup.ep_seed {
+        persistent.ep_seed = ep_seed;
+    }
+    if let Some(eh_proof) = backup.eh_proof {
+        persistent.eh_proof = eh_proof;
+    }
     persistent.ep_seed_compat_level = backup.ep_seed_compat_level;
     persistent.endorsement_auth = backup.endorsement_auth;
     persistent.endorsement_alg = backup.endorsement_alg;
@@ -271,6 +281,10 @@ mod tests {
 
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         Err(TPM_FAIL)
+    }
+
+    fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
+        panic!("the entropy-bad latch must short-circuit the platform callback");
     }
 
     fn manufactured_runtime(profile: Option<&[u8]>) -> Box<Tpm2Runtime> {
@@ -1000,29 +1014,69 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_leaves_no_partial_mutation() {
+    fn an_entropy_failure_keeps_the_old_secrets_and_succeeds() {
         let mut runtime = started_runtime();
         runtime.entropy = failing_entropy;
+        runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+        runtime.state.as_mut().unwrap().persistent.orderly_state = 0x0001;
+        let before = snapshot(&runtime);
+        assert_ne!(before.ep_seed, vec![0u8; before.ep_seed.len()]);
+        assert_ne!(before.eh_proof, vec![0u8; before.eh_proof.len()]);
+
+        let mut committed = 0;
+        let command = change_eps();
+        let input = CommandInput::new(command.len() as u32, command);
+        let response = process(&mut runtime, 0, &input, |_| {
+            committed += 1;
+            Ok(())
+        })
+        .expect("the command processes");
+        assert_eq!(response, success_response());
+        assert_eq!(
+            committed, 1,
+            "the NV update is still scheduled and committed"
+        );
+
+        let after = snapshot(&runtime);
+        assert_eq!(after.ep_seed, before.ep_seed, "the old seed is retained");
+        assert_eq!(after.eh_proof, before.eh_proof, "the old proof is retained");
+        assert_eq!(after.drbg, before.drbg, "no reseed was stored");
+        assert_eq!(after.endorsement_auth, Vec::<u8>::new());
+        assert_eq!(after.endorsement_alg, TPM_ALG_NULL);
+        assert_eq!(after.eh_enable, Some(true));
+        assert_eq!(
+            after.orderly_state, SU_NONE_VALUE,
+            "g_clearOrderly still runs"
+        );
+        assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
+        assert!(!runtime.failure_mode);
+        assert_eq!(runtime.failure_diagnostics, Default::default());
+    }
+
+    #[test]
+    fn a_pre_latched_runtime_keeps_the_old_secrets_without_invoking_the_callback() {
+        let mut runtime = started_runtime();
+        runtime.entropy_bad = true;
+        runtime.entropy = unreachable_entropy;
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
         runtime.state.as_mut().unwrap().persistent.orderly_state = 0x0001;
         let before = snapshot(&runtime);
 
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
-            error_response(TPM_RC_FAILURE)
+            success_response()
         );
-        assert_eq!(
-            snapshot(&runtime),
-            Snapshot {
-                failure_mode: true,
-                ..before
-            },
-            "a dead DRBG stops the TPM and changes nothing else"
-        );
+        let after = snapshot(&runtime);
+        assert_eq!(after.ep_seed, before.ep_seed, "the old seed is retained");
+        assert_eq!(after.eh_proof, before.eh_proof, "the old proof is retained");
+        assert_eq!(after.drbg, before.drbg, "no reseed was stored");
+        assert_eq!(after.endorsement_auth, Vec::<u8>::new());
+        assert!(runtime.entropy_bad, "the latch stays set");
+        assert!(!runtime.failure_mode);
     }
 
     #[test]
-    fn an_entropy_failure_after_the_first_draw_rolls_back_the_drbg() {
+    fn an_entropy_failure_after_the_first_draw_keeps_only_the_old_proof() {
         let mut runtime = started_runtime();
         runtime.entropy = failing_entropy;
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED - 1;
@@ -1031,17 +1085,19 @@ mod tests {
 
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
-            error_response(TPM_RC_FAILURE),
-            "the endorsement proof needs a reseed the failing entropy cannot serve"
+            success_response(),
+            "the proof needed a reseed the failing entropy cannot serve"
         );
+        let after = snapshot(&runtime);
+        assert_ne!(after.ep_seed, before.ep_seed, "the first draw still wrote");
+        assert_eq!(after.eh_proof, before.eh_proof, "the old proof is retained");
         assert_eq!(
-            snapshot(&runtime),
-            Snapshot {
-                failure_mode: true,
-                ..before
-            },
-            "the seed draw that did succeed is rolled back"
+            after.drbg.reseed_counter, CTR_DRBG_MAX_REQUESTS_PER_RESEED,
+            "the successful draw's state advance is kept, like the C generator"
         );
+        assert!(runtime.entropy_bad);
+        assert!(!runtime.failure_mode);
+        assert_eq!(runtime.failure_diagnostics, Default::default());
     }
 
     #[test]
@@ -1064,7 +1120,123 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_nv_image_leaves_no_partial_mutation() {
+    fn a_second_draw_continuous_test_failure_restores_the_pre_command_drbg() {
+        use crate::library::tpm2::crypto::{DRBG_SEED_SIZE, Drbg};
+        use crate::library::tpm2::failure_mode::FailureLocation;
+        use aes::cipher::{BlockDecrypt, KeyInit};
+        use std::cell::RefCell;
+
+        thread_local! {
+            static CRAFTED_ENTROPY: RefCell<[u8; 48]> = const { RefCell::new([0; 48]) };
+        }
+        fn crafted_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
+            CRAFTED_ENTROPY.with(|crafted| buffer.copy_from_slice(&crafted.borrow()[..]));
+            Ok(())
+        }
+        fn zero_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
+            buffer.fill(0);
+            Ok(())
+        }
+
+        const CONTINUOUS_TEST_PROFILE: &[u8] =
+            br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
+        let mut runtime = started_runtime_with(Some(CONTINUOUS_TEST_PROFILE));
+        runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED - 1;
+        let before = snapshot(&runtime);
+
+        let mut first_draw = Drbg::restore(
+            &before.drbg.seed,
+            CTR_DRBG_MAX_REQUESTS_PER_RESEED - 1,
+            before.drbg.last_value,
+            true,
+        )
+        .expect("the planted state restores");
+        first_draw
+            .generate(&mut [0u8; PRIMARY_SEED_SIZE])
+            .expect("the first draw survives the continuous test");
+        let seed_after_first = *first_draw.seed();
+        let last_value_after_first = first_draw.last_value();
+
+        let mut reseed_probe = Drbg::restore(
+            &seed_after_first,
+            CTR_DRBG_MAX_REQUESTS_PER_RESEED,
+            last_value_after_first,
+            true,
+        )
+        .expect("the post-first-draw state restores");
+        reseed_probe
+            .reseed_from_entropy(zero_entropy)
+            .expect("the automatic reseed survives the continuous test");
+        let update_stream_as_seed = *reseed_probe.seed();
+        let last_value_after_reseed = reseed_probe.last_value();
+
+        let mut colliding_block = [0u8; 16];
+        for (index, word) in last_value_after_reseed.iter().enumerate() {
+            colliding_block[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let chosen_key = [0x42u8; 32];
+        let cipher = aes::Aes256::new(&chosen_key.into());
+        let mut block = aes::Block::from(colliding_block);
+        cipher.decrypt_block(&mut block);
+        let mut chosen_iv: [u8; 16] = block.into();
+        for byte in chosen_iv.iter_mut().rev() {
+            if *byte == 0 {
+                *byte = 0xff;
+            } else {
+                *byte -= 1;
+                break;
+            }
+        }
+
+        let mut desired_seed = [0u8; DRBG_SEED_SIZE];
+        desired_seed[..32].copy_from_slice(&chosen_key);
+        desired_seed[32..].copy_from_slice(&chosen_iv);
+        CRAFTED_ENTROPY.with(|slot| {
+            let mut crafted = [0u8; 48];
+            for (index, byte) in crafted.iter_mut().enumerate() {
+                *byte = update_stream_as_seed[index] ^ desired_seed[index];
+            }
+            *slot.borrow_mut() = crafted;
+        });
+
+        let mut collision_probe = Drbg::restore(
+            &seed_after_first,
+            CTR_DRBG_MAX_REQUESTS_PER_RESEED,
+            last_value_after_first,
+            true,
+        )
+        .expect("the collision probe restores");
+        collision_probe
+            .reseed_from_entropy(crafted_entropy)
+            .expect("the crafted reseed succeeds");
+        assert!(
+            collision_probe.generate(&mut [0u8; PROOF_SIZE]).is_err(),
+            "the crafted state collides at the second draw"
+        );
+
+        runtime.entropy = crafted_entropy;
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &change_eps()),
+            error_response(TPM_RC_FAILURE)
+        );
+        assert!(runtime.failure_mode);
+        assert_eq!(
+            runtime.failure_diagnostics,
+            FailureLocation::DrbgEntropy.diagnostics()
+        );
+        assert!(!runtime.entropy_bad);
+        assert_eq!(
+            snapshot(&runtime),
+            Snapshot {
+                failure_mode: true,
+                ..before
+            },
+            "the first draw is not published after the fatal second draw"
+        );
+    }
+
+    #[test]
+    fn a_failed_nv_image_keeps_the_consumed_draws_and_rolls_back_the_rest() {
         let mut runtime = started_runtime_with(Some(DEFAULT_V1_PROFILE));
         push_nvram(
             &mut runtime,
@@ -1081,22 +1253,52 @@ mod tests {
             "the oversized policy must not serialize"
         );
         let before = snapshot(&runtime);
+        let counter_before = before.drbg.reseed_counter;
+
+        let mut twin = started_runtime_with(Some(DEFAULT_V1_PROFILE));
+        assert_eq!(
+            drbg(&twin),
+            before.drbg,
+            "the twin starts from the same generator state"
+        );
+        regenerate_secret(&mut twin, PRIMARY_SEED_SIZE)
+            .expect("the twin seed draw succeeds")
+            .expect("the twin seed is drawn");
+        regenerate_secret(&mut twin, PROOF_SIZE)
+            .expect("the twin proof draw succeeds")
+            .expect("the twin proof is drawn");
 
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
             error_response(TPM_RC_FAILURE)
         );
-        assert_unchanged(&runtime, &before);
+        let after = drbg(&runtime);
+        assert_ne!(after.seed, before.drbg.seed, "both draws remain consumed");
         assert_eq!(
-            drbg(&runtime),
-            before.drbg,
-            "both draws happened before the image failed and both are rolled back"
+            after.reseed_counter,
+            counter_before + 2,
+            "one advance for the seed draw and one for the proof draw"
+        );
+        assert_eq!(
+            after,
+            drbg(&twin),
+            "the kept generator matches a twin that performed the same two draws"
+        );
+        assert_eq!(
+            snapshot(&runtime),
+            Snapshot {
+                drbg: drbg(&twin),
+                ..before
+            },
+            "everything except the consumed draws is rolled back"
         );
         assert!(!runtime.failure_mode);
+        assert_eq!(runtime.failure_diagnostics, Default::default());
+        assert!(!runtime.entropy_bad);
     }
 
     #[test]
-    fn a_failed_capacity_check_leaves_no_partial_mutation() {
+    fn a_failed_capacity_check_keeps_the_consumed_draws_and_rolls_back_the_rest() {
         let mut runtime = started_runtime_with(Some(DEFAULT_V1_PROFILE));
         push_nvram(
             &mut runtime,
@@ -1113,13 +1315,42 @@ mod tests {
             .entries
             .push(oversized_persistent_entry(0x8100_0003));
         let before = snapshot(&runtime);
+        let counter_before = before.drbg.reseed_counter;
+
+        let mut twin = started_runtime_with(Some(DEFAULT_V1_PROFILE));
+        assert_eq!(
+            drbg(&twin),
+            before.drbg,
+            "the twin starts from the same generator state"
+        );
+        regenerate_secret(&mut twin, PRIMARY_SEED_SIZE)
+            .expect("the twin seed draw succeeds")
+            .expect("the twin seed is drawn");
+        regenerate_secret(&mut twin, PROOF_SIZE)
+            .expect("the twin proof draw succeeds")
+            .expect("the twin proof is drawn");
 
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
             error_response(TPM_RC_FAILURE)
         );
-        assert_unchanged(&runtime, &before);
+        let after = drbg(&runtime);
+        assert_ne!(after.seed, before.drbg.seed, "both draws remain consumed");
+        assert_eq!(
+            after.reseed_counter,
+            counter_before + 2,
+            "the capacity failure happens after both draws"
+        );
+        assert_eq!(
+            snapshot(&runtime),
+            Snapshot {
+                drbg: drbg(&twin),
+                ..before
+            },
+            "everything except the consumed draws is rolled back"
+        );
         assert!(!runtime.failure_mode);
+        assert!(!runtime.nv_update_pending);
     }
 
     #[test]
@@ -1128,8 +1359,12 @@ mod tests {
         let before = drbg(&runtime);
 
         let mut twin = started_runtime();
-        let ep_seed = generate_random(&mut twin, PRIMARY_SEED_SIZE).expect("the seed is drawn");
-        let eh_proof = generate_random(&mut twin, PROOF_SIZE).expect("the proof is drawn");
+        let ep_seed = regenerate_secret(&mut twin, PRIMARY_SEED_SIZE)
+            .expect("the seed draw succeeds")
+            .expect("the seed is drawn");
+        let eh_proof = regenerate_secret(&mut twin, PROOF_SIZE)
+            .expect("the proof draw succeeds")
+            .expect("the proof is drawn");
 
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),

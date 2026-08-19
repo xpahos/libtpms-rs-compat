@@ -56,6 +56,9 @@ TICKET_SOURCE          := libtpms/src/tpm2/Ticket.c
 CANCEL_FIXTURE_GENERATOR := scripts/generate_cancel_checkpoints_fixture.py
 ALGORITHM_TESTS_SOURCE   := libtpms/src/tpm2/AlgorithmTests.c
 
+FAILURE_LOCATIONS_FIXTURE_GENERATOR := scripts/generate_failure_locations_fixture.py
+EXEC_COMMAND_SOURCE                 := libtpms/src/tpm2/ExecCommand.c
+
 # ---------------------------------------------------------------------------
 # Cargo target directory / profile selection
 # ---------------------------------------------------------------------------
@@ -95,7 +98,7 @@ SWTPM_CONFIGURE_STAMP := $(SWTPM_TARGET_DIR)/.configured
 
 JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
-.PHONY: all build build-release generate-abi check-generated-inputs check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture test-abi cargo-check check clean \
+.PHONY: all build build-release generate-abi check-generated-inputs check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture check-failure-locations-fixture test-abi cargo-check check clean \
 	prepare-swtpm build-swtpm test-swtpm clean-swtpm verify-swtpm-linkage
 
 all: check
@@ -236,13 +239,20 @@ check-cancel-fixture:
 	}
 	$(PYTHON) $(CANCEL_FIXTURE_GENERATOR) --check
 
+check-failure-locations-fixture:
+	@test -f $(EXEC_COMMAND_SOURCE) || { \
+		echo "error: $(EXEC_COMMAND_SOURCE) not found; run 'git submodule update --init libtpms'" >&2; \
+		exit 1; \
+	}
+	$(PYTHON) $(FAILURE_LOCATIONS_FIXTURE_GENERATOR) --check
+
 test-abi:
 	$(PYTHON) -m unittest discover -s scripts/tests
 
 cargo-check:
 	$(CARGO) check
 
-check: test-abi check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture cargo-check
+check: test-abi check-generated-abi check-ffi-types check-pa-fixture check-nv-layout-fixture check-drbg-fixture check-volatile-fixture check-hash-fixture check-cancel-fixture check-failure-locations-fixture cargo-check
 
 clean:
 	$(CARGO) clean

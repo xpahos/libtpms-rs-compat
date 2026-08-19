@@ -16,7 +16,13 @@ pub(in crate::library::tpm2) const CTR_DRBG_MAX_REQUESTS_PER_RESEED: u64 = 1 << 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2) enum StirError {
     Entropy,
-    Fatal(TpmResult),
+    ContinuousTest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::library::tpm2) enum ReseedError {
+    Entropy,
+    ContinuousTest,
 }
 
 pub(in crate::library::tpm2) struct Drbg {
@@ -51,16 +57,17 @@ impl Drbg {
     pub(in crate::library::tpm2) fn instantiate(
         entropy: EntropySource,
         continuous_test: bool,
-    ) -> Result<Self, TpmResult> {
+    ) -> Result<Self, ReseedError> {
         let mut seed_material = [0u8; DRBG_SEED_SIZE];
-        entropy(&mut seed_material)?;
+        entropy(&mut seed_material).map_err(|_| ReseedError::Entropy)?;
         let mut drbg = Self {
             reseed_counter: 0,
             seed: [0; DRBG_SEED_SIZE],
             last_value: [0; 4],
             continuous_test,
         };
-        drbg.reseed(&seed_material)?;
+        drbg.reseed(&seed_material)
+            .map_err(|_| ReseedError::ContinuousTest)?;
         Ok(drbg)
     }
 
@@ -109,10 +116,11 @@ impl Drbg {
     pub(in crate::library::tpm2) fn reseed_from_entropy(
         &mut self,
         entropy: EntropySource,
-    ) -> Result<(), TpmResult> {
+    ) -> Result<(), ReseedError> {
         let mut seed_material = [0u8; DRBG_SEED_SIZE];
-        entropy(&mut seed_material)?;
+        entropy(&mut seed_material).map_err(|_| ReseedError::Entropy)?;
         self.reseed(&seed_material)
+            .map_err(|_| ReseedError::ContinuousTest)
     }
 
     pub(in crate::library::tpm2) fn stir(
@@ -127,7 +135,8 @@ impl Drbg {
                 *byte ^= data_byte;
             }
         }
-        self.reseed(&seed_material).map_err(StirError::Fatal)
+        self.reseed(&seed_material)
+            .map_err(|_| StirError::ContinuousTest)
     }
 
     fn reseed(&mut self, provided_entropy: &[u8; DRBG_SEED_SIZE]) -> Result<(), TpmResult> {
@@ -300,7 +309,77 @@ mod tests {
     fn entropy_failure_propagates_from_instantiate() {
         assert_eq!(
             Drbg::instantiate(failing_entropy, false).map(|_| ()),
-            Err(TPM_FAIL)
+            Err(ReseedError::Entropy)
+        );
+    }
+
+    fn snapshot(drbg: &Drbg) -> ([u8; DRBG_SEED_SIZE], u64, [u32; 4]) {
+        (*drbg.seed(), drbg.reseed_counter(), drbg.last_value())
+    }
+
+    fn colliding_last_value(drbg: &Drbg) -> [u32; 4] {
+        let key: [u8; DRBG_KEY_SIZE] = drbg.seed()[..DRBG_KEY_SIZE].try_into().unwrap();
+        let mut iv: [u8; DRBG_IV_SIZE] = drbg.seed()[DRBG_KEY_SIZE..].try_into().unwrap();
+        increment_iv(&mut iv);
+        let cipher = aes::Aes256::new(&key.into());
+        block_words(&encrypt_block(&cipher, iv))
+    }
+
+    #[test]
+    fn a_failed_entropy_source_is_classified_and_leaves_the_state_alone() {
+        let mut drbg = Drbg::instantiate(oracle_entropy, true).expect("instantiate");
+        let before = snapshot(&drbg);
+        assert_eq!(
+            drbg.reseed_from_entropy(failing_entropy),
+            Err(ReseedError::Entropy)
+        );
+        assert_eq!(
+            snapshot(&drbg),
+            before,
+            "DRBG_Reseed bails before the update"
+        );
+        assert_eq!(drbg.stir(failing_entropy, None), Err(StirError::Entropy));
+        assert_eq!(snapshot(&drbg), before);
+    }
+
+    #[test]
+    fn a_repeated_block_during_reseed_is_the_continuous_test_failure() {
+        let drbg = Drbg::instantiate(oracle_entropy, true).expect("instantiate");
+        let collision = colliding_last_value(&drbg);
+        let mut drbg =
+            Drbg::restore(drbg.seed(), drbg.reseed_counter(), collision, true).expect("restores");
+        let before = snapshot(&drbg);
+        assert_eq!(
+            drbg.reseed_from_entropy(oracle_entropy),
+            Err(ReseedError::ContinuousTest)
+        );
+        assert_eq!(snapshot(&drbg), before, "the failed update is not stored");
+        assert_eq!(
+            drbg.stir(oracle_entropy, None),
+            Err(StirError::ContinuousTest)
+        );
+    }
+
+    #[test]
+    fn a_repeated_block_during_generation_is_the_continuous_test_failure() {
+        let source = Drbg::instantiate(oracle_entropy, true).expect("instantiate");
+        let collision = colliding_last_value(&source);
+        let mut drbg = Drbg::restore(source.seed(), source.reseed_counter(), collision, true)
+            .expect("restores");
+        let before = snapshot(&drbg);
+        let mut out = [0u8; 16];
+        assert_eq!(drbg.generate(&mut out), Err(TPM_FAIL));
+        assert_eq!(
+            (*drbg.seed(), drbg.reseed_counter()),
+            (before.0, before.1),
+            "the failed generation neither stores a new seed nor advances the counter"
+        );
+
+        let mut plain = Drbg::restore(source.seed(), source.reseed_counter(), collision, false)
+            .expect("restores");
+        assert!(
+            plain.generate(&mut out).is_ok(),
+            "without the attribute the same state generates"
         );
     }
 

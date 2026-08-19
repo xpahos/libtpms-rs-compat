@@ -80,6 +80,7 @@ FAMILIES = {
     "dictionary-attack": (b"DAORACLE", "dictionary_attack.bin"),
     "evict-control": (b"ECORACLE", "evict_control.bin"),
     "flush-context": (b"FCORACLE", "flush_context.bin"),
+    "get-test-result": (b"GTORACLE", "get_test_result.bin"),
     "nv-commands": (b"NVORACLE", "nv_commands.bin"),
     "nv-certify": (b"NVORACLE", "nv_certify.bin"),
 }

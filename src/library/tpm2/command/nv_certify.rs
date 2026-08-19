@@ -4,7 +4,7 @@ use crate::library::constants::{
     TPM_RC_VALUE,
 };
 
-use super::super::crypto::{DRBG_MAGIC, Drbg, Hasher};
+use super::super::crypto::Hasher;
 use super::super::hierarchy::TPM_RH_NULL;
 use super::super::marshal::BlobWriter;
 use super::super::nv::{nv_index_name, read_index_data};
@@ -13,10 +13,9 @@ use super::super::object_create::{
     is_transient_object_handle, occupied_object_slot, persistent_object_entry,
 };
 use super::super::orderly::{commit_clear_orderly, prepare_clear_orderly};
-use super::super::persistent::{
-    OwnedAnyObjectBody, OwnedDrbgState, OwnedObjectBody, OwnedSecret, OwnedUserNvramEntry,
-};
-use super::super::profile::{ATTRIBUTE_DRBG_CONTINUOUS_TEST, ValidatedProfile};
+use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedUserNvramEntry};
+use super::super::profile::ValidatedProfile;
+use super::super::random::{finish_live_rand, take_live_rand};
 use super::super::runtime::Tpm2Runtime;
 use super::super::signature::{
     SigScheme, Signature, SigningState, is_anonymous_scheme, is_signing_object, marshal_signature,
@@ -129,13 +128,10 @@ pub(super) fn execute(
                 &digest,
                 &runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?.profile,
                 &mut signing,
-            )?;
+            );
+            let signature = publish_signing_outcome(runtime, signing, signature)?;
             let orderly_state = prepare_clear_orderly(runtime)?;
-            let backup = publish_signing_state(runtime, &signing)?;
-            if let Err(code) = commit_clear_orderly(runtime, orderly_state) {
-                rollback_signing_state(runtime, backup);
-                return Err(code);
-            }
+            commit_clear_orderly(runtime, orderly_state)?;
             signature
         } else {
             Signature::Null
@@ -365,61 +361,41 @@ fn attest_digest(hash_alg: u16, certify_info: &[u8]) -> Result<Vec<u8>, TpmResul
     Ok(hasher.finalize())
 }
 
-struct SigningBackup {
-    drbg_state: OwnedDrbgState,
-    commit_array: [u8; COMMIT_ARRAY_SIZE],
-}
-
-fn load_signing_state(runtime: &Tpm2Runtime) -> Result<SigningState, TpmResult> {
-    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-    let continuous_test = state
-        .profile
-        .attribute_enabled(ATTRIBUTE_DRBG_CONTINUOUS_TEST);
-    let stored = &runtime.live.orderly.drbg_state;
-    if stored.drbg_magic != DRBG_MAGIC {
-        return Err(TPM_RC_FAILURE);
-    }
-    let drbg = Drbg::restore(
-        stored.seed.as_bytes(),
-        stored.reseed_counter,
-        stored.last_value,
-        continuous_test,
-    )
-    .map_err(|_| TPM_RC_FAILURE)?;
+fn load_signing_state(runtime: &mut Tpm2Runtime) -> Result<SigningState, TpmResult> {
+    let rand = take_live_rand(runtime)?;
     let reset = runtime.live.state_reset.as_ref().ok_or(TPM_RC_FAILURE)?;
     Ok(SigningState {
-        drbg,
+        rand,
         commit_counter: reset.commit_counter,
         commit_nonce: reset.commit_nonce.clone(),
         commit_array: reset.commit_array,
     })
 }
 
-fn publish_signing_state(
+fn publish_commit_array(
     runtime: &mut Tpm2Runtime,
-    signing: &SigningState,
-) -> Result<SigningBackup, TpmResult> {
-    let reset = runtime.live.state_reset.as_mut().ok_or(TPM_RC_FAILURE)?;
-    let commit_array = reset.commit_array;
-    reset.commit_array = signing.commit_array;
-    let backup = SigningBackup {
-        drbg_state: runtime.live.orderly.drbg_state.clone(),
-        commit_array,
-    };
-    runtime.live.orderly.drbg_state = OwnedDrbgState {
-        reseed_counter: signing.drbg.reseed_counter(),
-        drbg_magic: DRBG_MAGIC,
-        seed: OwnedSecret::copy_of(signing.drbg.seed()),
-        last_value: signing.drbg.last_value(),
-    };
-    Ok(backup)
+    commit_array: [u8; COMMIT_ARRAY_SIZE],
+) -> Result<(), TpmResult> {
+    runtime
+        .live
+        .state_reset
+        .as_mut()
+        .ok_or(TPM_RC_FAILURE)?
+        .commit_array = commit_array;
+    Ok(())
 }
 
-fn rollback_signing_state(runtime: &mut Tpm2Runtime, backup: SigningBackup) {
-    runtime.live.orderly.drbg_state = backup.drbg_state;
-    if let Some(reset) = runtime.live.state_reset.as_mut() {
-        reset.commit_array = backup.commit_array;
-    }
+fn publish_signing_outcome(
+    runtime: &mut Tpm2Runtime,
+    signing: SigningState,
+    signature: Result<Signature, TpmResult>,
+) -> Result<Signature, TpmResult> {
+    let SigningState {
+        rand, commit_array, ..
+    } = signing;
+    finish_live_rand(runtime, rand)?;
+    publish_commit_array(runtime, commit_array)?;
+    signature
 }
 
 #[cfg(test)]
@@ -433,6 +409,7 @@ mod tests {
         marshal_sized_nv_public,
     };
     use crate::library::tpm2::oracles::nv::certify_vector;
+    use crate::library::tpm2::persistent::OwnedSecret;
     use crate::library::tpm2::restore_permanent_blob_for_test;
 
     const RC_SIZE: u32 = 0x095;
@@ -2223,6 +2200,7 @@ mod tests {
     }
 
     const RC_NV_UNAVAILABLE: u32 = 0x923;
+    const RC_FAILURE: u32 = 0x101;
 
     #[derive(Debug, Eq, PartialEq)]
     struct SigningSnapshot {
@@ -2325,67 +2303,344 @@ mod tests {
     }
 
     #[test]
-    fn a_rolled_back_signing_state_restores_every_published_field() {
+    fn a_reseed_due_signature_draw_follows_the_live_drbg_policy() {
+        use crate::library::tpm2::crypto::CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+
+        fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
+            Err(crate::library::constants::TPM_FAIL)
+        }
+        fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
+            panic!("the entropy-bad latch must short-circuit the platform callback");
+        }
+        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
+            let len = buffer.len() as u8;
+            for (index, byte) in buffer.iter_mut().enumerate() {
+                *byte = (index as u8).wrapping_add(len) ^ 0x1d;
+            }
+            Ok(())
+        }
+
+        const RC_NO_RESULT: u32 = 0x154;
+
+        let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
+        runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+        runtime.entropy = failing_entropy;
+        let before = signing_snapshot(&runtime);
+        let certify_ecdsa = |runtime: &mut Tpm2Runtime| {
+            certify(
+                runtime,
+                key,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                TPM_ALG_ECDSA,
+                TPM_ALG_SHA256,
+                32,
+                0,
+            )
+        };
+        assert_eq!(response_code(&certify_ecdsa(&mut runtime)), RC_NO_RESULT);
+        assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
+        assert!(!runtime.failure_mode);
+        assert_eq!(signing_snapshot(&runtime), before, "nothing was published");
+
+        runtime.entropy = unreachable_entropy;
+        assert_eq!(response_code(&certify_ecdsa(&mut runtime)), RC_NO_RESULT);
+        assert_eq!(signing_snapshot(&runtime), before);
+
+        let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
+        runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+        runtime.entropy = deterministic_entropy;
+        let response = certify(
+            &mut runtime,
+            key,
+            TPM_RH_OWNER,
+            INDEX,
+            &QUALIFY,
+            TPM_ALG_ECDSA,
+            TPM_ALG_SHA256,
+            32,
+            0,
+        );
+        assert_eq!(response_code(&response), RC_SUCCESS);
+        assert_eq!(
+            runtime.live.orderly.drbg_state.reseed_counter, 2,
+            "one automatic reseed and one nonce draw"
+        );
+        assert!(!runtime.entropy_bad);
+    }
+
+    #[test]
+    fn the_production_outcome_publication_precedes_an_ordinary_signing_error() {
+        const INJECTED_SIGNING_ERROR: TpmResult = 0x0195;
+
         let mut runtime = profile_runtime(&all_algorithms(), "drbg-continous-test");
         let before = signing_snapshot(&runtime);
+        let orderly_before = runtime.state().persistent.orderly_state;
+        let nv_memory_before = runtime.nv_memory.clone();
 
-        let mut signing = load_signing_state(&runtime).expect("the signing state loads");
+        let mut signing = load_signing_state(&mut runtime).expect("the signing state loads");
         let mut scratch = [0u8; 64];
-        signing.drbg.generate(&mut scratch).expect("randomness");
+        signing.rand.generate(&mut scratch).expect("randomness");
         signing.commit_array[3] = 0xa5;
 
-        let backup = publish_signing_state(&mut runtime, &signing).expect("the state publishes");
+        let outcome = publish_signing_outcome(&mut runtime, signing, Err(INJECTED_SIGNING_ERROR));
+        assert_eq!(
+            outcome.map(|_| ()),
+            Err(INJECTED_SIGNING_ERROR),
+            "the injected ordinary error is returned"
+        );
+
         let published = signing_snapshot(&runtime);
         assert_ne!(published.seed, before.seed, "the DRBG seed moved");
-        assert_ne!(
-            published.reseed_counter, before.reseed_counter,
-            "the reseed counter moved"
+        assert_eq!(
+            published.reseed_counter,
+            before.reseed_counter + 1,
+            "the single draw advanced the reseed counter"
         );
         assert_ne!(
             published.last_value, before.last_value,
             "the continuous-test value moved"
         );
         assert_eq!(published.commit_array[3], 0xa5);
+        assert!(!runtime.entropy_bad);
+        assert!(!runtime.failure_mode);
+        assert_eq!(runtime.state().persistent.orderly_state, orderly_before);
+        assert_eq!(runtime.nv_memory, nv_memory_before);
+        assert!(!runtime.nv_update_pending);
+    }
 
-        rollback_signing_state(&mut runtime, backup);
+    #[test]
+    fn an_unavailable_nv_after_signing_keeps_the_published_signing_state() {
+        const NO_DA_SIGN_KEY_ATTRS: u32 = SIGN_KEY_ATTRS | 0x0400;
+
+        let (mut runtime, _) = commitable_ecc_runtime("drbg-continous-test");
+        let (key, _) = create_primary(
+            &mut runtime,
+            TPM_RH_OWNER,
+            &ecc_template(0x0010, 0, TPM_ECC_NIST_P256, NO_DA_SIGN_KEY_ATTRS),
+        );
+        runtime.nv_available = false;
+        let before = signing_snapshot(&runtime);
+        let nv_memory_before = runtime.nv_memory.clone();
+
         assert_eq!(
-            signing_snapshot(&runtime),
-            before,
-            "the rollback restores every published field"
+            response_code(&certify(
+                &mut runtime,
+                key,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                TPM_ALG_ECDSA,
+                TPM_ALG_SHA256,
+                32,
+                0
+            )),
+            RC_NV_UNAVAILABLE
+        );
+
+        let after = signing_snapshot(&runtime);
+        assert_ne!(after.seed, before.seed, "the nonce draw remains consumed");
+        assert_ne!(after.reseed_counter, before.reseed_counter);
+        assert_eq!(after.commit_array, before.commit_array);
+        assert_eq!(runtime.state().persistent.orderly_state, 0);
+        assert_eq!(runtime.nv_memory, nv_memory_before);
+        assert!(!runtime.nv_update_pending);
+        assert!(!runtime.failure_mode);
+    }
+
+    #[test]
+    fn a_failed_orderly_commit_keeps_the_signing_state_and_rolls_back_nv() {
+        use crate::library::tpm2::nv::build_nv_image;
+
+        let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
+        runtime.state.as_mut().unwrap().persistent.owner_policy = vec![0x5a; 4096];
+        assert!(build_nv_image(runtime.state()).is_err());
+        let before = signing_snapshot(&runtime);
+        let nv_memory_before = runtime.nv_memory.clone();
+
+        assert_eq!(
+            response_code(&certify(
+                &mut runtime,
+                key,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                TPM_ALG_ECDSA,
+                TPM_ALG_SHA256,
+                32,
+                0
+            )),
+            RC_FAILURE
+        );
+
+        let after = signing_snapshot(&runtime);
+        assert_ne!(after.seed, before.seed, "the nonce draw remains consumed");
+        assert_ne!(after.reseed_counter, before.reseed_counter);
+        assert_eq!(after.commit_array, before.commit_array);
+        assert_eq!(
+            runtime.state().persistent.orderly_state,
+            0,
+            "the tentative orderly mutation is rolled back"
+        );
+        assert_eq!(runtime.nv_memory, nv_memory_before);
+        assert!(!runtime.nv_update_pending);
+        assert!(!runtime.failure_mode);
+    }
+
+    #[test]
+    fn an_unavailable_nv_after_a_split_signature_keeps_the_consumed_commitment() {
+        const NO_DA_SIGN_KEY_ATTRS: u32 = SIGN_KEY_ATTRS | 0x0400;
+
+        let (mut runtime, _) = commitable_ecc_runtime("drbg-continous-test");
+        let (key, _) = create_primary(
+            &mut runtime,
+            TPM_RH_OWNER,
+            &ecc_template(0x0010, 0, TPM_ECC_NIST_P256, NO_DA_SIGN_KEY_ATTRS),
+        );
+        runtime.nv_available = false;
+        let before = signing_snapshot(&runtime);
+        let nv_memory_before = runtime.nv_memory.clone();
+        assert_eq!(before.commit_array[0], 0x01, "the commitment is active");
+
+        assert_eq!(
+            response_code(&certify_split(
+                &mut runtime,
+                key,
+                INDEX,
+                TPM_ALG_ECDAA,
+                TPM_ALG_SHA256,
+                0
+            )),
+            RC_NV_UNAVAILABLE
+        );
+
+        let after = signing_snapshot(&runtime);
+        assert_ne!(after.seed, before.seed, "the nonce draw remains consumed");
+        assert_ne!(after.reseed_counter, before.reseed_counter);
+        assert_eq!(
+            after.commit_array[0], 0x00,
+            "the split signature released its commit slot"
+        );
+        assert_eq!(runtime.state().persistent.orderly_state, 0);
+        assert_eq!(runtime.nv_memory, nv_memory_before);
+        assert!(!runtime.nv_update_pending);
+        assert!(!runtime.failure_mode);
+
+        assert_eq!(
+            response_code(&certify_split(
+                &mut runtime,
+                key,
+                INDEX,
+                TPM_ALG_ECDAA,
+                TPM_ALG_SHA256,
+                0
+            )),
+            RC_VALUE,
+            "the commitment cannot be reused"
         );
     }
 
     #[test]
-    fn a_failed_orderly_commit_rolls_the_signing_state_back() {
-        let (mut runtime, _) = commitable_ecc_runtime("drbg-continous-test");
+    fn a_failed_orderly_commit_after_a_split_signature_keeps_the_consumed_commitment() {
+        use crate::library::tpm2::nv::build_nv_image;
+
+        let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
+        runtime.state.as_mut().unwrap().persistent.owner_policy = vec![0x5a; 4096];
+        assert!(build_nv_image(runtime.state()).is_err());
         let before = signing_snapshot(&runtime);
         let nv_memory_before = runtime.nv_memory.clone();
+        assert_eq!(before.commit_array[0], 0x01, "the commitment is active");
 
-        let orderly_state = prepare_clear_orderly(&runtime).expect("the TPM is orderly");
-        let mut signing = load_signing_state(&runtime).expect("the signing state loads");
-        signing.drbg.generate(&mut [0u8; 48]).expect("randomness");
-        signing.commit_array[0] = 0x00;
-        let backup = publish_signing_state(&mut runtime, &signing).expect("the state publishes");
-
-        let saved = runtime.state.take();
         assert_eq!(
-            commit_clear_orderly(&mut runtime, orderly_state),
-            Err(TPM_RC_FAILURE),
-            "the orderly commit fails after the signature was produced"
+            response_code(&certify_split(
+                &mut runtime,
+                key,
+                INDEX,
+                TPM_ALG_ECDAA,
+                TPM_ALG_SHA256,
+                0
+            )),
+            RC_FAILURE
         );
-        rollback_signing_state(&mut runtime, backup);
-        runtime.state = saved;
 
+        let after = signing_snapshot(&runtime);
+        assert_ne!(after.seed, before.seed, "the nonce draw remains consumed");
+        assert_ne!(after.reseed_counter, before.reseed_counter);
         assert_eq!(
-            signing_snapshot(&runtime),
-            before,
-            "the rollback restores the DRBG and the commitment"
+            after.commit_array[0], 0x00,
+            "the split signature released its commit slot"
         );
         assert_eq!(
             runtime.state().persistent.orderly_state,
             0,
-            "the TPM is still orderly"
+            "the tentative orderly mutation is rolled back"
         );
+        assert_eq!(runtime.nv_memory, nv_memory_before);
+        assert!(!runtime.nv_update_pending);
+        assert!(!runtime.failure_mode);
+
+        assert_eq!(
+            response_code(&certify_split(
+                &mut runtime,
+                key,
+                INDEX,
+                TPM_ALG_ECDAA,
+                TPM_ALG_SHA256,
+                0
+            )),
+            RC_VALUE,
+            "the commitment cannot be reused"
+        );
+    }
+
+    #[test]
+    fn a_continuous_test_failure_during_signing_is_fatal_and_publishes_nothing() {
+        use crate::library::tpm2::crypto::Drbg;
+        use crate::library::tpm2::failure_mode::FailureLocation;
+
+        fn colliding_last_value(seed: &[u8]) -> [u32; 4] {
+            let mut probe = Drbg::restore(seed, 1, [0; 4], false).expect("the probe restores");
+            let mut block = [0u8; 16];
+            probe.generate(&mut block).expect("the probe generates");
+            core::array::from_fn(|word| {
+                u32::from_le_bytes(block[word * 4..word * 4 + 4].try_into().unwrap())
+            })
+        }
+
+        let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
+        let seed = runtime.live.orderly.drbg_state.seed.as_bytes().to_vec();
+        runtime.live.orderly.drbg_state.last_value = colliding_last_value(&seed);
+        let before = signing_snapshot(&runtime);
+        let nv_memory_before = runtime.nv_memory.clone();
+
+        assert_eq!(
+            response_code(&certify(
+                &mut runtime,
+                key,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                TPM_ALG_ECDSA,
+                TPM_ALG_SHA256,
+                32,
+                0
+            )),
+            RC_FAILURE
+        );
+
+        assert!(runtime.failure_mode);
+        assert_eq!(
+            runtime.failure_diagnostics,
+            FailureLocation::DrbgEntropy.diagnostics()
+        );
+        assert!(!runtime.entropy_bad);
+        assert_eq!(
+            signing_snapshot(&runtime),
+            before,
+            "no partially advanced state is published"
+        );
+        assert_eq!(runtime.state().persistent.orderly_state, 0);
         assert_eq!(runtime.nv_memory, nv_memory_before);
         assert!(!runtime.nv_update_pending);
     }

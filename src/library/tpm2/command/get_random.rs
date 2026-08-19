@@ -123,6 +123,10 @@ mod tests {
         hex("80010000001600 00017a 00000006 00000100 0000000a")
     }
 
+    fn restricted_properties_response() -> Vec<u8> {
+        crate::library::tpm2::oracles::get_test_result::vector("FM_CAP_PT105_C1").to_vec()
+    }
+
     fn get_random_command(parameters: &[u8]) -> Vec<u8> {
         let mut out = vec![0x80, 0x01];
         out.extend_from_slice(&(10 + parameters.len() as u32).to_be_bytes());
@@ -464,9 +468,15 @@ mod tests {
 
         let before = snapshot(&runtime);
         let live_before = runtime.live.orderly.drbg_state.clone();
-        for follow_up in [
-            get_capability_properties_command(),
-            get_random_command(&[0x00, 0x10]),
+        for (follow_up, expected) in [
+            (
+                get_capability_properties_command(),
+                restricted_properties_response(),
+            ),
+            (
+                get_random_command(&[0x00, 0x10]),
+                error_response(TPM_RC_FAILURE),
+            ),
         ] {
             let input = CommandInput::new(follow_up.len() as u32, follow_up);
             let response = process(&mut runtime, 0, &input, |_| {
@@ -474,8 +484,7 @@ mod tests {
             })
             .expect("the command processes");
             assert_eq!(
-                response,
-                error_response(TPM_RC_FAILURE),
+                response, expected,
                 "failure mode answers every command itself"
             );
         }
@@ -521,41 +530,38 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_at_the_reseed_threshold_stops_the_tpm() {
+    fn an_entropy_failure_at_the_reseed_threshold_yields_zero_filled_bytes() {
         let mut runtime = started_runtime();
         runtime.entropy = failing_entropy;
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
         let before = snapshot(&runtime);
         let live_before = runtime.live.orderly.drbg_state.clone();
 
-        let command = get_random_command(&[0x00, 0x10]);
-        let input = CommandInput::new(command.len() as u32, command);
-        let response = process(&mut runtime, 0, &input, |_| {
-            panic!("a failed automatic reseed must not schedule an NV commit")
-        })
-        .expect("the command processes");
-        assert_eq!(response, error_response(TPM_RC_FAILURE));
-        assert!(runtime.failure_mode);
-        assert_live_drbg_unchanged(&runtime, &live_before);
-        assert_persistent_unchanged(&runtime, &before);
+        let mut expected = hex("80010000001c000000000010");
+        expected.extend_from_slice(&[0u8; 16]);
 
-        for follow_up in [
-            get_capability_properties_command(),
-            get_random_command(&[0x00, 0x10]),
-        ] {
-            let input = CommandInput::new(follow_up.len() as u32, follow_up);
+        for attempt in 0..3 {
+            if attempt == 1 {
+                runtime.entropy = failing_entropy;
+                runtime.entropy = |_buffer: &mut [u8]| -> Result<(), TpmResult> {
+                    panic!("the latched condition must not retry the source")
+                };
+            }
+            let command = get_random_command(&[0x00, 0x10]);
+            let input = CommandInput::new(command.len() as u32, command);
             let response = process(&mut runtime, 0, &input, |_| {
-                panic!("failure mode must not schedule an NV commit")
+                panic!("a failed automatic reseed must not schedule an NV commit")
             })
             .expect("the command processes");
-            assert_eq!(
-                response,
-                error_response(TPM_RC_FAILURE),
-                "failure mode answers every command itself"
+            assert_eq!(response, expected, "attempt {attempt}");
+            assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
+            assert!(
+                !runtime.failure_mode,
+                "an entropy-source failure is not a FAIL() site"
             );
+            assert_live_drbg_unchanged(&runtime, &live_before);
+            assert_persistent_unchanged(&runtime, &before);
         }
-        assert_live_drbg_unchanged(&runtime, &live_before);
-        assert_persistent_unchanged(&runtime, &before);
     }
 
     #[test]

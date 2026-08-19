@@ -1,4 +1,5 @@
 use crate::ffi_types::TpmResult;
+use crate::library::constants::TPM_FAIL;
 
 use super::crypto::{DRBG_MAGIC, Drbg, EntropySource};
 use super::nv::RAM_INDEX_SPACE;
@@ -20,8 +21,9 @@ const PROOF_SIZE: usize = 64;
 
 const COMMIT_NONCE_SIZE: usize = 64;
 
-const FIRMWARE_V1: u32 = 0x2024_0125;
-const FIRMWARE_V2: u32 = 0x0012_0000;
+use super::capability::properties::{
+    PLATFORM_FIRMWARE_V1 as FIRMWARE_V1, PLATFORM_FIRMWARE_V2 as FIRMWARE_V2,
+};
 
 const TPM_SU_CLEAR: u16 = 0x0000;
 
@@ -67,7 +69,7 @@ pub(super) fn manufacture_state(
 ) -> Result<OwnedPersistentState, TpmResult> {
     let _ = entropy(&mut []);
     let continuous_test = profile.attribute_enabled(ATTRIBUTE_DRBG_CONTINUOUS_TEST);
-    let mut drbg = Drbg::instantiate(entropy, continuous_test)?;
+    let mut drbg = Drbg::instantiate(entropy, continuous_test).map_err(|_| TPM_FAIL)?;
     generate_secret(&mut drbg, COMMIT_NONCE_SIZE)?;
     let ep_seed = generate_secret(&mut drbg, PRIMARY_SEED_SIZE)?;
     let sp_seed = generate_secret(&mut drbg, PRIMARY_SEED_SIZE)?;

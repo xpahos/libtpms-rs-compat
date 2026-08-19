@@ -17,7 +17,7 @@ use super::super::object_create::{
 use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody};
 use super::super::profile::{ATTRIBUTE_DRBG_CONTINUOUS_TEST, ATTRIBUTE_NO_ECC_KEY_DERIVATION};
 use super::super::public::{PublicParms, StateFormatLimit, TPM_ALG_ECC, TPM_ALG_NULL, TPM_ALG_RSA};
-use super::super::random::{store_live_drbg, take_live_drbg};
+use super::super::random::{finish_live_rand, take_live_rand};
 use super::super::runtime::Tpm2Runtime;
 use super::super::template::{
     AlgorithmPolicy, TPMA_OBJECT_SENSITIVE_DATA_ORIGIN, TemplateReader, adjusted_auth_value,
@@ -186,7 +186,7 @@ pub(super) fn execute(
             )?;
         } else {
             seed_compat_level = profile_seed_compat_level;
-            rand = SeededRand::from_live_drbg(take_live_drbg(runtime)?, runtime.entropy);
+            rand = take_live_rand(runtime)?;
         }
     }
 
@@ -207,7 +207,7 @@ pub(super) fn execute(
         &secrets,
         &mut rand,
     );
-    let (created, out_private) = created.and_then(|created| {
+    let created = created.and_then(|created| {
         let out_private = match parent.as_ref().filter(|_| !derivation) {
             Some(parent) => {
                 let body = parent.body.as_deref().ok_or(TPM_RC_FAILURE)?;
@@ -223,10 +223,9 @@ pub(super) fn execute(
             None => Vec::new(),
         };
         Ok((created, out_private))
-    })?;
-    if let Some(drbg) = rand.into_live_drbg() {
-        store_live_drbg(runtime, &drbg);
-    }
+    });
+    finish_live_rand(runtime, rand)?;
+    let (created, out_private) = created?;
 
     let out_public = marshal_public_area(&created.public)?;
     let name = created.name.clone();
@@ -1491,6 +1490,250 @@ mod tests {
                 vector("DERIVED_ECC_EMPTY"),
                 "an owner-hierarchy parent derives a different child than the endorsement one"
             );
+        }
+    }
+
+    mod live_drbg_policy {
+        use super::*;
+        use crate::library::constants::TPM_FAIL;
+        use crate::library::tpm2::crypto::{CTR_DRBG_MAX_REQUESTS_PER_RESEED, Drbg};
+        use crate::library::tpm2::failure_mode::FailureLocation;
+        use crate::library::tpm2::manufacture::manufacture_state;
+        use crate::library::tpm2::object_create::find_empty_object_slot;
+        use crate::library::tpm2::profile::validate_user_profile;
+        use crate::library::tpm2::runtime::commit_manufactured_state;
+        use std::cell::Cell;
+
+        const NO_RESULT_RESPONSE: [u8; 10] =
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x54];
+        const FAILURE_RESPONSE: [u8; 10] =
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
+        const SUCCESS_RESPONSE: [u8; 10] =
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
+
+        thread_local! {
+            static ENTROPY_CALLS: Cell<u32> = const { Cell::new(0) };
+        }
+
+        fn counted_failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
+            ENTROPY_CALLS.with(|calls| calls.set(calls.get() + 1));
+            Err(TPM_FAIL)
+        }
+
+        fn take_entropy_calls() -> u32 {
+            ENTROPY_CALLS.with(|calls| calls.replace(0))
+        }
+
+        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
+            let len = buffer.len() as u8;
+            for (index, byte) in buffer.iter_mut().enumerate() {
+                *byte = (index as u8).wrapping_add(len) ^ 0x2f;
+            }
+            Ok(())
+        }
+
+        fn drbg_snapshot(runtime: &Tpm2Runtime) -> (u64, u32, Vec<u8>, [u32; 4]) {
+            let state = &runtime.live.orderly.drbg_state;
+            (
+                state.reseed_counter,
+                state.drbg_magic,
+                state.seed.expose().to_vec(),
+                state.last_value,
+            )
+        }
+
+        fn parent_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+            let mut runtime = restored_runtime(clock);
+            exec(
+                &mut runtime,
+                clock,
+                "CP_STORAGE_PARENT",
+                cp_command(TPM_RH_OWNER_H, &[], &SRK_TEMPLATE),
+            );
+            runtime
+        }
+
+        #[track_caller]
+        fn run(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: Vec<u8>) -> Vec<u8> {
+            let input = CommandInput::new(bytes.len() as u32, bytes);
+            process(runtime, 0, &input, clock, |_| Ok(())).expect("the command processes")
+        }
+
+        #[test]
+        fn a_reseed_due_entropy_failure_answers_no_result_latches_and_never_retries() {
+            let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
+            let mut runtime = parent_runtime(&clock);
+            runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+            runtime.entropy = counted_failing_entropy;
+            take_entropy_calls();
+            let before = drbg_snapshot(&runtime);
+
+            let child = cl_command(0x8000_0000, &[], &[], &[], &AES_TEMPLATE);
+            let response = run(&mut runtime, &clock, child.clone());
+            assert_eq!(response, NO_RESULT_RESPONSE);
+            assert_eq!(
+                take_entropy_calls(),
+                1,
+                "the callback is invoked exactly once"
+            );
+            assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
+            assert!(!runtime.failure_mode, "no FAIL() site is reached");
+            assert_eq!(runtime.failure_diagnostics, Default::default());
+            assert_eq!(
+                drbg_snapshot(&runtime),
+                before,
+                "the failed reseed leaves the live DRBG untouched"
+            );
+            assert_eq!(
+                find_empty_object_slot(&runtime),
+                Some((1, 0x8000_0001)),
+                "no child slot is consumed"
+            );
+
+            runtime.entropy = unreachable_entropy;
+            let response = run(&mut runtime, &clock, child);
+            assert_eq!(response, NO_RESULT_RESPONSE);
+            assert_eq!(drbg_snapshot(&runtime), before);
+            assert!(runtime.entropy_bad);
+            assert!(!runtime.failure_mode);
+        }
+
+        #[test]
+        fn a_pre_latched_runtime_short_circuits_live_draws() {
+            let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
+            let mut runtime = parent_runtime(&clock);
+            runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+            runtime.entropy_bad = true;
+            runtime.entropy = unreachable_entropy;
+            let before = drbg_snapshot(&runtime);
+
+            let response = run(
+                &mut runtime,
+                &clock,
+                cl_command(0x8000_0000, &[], &[], &[], &AES_TEMPLATE),
+            );
+            assert_eq!(response, NO_RESULT_RESPONSE);
+            assert!(runtime.entropy_bad);
+            assert!(!runtime.failure_mode);
+            assert_eq!(drbg_snapshot(&runtime), before);
+            assert_eq!(find_empty_object_slot(&runtime), Some((1, 0x8000_0001)));
+        }
+
+        #[test]
+        fn an_entropy_starved_outer_wrap_iv_matches_the_pre_latched_twin() {
+            let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
+            let mut starved = parent_runtime(&clock);
+            starved.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED - 2;
+            starved.entropy = counted_failing_entropy;
+            take_entropy_calls();
+
+            let child = cl_command(0x8000_0000, &[], &[], &[], &AES_TEMPLATE);
+            let starved_response = run(&mut starved, &clock, child.clone());
+            assert_eq!(starved_response[6..10], [0, 0, 0, 0], "the create succeeds");
+            assert_eq!(take_entropy_calls(), 1);
+            assert!(starved.entropy_bad);
+            assert!(!starved.failure_mode);
+            assert_eq!(
+                starved.live.orderly.drbg_state.reseed_counter, CTR_DRBG_MAX_REQUESTS_PER_RESEED,
+                "the key and seedValue draws advance the stored live DRBG"
+            );
+            assert_eq!(
+                find_empty_object_slot(&starved),
+                Some((2, 0x8000_0002)),
+                "the child is loaded"
+            );
+
+            let twin_clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
+            let mut latched = parent_runtime(&twin_clock);
+            latched.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED - 2;
+            latched.entropy_bad = true;
+            latched.entropy = unreachable_entropy;
+            let latched_response = run(&mut latched, &twin_clock, child);
+            assert_eq!(
+                starved_response, latched_response,
+                "a fresh callback failure and the standing latch answer identical bytes"
+            );
+        }
+
+        fn continuous_test_runtime() -> Box<Tpm2Runtime> {
+            const CONTINUOUS_TEST_PROFILE: &[u8] =
+                br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
+            let profile = validate_user_profile(Some(CONTINUOUS_TEST_PROFILE))
+                .expect("the profile validates");
+            let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+            let mut runtime = commit_manufactured_state(state).expect("commits");
+            runtime.entropy = deterministic_entropy;
+            runtime
+        }
+
+        fn colliding_last_value(seed: &[u8]) -> [u32; 4] {
+            let mut probe = Drbg::restore(seed, 1, [0; 4], false).expect("the probe restores");
+            let mut block = [0u8; 16];
+            probe.generate(&mut block).expect("the probe generates");
+            core::array::from_fn(|word| {
+                u32::from_le_bytes(block[word * 4..word * 4 + 4].try_into().unwrap())
+            })
+        }
+
+        #[test]
+        fn a_live_continuous_test_failure_enters_failure_mode_with_the_encrypt_drbg_site() {
+            let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
+            let mut runtime = continuous_test_runtime();
+            let startup = vec![
+                0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
+            ];
+            assert_eq!(run(&mut runtime, &clock, startup), SUCCESS_RESPONSE);
+
+            let primary = cp_command(0x4000_0001, &[], &SRK_TEMPLATE);
+            let response = run(&mut runtime, &clock, primary);
+            assert_eq!(response[6..10], [0, 0, 0, 0], "the parent is created");
+
+            let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
+            runtime.live.orderly.drbg_state.last_value = colliding_last_value(&seed);
+            runtime.entropy = unreachable_entropy;
+            let before = drbg_snapshot(&runtime);
+
+            let child = cl_command(0x8000_0000, &[], &[], &[], &AES_TEMPLATE);
+            let response = run(&mut runtime, &clock, child.clone());
+            assert_eq!(response, FAILURE_RESPONSE);
+            assert!(runtime.failure_mode, "the repeated block stops the TPM");
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::DrbgEntropy.diagnostics(),
+                "the diagnostics name EncryptDRBG's FATAL_ERROR_ENTROPY site"
+            );
+            assert!(
+                !runtime.entropy_bad,
+                "a continuous-test hit is not an entropy-callback failure"
+            );
+            assert_eq!(
+                drbg_snapshot(&runtime),
+                before,
+                "the partially advanced DRBG is not stored"
+            );
+            assert_eq!(
+                find_empty_object_slot(&runtime),
+                Some((1, 0x8000_0001)),
+                "no child slot is consumed"
+            );
+
+            let response = run(&mut runtime, &clock, child);
+            assert_eq!(response, FAILURE_RESPONSE);
+        }
+
+        #[test]
+        fn an_independently_seeded_create_ignores_the_global_latch() {
+            let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
+            let mut runtime = restored_runtime(&clock);
+            runtime.entropy_bad = true;
+            exec(
+                &mut runtime,
+                &clock,
+                "AES_PRIMARY_OWNER",
+                cl_command(TPM_RH_OWNER_H, &[], &[], &[], &AES_TEMPLATE),
+            );
+            assert!(runtime.entropy_bad, "the latch is left alone");
+            assert!(!runtime.failure_mode);
         }
     }
 }

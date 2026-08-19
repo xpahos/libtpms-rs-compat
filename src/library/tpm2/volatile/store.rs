@@ -329,9 +329,9 @@ pub(in crate::library::tpm2) fn capture_volatile_state(
         free_session_slots: live.free_session_slots,
         in_failure_mode: runtime.failure_mode,
         tpm_established: runtime.tpm_established,
-        fail_function: compat.fail_function,
-        fail_line: compat.fail_line,
-        fail_code: compat.fail_code,
+        fail_function: runtime.failure_diagnostics.function,
+        fail_line: runtime.failure_diagnostics.line,
+        fail_code: runtime.failure_diagnostics.code,
         real_time_previous: runtime.timer.real_time_previous,
         tpm_time: runtime.timer.tpm_time,
         timer_reset: runtime.timer.timer_reset,
@@ -656,6 +656,73 @@ mod tests {
             assert_eq!(decoded.in_failure_mode, failure_mode);
             assert_eq!(decoded.tpm_established, established);
         }
+    }
+
+    #[test]
+    fn failure_diagnostics_round_trip_through_the_volatile_state() {
+        use crate::library::tpm2::failure_mode::{FailureLocation, enter_failure_mode};
+
+        let mut runtime = manufactured_runtime();
+        enter_failure_mode(&mut runtime, FailureLocation::NvCommit);
+        let recorded = runtime.failure_diagnostics;
+        let blob = store(&runtime);
+        let seeds = runtime_seed_tie(&runtime);
+        let decoded = decode_produced(&blob, &seeds);
+        assert!(decoded.in_failure_mode);
+        assert_eq!(decoded.fail_function, recorded.function);
+        assert_eq!(decoded.fail_line, recorded.line);
+        assert_eq!(decoded.fail_code, recorded.code);
+
+        let owned = materialize_volatile_state(
+            &decoded,
+            SeedTie {
+                ep_seed: &seeds.0,
+                sp_seed: &seeds.1,
+                pp_seed: &seeds.2,
+            },
+            CURRENT_OBJECT_VERSION,
+        )
+        .expect("materializes");
+        let mut restored = manufactured_runtime();
+        merge_volatile_state(&mut restored, owned);
+        assert!(restored.failure_mode);
+        assert_eq!(restored.failure_diagnostics, recorded);
+    }
+
+    #[test]
+    fn the_entropy_bad_latch_is_not_part_of_the_volatile_contract() {
+        use crate::library::tpm2::runtime::merge_volatile_state;
+
+        let mut runtime = manufactured_runtime();
+        runtime.entropy_bad = true;
+        let blob = store(&runtime);
+        let seeds = runtime_seed_tie(&runtime);
+        let decoded = decode_produced(&blob, &seeds);
+        let owned = materialize_volatile_state(
+            &decoded,
+            SeedTie {
+                ep_seed: &seeds.0,
+                sp_seed: &seeds.1,
+                pp_seed: &seeds.2,
+            },
+            CURRENT_OBJECT_VERSION,
+        )
+        .expect("materializes");
+        let mut restored = manufactured_runtime();
+        merge_volatile_state(&mut restored, owned);
+        assert!(!restored.entropy_bad);
+    }
+
+    #[test]
+    fn a_healthy_runtime_serializes_zero_failure_diagnostics() {
+        let runtime = manufactured_runtime();
+        let blob = store(&runtime);
+        let seeds = runtime_seed_tie(&runtime);
+        let decoded = decode_produced(&blob, &seeds);
+        assert!(!decoded.in_failure_mode);
+        assert_eq!(decoded.fail_function, 0);
+        assert_eq!(decoded.fail_line, 0);
+        assert_eq!(decoded.fail_code, 0);
     }
 
     #[test]

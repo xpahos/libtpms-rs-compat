@@ -1,7 +1,8 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NO_RESULT};
 
-use super::crypto::{DRBG_MAGIC, Drbg, StirError, df_buffer};
+use super::crypto::{DRBG_MAGIC, Drbg, LiveDrbg, ReseedError, SeededRand, StirError, df_buffer};
+use super::failure_mode::{FailureLocation, enter_failure_mode};
 use super::persistent::{OwnedDrbgState, OwnedSecret};
 use super::profile::ATTRIBUTE_DRBG_CONTINUOUS_TEST;
 use super::runtime::Tpm2Runtime;
@@ -9,10 +10,20 @@ use super::runtime::Tpm2Runtime;
 pub(super) fn stir_random(runtime: &mut Tpm2Runtime, in_data: &[u8]) -> Result<(), TpmResult> {
     let (mut drbg, magic) = restore_live_drbg(runtime)?;
     let additional = df_buffer(in_data);
-    match drbg.stir(runtime.entropy, additional.as_ref()) {
+    let outcome = if runtime.entropy_bad {
+        Err(StirError::Entropy)
+    } else {
+        drbg.stir(runtime.entropy, additional.as_ref())
+    };
+    match outcome {
         Ok(()) => {}
-        Err(StirError::Entropy) => return Err(TPM_RC_NO_RESULT),
-        Err(StirError::Fatal(_)) => return Err(fatal_drbg_failure(runtime)),
+        Err(StirError::Entropy) => {
+            runtime.entropy_bad = true;
+            return Err(TPM_RC_NO_RESULT);
+        }
+        Err(StirError::ContinuousTest) => {
+            return Err(fatal_drbg_failure(runtime, FailureLocation::DrbgEntropy));
+        }
     }
     runtime.live.orderly.drbg_state = OwnedDrbgState {
         reseed_counter: drbg.reseed_counter(),
@@ -34,7 +45,10 @@ fn restore_live_drbg(runtime: &mut Tpm2Runtime) -> Result<(Drbg, u32), TpmResult
     let stored = &runtime.live.orderly.drbg_state;
     let magic = stored.drbg_magic;
     if magic != DRBG_MAGIC {
-        return Err(fatal_drbg_failure(runtime));
+        return Err(fatal_drbg_failure(
+            runtime,
+            FailureLocation::DrbgInvalidState,
+        ));
     }
     let restored = Drbg::restore(
         stored.seed.as_bytes(),
@@ -44,15 +58,14 @@ fn restore_live_drbg(runtime: &mut Tpm2Runtime) -> Result<(Drbg, u32), TpmResult
     );
     match restored {
         Ok(drbg) => Ok((drbg, magic)),
-        Err(_) => Err(fatal_drbg_failure(runtime)),
+        Err(_) => Err(fatal_drbg_failure(
+            runtime,
+            FailureLocation::DrbgInvalidState,
+        )),
     }
 }
 
-pub(super) fn take_live_drbg(runtime: &mut Tpm2Runtime) -> Result<Drbg, TpmResult> {
-    restore_live_drbg(runtime).map(|(drbg, _)| drbg)
-}
-
-pub(super) fn store_live_drbg(runtime: &mut Tpm2Runtime, drbg: &Drbg) {
+fn store_live_drbg(runtime: &mut Tpm2Runtime, drbg: &Drbg) {
     runtime.live.orderly.drbg_state = OwnedDrbgState {
         reseed_counter: drbg.reseed_counter(),
         drbg_magic: DRBG_MAGIC,
@@ -61,19 +74,136 @@ pub(super) fn store_live_drbg(runtime: &mut Tpm2Runtime, drbg: &Drbg) {
     };
 }
 
+pub(super) fn take_live_rand(runtime: &mut Tpm2Runtime) -> Result<SeededRand, TpmResult> {
+    let (drbg, _) = restore_live_drbg(runtime)?;
+    Ok(SeededRand::from_live(LiveDrbg::new(
+        drbg,
+        runtime.entropy,
+        runtime.entropy_bad,
+    )))
+}
+
+pub(super) fn finish_live_rand(
+    runtime: &mut Tpm2Runtime,
+    rand: SeededRand,
+) -> Result<(), TpmResult> {
+    let Some(live) = rand.into_live() else {
+        return Ok(());
+    };
+    if live.entropy_bad() {
+        runtime.entropy_bad = true;
+    }
+    if live.fatal() {
+        return Err(fatal_drbg_failure(runtime, FailureLocation::DrbgEntropy));
+    }
+    store_live_drbg(runtime, &live.into_drbg());
+    Ok(())
+}
+
+pub(super) fn startup_live_drbg(runtime: &mut Tpm2Runtime) -> Result<Drbg, TpmResult> {
+    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+    let continuous_test = state
+        .profile
+        .attribute_enabled(ATTRIBUTE_DRBG_CONTINUOUS_TEST);
+
+    let stored = &runtime.live.orderly.drbg_state;
+    if stored.drbg_magic == DRBG_MAGIC {
+        let restored = Drbg::restore(
+            stored.seed.as_bytes(),
+            stored.reseed_counter,
+            stored.last_value,
+            continuous_test,
+        );
+        let Ok(mut drbg) = restored else {
+            return Err(fatal_drbg_failure(
+                runtime,
+                FailureLocation::DrbgInvalidState,
+            ));
+        };
+        let outcome = if runtime.entropy_bad {
+            Err(ReseedError::Entropy)
+        } else {
+            drbg.reseed_from_entropy(runtime.entropy)
+        };
+        match outcome {
+            Ok(()) => Ok(drbg),
+            Err(ReseedError::Entropy) => {
+                runtime.entropy_bad = true;
+                Err(TPM_RC_FAILURE)
+            }
+            Err(ReseedError::ContinuousTest) => {
+                Err(fatal_drbg_failure(runtime, FailureLocation::DrbgEntropy))
+            }
+        }
+    } else {
+        let outcome = if runtime.entropy_bad {
+            Err(ReseedError::Entropy)
+        } else {
+            Drbg::instantiate(runtime.entropy, continuous_test)
+        };
+        match outcome {
+            Ok(drbg) => Ok(drbg),
+            Err(ReseedError::Entropy) => {
+                runtime.entropy_bad = true;
+                Err(TPM_RC_FAILURE)
+            }
+            Err(ReseedError::ContinuousTest) => {
+                Err(fatal_drbg_failure(runtime, FailureLocation::DrbgEntropy))
+            }
+        }
+    }
+}
+
+pub(super) fn startup_secret(
+    runtime: &mut Tpm2Runtime,
+    drbg: &mut Drbg,
+    len: usize,
+) -> Result<OwnedSecret, TpmResult> {
+    let mut bytes = vec![0u8; len];
+    if drbg.generate(&mut bytes).is_err() {
+        return Err(fatal_drbg_failure(runtime, FailureLocation::DrbgEntropy));
+    }
+    Ok(OwnedSecret::from_vec(bytes))
+}
+
 pub(super) fn generate_random(
     runtime: &mut Tpm2Runtime,
     length: usize,
 ) -> Result<Vec<u8>, TpmResult> {
+    Ok(generate_fresh(runtime, length)?.unwrap_or_else(|| vec![0u8; length]))
+}
+
+pub(super) fn regenerate_secret(
+    runtime: &mut Tpm2Runtime,
+    length: usize,
+) -> Result<Option<Vec<u8>>, TpmResult> {
+    generate_fresh(runtime, length)
+}
+
+fn generate_fresh(runtime: &mut Tpm2Runtime, length: usize) -> Result<Option<Vec<u8>>, TpmResult> {
     let (mut drbg, magic) = restore_live_drbg(runtime)?;
 
-    if drbg.needs_reseed() && drbg.reseed_from_entropy(runtime.entropy).is_err() {
-        return Err(fatal_drbg_failure(runtime));
+    if drbg.needs_reseed() {
+        let outcome = if runtime.entropy_bad {
+            Err(ReseedError::Entropy)
+        } else {
+            drbg.reseed_from_entropy(runtime.entropy)
+        };
+        match outcome {
+            Ok(()) => {}
+            Err(ReseedError::Entropy) => {
+                runtime.entropy_bad = true;
+                return Ok(None);
+            }
+            Err(ReseedError::ContinuousTest) => {
+                return Err(fatal_drbg_failure(runtime, FailureLocation::DrbgEntropy));
+            }
+        }
     }
 
     let mut bytes = vec![0u8; length];
     if drbg.generate(&mut bytes).is_err() {
-        return Err(fatal_drbg_failure(runtime));
+        return Err(fatal_drbg_failure(runtime, FailureLocation::DrbgEntropy));
     }
 
     let updated = OwnedDrbgState {
@@ -83,11 +213,11 @@ pub(super) fn generate_random(
         last_value: drbg.last_value(),
     };
     runtime.live.orderly.drbg_state = updated;
-    Ok(bytes)
+    Ok(Some(bytes))
 }
 
-fn fatal_drbg_failure(runtime: &mut Tpm2Runtime) -> TpmResult {
-    runtime.failure_mode = true;
+fn fatal_drbg_failure(runtime: &mut Tpm2Runtime, location: FailureLocation) -> TpmResult {
+    enter_failure_mode(runtime, location);
     TPM_RC_FAILURE
 }
 
@@ -375,6 +505,11 @@ mod tests {
             &before,
             &persistent,
         );
+        assert_eq!(
+            runtime.failure_diagnostics,
+            FailureLocation::DrbgEntropy.diagnostics(),
+            "the diagnostics name EncryptDRBG's continuous-test site"
+        );
 
         let mut runtime = runtime_for(false);
         install(
@@ -569,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_at_the_threshold_fails_transactionally() {
+    fn an_entropy_failure_at_the_threshold_yields_no_bytes_without_failing() {
         for continuous_test in [false, true] {
             let record = boundary_record(continuous_test);
             for case in [&record.cases[1], &record.cases[2], &record.cases[3]] {
@@ -579,14 +714,130 @@ mod tests {
                 let before = live_drbg(&runtime);
                 let persistent = persistent_snapshot(&runtime);
                 assert!(!runtime.failure_mode, "the TPM starts healthy");
-                assert_fatal_failure(
-                    generate_random(&mut runtime, usize::from(case.requested)),
-                    &runtime,
-                    &before,
-                    &persistent,
+                let produced = generate_random(&mut runtime, usize::from(case.requested))
+                    .expect("the vendored path answers success");
+                assert_eq!(
+                    produced,
+                    vec![0u8; usize::from(case.requested)],
+                    "no generated bytes; the unwritten reference buffer maps to zeros"
                 );
+                assert!(
+                    !runtime.failure_mode,
+                    "an entropy-source failure is not a FAIL() site"
+                );
+                assert_eq!(
+                    runtime.failure_diagnostics,
+                    Default::default(),
+                    "no diagnostics are fabricated"
+                );
+                assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
+                assert_live_drbg_unchanged(&runtime, &before);
+                assert_persistent_unchanged(&runtime, &persistent);
             }
         }
+    }
+
+    fn first_encrypted_block(seed: &[u8; 48]) -> [u32; 4] {
+        use aes::cipher::{BlockEncrypt, KeyInit};
+        let key: [u8; 32] = seed[..32].try_into().unwrap();
+        let mut iv: [u8; 16] = seed[32..].try_into().unwrap();
+        for byte in iv.iter_mut().rev() {
+            *byte = byte.wrapping_add(1);
+            if *byte != 0 {
+                break;
+            }
+        }
+        let cipher = aes::Aes256::new(&key.into());
+        let mut block = aes::Block::from(iv);
+        cipher.encrypt_block(&mut block);
+        block_words(block.as_slice())
+    }
+
+    #[test]
+    fn a_continuous_test_hit_during_the_automatic_reseed_stops_the_tpm() {
+        let record = boundary_record(true);
+        let case = &record.cases[1];
+        let mut runtime = runtime_for(true);
+        runtime.entropy = deterministic_entropy;
+        install(
+            &mut runtime,
+            &record.initial_seed,
+            case.initial_reseed_counter,
+            first_encrypted_block(&record.initial_seed),
+        );
+        let before = live_drbg(&runtime);
+        let persistent = persistent_snapshot(&runtime);
+        assert_fatal_failure(
+            generate_random(&mut runtime, usize::from(case.requested)),
+            &runtime,
+            &before,
+            &persistent,
+        );
+        assert_eq!(
+            runtime.failure_diagnostics,
+            FailureLocation::DrbgEntropy.diagnostics(),
+            "the diagnostics name EncryptDRBG's continuous-test site"
+        );
+    }
+
+    #[test]
+    fn a_failed_fetch_latches_entropy_bad_and_never_retries_the_source() {
+        let record = boundary_record(false);
+        let case = &record.cases[1];
+        let mut runtime = runtime_for(false);
+        runtime.entropy = failing_entropy;
+        install_boundary(&mut runtime, &record, case);
+        let before = live_drbg(&runtime);
+        assert!(!runtime.entropy_bad);
+        assert_eq!(
+            generate_random(&mut runtime, usize::from(case.requested)).expect("succeeds"),
+            vec![0u8; usize::from(case.requested)]
+        );
+        assert!(
+            runtime.entropy_bad,
+            "the failed fetch latches the condition"
+        );
+        assert_live_drbg_unchanged(&runtime, &before);
+
+        runtime.entropy = unreachable_entropy;
+        for attempt in 0..2 {
+            assert_eq!(
+                generate_random(&mut runtime, usize::from(case.requested)).expect("still succeeds"),
+                vec![0u8; usize::from(case.requested)],
+                "attempt {attempt}: a recovered source is never consulted"
+            );
+            assert!(runtime.entropy_bad);
+            assert_live_drbg_unchanged(&runtime, &before);
+        }
+    }
+
+    #[test]
+    fn the_entropy_bad_latch_reaches_the_stir_and_back() {
+        let stir_case = stir_record(false);
+        let case = &stir_case.cases[0];
+        let mut runtime = runtime_for(false);
+        runtime.entropy = failing_entropy;
+        install_stir(&mut runtime, case);
+        assert_eq!(
+            stir_random(&mut runtime, case.additional()),
+            Err(TPM_RC_NO_RESULT)
+        );
+        assert!(runtime.entropy_bad);
+
+        runtime.entropy = unreachable_entropy;
+        runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
+        assert_eq!(
+            generate_random(&mut runtime, 16).expect("succeeds"),
+            vec![0u8; 16],
+            "the latched condition starves the automatic reseed"
+        );
+        assert_eq!(
+            stir_random(&mut runtime, case.additional()),
+            Err(TPM_RC_NO_RESULT),
+            "a later stir answers without retrying the source"
+        );
+        assert!(!runtime.failure_mode);
+        assert_eq!(runtime.failure_diagnostics, Default::default());
     }
 
     fn install_stir(runtime: &mut Tpm2Runtime, case: &DrbgStirCase) {
@@ -800,6 +1051,7 @@ mod tests {
                     !runtime.failure_mode,
                     "upstream CryptRandomStir does not fail the TPM"
                 );
+                assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
                 assert_live_drbg_unchanged(&runtime, &before);
                 assert_persistent_unchanged(&runtime, &persistent);
             }
@@ -823,6 +1075,33 @@ mod tests {
                 "the state check precedes entropy collection"
             );
         }
+    }
+
+    #[test]
+    fn a_continuous_test_hit_during_a_stir_stops_the_tpm() {
+        let continuous = stir_record(true);
+        let case = &continuous.cases[0];
+        let mut runtime = stir_runtime(true);
+        install(
+            &mut runtime,
+            &case.initial_seed,
+            case.initial_reseed_counter,
+            first_encrypted_block(&case.initial_seed),
+        );
+        let before = live_drbg(&runtime);
+        let persistent = persistent_snapshot(&runtime);
+        assert_eq!(
+            stir_random(&mut runtime, case.additional()),
+            Err(TPM_RC_FAILURE)
+        );
+        assert!(runtime.failure_mode);
+        assert_eq!(
+            runtime.failure_diagnostics,
+            FailureLocation::DrbgEntropy.diagnostics(),
+            "the reseed's DRBG_Update() runs the same EncryptDRBG() site"
+        );
+        assert_live_drbg_unchanged(&runtime, &before);
+        assert_persistent_unchanged(&runtime, &persistent);
     }
 
     #[test]
@@ -896,6 +1175,322 @@ mod tests {
             assert_eq!(take_entropy_requests(), [DRBG_SEED_SIZE]);
             assert_persistent_unchanged(&runtime, &persistent);
             assert!(!runtime.failure_mode, "a served request is not fatal");
+        }
+    }
+
+    #[test]
+    fn no_production_caller_bypasses_the_live_drbg_layer() {
+        use std::path::Path;
+
+        let rules: &[(&str, &[&str])] = &[
+            (
+                "reseed_from_entropy",
+                &["crypto/drbg.rs", "crypto/rand_state.rs", "random.rs"],
+            ),
+            (".stir(", &["random.rs"]),
+            ("Drbg::instantiate(", &["random.rs", "manufacture.rs"]),
+            ("Drbg::restore(", &["random.rs"]),
+            ("LiveDrbg::new(", &["random.rs"]),
+            ("from_live(", &["crypto/rand_state.rs", "random.rs"]),
+            (".entropy_bad = ", &["crypto/rand_state.rs", "random.rs"]),
+            (".failure_mode = ", &["failure_mode.rs", "runtime.rs"]),
+        ];
+
+        fn production_slice(source: &str) -> &str {
+            let mut cut = source.len();
+            let mut search_from = 0;
+            while let Some(found) = source[search_from..].find("#[cfg(test)]") {
+                let attribute = search_from + found;
+                let rest = source[attribute + "#[cfg(test)]".len()..].trim_start();
+                if rest.starts_with("mod ") || rest.starts_with("pub(") && rest.contains("mod ") {
+                    cut = attribute;
+                    break;
+                }
+                search_from = attribute + "#[cfg(test)]".len();
+            }
+            &source[..cut]
+        }
+
+        fn visit(root: &Path, dir: &Path, rules: &[(&str, &[&str])], violations: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("the source tree is readable") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    visit(root, &path, rules, violations);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("inside the tree")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let source = std::fs::read_to_string(&path).expect("the source file reads");
+                let production = production_slice(&source);
+                for (needle, allowed) in rules {
+                    if production.contains(needle) && !allowed.contains(&relative.as_str()) {
+                        violations.push(format!("{relative}: `{needle}`"));
+                    }
+                }
+                if relative != "random.rs" {
+                    let mut search_from = 0;
+                    while let Some(found) = production[search_from..].find("runtime.entropy") {
+                        let after = search_from + found + "runtime.entropy".len();
+                        if !production[after..].starts_with("_bad") {
+                            violations.push(format!("{relative}: `runtime.entropy`"));
+                            break;
+                        }
+                        search_from = after;
+                    }
+                }
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/library/tpm2");
+        let mut violations = Vec::new();
+        visit(&root, &root, rules, &mut violations);
+        assert!(
+            violations.is_empty(),
+            "production code must reach the live DRBG through random.rs:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    fn colliding_last_value(seed: &[u8]) -> [u32; 4] {
+        let mut probe = Drbg::restore(seed, 1, [0; 4], false).expect("the probe restores");
+        let mut block = [0u8; 16];
+        probe.generate(&mut block).expect("the probe generates");
+        block_words(&block)
+    }
+
+    mod startup_boundary {
+        use super::*;
+
+        #[test]
+        fn a_successful_reseed_draws_one_full_seed_and_resets_the_counter() {
+            let mut runtime = runtime_for(false);
+            runtime.entropy = recording_entropy;
+            take_entropy_requests();
+            let drbg = startup_live_drbg(&mut runtime).expect("the startup reseed succeeds");
+            assert_eq!(take_entropy_requests(), [DRBG_SEED_SIZE]);
+            assert_eq!(drbg.reseed_counter(), 1, "DRBG_Reseed's final assignment");
+        }
+
+        #[test]
+        fn an_instantiate_draws_one_full_seed_when_no_stored_state_is_valid() {
+            let mut runtime = runtime_for(false);
+            runtime.live.orderly.drbg_state.drbg_magic = 0;
+            runtime.entropy = recording_entropy;
+            take_entropy_requests();
+            let drbg = startup_live_drbg(&mut runtime).expect("the instantiation succeeds");
+            assert_eq!(take_entropy_requests(), [DRBG_SEED_SIZE]);
+            assert_eq!(drbg.reseed_counter(), 1);
+        }
+
+        #[test]
+        fn an_entropy_failure_latches_and_never_reaches_the_callback_again() {
+            for wipe_magic in [false, true] {
+                let mut runtime = runtime_for(false);
+                if wipe_magic {
+                    runtime.live.orderly.drbg_state.drbg_magic = 0;
+                }
+                runtime.entropy = failing_entropy;
+                let before = live_drbg(&runtime);
+                assert_eq!(
+                    startup_live_drbg(&mut runtime).map(|_| ()),
+                    Err(TPM_RC_FAILURE),
+                    "wipe_magic {wipe_magic}"
+                );
+                assert!(runtime.entropy_bad, "the failed fetch latches g_entropyBad");
+                assert!(!runtime.failure_mode, "no FAIL() site is reached");
+                assert_live_drbg_unchanged(&runtime, &before);
+
+                runtime.entropy = unreachable_entropy;
+                assert_eq!(
+                    startup_live_drbg(&mut runtime).map(|_| ()),
+                    Err(TPM_RC_FAILURE)
+                );
+                assert_live_drbg_unchanged(&runtime, &before);
+            }
+        }
+
+        #[test]
+        fn a_reseed_collision_is_the_encrypt_drbg_fatal() {
+            let mut runtime = runtime_for(true);
+            runtime.entropy = deterministic_entropy;
+            let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
+            runtime.live.orderly.drbg_state.last_value = colliding_last_value(&seed);
+            let before = live_drbg(&runtime);
+            assert_eq!(
+                startup_live_drbg(&mut runtime).map(|_| ()),
+                Err(TPM_RC_FAILURE)
+            );
+            assert!(runtime.failure_mode, "the repeated block stops the TPM");
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::DrbgEntropy.diagnostics()
+            );
+            assert!(
+                !runtime.entropy_bad,
+                "a continuous-test hit is not an entropy failure"
+            );
+            assert_live_drbg_unchanged(&runtime, &before);
+        }
+
+        #[test]
+        fn a_startup_draw_collision_is_the_encrypt_drbg_fatal() {
+            let mut runtime = runtime_for(true);
+            let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
+            let mut drbg = Drbg::restore(&seed, 1, colliding_last_value(&seed), true)
+                .expect("the crafted state restores");
+            assert_eq!(
+                startup_secret(&mut runtime, &mut drbg, 64).map(|_| ()),
+                Err(TPM_RC_FAILURE)
+            );
+            assert!(runtime.failure_mode);
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::DrbgEntropy.diagnostics()
+            );
+        }
+
+        #[test]
+        fn a_healthy_startup_draw_serves_the_secret_without_entropy() {
+            let mut runtime = runtime_for(true);
+            let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
+            let mut drbg = Drbg::restore(&seed, 1, [0; 4], true).expect("restores");
+            let secret = startup_secret(&mut runtime, &mut drbg, 64).expect("draws");
+            assert_eq!(secret.as_bytes().len(), 64);
+            assert!(!runtime.failure_mode);
+            assert_eq!(drbg.reseed_counter(), 2);
+        }
+    }
+
+    mod live_rand_boundary {
+        use super::*;
+
+        #[test]
+        fn take_generate_finish_matches_the_direct_generate_path() {
+            let record = generate_record(false);
+            let step = &record.steps[1];
+
+            let mut direct = runtime_for(false);
+            install_initial(&mut direct, &record);
+            let expected =
+                generate_random(&mut direct, usize::from(step.requested)).expect("generates");
+
+            let mut staged = runtime_for(false);
+            install_initial(&mut staged, &record);
+            let mut rand = take_live_rand(&mut staged).expect("the live DRBG restores");
+            let produced = rand
+                .random_bytes(usize::from(step.requested))
+                .expect("draws");
+            finish_live_rand(&mut staged, rand).expect("completes");
+
+            assert_eq!(produced, expected, "one live draw, same stream");
+            assert_eq!(live_drbg(&staged).seed, live_drbg(&direct).seed);
+            assert_eq!(
+                live_drbg(&staged).reseed_counter,
+                live_drbg(&direct).reseed_counter
+            );
+        }
+
+        #[test]
+        fn a_reseed_due_entropy_failure_is_no_result_and_latches_at_finish() {
+            let record = boundary_record(false);
+            let mut runtime = runtime_for(false);
+            runtime.entropy = failing_entropy;
+            install_boundary(&mut runtime, &record, &record.cases[1]);
+            let before = live_drbg(&runtime);
+
+            let mut rand = take_live_rand(&mut runtime).expect("restores");
+            assert_eq!(rand.random_bytes(16), Err(TPM_RC_NO_RESULT));
+            assert!(
+                !runtime.entropy_bad,
+                "the latch is published at completion, not mid-draw"
+            );
+            assert_eq!(rand.random_bytes(16), Err(TPM_RC_NO_RESULT));
+
+            finish_live_rand(&mut runtime, rand).expect("an entropy failure is not fatal");
+            assert!(runtime.entropy_bad, "the completion latches g_entropyBad");
+            assert!(!runtime.failure_mode);
+            assert_live_drbg_unchanged(&runtime, &before);
+        }
+
+        #[test]
+        fn a_pre_latched_runtime_never_reaches_the_callback() {
+            let record = boundary_record(false);
+            let mut runtime = runtime_for(false);
+            runtime.entropy_bad = true;
+            runtime.entropy = unreachable_entropy;
+            install_boundary(&mut runtime, &record, &record.cases[1]);
+            let before = live_drbg(&runtime);
+
+            let mut rand = take_live_rand(&mut runtime).expect("restores");
+            assert_eq!(rand.random_bytes(16), Err(TPM_RC_NO_RESULT));
+            finish_live_rand(&mut runtime, rand).expect("not fatal");
+            assert!(runtime.entropy_bad);
+            assert_live_drbg_unchanged(&runtime, &before);
+        }
+
+        #[test]
+        fn a_generate_collision_is_fatal_at_finish_and_stores_nothing() {
+            let mut runtime = runtime_for(true);
+            let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
+            runtime.live.orderly.drbg_state.last_value = colliding_last_value(&seed);
+            runtime.live.orderly.drbg_state.reseed_counter = 1;
+            let before = live_drbg(&runtime);
+            let persistent = persistent_snapshot(&runtime);
+
+            let mut rand = take_live_rand(&mut runtime).expect("restores");
+            assert_eq!(rand.random_bytes(16), Err(TPM_RC_FAILURE));
+            assert!(!runtime.failure_mode, "failure mode enters at completion");
+
+            assert_fatal_failure(
+                finish_live_rand(&mut runtime, rand).map(|_| Vec::new()),
+                &runtime,
+                &before,
+                &persistent,
+            );
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::DrbgEntropy.diagnostics()
+            );
+            assert!(!runtime.entropy_bad);
+        }
+
+        #[test]
+        fn an_invalid_stored_state_is_fatal_at_take() {
+            let mut runtime = runtime_for(false);
+            runtime.live.orderly.drbg_state.drbg_magic = 0;
+            assert_eq!(
+                take_live_rand(&mut runtime).map(|_| ()),
+                Err(TPM_RC_FAILURE)
+            );
+            assert!(runtime.failure_mode);
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::DrbgInvalidState.diagnostics()
+            );
+        }
+
+        #[test]
+        fn a_non_live_generator_is_a_completion_no_op() {
+            let mut runtime = runtime_for(false);
+            let before = live_drbg(&runtime);
+            let rand = crate::library::tpm2::crypto::SeededRand::instantiate(
+                &[0x5a; 64],
+                b"PURPOSE",
+                &[0x11; 34],
+                &[],
+                1,
+                false,
+            )
+            .expect("instantiates");
+            finish_live_rand(&mut runtime, rand).expect("nothing to publish");
+            assert_live_drbg_unchanged(&runtime, &before);
+            assert!(!runtime.entropy_bad && !runtime.failure_mode);
         }
     }
 }

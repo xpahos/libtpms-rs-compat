@@ -495,7 +495,11 @@ pub(super) fn sensitive_to_private(
     let integrity_len = digest_size(hash_alg).ok_or(TPM_RC_FAILURE)?;
     let (sym_alg, key_bits) = parent_storage_symmetric(parent_public)?;
     let block_size = super::crypto::sym_block_size(sym_alg).ok_or(TPM_RC_SYMMETRIC)?;
-    let iv = rand.random_bytes(block_size)?;
+    let iv = match rand.random_bytes(block_size) {
+        Ok(iv) => iv,
+        Err(_) if rand.live_entropy_starved() => vec![0; block_size],
+        Err(code) => return Err(code),
+    };
 
     let mut encrypted = marshal_sensitive(sensitive, name_alg)?;
     let sym_key = super::crypto::kdfa(

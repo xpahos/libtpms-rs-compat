@@ -97,6 +97,22 @@ const VENDOR_STRING_3: u32 = 0;
 const VENDOR_STRING_4: u32 = 0;
 const VENDOR_TPM_TYPE: u32 = 1;
 
+pub(in crate::library::tpm2) const PLATFORM_FIRMWARE_V1: u32 = 0x2024_0125;
+pub(in crate::library::tpm2) const PLATFORM_FIRMWARE_V2: u32 = 0x0012_0000;
+
+pub(in crate::library::tpm2) fn failure_mode_property_value(property: u32) -> u32 {
+    match property {
+        TPM_PT_MANUFACTURER => MANUFACTURER_CODE,
+        TPM_PT_VENDOR_STRING_1 => VENDOR_STRING_1,
+        TPM_PT_VENDOR_STRING_2 => VENDOR_STRING_2,
+        TPM_PT_VENDOR_STRING_3 => VENDOR_STRING_3,
+        TPM_PT_VENDOR_STRING_4 => VENDOR_STRING_4,
+        TPM_PT_VENDOR_TPM_TYPE => VENDOR_TPM_TYPE,
+        TPM_PT_FIRMWARE_VERSION_1 => PLATFORM_FIRMWARE_V1,
+        _ => PLATFORM_FIRMWARE_V2,
+    }
+}
+
 const PLATFORM_FAMILY: u32 = 1;
 const PLATFORM_LEVEL: u32 = TPM_SPEC_LEVEL;
 const PLATFORM_VERSION: u32 = 0x0000_0106;
@@ -486,8 +502,8 @@ mod tests {
         (0x12c, 0x400),
         (0x12d, 0),
         (0x12e, 0x400),
-        (0x129, 33),
-        (0x12a, 33),
+        (0x129, 34),
+        (0x12a, 34),
     ];
 
     #[test]

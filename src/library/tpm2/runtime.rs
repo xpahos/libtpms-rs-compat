@@ -15,6 +15,13 @@ use super::volatile::OwnedVolatileState;
 
 pub const NV_MEMORY_SIZE: usize = 128 * 1024 + 65 * 704;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct FailureDiagnostics {
+    pub(super) function: u32,
+    pub(super) line: u32,
+    pub(super) code: u32,
+}
+
 pub struct Tpm2Runtime {
     pub(super) state: Option<OwnedPersistentState>,
 
@@ -51,6 +58,8 @@ pub struct Tpm2Runtime {
     pub startup_received: bool,
     pub tpm_established: bool,
     pub failure_mode: bool,
+    pub(super) failure_diagnostics: FailureDiagnostics,
+    pub(super) entropy_bad: bool,
     #[allow(dead_code)]
     pub reported_failure: bool,
 
@@ -84,6 +93,7 @@ pub(super) fn merge_volatile_state(runtime: &mut Tpm2Runtime, volatile: OwnedVol
     runtime.startup_received = flags.initialized;
     runtime.tpm_established = flags.tpm_established;
     runtime.failure_mode = flags.in_failure_mode;
+    runtime.failure_diagnostics = flags.failure_diagnostics;
     runtime.clock = flags.resume_clock;
     runtime.timer = TpmTimer {
         time_ms: carry.time,
@@ -206,6 +216,8 @@ fn commit_state(
         startup_received: false,
         tpm_established: false,
         failure_mode: false,
+        failure_diagnostics: FailureDiagnostics::default(),
+        entropy_bad: false,
         reported_failure: false,
         power_on: true,
         nv_available: true,
@@ -239,6 +251,8 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         startup_received: false,
         tpm_established: false,
         failure_mode: false,
+        failure_diagnostics: FailureDiagnostics::default(),
+        entropy_bad: false,
         reported_failure: false,
         power_on: true,
         nv_available: true,

@@ -9,7 +9,7 @@ use super::algorithm::{
     TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_SM2, algorithm_enabled, algorithm_profile_name,
 };
 use super::crypto::{
-    BigUint, CurveParameters, Drbg, HmacState, curve_parameters, kdfa, kdfa_from, mgf1,
+    BigUint, CurveParameters, HmacState, SeededRand, curve_parameters, kdfa, kdfa_from, mgf1,
     rsa_private_key_op,
 };
 use super::marshal::BlobWriter;
@@ -349,7 +349,7 @@ fn rsa_sign(
     body: &OwnedObjectBody,
     scheme: &SigScheme,
     digest: &[u8],
-    drbg: &mut Drbg,
+    rand: &mut SeededRand,
 ) -> Result<Signature, TpmResult> {
     let modulus_bytes = rsa_modulus(body).ok_or(TPM_RC_FAILURE)?.to_vec();
     let modulus_size = modulus_bytes.len();
@@ -358,7 +358,11 @@ fn rsa_sign(
         TPM_ALG_RSAPSS => {
             let hash_len = digest_size(scheme.hash_alg).ok_or(TPM_RC_SCHEME)?;
             let mut salt = vec![0u8; pss_salt_size(hash_len, modulus_size)];
-            drbg.generate(&mut salt).map_err(|_| TPM_RC_FAILURE)?;
+            match rand.generate(&mut salt) {
+                Ok(()) => {}
+                Err(_) if rand.live_entropy_starved() => {}
+                Err(code) => return Err(code),
+            }
             pss_encode(modulus_size, scheme.hash_alg, digest, &salt)?
         }
         _ => return Err(TPM_RC_SCHEME),
@@ -377,7 +381,7 @@ fn rsa_sign(
 }
 
 pub(super) struct SigningState {
-    pub(super) drbg: Drbg,
+    pub(super) rand: SeededRand,
     pub(super) commit_counter: u64,
     pub(super) commit_nonce: OwnedSecret,
     pub(super) commit_array: [u8; COMMIT_ARRAY_SIZE],
@@ -406,9 +410,9 @@ fn ecc_sign(
         return ecdaa_sign(body, &curve, &d, digest, scheme, state);
     }
     let (r, s) = match scheme.scheme {
-        TPM_ALG_ECDSA => ecdsa_sign(&curve, &d, digest, &mut state.drbg)?,
-        TPM_ALG_ECSCHNORR => ecschnorr_sign(&curve, &d, digest, scheme.hash_alg, &mut state.drbg)?,
-        TPM_ALG_SM2 => sm2_sign(&curve, &d, digest, &mut state.drbg)?,
+        TPM_ALG_ECDSA => ecdsa_sign(&curve, &d, digest, &mut state.rand)?,
+        TPM_ALG_ECSCHNORR => ecschnorr_sign(&curve, &d, digest, scheme.hash_alg, &mut state.rand)?,
+        TPM_ALG_SM2 => sm2_sign(&curve, &d, digest, &mut state.rand)?,
         _ => return Err(TPM_RC_SCHEME),
     };
     Ok(Signature::Ecc {
@@ -423,11 +427,11 @@ fn ecdsa_sign(
     curve: &CurveParameters,
     d: &BigUint,
     digest: &[u8],
-    drbg: &mut Drbg,
+    rand: &mut SeededRand,
 ) -> Result<(BigUint, BigUint), TpmResult> {
     let z = ecdsa_digest(digest, curve.order.bit_len());
     for _ in 0..SIGN_ATTEMPTS {
-        let k = random_in_order(drbg, &curve.order)?;
+        let k = random_in_order(rand, &curve.order)?;
         let Some((x, _)) = curve.multiply_generator(&k) else {
             continue;
         };
@@ -460,12 +464,12 @@ fn ecschnorr_sign(
     d: &BigUint,
     digest: &[u8],
     hash_alg: u16,
-    drbg: &mut Drbg,
+    rand: &mut SeededRand,
 ) -> Result<(BigUint, BigUint), TpmResult> {
     let digest_len = digest_size(hash_alg).ok_or(TPM_RC_SCHEME)?;
     let order_bytes = curve.order.bit_len().div_ceil(8);
     for _ in 0..SIGN_ATTEMPTS {
-        let k = random_in_order(drbg, &curve.order)?;
+        let k = random_in_order(rand, &curve.order)?;
         let Some((x, _)) = curve.multiply_generator(&k) else {
             continue;
         };
@@ -489,7 +493,7 @@ fn sm2_sign(
     curve: &CurveParameters,
     d: &BigUint,
     digest: &[u8],
-    drbg: &mut Drbg,
+    rand: &mut SeededRand,
 ) -> Result<(BigUint, BigUint), TpmResult> {
     let e = BigUint::from_be_bytes(digest);
     let inverse = d
@@ -497,7 +501,7 @@ fn sm2_sign(
         .mod_inverse(&curve.order)
         .ok_or(TPM_RC_NO_RESULT)?;
     for _ in 0..SIGN_ATTEMPTS {
-        let k = random_below(drbg, &curve.order)?;
+        let k = random_below(rand, &curve.order)?;
         let Some((x, _)) = curve.multiply_generator(&k) else {
             continue;
         };
@@ -534,7 +538,7 @@ fn ecdaa_sign(
     let order_bytes = curve.order.byte_len();
     let commit = generate_r(state, curve, &body.name, scheme.count).ok_or(TPM_RC_VALUE)?;
     for _ in 0..SIGN_ATTEMPTS {
-        let nonce = random_in_order(&mut state.drbg, &curve.order)?;
+        let nonce = random_in_order(&mut state.rand, &curve.order)?;
         let nonce_bytes = nonce.to_be_bytes(nonce.byte_len()).ok_or(TPM_RC_FAILURE)?;
         let mut hasher = super::crypto::Hasher::new(scheme.hash_alg).ok_or(TPM_RC_SCHEME)?;
         hasher.update(&nonce_bytes);
@@ -635,24 +639,24 @@ fn truncate_digest(digest: &[u8], order_bits: usize) -> Vec<u8> {
     }
 }
 
-fn random_in_order(drbg: &mut Drbg, order: &BigUint) -> Result<BigUint, TpmResult> {
+fn random_in_order(rand: &mut SeededRand, order: &BigUint) -> Result<BigUint, TpmResult> {
     let order_bytes = order.bit_len().div_ceil(8);
     let mut bytes = vec![0u8; order_bytes + 8];
-    drbg.generate(&mut bytes).map_err(|_| TPM_RC_FAILURE)?;
+    rand.generate(&mut bytes)?;
     let extra = BigUint::from_be_bytes(&bytes);
     let order_minus_one = order.sub_u64(1).ok_or(TPM_RC_FAILURE)?;
     let reduced = extra.rem(&order_minus_one).ok_or(TPM_RC_FAILURE)?;
     Ok(reduced.add_u64(1))
 }
 
-fn random_below(drbg: &mut Drbg, limit: &BigUint) -> Result<BigUint, TpmResult> {
+fn random_below(rand: &mut SeededRand, limit: &BigUint) -> Result<BigUint, TpmResult> {
     let bits = limit.bit_len();
     if bits < 2 {
         return Err(TPM_RC_NO_RESULT);
     }
     for _ in 0..SIGN_ATTEMPTS {
         let mut bytes = vec![0u8; bits.div_ceil(8)];
-        drbg.generate(&mut bytes).map_err(|_| TPM_RC_FAILURE)?;
+        rand.generate(&mut bytes)?;
         let mut value = BigUint::from_be_bytes(&bytes);
         value.mask_bits(bits);
         if !value.is_zero() && value < *limit {
@@ -698,7 +702,7 @@ pub(super) fn sign_digest(
         return Err(TPM_RC_HASH);
     }
     match body.public.object_type {
-        TPM_ALG_RSA => rsa_sign(body, scheme, digest, &mut state.drbg),
+        TPM_ALG_RSA => rsa_sign(body, scheme, digest, &mut state.rand),
         TPM_ALG_ECC => ecc_sign(body, scheme, digest, state),
         TPM_ALG_KEYEDHASH => hmac_sign(body, scheme, digest),
         _ => Err(TPM_RC_SCHEME),

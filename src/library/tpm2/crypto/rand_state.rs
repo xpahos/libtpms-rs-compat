@@ -2,7 +2,7 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NO_RESULT};
 
 use super::bignum::BigUint;
-use super::drbg::Drbg;
+use super::drbg::{Drbg, ReseedError};
 use super::entropy::EntropySource;
 use super::hmac::HmacState;
 
@@ -86,10 +86,76 @@ impl KdfState {
     }
 }
 
+pub(in crate::library::tpm2) struct LiveDrbg {
+    drbg: Drbg,
+    entropy: EntropySource,
+    entropy_bad: bool,
+    fatal: bool,
+}
+
+impl LiveDrbg {
+    pub(in crate::library::tpm2) fn new(
+        drbg: Drbg,
+        entropy: EntropySource,
+        entropy_bad: bool,
+    ) -> Self {
+        Self {
+            drbg,
+            entropy,
+            entropy_bad,
+            fatal: false,
+        }
+    }
+
+    fn generate(&mut self, out: &mut [u8]) -> Result<(), TpmResult> {
+        if self.drbg.needs_reseed() {
+            let outcome = if self.entropy_bad {
+                Err(ReseedError::Entropy)
+            } else {
+                self.drbg.reseed_from_entropy(self.entropy)
+            };
+            match outcome {
+                Ok(()) => {}
+                Err(ReseedError::Entropy) => {
+                    self.entropy_bad = true;
+                    return Err(TPM_RC_NO_RESULT);
+                }
+                Err(ReseedError::ContinuousTest) => {
+                    self.fatal = true;
+                    return Err(TPM_RC_FAILURE);
+                }
+            }
+        }
+        if self.drbg.generate(out).is_err() {
+            self.fatal = true;
+            return Err(TPM_RC_FAILURE);
+        }
+        Ok(())
+    }
+
+    fn additional_data(&mut self, data: &[u8]) -> Result<(), TpmResult> {
+        self.drbg.additional_data(data).inspect_err(|_| {
+            self.fatal = true;
+        })
+    }
+
+    pub(in crate::library::tpm2) fn entropy_bad(&self) -> bool {
+        self.entropy_bad
+    }
+
+    pub(in crate::library::tpm2) fn fatal(&self) -> bool {
+        self.fatal
+    }
+
+    pub(in crate::library::tpm2) fn into_drbg(self) -> Drbg {
+        self.drbg
+    }
+}
+
 enum RandSource {
     Drbg(Drbg),
     Kdf(KdfState),
-    Live { drbg: Drbg, entropy: EntropySource },
+    Live(LiveDrbg),
 }
 
 pub(in crate::library::tpm2) struct SeededRand {
@@ -127,18 +193,22 @@ impl SeededRand {
         })
     }
 
-    pub(in crate::library::tpm2) fn from_live_drbg(drbg: Drbg, entropy: EntropySource) -> Self {
+    pub(in crate::library::tpm2) fn from_live(live: LiveDrbg) -> Self {
         Self {
-            source: RandSource::Live { drbg, entropy },
+            source: RandSource::Live(live),
             seed_compat_level: SEED_COMPAT_LEVEL_LAST,
         }
     }
 
-    pub(in crate::library::tpm2) fn into_live_drbg(self) -> Option<Drbg> {
+    pub(in crate::library::tpm2) fn into_live(self) -> Option<LiveDrbg> {
         match self.source {
-            RandSource::Live { drbg, .. } => Some(drbg),
+            RandSource::Live(live) => Some(live),
             _ => None,
         }
+    }
+
+    pub(in crate::library::tpm2) fn live_entropy_starved(&self) -> bool {
+        matches!(&self.source, RandSource::Live(live) if live.entropy_bad)
     }
 
     pub(in crate::library::tpm2) fn seed_compat_level(&self) -> u8 {
@@ -150,7 +220,8 @@ impl SeededRand {
         data: &[u8],
     ) -> Result<(), TpmResult> {
         match &mut self.source {
-            RandSource::Drbg(drbg) | RandSource::Live { drbg, .. } => drbg.additional_data(data),
+            RandSource::Drbg(drbg) => drbg.additional_data(data),
+            RandSource::Live(live) => live.additional_data(data),
             RandSource::Kdf(_) => Ok(()),
         }
     }
@@ -162,13 +233,7 @@ impl SeededRand {
         match &mut self.source {
             RandSource::Drbg(drbg) => drbg.generate(out),
             RandSource::Kdf(kdf) => kdf.generate(out),
-            RandSource::Live { drbg, entropy } => {
-                if drbg.needs_reseed() {
-                    drbg.reseed_from_entropy(*entropy)
-                        .map_err(|_| TPM_RC_FAILURE)?;
-                }
-                drbg.generate(out)
-            }
+            RandSource::Live(live) => live.generate(out),
         }
     }
 
@@ -334,5 +399,38 @@ mod tests {
     fn empty_additional_data_is_rejected_rather_than_drawing_entropy() {
         let mut generator = rand();
         assert!(generator.additional_data(&[]).is_err());
+    }
+
+    #[test]
+    fn a_seeded_generator_reports_no_live_outcome_and_no_starvation() {
+        assert!(!rand().live_entropy_starved());
+        assert!(
+            rand().into_live().is_none(),
+            "a seeded generator has no runtime-global outcome to publish"
+        );
+    }
+
+    #[test]
+    fn a_seeded_continuous_test_hit_stays_a_local_error() {
+        use crate::library::constants::TPM_FAIL;
+
+        let base = Drbg::instantiate_seeded(&[&[0x5a; 64]], true).expect("instantiates");
+        let mut probe = Drbg::restore(base.seed(), 1, [0; 4], false).expect("the probe restores");
+        let mut block = [0u8; 16];
+        probe.generate(&mut block).expect("the probe generates");
+        let collision: [u32; 4] = core::array::from_fn(|word| {
+            u32::from_le_bytes(block[word * 4..word * 4 + 4].try_into().unwrap())
+        });
+        let crafted = Drbg::restore(base.seed(), 1, collision, true).expect("restores");
+
+        let mut generator = SeededRand {
+            source: RandSource::Drbg(crafted),
+            seed_compat_level: SEED_COMPAT_LEVEL_LAST,
+        };
+        assert_eq!(generator.random_bytes(16).map(|_| ()), Err(TPM_FAIL));
+        assert!(
+            generator.into_live().is_none(),
+            "the local fatal never masquerades as a live-DRBG outcome"
+        );
     }
 }

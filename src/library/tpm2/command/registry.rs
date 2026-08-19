@@ -12,6 +12,7 @@ use super::evict_control;
 use super::flush_context;
 use super::get_capability;
 use super::get_random;
+use super::get_test_result;
 use super::hash;
 use super::hierarchy_change_auth;
 use super::incremental_self_test;
@@ -60,6 +61,7 @@ pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
+pub(in crate::library::tpm2) const TPM_CC_GET_TEST_RESULT: u32 = 0x0000_017c;
 pub(in crate::library::tpm2) const TPM_CC_HASH: u32 = 0x0000_017d;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
@@ -601,6 +603,16 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: get_random::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_GET_TEST_RESULT,
+        attributes: tpma_cc(TPM_CC_GET_TEST_RESULT, false, 0),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: get_test_result::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_HASH,
         attributes: tpma_cc(TPM_CC_HASH, false, 0),
         physical_presence: false,
@@ -830,6 +842,7 @@ mod tests {
                 TPM_CC_NV_READ_PUBLIC,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
+                TPM_CC_GET_TEST_RESULT,
                 TPM_CC_HASH,
                 TPM_CC_PCR_READ,
                 TPM_CC_PCR_EXTEND,

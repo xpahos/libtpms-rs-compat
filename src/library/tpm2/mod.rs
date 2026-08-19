@@ -3351,7 +3351,7 @@ mod tests {
             .as_ref()
             .expect("volatile state merged");
         assert_eq!(volatile_state.time, 0x123456);
-        assert_eq!(volatile_state.fail_function, 0xa1);
+        assert_eq!(runtime.failure_diagnostics.function, 0xa1);
         assert!(runtime.manufactured);
         assert!(runtime.startup_received);
         assert!(!runtime.shadow_pcr_pending);

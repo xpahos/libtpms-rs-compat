@@ -1,6 +1,7 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 
+use super::super::failure_mode::{FailureLocation, enter_failure_mode};
 use super::super::marshal::BlobReader;
 use super::super::runtime::Tpm2Runtime;
 use super::super::self_test::SelectedTestError;
@@ -26,7 +27,8 @@ pub(super) fn execute(
             Err(TPM_RC_VALUE + RC_INCREMENTAL_SELF_TEST_TO_TEST)
         }
         Err(SelectedTestError::TestFailed) => {
-            runtime.failure_mode = true;
+            let location = FailureLocation::for_self_test(&runtime.self_test);
+            enter_failure_mode(runtime, location);
             Err(TPM_RC_FAILURE)
         }
     }

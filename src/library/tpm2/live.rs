@@ -5,7 +5,7 @@ use super::persistent::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedDrbgState, OwnedIndexOrderlyRam, OwnedOrderlyData,
     OwnedSecret, OwnedStateClearData, OwnedStateResetData,
 };
-use super::runtime::NV_MEMORY_SIZE;
+use super::runtime::{FailureDiagnostics, NV_MEMORY_SIZE};
 use super::volatile::{
     IMPLEMENTATION_PCR, MAX_LOADED_OBJECTS, MAX_LOADED_SESSIONS, MAX_SESSION_NUM, OwnedPcr,
     OwnedSessionProcess, OwnedSessionSlot, OwnedVolatileState, TailV4,
@@ -187,9 +187,6 @@ pub(super) struct RestoredVolatile {
     pub(super) evict_nv_end: u32,
     pub(super) index_orderly_ram_bytes: Vec<u8>,
     pub(super) max_counter: u64,
-    pub(super) fail_function: u32,
-    pub(super) fail_line: u32,
-    pub(super) fail_code: u32,
     pub(super) real_time_previous: u64,
     pub(super) tpm_time: u64,
     pub(super) timer_reset: bool,
@@ -211,9 +208,6 @@ impl RestoredVolatile {
             evict_nv_end: NV_MEMORY_SIZE as u32,
             index_orderly_ram_bytes: Vec::new(),
             max_counter: 0,
-            fail_function: 0,
-            fail_line: 0,
-            fail_code: 0,
             real_time_previous: 0,
             tpm_time: 0,
             timer_reset: true,
@@ -231,6 +225,7 @@ pub(super) struct RestoredRuntimeFlags {
     pub(super) initialized: bool,
     pub(super) in_failure_mode: bool,
     pub(super) tpm_established: bool,
+    pub(super) failure_diagnostics: FailureDiagnostics,
     pub(super) resume_clock: RuntimeClock,
 }
 
@@ -313,6 +308,11 @@ pub(super) fn split_restored_volatile(
         initialized,
         in_failure_mode,
         tpm_established,
+        failure_diagnostics: FailureDiagnostics {
+            function: fail_function,
+            line: fail_line,
+            code: fail_code,
+        },
         resume_clock,
     };
 
@@ -325,9 +325,6 @@ pub(super) fn split_restored_volatile(
         evict_nv_end,
         index_orderly_ram_bytes: index_orderly_ram,
         max_counter,
-        fail_function,
-        fail_line,
-        fail_code,
         real_time_previous,
         tpm_time,
         timer_reset,
