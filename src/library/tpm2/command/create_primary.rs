@@ -35,7 +35,7 @@ const RC_CREATION_PCR: TpmResult = TPM_RC_P + TPM_RC_1 * 4;
 
 const MAX_OUTSIDE_INFO: usize = 2 + 64;
 
-const TPM_ST_CREATION: u16 = 0x8021;
+pub(super) const TPM_ST_CREATION: u16 = 0x8021;
 
 pub(super) fn add_modifier(code: TpmResult, modifier: TpmResult) -> TpmResult {
     if code & RC_FMT1 != 0 && code & RC_MODIFIER_MASK == 0 {
@@ -45,15 +45,15 @@ pub(super) fn add_modifier(code: TpmResult, modifier: TpmResult) -> TpmResult {
     }
 }
 
-struct Parameters {
-    user_auth: Vec<u8>,
-    sensitive_data: Vec<u8>,
-    public: super::super::persistent::OwnedTpmtPublic,
-    outside_info: Vec<u8>,
-    creation_pcr: Vec<OwnedPcrSelection>,
+pub(super) struct Parameters {
+    pub(super) user_auth: Vec<u8>,
+    pub(super) sensitive_data: Vec<u8>,
+    pub(super) public: super::super::persistent::OwnedTpmtPublic,
+    pub(super) outside_info: Vec<u8>,
+    pub(super) creation_pcr: Vec<OwnedPcrSelection>,
 }
 
-fn parse_parameters(
+pub(super) fn parse_parameters(
     policy: &AlgorithmPolicy<'_>,
     parameters: &[u8],
 ) -> Result<Parameters, TpmResult> {
@@ -157,8 +157,10 @@ fn locality_attributes(locality: u8) -> u8 {
     }
 }
 
-fn creation_data_bytes(
-    primary_handle: u32,
+pub(super) fn creation_data_bytes(
+    parent_name_alg: u16,
+    parent_name: &[u8],
+    parent_qualified_name: &[u8],
     locality: u8,
     creation_pcr: &[OwnedPcrSelection],
     pcr_digest: &[u8],
@@ -168,18 +170,16 @@ fn creation_data_bytes(
     marshal_pcr_selection(&mut writer, creation_pcr);
     writer.write_tpm2b(pcr_digest).map_err(|_| TPM_RC_SIZE)?;
     writer.write_u8(locality_attributes(locality));
-    writer.write_u16(TPM_ALG_NULL);
+    writer.write_u16(parent_name_alg);
+    writer.write_tpm2b(parent_name).map_err(|_| TPM_RC_SIZE)?;
     writer
-        .write_tpm2b(&primary_handle.to_be_bytes())
-        .map_err(|_| TPM_RC_SIZE)?;
-    writer
-        .write_tpm2b(&primary_handle.to_be_bytes())
+        .write_tpm2b(parent_qualified_name)
         .map_err(|_| TPM_RC_SIZE)?;
     writer.write_tpm2b(outside_info).map_err(|_| TPM_RC_SIZE)?;
     Ok(writer.into_bytes())
 }
 
-fn compute_creation_ticket(
+pub(super) fn compute_creation_ticket(
     runtime: &Tpm2Runtime,
     hierarchy: u32,
     name: &[u8],
@@ -266,7 +266,9 @@ pub(super) fn execute(
     let mut creation_pcr = parsed.creation_pcr;
     let pcr_digest = compute_current_digest(runtime, public.name_alg, &mut creation_pcr)?;
     let creation_data = creation_data_bytes(
-        primary_handle,
+        TPM_ALG_NULL,
+        &primary_handle.to_be_bytes(),
+        &primary_handle.to_be_bytes(),
         runtime.locality,
         &creation_pcr,
         &pcr_digest,

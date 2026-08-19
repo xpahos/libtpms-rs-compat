@@ -75,6 +75,7 @@ TESTDATA = (
 )
 
 FAMILIES = {
+    "create": (b"CRORACLE", "create.bin"),
     "create-loaded": (b"CLORACLE", "create_loaded.bin"),
     "create-primary": (b"CPORACLE", "create_primary.bin"),
     "dictionary-attack": (b"DAORACLE", "dictionary_attack.bin"),

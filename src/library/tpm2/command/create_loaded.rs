@@ -38,13 +38,16 @@ const RC_IN_PUBLIC: TpmResult = TPM_RC_P + TPM_RC_1 * 2;
 const TPMT_PUBLIC_MARSHALED_LIMIT: usize = 484;
 const TPM_MAX_DERIVATION_BITS: u32 = 8192;
 
-struct ResolvedParent {
-    slot_attributes: u32,
-    body: Option<Box<OwnedObjectBody>>,
-    persistent: bool,
+pub(super) struct ResolvedParent {
+    pub(super) slot_attributes: u32,
+    pub(super) body: Option<Box<OwnedObjectBody>>,
+    pub(super) persistent: bool,
 }
 
-fn resolve_parent(runtime: &Tpm2Runtime, handle: u32) -> Result<Option<ResolvedParent>, TpmResult> {
+pub(super) fn resolve_parent(
+    runtime: &Tpm2Runtime,
+    handle: u32,
+) -> Result<Option<ResolvedParent>, TpmResult> {
     if !is_object_handle(handle) {
         return Ok(None);
     }
@@ -60,7 +63,7 @@ fn resolve_parent(runtime: &Tpm2Runtime, handle: u32) -> Result<Option<ResolvedP
     }))
 }
 
-fn object_hierarchy(body: &OwnedObjectBody, slot_attributes: u32) -> u32 {
+pub(super) fn object_hierarchy(body: &OwnedObjectBody, slot_attributes: u32) -> u32 {
     body.hierarchy.unwrap_or({
         if slot_attributes & ATTR_SPS_HIERARCHY != 0 {
             TPM_RH_OWNER
