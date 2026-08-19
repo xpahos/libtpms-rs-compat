@@ -1,6 +1,6 @@
 pub(crate) const TPM_LIBRARY_VER_MAJOR: u32 = 0;
 pub(crate) const TPM_LIBRARY_VER_MINOR: u32 = 10;
-pub(crate) const TPM_LIBRARY_VER_MICRO: u32 = 1;
+pub(crate) const TPM_LIBRARY_VER_MICRO: u32 = 2;
 
 const fn encode_version(major: u32, minor: u32, micro: u32) -> u32 {
     assert!(major <= u8::MAX as u32);
