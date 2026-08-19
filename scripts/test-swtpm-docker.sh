@@ -40,5 +40,13 @@ if grep -qF skip_test_no_tpm12 "$ctrl3"; then
     exit 1
 fi
 
+for tool in tssstartup tssnvdefinespace tsscreateprimary; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "test-swtpm-docker: required IBM TSS command '$tool' not found in PATH" >&2
+        exit 1
+    fi
+done
+
 cd "$workspace"
-exec make test-swtpm PROFILE="${PROFILE:-debug}"
+exec env SWTPM_TEST_IBMTSS2=1 SWTPM_TEST_EXPENSIVE=1 \
+    make test-swtpm PROFILE="${PROFILE:-debug}"

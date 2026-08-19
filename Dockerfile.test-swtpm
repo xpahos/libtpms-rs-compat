@@ -23,6 +23,7 @@ RUN apt-get update \
         python3-pycparser \
         socat \
         softhsm2 \
+        tss2 \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --shell /bin/bash tester \
     && mkdir -p /cache/target "$CARGO_HOME/registry" "$CARGO_HOME/git" \

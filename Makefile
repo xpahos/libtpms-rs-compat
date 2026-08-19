@@ -468,5 +468,7 @@ test-swtpm-docker:
 		-v "$(SWTPM_DOCKER_REGISTRY_VOLUME):/usr/local/cargo/registry" \
 		-v "$(SWTPM_DOCKER_GIT_VOLUME):/usr/local/cargo/git" \
 		-e "PROFILE=$(PROFILE)" \
+		-e "SWTPM_TEST_IBMTSS2=1" \
+		-e "SWTPM_TEST_EXPENSIVE=1" \
 		-e "SWTPM_DOCKER_IMAGE_ID=$$image_id" \
 		"$(SWTPM_DOCKER_IMAGE)" /repo/$(SWTPM_DOCKER_RUNNER)
