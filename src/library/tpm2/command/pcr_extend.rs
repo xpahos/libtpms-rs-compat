@@ -20,12 +20,12 @@ const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
 const RC_PCR_EXTEND_DIGESTS: TpmResult = TPM_RC_P + TPM_RC_1;
 
-struct DigestValue<'a> {
-    slot: usize,
-    digest: &'a [u8],
+pub(super) struct DigestValue<'a> {
+    pub(super) slot: usize,
+    pub(super) digest: &'a [u8],
 }
 
-struct PreparedExtend {
+pub(super) struct PreparedExtend {
     banks: [Option<Vec<u8>>; PCR_SLOT_BANKS.len()],
     pcr_counter: u32,
     orderly_state: Option<u16>,
@@ -86,7 +86,7 @@ fn parse_digests<'a>(
     Ok(digests)
 }
 
-fn prepare_extend(
+pub(super) fn prepare_extend(
     runtime: &Tpm2Runtime,
     pcr: usize,
     digests: &[DigestValue<'_>],
@@ -126,7 +126,7 @@ fn prepare_extend(
     })
 }
 
-fn commit_extend(
+pub(super) fn commit_extend(
     runtime: &mut Tpm2Runtime,
     pcr: usize,
     prepared: PreparedExtend,

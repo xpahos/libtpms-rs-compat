@@ -26,6 +26,7 @@ use super::nv_undefine_space;
 use super::nv_write;
 use super::output::CommandOutput;
 use super::pcr_allocate;
+use super::pcr_event;
 use super::pcr_extend;
 use super::pcr_read;
 use super::pcr_reset;
@@ -50,6 +51,7 @@ pub(in crate::library::tpm2) const TPM_CC_NV_WRITE: u32 = 0x0000_0137;
 pub(in crate::library::tpm2) const TPM_CC_NV_WRITE_LOCK: u32 = 0x0000_0138;
 pub(in crate::library::tpm2) const TPM_CC_DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0000_013a;
 pub(in crate::library::tpm2) const TPM_CC_NV_CHANGE_AUTH: u32 = 0x0000_013b;
+pub(in crate::library::tpm2) const TPM_CC_PCR_EVENT: u32 = 0x0000_013c;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
@@ -455,6 +457,20 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: nv_change_auth::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_PCR_EVENT,
+        attributes: tpma_cc(TPM_CC_PCR_EVENT, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::PcrAllowNull,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: pcr_event::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_PCR_RESET,
         attributes: tpma_cc(TPM_CC_PCR_RESET, false, 1),
         physical_presence: false,
@@ -846,6 +862,7 @@ mod tests {
                 TPM_CC_NV_WRITE_LOCK,
                 TPM_CC_DICTIONARY_ATTACK_PARAMETERS,
                 TPM_CC_NV_CHANGE_AUTH,
+                TPM_CC_PCR_EVENT,
                 TPM_CC_PCR_RESET,
                 TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
@@ -1267,6 +1284,81 @@ mod tests {
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
         assert!(descriptor.sessions_allowed);
+    }
+
+    #[test]
+    fn pcr_event_attributes_match_the_upstream_tpma_cc() {
+        assert_eq!(find(TPM_CC_PCR_EVENT).unwrap().attributes, 0x0200_013c);
+    }
+
+    #[test]
+    fn pcr_event_is_registered_exactly_once() {
+        let count = implemented()
+            .filter(|descriptor| descriptor.code == TPM_CC_PCR_EVENT)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn pcr_event_declares_one_command_handle_requiring_user_authorization() {
+        let descriptor = find(TPM_CC_PCR_EVENT).unwrap();
+        assert_eq!(descriptor.code, TPM_CC_PCR_EVENT);
+        assert_eq!(descriptor.handles.len(), 1);
+        assert!(descriptor.handles[0].user_auth);
+        assert!(!descriptor.handles[0].admin_role);
+        assert!(matches!(
+            descriptor.handles[0].kind,
+            HandleKind::PcrAllowNull
+        ));
+        assert!(descriptor.sessions_allowed);
+        assert!(!descriptor.physical_presence);
+        assert!(matches!(
+            descriptor.lifecycle,
+            CommandLifecycle::RequiresStarted
+        ));
+        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
+        assert_eq!(
+            descriptor.attributes & (1 << 22),
+            0,
+            "PCR_Event carries no NV attribute"
+        );
+        assert_eq!(
+            descriptor.attributes & (1 << 28),
+            0,
+            "PCR_Event has no response handle"
+        );
+    }
+
+    #[test]
+    fn the_pcr_event_handle_kind_accepts_implemented_pcrs_and_the_null_handle() {
+        let kind = find(TPM_CC_PCR_EVENT).unwrap().handles[0].kind;
+        for pcr in 0..IMPLEMENTATION_PCR as u32 {
+            assert!(kind.accepts(pcr), "PCR {pcr}");
+        }
+        assert!(
+            kind.accepts(TPM_RH_NULL),
+            "upstream unmarshals with allowNull"
+        );
+        for handle in [
+            IMPLEMENTATION_PCR as u32,
+            0x0100_0000,
+            0x8000_0000,
+            TPM_RH_NULL - 1,
+            u32::MAX,
+        ] {
+            assert!(!kind.accepts(handle), "handle {handle:#x}");
+        }
+    }
+
+    #[test]
+    fn pcr_event_sorts_between_nv_change_auth_and_pcr_reset() {
+        let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
+        let at = codes
+            .iter()
+            .position(|&code| code == TPM_CC_PCR_EVENT)
+            .expect("PCR_Event is registered");
+        assert_eq!(codes[at - 1], TPM_CC_NV_CHANGE_AUTH);
+        assert_eq!(codes[at + 1], TPM_CC_PCR_RESET);
     }
 
     #[test]

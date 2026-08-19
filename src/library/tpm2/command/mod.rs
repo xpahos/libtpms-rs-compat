@@ -23,6 +23,7 @@ mod nv_undefine_space;
 mod nv_write;
 mod output;
 mod pcr_allocate;
+mod pcr_event;
 mod pcr_extend;
 mod pcr_read;
 mod pcr_reset;

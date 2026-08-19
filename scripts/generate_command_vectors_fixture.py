@@ -84,6 +84,7 @@ FAMILIES = {
     "get-test-result": (b"GTORACLE", "get_test_result.bin"),
     "nv-commands": (b"NVORACLE", "nv_commands.bin"),
     "nv-certify": (b"NVORACLE", "nv_certify.bin"),
+    "pcr-event": (b"PEORACLE", "pcr_event.bin"),
 }
 
 RUST_CONST = re.compile(
