@@ -1,7 +1,5 @@
 use crate::ffi_types::TpmResult;
-use crate::library::constants::{
-    TPM_RC_FAILURE, TPM_RC_LOCKOUT, TPM_RC_NV_UNAVAILABLE, TPM_RC_RETRY,
-};
+use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_LOCKOUT, TPM_RC_NV_UNAVAILABLE};
 
 use super::hierarchy::TPM_RH_LOCKOUT;
 use super::nv::{TPMA_NV_NO_DA, build_nv_image, is_nv_index_handle, resolve_index};
@@ -52,7 +50,6 @@ pub(super) fn check_locked_out(runtime: &mut Tpm2Runtime, handle: u32) -> Result
             return Err(TPM_RC_NV_UNAVAILABLE);
         }
         record_da_used(runtime)?;
-        return Err(TPM_RC_RETRY);
     }
     Ok(())
 }
@@ -227,16 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn the_first_da_protected_authorization_records_the_marker_and_asks_for_a_retry() {
+    fn the_first_da_protected_authorization_records_the_marker_and_proceeds() {
         let mut runtime = manufactured_runtime();
         runtime.timer.time_ms = 1_234;
         assert!(!runtime.live.da_used);
-        assert_eq!(check_locked_out(&mut runtime, DA_INDEX), Err(TPM_RC_RETRY));
+        assert_eq!(check_locked_out(&mut runtime, DA_INDEX), Ok(()));
         assert!(runtime.live.da_used);
         assert_eq!(
             runtime.state().persistent.orderly_state,
             SU_DA_USED_VALUE,
-            "the retry commits the DA-used orderly marker"
+            "the first use commits the DA-used orderly marker"
         );
         assert!(runtime.nv_update_pending);
         assert_eq!(
@@ -388,15 +385,15 @@ mod tests {
 
         assert_eq!(
             check_locked_out(&mut runtime, PROTECTED_PERSISTENT),
-            Err(TPM_RC_RETRY),
-            "the first use of a real DA-protected persistent object retries"
+            Ok(()),
+            "the first use of a real DA-protected persistent object proceeds"
         );
         assert!(runtime.live.da_used);
         assert_eq!(runtime.state().persistent.orderly_state, SU_DA_USED_VALUE);
         assert_eq!(
             check_locked_out(&mut runtime, PROTECTED_PERSISTENT),
             Ok(()),
-            "the retried authorization proceeds normally"
+            "the following authorization proceeds normally"
         );
         assert_eq!(
             check_locked_out(&mut runtime, PROTECTED_TRANSIENT),

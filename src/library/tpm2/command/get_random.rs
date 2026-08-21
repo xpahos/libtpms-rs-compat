@@ -124,7 +124,7 @@ mod tests {
     }
 
     fn restricted_properties_response() -> Vec<u8> {
-        crate::library::tpm2::oracles::get_test_result::vector("FM_CAP_PT105_C1").to_vec()
+        crate::library::tpm2::golden_responses::get_test_result::vector("FM_CAP_PT105_C1").to_vec()
     }
 
     fn get_random_command(parameters: &[u8]) -> Vec<u8> {

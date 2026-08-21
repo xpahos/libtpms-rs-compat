@@ -178,12 +178,12 @@ mod tests {
     };
     use super::*;
     use crate::library::constants::TPM_RC_INITIALIZE;
+    use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL};
     use crate::library::tpm2::nv::{
         NV_INDEX_FIRST, NV_INDEX_LAST, TPMA_NV_ORDERLY, TPMA_NV_READ_STCLEAR,
         TPMA_NV_WRITE_STCLEAR, marshal_sized_nv_public, resolve_index,
     };
-    use crate::library::tpm2::oracles::nv::nv_vector;
     use crate::library::tpm2::persistent::OwnedUserNvramEntry;
 
     const RC_SIZE: u32 = 0x095;

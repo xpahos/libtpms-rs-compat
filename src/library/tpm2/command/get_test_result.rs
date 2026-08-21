@@ -25,7 +25,7 @@ mod tests {
     use super::super::registry::{TPM_CC_GET_TEST_RESULT, find, implemented};
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::tpm2::oracles::get_test_result::vector;
+    use crate::library::tpm2::golden_responses::get_test_result::vector;
     use crate::library::tpm2::runtime::empty_state_runtime;
 
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {

@@ -193,7 +193,7 @@ mod tests {
     use super::*;
     use crate::library::tpm2::capability::{TPM_CAP_ALGS, TPM_CAP_COMMANDS};
     use crate::library::tpm2::command::implemented_commands;
-    use crate::library::tpm2::oracles::get_test_result::vector;
+    use crate::library::tpm2::golden_responses::get_test_result::vector;
     use crate::library::tpm2::runtime::empty_state_runtime;
 
     const BARE_FAILURE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];

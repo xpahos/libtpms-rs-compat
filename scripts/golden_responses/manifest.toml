@@ -1,0 +1,624 @@
+[reference]
+docker_platform = "linux/arm64"
+
+[families."create"]
+magic = "CRORACLE"
+scenario = "scripts/golden_responses/scenarios/create.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/create.bin"
+reader = "src/library/tpm2/golden_responses/create.rs"
+commands = ["TPM2_Create"]
+
+[families."create-loaded"]
+magic = "CLORACLE"
+scenario = "scripts/golden_responses/scenarios/create_loaded.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/create_loaded.bin"
+reader = "src/library/tpm2/golden_responses/create_loaded.rs"
+commands = ["TPM2_CreateLoaded"]
+
+[families."create-primary"]
+magic = "CPORACLE"
+scenario = "scripts/golden_responses/scenarios/create_primary.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/create_primary.bin"
+reader = "src/library/tpm2/golden_responses/create_primary.rs"
+commands = ["TPM2_CreatePrimary"]
+
+[families."dictionary-attack"]
+magic = "DAORACLE"
+scenario = "scripts/golden_responses/scenarios/dictionary_attack.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/dictionary_attack.bin"
+reader = "src/library/tpm2/golden_responses/dictionary_attack.rs"
+commands = ["TPM2_DictionaryAttackParameters"]
+
+[families."evict-control"]
+magic = "ECORACLE"
+scenario = "scripts/golden_responses/scenarios/evict_control.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/evict_control.bin"
+reader = "src/library/tpm2/golden_responses/evict_control.rs"
+commands = ["TPM2_EvictControl"]
+
+[families."flush-context"]
+magic = "FCORACLE"
+scenario = "scripts/golden_responses/scenarios/flush_context.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/flush_context.bin"
+reader = "src/library/tpm2/golden_responses/flush_context.rs"
+commands = ["TPM2_FlushContext"]
+
+[families."get-test-result"]
+magic = "GTORACLE"
+scenario = "scripts/golden_responses/scenarios/get_test_result.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/get_test_result.bin"
+reader = "src/library/tpm2/golden_responses/get_test_result.rs"
+commands = ["TPM2_GetTestResult"]
+
+[families."nv-commands"]
+magic = "NVORACLE"
+scenario = "scripts/golden_responses/scenarios/nv_commands.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/nv_commands.bin"
+reader = "src/library/tpm2/golden_responses/nv.rs"
+commands = [
+    "TPM2_NV_UndefineSpaceSpecial",
+    "TPM2_NV_UndefineSpace",
+    "TPM2_NV_DefineSpace",
+    "TPM2_NV_GlobalWriteLock",
+    "TPM2_NV_Increment",
+    "TPM2_NV_SetBits",
+    "TPM2_NV_Extend",
+    "TPM2_NV_Write",
+    "TPM2_NV_WriteLock",
+    "TPM2_NV_ChangeAuth",
+    "TPM2_NV_Read",
+    "TPM2_NV_ReadLock",
+    "TPM2_NV_ReadPublic",
+]
+
+[families."nv-certify"]
+magic = "NCORACLE"
+scenario = "scripts/golden_responses/scenarios/nv_certify.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/nv_certify.bin"
+reader = "src/library/tpm2/golden_responses/nv.rs"
+commands = ["TPM2_NV_Certify"]
+
+[families."pcr-event"]
+magic = "PEORACLE"
+scenario = "scripts/golden_responses/scenarios/pcr_event.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/pcr_event.bin"
+reader = "src/library/tpm2/golden_responses/pcr_event.rs"
+commands = ["TPM2_PCR_Event"]
+
+[commands.NV_UndefineSpaceSpecial]
+code = 0x0000011f
+status = "implemented"
+family = "nv-commands"
+
+[commands.EvictControl]
+code = 0x00000120
+status = "implemented"
+family = "evict-control"
+
+[commands.HierarchyControl]
+code = 0x00000121
+status = "todo"
+
+[commands.NV_UndefineSpace]
+code = 0x00000122
+status = "implemented"
+family = "nv-commands"
+
+[commands.ChangeEPS]
+code = 0x00000124
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.ChangePPS]
+code = 0x00000125
+status = "todo"
+
+[commands.Clear]
+code = 0x00000126
+status = "todo"
+
+[commands.ClearControl]
+code = 0x00000127
+status = "todo"
+
+[commands.ClockSet]
+code = 0x00000128
+status = "todo"
+
+[commands.HierarchyChangeAuth]
+code = 0x00000129
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.NV_DefineSpace]
+code = 0x0000012a
+status = "implemented"
+family = "nv-commands"
+
+[commands.PCR_Allocate]
+code = 0x0000012b
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.PCR_SetAuthPolicy]
+code = 0x0000012c
+status = "todo"
+
+[commands.PP_Commands]
+code = 0x0000012d
+status = "todo"
+
+[commands.SetPrimaryPolicy]
+code = 0x0000012e
+status = "todo"
+
+[commands.FieldUpgradeStart]
+code = 0x0000012f
+status = "todo"
+
+[commands.ClockRateAdjust]
+code = 0x00000130
+status = "todo"
+
+[commands.CreatePrimary]
+code = 0x00000131
+status = "implemented"
+family = "create-primary"
+
+[commands.NV_GlobalWriteLock]
+code = 0x00000132
+status = "implemented"
+family = "nv-commands"
+
+[commands.GetCommandAuditDigest]
+code = 0x00000133
+status = "todo"
+
+[commands.NV_Increment]
+code = 0x00000134
+status = "implemented"
+family = "nv-commands"
+
+[commands.NV_SetBits]
+code = 0x00000135
+status = "implemented"
+family = "nv-commands"
+
+[commands.NV_Extend]
+code = 0x00000136
+status = "implemented"
+family = "nv-commands"
+
+[commands.NV_Write]
+code = 0x00000137
+status = "implemented"
+family = "nv-commands"
+
+[commands.NV_WriteLock]
+code = 0x00000138
+status = "implemented"
+family = "nv-commands"
+
+[commands.DictionaryAttackLockReset]
+code = 0x00000139
+status = "todo"
+
+[commands.DictionaryAttackParameters]
+code = 0x0000013a
+status = "implemented"
+family = "dictionary-attack"
+
+[commands.NV_ChangeAuth]
+code = 0x0000013b
+status = "implemented"
+family = "nv-commands"
+
+[commands.PCR_Event]
+code = 0x0000013c
+status = "implemented"
+family = "pcr-event"
+
+[commands.PCR_Reset]
+code = 0x0000013d
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.SequenceComplete]
+code = 0x0000013e
+status = "todo"
+
+[commands.SetAlgorithmSet]
+code = 0x0000013f
+status = "todo"
+
+[commands.SetCommandCodeAuditStatus]
+code = 0x00000140
+status = "todo"
+
+[commands.FieldUpgradeData]
+code = 0x00000141
+status = "todo"
+
+[commands.IncrementalSelfTest]
+code = 0x00000142
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.SelfTest]
+code = 0x00000143
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.Startup]
+code = 0x00000144
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.Shutdown]
+code = 0x00000145
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.StirRandom]
+code = 0x00000146
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.ActivateCredential]
+code = 0x00000147
+status = "todo"
+
+[commands.Certify]
+code = 0x00000148
+status = "todo"
+
+[commands.PolicyNV]
+code = 0x00000149
+status = "todo"
+
+[commands.CertifyCreation]
+code = 0x0000014a
+status = "todo"
+
+[commands.Duplicate]
+code = 0x0000014b
+status = "todo"
+
+[commands.GetTime]
+code = 0x0000014c
+status = "todo"
+
+[commands.GetSessionAuditDigest]
+code = 0x0000014d
+status = "todo"
+
+[commands.NV_Read]
+code = 0x0000014e
+status = "implemented"
+family = "nv-commands"
+
+[commands.NV_ReadLock]
+code = 0x0000014f
+status = "implemented"
+family = "nv-commands"
+
+[commands.ObjectChangeAuth]
+code = 0x00000150
+status = "todo"
+
+[commands.PolicySecret]
+code = 0x00000151
+status = "todo"
+
+[commands.Rewrap]
+code = 0x00000152
+status = "todo"
+
+[commands.Create]
+code = 0x00000153
+status = "implemented"
+family = "create"
+
+[commands.ECDH_ZGen]
+code = 0x00000154
+status = "todo"
+
+[commands.HMAC]
+code = 0x00000155
+status = "todo"
+alias = "MAC"
+
+[commands.Import]
+code = 0x00000156
+status = "todo"
+
+[commands.Load]
+code = 0x00000157
+status = "todo"
+
+[commands.Quote]
+code = 0x00000158
+status = "todo"
+
+[commands.RSA_Decrypt]
+code = 0x00000159
+status = "todo"
+
+[commands.HMAC_Start]
+code = 0x0000015b
+status = "todo"
+alias = "MAC_Start"
+
+[commands.SequenceUpdate]
+code = 0x0000015c
+status = "todo"
+
+[commands.Sign]
+code = 0x0000015d
+status = "todo"
+
+[commands.Unseal]
+code = 0x0000015e
+status = "todo"
+
+[commands.PolicySigned]
+code = 0x00000160
+status = "todo"
+
+[commands.ContextLoad]
+code = 0x00000161
+status = "todo"
+
+[commands.ContextSave]
+code = 0x00000162
+status = "todo"
+
+[commands.ECDH_KeyGen]
+code = 0x00000163
+status = "todo"
+
+[commands.EncryptDecrypt]
+code = 0x00000164
+status = "todo"
+
+[commands.FlushContext]
+code = 0x00000165
+status = "implemented"
+family = "flush-context"
+
+[commands.LoadExternal]
+code = 0x00000167
+status = "todo"
+
+[commands.MakeCredential]
+code = 0x00000168
+status = "todo"
+
+[commands.NV_ReadPublic]
+code = 0x00000169
+status = "implemented"
+family = "nv-commands"
+
+[commands.PolicyAuthorize]
+code = 0x0000016a
+status = "todo"
+
+[commands.PolicyAuthValue]
+code = 0x0000016b
+status = "todo"
+
+[commands.PolicyCommandCode]
+code = 0x0000016c
+status = "todo"
+
+[commands.PolicyCounterTimer]
+code = 0x0000016d
+status = "todo"
+
+[commands.PolicyCpHash]
+code = 0x0000016e
+status = "todo"
+
+[commands.PolicyLocality]
+code = 0x0000016f
+status = "todo"
+
+[commands.PolicyNameHash]
+code = 0x00000170
+status = "todo"
+
+[commands.PolicyOR]
+code = 0x00000171
+status = "todo"
+
+[commands.PolicyTicket]
+code = 0x00000172
+status = "todo"
+
+[commands.ReadPublic]
+code = 0x00000173
+status = "todo"
+
+[commands.RSA_Encrypt]
+code = 0x00000174
+status = "todo"
+
+[commands.StartAuthSession]
+code = 0x00000176
+status = "todo"
+
+[commands.VerifySignature]
+code = 0x00000177
+status = "todo"
+
+[commands.ECC_Parameters]
+code = 0x00000178
+status = "todo"
+
+[commands.FirmwareRead]
+code = 0x00000179
+status = "todo"
+
+[commands.GetCapability]
+code = 0x0000017a
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.GetRandom]
+code = 0x0000017b
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.GetTestResult]
+code = 0x0000017c
+status = "implemented"
+family = "get-test-result"
+
+[commands.Hash]
+code = 0x0000017d
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.PCR_Read]
+code = 0x0000017e
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.PolicyPCR]
+code = 0x0000017f
+status = "todo"
+
+[commands.PolicyRestart]
+code = 0x00000180
+status = "todo"
+
+[commands.ReadClock]
+code = 0x00000181
+status = "todo"
+
+[commands.PCR_Extend]
+code = 0x00000182
+status = "implemented"
+reason = "pinned by module tests predating the fixture format"
+
+[commands.PCR_SetAuthValue]
+code = 0x00000183
+status = "todo"
+
+[commands.NV_Certify]
+code = 0x00000184
+status = "implemented"
+family = "nv-certify"
+
+[commands.EventSequenceComplete]
+code = 0x00000185
+status = "todo"
+
+[commands.HashSequenceStart]
+code = 0x00000186
+status = "todo"
+
+[commands.PolicyPhysicalPresence]
+code = 0x00000187
+status = "todo"
+
+[commands.PolicyDuplicationSelect]
+code = 0x00000188
+status = "todo"
+
+[commands.PolicyGetDigest]
+code = 0x00000189
+status = "todo"
+
+[commands.TestParms]
+code = 0x0000018a
+status = "todo"
+
+[commands.Commit]
+code = 0x0000018b
+status = "todo"
+
+[commands.PolicyPassword]
+code = 0x0000018c
+status = "todo"
+
+[commands.ZGen_2Phase]
+code = 0x0000018d
+status = "todo"
+
+[commands.EC_Ephemeral]
+code = 0x0000018e
+status = "todo"
+
+[commands.PolicyNvWritten]
+code = 0x0000018f
+status = "todo"
+
+[commands.PolicyTemplate]
+code = 0x00000190
+status = "todo"
+
+[commands.CreateLoaded]
+code = 0x00000191
+status = "implemented"
+family = "create-loaded"
+
+[commands.PolicyAuthorizeNV]
+code = 0x00000192
+status = "todo"
+
+[commands.EncryptDecrypt2]
+code = 0x00000193
+status = "todo"
+
+[commands.AC_GetCapability]
+code = 0x00000194
+status = "todo"
+
+[commands.AC_Send]
+code = 0x00000195
+status = "todo"
+
+[commands.Policy_AC_SendSelect]
+code = 0x00000196
+status = "todo"
+
+[commands.CertifyX509]
+code = 0x00000197
+status = "todo"
+
+[commands.ACT_SetTimeout]
+code = 0x00000198
+status = "todo"
+
+[commands.ECC_Encrypt]
+code = 0x00000199
+status = "todo"
+
+[commands.ECC_Decrypt]
+code = 0x0000019a
+status = "todo"
+
+[commands.PolicyCapability]
+code = 0x0000019b
+status = "todo"
+
+[commands.PolicyParameters]
+code = 0x0000019c
+status = "todo"
+
+[commands.NV_DefineSpace2]
+code = 0x0000019d
+status = "todo"
+
+[commands.NV_ReadPublic2]
+code = 0x0000019e
+status = "todo"
+
+[commands.SetCapability]
+code = 0x0000019f
+status = "todo"
+
+[commands.Vendor_TCG_Test]
+code = 0x20000000
+status = "todo"

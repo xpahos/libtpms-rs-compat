@@ -90,9 +90,9 @@ mod tests {
     use super::*;
     use crate::library::CommandInput;
     use crate::library::constants::{TPM_RC_AUTH_MISSING, TPM_RC_INITIALIZE};
+    use crate::library::tpm2::golden_responses::pcr_event::vector;
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::nv::build_nv_image;
-    use crate::library::tpm2::oracles::pcr_event::vector;
     use crate::library::tpm2::parse_persistent_all_payload;
     use crate::library::tpm2::persistent::{
         OwnedPcrAllocation, OwnedPcrSelection, OwnedPersistentState, PersistentAllEnvelope,

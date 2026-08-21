@@ -84,8 +84,8 @@ SWTPM_SRC_DIR      := $(CURDIR)/swtpm
 LIBTPMS_INCLUDE_DIR    := $(CURDIR)/libtpms/include/libtpms
 LIBTPMS_PUBLIC_HEADERS := $(wildcard $(LIBTPMS_INCLUDE_DIR)/*.h)
 # Version advertised via pkg-config; must satisfy swtpm's `libtpms >= 0.10`
-# requirement and match the pinned libtpms submodule (v0.10.1).
-LIBTPMS_PC_VERSION     := 0.10.1
+# requirement and match the pinned libtpms submodule (v0.10.2).
+LIBTPMS_PC_VERSION     := 0.10.2
 
 CARGO_BUILT_LIB     := $(PROFILE_TARGET_DIR)/$(LIBTPMS_BUILD_NAME)
 SWTPM_PKGCONFIG_DIR := $(SWTPM_PREFIX)/lib/pkgconfig
@@ -106,12 +106,12 @@ all: check
 # Build the library (debug profile). Regenerates the ABI stubs first; the
 # generator only touches the file when its content changes, so cargo does
 # not rebuild needlessly.
-build: generate-abi check-generated-inputs
+build: golden-audit generate-abi check-generated-inputs
 	$(CARGO) build
 	@echo "built: $(CARGO_TARGET_DIR)/debug/$(DYLIB_NAME)"
 
 # Build the library with optimizations (release profile).
-build-release: generate-abi check-generated-inputs
+build-release: golden-audit generate-abi check-generated-inputs
 	$(CARGO) build --release
 	@echo "built: $(CARGO_TARGET_DIR)/release/$(DYLIB_NAME)"
 
@@ -472,3 +472,26 @@ test-swtpm-docker:
 		-e "SWTPM_TEST_EXPENSIVE=1" \
 		-e "SWTPM_DOCKER_IMAGE_ID=$$image_id" \
 		"$(SWTPM_DOCKER_IMAGE)" /repo/$(SWTPM_DOCKER_RUNNER)
+
+GOLDEN := $(PYTHON) scripts/golden_responses/golden.py
+
+.PHONY: golden-audit test-golden update-golden update-golden-all ci
+
+golden-audit:
+	$(GOLDEN) audit
+
+test-golden:
+	$(GOLDEN) verify --all
+	$(PYTHON) -m unittest scripts.tests.golden_docker_checks
+
+update-golden:
+	@test -n "$(FAMILY)" || { \
+		echo "usage: make update-golden FAMILY=create-primary"; \
+		exit 2; \
+	}
+	$(GOLDEN) update "$(FAMILY)"
+
+update-golden-all:
+	$(GOLDEN) update --all --confirm-reference-update
+
+ci: test-golden check

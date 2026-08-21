@@ -78,13 +78,13 @@ mod tests {
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_READ, TPM_CC_NV_READ_PUBLIC, find,
     };
     use super::*;
+    use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::nv::{
         NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_ORDERLY, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE,
         TPMA_NV_POLICYREAD, TPMA_NV_POLICYWRITE, TPMA_NV_PPREAD, TPMA_NV_READ_STCLEAR,
         TPMA_NV_WRITTEN, marshal_sized_nv_public, nv_index_name,
     };
-    use crate::library::tpm2::oracles::nv::nv_vector;
 
     const RC_SIZE: u32 = 0x095;
     const RC_NV_RANGE: u32 = 0x146;

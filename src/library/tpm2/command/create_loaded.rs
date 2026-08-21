@@ -265,7 +265,7 @@ mod tests {
     use super::*;
     use crate::library::CommandInput;
     use crate::library::tpm2::clock::SteppingClock;
-    use crate::library::tpm2::oracles::create_loaded::vector;
+    use crate::library::tpm2::golden_responses::create_loaded::vector;
     use crate::library::tpm2::process::process;
     use crate::library::tpm2::{VolatileDecodeBoundary, restore_permanent_blob_for_test};
 
@@ -864,7 +864,10 @@ mod tests {
                 cp_command(TPM_RH_OWNER_H, b"parent", &SRK_NODA_CLEAR_TEMPLATE),
             ),
             ("DEFINE_DA_INDEX", define_da_index_command()),
-            ("NVWRITE_DA_RETRY", nv_write_empty_command(0x0100_0000, &[])),
+            (
+                "NVWRITE_DA_FIRST_USE",
+                nv_write_empty_command(0x0100_0000, &[]),
+            ),
             ("CAP_DA_BEFORE_FAIL", cap_da_command()),
             (
                 "DA_CHILD_WRONG_AUTH",
@@ -953,15 +956,23 @@ mod tests {
             ("CAP_DA2_PERSISTENT", cap_da_command()),
         ]);
 
-        assert_eq!(
-            vector("DA2_NV_FIRST_USE"),
-            vector("DA2_TRANSIENT_FIRST_USE"),
-            "the first-use retry is identical for NV and transient-object auth"
-        );
+        const RETRY_CODE: [u8; 4] = [0x00, 0x00, 0x09, 0x22];
+        for label in [
+            "DA2_NV_FIRST_USE",
+            "DA2_TRANSIENT_FIRST_USE",
+            "DA2_PERSISTENT_FIRST_USE",
+        ] {
+            assert_ne!(
+                vector(label)[6..10],
+                RETRY_CODE,
+                "{label}: the first DA-protected use proceeds instead of asking \
+                 for a retry"
+            );
+        }
         assert_eq!(
             vector("DA2_TRANSIENT_FIRST_USE"),
             vector("DA2_PERSISTENT_FIRST_USE"),
-            "the first-use retry is identical for transient and persistent auth"
+            "the first use is identical for transient and persistent auth"
         );
         assert_eq!(
             vector("DA2_TRANSIENT_AFTER_USED_OK"),
@@ -994,7 +1005,7 @@ mod tests {
                 .persistent
                 .failed_tries,
             0,
-            "a retried then successful authorization never fails a try"
+            "an authorization that proceeds on first use never fails a try"
         );
         assert_eq!(
             persistent
@@ -1013,8 +1024,8 @@ mod tests {
                 .iter()
                 .map(|object| object.attributes & ATTR_OCCUPIED != 0)
                 .collect::<Vec<bool>>(),
-            [false, true, false],
-            "only the successful child occupies a slot, one past the \
+            [false, true, true],
+            "the first use and its repeat both load a child, one past the \
              persistent parent's temporary load slot"
         );
     }

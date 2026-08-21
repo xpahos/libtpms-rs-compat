@@ -119,7 +119,7 @@ pub(in crate::library) const TPM_RC_REFERENCE_S0: TpmResult = 0x918;
 pub(in crate::library) const TPM_RC_NV_RATE: TpmResult = 0x920;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_LOCKOUT: TpmResult = 0x921;
-#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+#[allow(dead_code)]
 pub(in crate::library) const TPM_RC_RETRY: TpmResult = 0x922;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NV_UNAVAILABLE: TpmResult = 0x923;

@@ -141,8 +141,8 @@ mod tests {
     use super::*;
     use crate::library::CommandInput;
     use crate::library::tpm2::clock::SteppingClock;
+    use crate::library::tpm2::golden_responses::create::vector;
     use crate::library::tpm2::object::ATTR_OCCUPIED;
-    use crate::library::tpm2::oracles::create::vector;
     use crate::library::tpm2::process::process;
     use crate::library::tpm2::template::TemplateReader;
     use crate::library::tpm2::{VolatileDecodeBoundary, restore_permanent_blob_for_test};
@@ -898,11 +898,11 @@ mod tests {
                 cp_command(TPM_RH_OWNER_H, b"parent", &SRK_NODA_CLEAR_TEMPLATE),
             ),
             (
-                "DA_CHILD_FIRST_RETRY",
+                "DA_CHILD_FIRST_USE",
                 create_command(0x8000_0000, b"parent", &AES_TEMPLATE),
             ),
             (
-                "DA_CHILD_AFTER_RETRY",
+                "DA_CHILD_SECOND_USE",
                 create_command(0x8000_0000, b"parent", &AES_TEMPLATE),
             ),
             (

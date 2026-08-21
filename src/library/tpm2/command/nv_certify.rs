@@ -403,12 +403,12 @@ mod tests {
     use super::super::nv_common::harness::*;
     use super::super::registry::{CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_CERTIFY, find};
     use super::*;
+    use crate::library::tpm2::golden_responses::nv::certify_vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::nv::{
         NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE, TPMA_NV_READ_STCLEAR,
         marshal_sized_nv_public,
     };
-    use crate::library::tpm2::oracles::nv::certify_vector;
     use crate::library::tpm2::persistent::OwnedSecret;
     use crate::library::tpm2::restore_permanent_blob_for_test;
 
@@ -423,7 +423,6 @@ mod tests {
     const RC_NV_AUTHORIZATION: u32 = 0x149;
     const RC_NV_UNINITIALIZED: u32 = 0x14a;
     const RC_AUTH_MISSING: u32 = 0x125;
-    const RC_RETRY: u32 = 0x922;
 
     const INDEX: u32 = 0x0100_0001;
 
@@ -603,24 +602,7 @@ mod tests {
 
     #[track_caller]
     fn oracle_runtime_with_owner(with_owner: bool) -> (Box<Tpm2Runtime>, u32, u32) {
-        let (mut runtime, endorsement, owner) = oracle_runtime_before_da_transition(with_owner);
-        assert_eq!(
-            response_code(&certify(
-                &mut runtime,
-                endorsement,
-                TPM_RH_OWNER,
-                INDEX,
-                &QUALIFY,
-                0x0010,
-                0,
-                32,
-                0
-            )),
-            RC_RETRY,
-            "the first DA-protected signer authorization records the DA-used \
-             transition through the production path"
-        );
-        (runtime, endorsement, owner)
+        oracle_runtime_before_da_transition(with_owner)
     }
 
     #[track_caller]
@@ -671,12 +653,8 @@ mod tests {
     fn mark_da_cycle_used(runtime: &mut Tpm2Runtime) {
         use crate::library::tpm2::dictionary_attack::record_da_used;
         record_da_used(runtime).expect(
-            "the certify fixtures were captured from a libtpms build with the \
-             reverted first-use return, which proceeds after recording the \
-             DA-used transition; under the repository's pre-revert \
-             TPM_RC_RETRY contract those bytes correspond to the \
-             post-transition cycle state, so the harness performs the \
-             production transition up front",
+            "the certify fixtures expect the post-transition DA state, so the \
+             harness performs that production transition before replaying them",
         );
     }
 
@@ -691,27 +669,28 @@ mod tests {
     fn the_harness_enters_the_complete_post_transition_state() {
         use crate::library::tpm2::nv::build_nv_image;
 
-        let (oracle, _) = oracle_runtime();
+        let (mut oracle, endorsement) = oracle_runtime();
+        assert!(!oracle.live.da_used, "the transition has not happened yet");
+        assert_eq!(
+            response_code(&certify(
+                &mut oracle,
+                endorsement,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                0x0010,
+                0,
+                32,
+                0
+            )),
+            RC_SUCCESS
+        );
         assert!(oracle.live.da_used);
         assert_eq!(oracle.state().persistent.orderly_state, 0xfffe);
-        assert!(
-            oracle.nv_update_pending,
-            "the production retry path scheduled the NV commit"
-        );
         assert_eq!(
             oracle.nv_memory,
             build_nv_image(oracle.state()).expect("the state serializes"),
             "the committed NV image carries the DA-used marker"
-        );
-
-        let synthetic = certify_runtime();
-        assert!(synthetic.live.da_used);
-        assert_eq!(synthetic.state().persistent.orderly_state, 0xfffe);
-        assert_eq!(
-            synthetic.nv_memory,
-            build_nv_image(synthetic.state()).expect("the state serializes"),
-            "the helper leaves the serialized state consistent with the \
-             in-memory transition"
         );
     }
 
@@ -1356,24 +1335,9 @@ mod tests {
                 32,
                 0
             )),
-            RC_RETRY,
+            RC_SUCCESS,
             "the first DA-protected signer authorization records the DA-used \
-             marker exactly as the capture's first certification did"
-        );
-        runtime.nv_update_pending = false;
-        assert_eq!(
-            response_code(&certify(
-                &mut runtime,
-                endorsement,
-                TPM_RH_OWNER,
-                INDEX,
-                &QUALIFY,
-                0x0010,
-                0,
-                32,
-                0
-            )),
-            RC_SUCCESS
+             marker and proceeds, exactly as the capture's first certification did"
         );
         assert_matches_oracle_except(
             &runtime,
@@ -1502,11 +1466,9 @@ mod tests {
         let (mut runtime, endorsement) = oracle_runtime();
         let modulus = {
             let create = certify_vector("CREATE_ENDORSEMENT_SIGNER");
-            let start = create
-                .windows(3)
-                .position(|window| window == [0x01, 0x00, 0xcf])
-                .expect("the modulus follows its TPM2B size");
-            create[start + 2..start + 2 + 256].to_vec()
+            let public_size = usize::from(u16::from_be_bytes([create[18], create[19]]));
+            let public_area = &create[20..20 + public_size];
+            public_area[public_area.len() - 256..].to_vec()
         };
         let response = certify(
             &mut runtime,
@@ -2733,6 +2695,21 @@ mod tests {
     #[test]
     fn a_failed_certification_leaves_no_trace() {
         let (mut runtime, endorsement) = oracle_runtime();
+        assert_eq!(
+            response_code(&certify(
+                &mut runtime,
+                endorsement,
+                TPM_RH_OWNER,
+                INDEX,
+                &QUALIFY,
+                0x0010,
+                0,
+                32,
+                0
+            )),
+            RC_SUCCESS,
+            "the first authorization performs the DA-used transition"
+        );
         runtime.nv_update_pending = false;
         let before = snapshot(&runtime);
         for (size, offset) in [(0u16, 33u16), (8, 28)] {

@@ -1410,7 +1410,7 @@ mod tests {
     }
 
     fn oracle_runtime() -> Box<Tpm2Runtime> {
-        use crate::library::tpm2::oracles::create_primary::vector;
+        use crate::library::tpm2::golden_responses::create_primary::vector;
         let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL"))
             .expect("the oracle permanent state restores");
         let startup = vec![
@@ -1425,7 +1425,7 @@ mod tests {
 
     #[test]
     fn every_swtpm_setup_template_matches_the_libtpms_oracle_byte_for_byte() {
-        use crate::library::tpm2::oracles::create_primary::oracle_cases;
+        use crate::library::tpm2::golden_responses::create_primary::oracle_cases;
         for (label, hierarchy, template, expected) in oracle_cases() {
             let mut runtime = oracle_runtime();
             let response = create(&mut runtime, hierarchy, &template);
@@ -1457,7 +1457,9 @@ mod tests {
 
     #[test]
     fn the_null_hierarchy_key_has_the_oracle_shape_but_a_per_boot_value() {
-        use crate::library::tpm2::oracles::create_primary::{null_hierarchy_template, vector};
+        use crate::library::tpm2::golden_responses::create_primary::{
+            null_hierarchy_template, vector,
+        };
         let expected = vector("NULL_RSA1024");
         let mut runtime = oracle_runtime();
         let response = create(&mut runtime, TPM_RH_NULL, &null_hierarchy_template());
@@ -1491,7 +1493,7 @@ mod tests {
     }
 
     fn sym_permall_runtime() -> Box<Tpm2Runtime> {
-        use crate::library::tpm2::oracles::create_primary::vector;
+        use crate::library::tpm2::golden_responses::create_primary::vector;
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("SYM_PERMALL"))
                 .expect("the oracle permanent state restores");
@@ -1536,7 +1538,7 @@ mod tests {
 
     #[test]
     fn the_profile_minimum_key_sizes_match_the_libtpms_oracle_codes() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, Vec<u8>, u32); 9] = [
             (
                 "rsa1024",
@@ -1601,7 +1603,7 @@ mod tests {
 
     #[test]
     fn a_template_at_or_above_the_profile_minimum_is_accepted() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, Vec<u8>); 3] = [
             ("rsa3072", vectors::asym_rsa_template(3072, 256)),
             ("ecc_p384", vectors::asym_ecc_template(0x0004, 256)),
@@ -1619,7 +1621,7 @@ mod tests {
 
     #[test]
     fn the_symmetric_parameter_of_a_storage_key_is_checked_against_the_profile() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let mut runtime = profile_runtime(vectors::MIN_SIZE_PROFILE);
         let template = vectors::asym_rsa_template(3072, 128);
         let response = create(&mut runtime, TPM_RH_OWNER, &template);
@@ -1631,7 +1633,7 @@ mod tests {
 
     #[test]
     fn a_disabled_curve_family_is_rejected_with_the_oracle_code() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         for (label, curve, expected) in [
             ("bn_p256", 0x0010u16, vectors::RC_NOBN_ECC_BN_P256),
             ("sm2_p256", 0x0020, vectors::RC_NOBN_ECC_SM2_P256),
@@ -1652,7 +1654,7 @@ mod tests {
 
     #[test]
     fn an_individually_disabled_curve_is_rejected_with_the_oracle_code() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         for (label, curve, expected) in [
             ("p192", 0x0001u16, vectors::RC_ONECURVE_ECC_P192),
             ("p521", 0x0005, vectors::RC_ONECURVE_ECC_P521),
@@ -1675,7 +1677,7 @@ mod tests {
 
     #[test]
     fn a_disabled_symmetric_algorithm_is_rejected_before_its_key_size() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let mut runtime = profile_runtime(vectors::NO_TDES_PROFILE);
         let template = vectors::symcipher_template(0x0003, 128, vectors::SYM_GENERATED_ATTRIBUTES);
         let response = create(&mut runtime, TPM_RH_OWNER, &template);
@@ -1684,7 +1686,7 @@ mod tests {
 
     #[test]
     fn generated_symmetric_primaries_match_the_libtpms_oracle_byte_for_byte() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, u16, u16, &[u8]); 3] = [
             ("tdes128", 0x0003, 128, vectors::vector("TDES128_GENERATED")),
             ("tdes192", 0x0003, 192, vectors::vector("TDES192_GENERATED")),
@@ -1701,7 +1703,7 @@ mod tests {
 
     #[test]
     fn supplied_symmetric_primaries_match_the_libtpms_oracle_byte_for_byte() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, u16, u16, &[u8], &[u8]); 5] = [
             (
                 "tdes128",
@@ -1750,7 +1752,7 @@ mod tests {
 
     #[test]
     fn a_rejected_supplied_tdes_key_matches_the_libtpms_oracle_code() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, u16, &[u8], u32); 5] = [
             (
                 "wrong_size_long",
@@ -1802,7 +1804,7 @@ mod tests {
 
     #[test]
     fn a_generated_tdes_primary_derives_deterministically_from_the_hierarchy_seed() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         let template = vectors::symcipher_template(0x0003, 192, vectors::SYM_GENERATED_ATTRIBUTES);
         let mut first = started_runtime();
         let mut second = started_runtime();
@@ -1821,7 +1823,7 @@ mod tests {
 
     #[test]
     fn a_generated_tdes_key_carries_odd_parity_and_distinct_components() {
-        use crate::library::tpm2::oracles::create_primary as vectors;
+        use crate::library::tpm2::golden_responses::create_primary as vectors;
         for key_bits in [128u16, 192] {
             let mut runtime = started_runtime();
             let template =

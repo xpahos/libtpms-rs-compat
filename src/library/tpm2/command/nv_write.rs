@@ -233,6 +233,7 @@ mod tests {
         TPM_CC_NV_SET_BITS, TPM_CC_NV_WRITE, find,
     };
     use super::*;
+    use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::nv::{
         NV_INDEX_FIRST, NvPublic, TPM_NT_BITS, TPM_NT_COUNTER, TPM_NT_EXTEND, TPMA_NV_AUTHREAD,
@@ -240,7 +241,6 @@ mod tests {
         TPMA_NV_POLICYWRITE, TPMA_NV_PPREAD, TPMA_NV_PPWRITE, TPMA_NV_WRITE_STCLEAR,
         marshal_sized_nv_public, resolve_index,
     };
-    use crate::library::tpm2::oracles::nv::nv_vector;
 
     const RC_SIZE: u32 = 0x095;
     const RC_ATTRIBUTES: u32 = 0x082;
@@ -671,7 +671,9 @@ mod tests {
         );
     }
 
-    const RETRY_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x09, 0x22];
+    fn wrong_password_response() -> Vec<u8> {
+        vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x09, 0x8e]
+    }
 
     #[test]
     fn an_index_may_authorize_its_own_write_but_no_other_index() {
@@ -722,8 +724,9 @@ mod tests {
                     &write_parameters(&[], 0),
                 ),
             ),
-            RETRY_RESPONSE,
-            "the first DA-protected authorization of the cycle asks for a retry"
+            wrong_password_response(),
+            "the first DA-protected authorization performs the transition and \
+             reports the wrong password"
         );
         assert_eq!(
             response_code(&dispatch_bytes(
@@ -777,24 +780,22 @@ mod tests {
                     &write_parameters(b"A", 0),
                 ),
             ),
-            RETRY_RESPONSE,
-            "the first DA-protected authorization of the cycle asks for a retry"
+            nv_vector("DA_WRITE_NO_PASSWORD"),
+            "the first DA-protected authorization performs the DA-used \
+             transition and reports the missing password"
         );
-        for password in [&b""[..], &b"nope"[..]] {
-            assert_eq!(
-                dispatch_bytes(
-                    &mut runtime,
-                    &command(
-                        TPM_CC_NV_WRITE,
-                        &[0x0100_0000, 0x0100_0000],
-                        &[password],
-                        &write_parameters(b"A", 0),
-                    ),
+        assert_eq!(
+            dispatch_bytes(
+                &mut runtime,
+                &command(
+                    TPM_CC_NV_WRITE,
+                    &[0x0100_0000, 0x0100_0000],
+                    &[&b"nope"[..]],
+                    &write_parameters(b"A", 0),
                 ),
-                nv_vector("DA_WRITE_NO_PASSWORD"),
-                "password {password:02x?}"
-            );
-        }
+            ),
+            nv_vector("DA_WRITE_WRONG_PASSWORD")
+        );
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,

@@ -10,6 +10,8 @@ mod crypto;
 mod dictionary_attack;
 mod failure_mode;
 #[cfg(test)]
+mod golden_responses;
+#[cfg(test)]
 mod hash_vectors;
 mod hierarchy;
 mod info;
@@ -20,8 +22,6 @@ mod marshal;
 mod nv;
 mod object;
 mod object_create;
-#[cfg(test)]
-mod oracles;
 mod orderly;
 mod pcr;
 mod persistent;

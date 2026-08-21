@@ -1,0 +1,6 @@
+*
+!libtpms/
+!scripts/golden_responses/
+libtpms/.git
+**/*.swp
+**/*~

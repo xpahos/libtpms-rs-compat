@@ -90,10 +90,10 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::tpm2::capability::handles::test_state::{load_session, save_session};
     use crate::library::tpm2::clock::RecordingClock;
+    use crate::library::tpm2::golden_responses::flush_context::vector;
     use crate::library::tpm2::live::RestoredVolatile;
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::object::ATTR_OCCUPIED;
-    use crate::library::tpm2::oracles::flush_context::vector;
     use crate::library::tpm2::persistent::{OwnedUserNvramEntry, persistent_all_store};
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::restore_permanent_blob_for_test;

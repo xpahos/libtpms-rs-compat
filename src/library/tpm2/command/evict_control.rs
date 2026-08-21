@@ -293,6 +293,7 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::constants::TPM_RC_INITIALIZE;
     use crate::library::tpm2::command::registry::{CommandLifecycle, HandleKind};
+    use crate::library::tpm2::golden_responses::evict_control::vector;
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_PLATFORM_NV,
     };
@@ -300,7 +301,6 @@ mod tests {
     use crate::library::tpm2::nv::USER_NVRAM_CAPACITY;
     use crate::library::tpm2::object::{ATTR_OCCUPIED, ATTR_SPS_HIERARCHY};
     use crate::library::tpm2::object_create::find_empty_object_slot;
-    use crate::library::tpm2::oracles::evict_control::vector;
     use crate::library::tpm2::persistent::{
         OwnedNvIndex, OwnedSecret, persistent_all_store, user_nvram_required_capacity,
     };

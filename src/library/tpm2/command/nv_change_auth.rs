@@ -48,11 +48,11 @@ mod tests {
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_CHANGE_AUTH, find,
     };
     use super::*;
+    use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
     use crate::library::tpm2::nv::{
         NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, index_auth_value, marshal_sized_nv_public,
     };
-    use crate::library::tpm2::oracles::nv::nv_vector;
     use crate::library::tpm2::persistent::OwnedUserNvramEntry;
 
     const RC_AUTH_TYPE: u32 = 0x124;

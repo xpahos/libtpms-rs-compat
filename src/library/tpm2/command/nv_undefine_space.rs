@@ -60,13 +60,13 @@ mod tests {
         TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, find,
     };
     use super::*;
+    use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::TPM_RH_PLATFORM;
     use crate::library::tpm2::nv::{
         NvPublic, TPM_NT_COUNTER, TPMA_NV_ORDERLY, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE,
         TPMA_NV_PLATFORMCREATE, TPMA_NV_PPREAD, TPMA_NV_PPWRITE, TPMA_NV_TPM_NT_SHIFT,
         marshal_sized_nv_public, resolve_index,
     };
-    use crate::library::tpm2::oracles::nv::nv_vector;
 
     const RC_SIZE: u32 = 0x095;
     const RC_AUTH_TYPE: u32 = 0x124;
