@@ -85,6 +85,19 @@ fixture = "src/library/tpm2/testdata/golden_responses/pcr_event.bin"
 reader = "src/library/tpm2/golden_responses/pcr_event.rs"
 commands = ["TPM2_PCR_Event"]
 
+[families."sequence-commands"]
+magic = "SQORACLE"
+scenario = "scripts/golden_responses/scenarios/sequence_commands.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/sequence_commands.bin"
+reader = "src/library/tpm2/golden_responses/sequence_commands.rs"
+commands = [
+    "TPM2_SequenceComplete",
+    "TPM2_HMAC_Start",
+    "TPM2_SequenceUpdate",
+    "TPM2_EventSequenceComplete",
+    "TPM2_HashSequenceStart",
+]
+
 [families."sign"]
 magic = "SGORACLE"
 scenario = "scripts/golden_responses/scenarios/sign.scenario"
@@ -232,7 +245,8 @@ reason = "pinned by module tests predating the fixture format"
 
 [commands.SequenceComplete]
 code = 0x0000013e
-status = "todo"
+status = "implemented"
+family = "sequence-commands"
 
 [commands.SetAlgorithmSet]
 code = 0x0000013f
@@ -353,12 +367,14 @@ status = "todo"
 
 [commands.HMAC_Start]
 code = 0x0000015b
-status = "todo"
+status = "implemented"
+family = "sequence-commands"
 alias = "MAC_Start"
 
 [commands.SequenceUpdate]
 code = 0x0000015c
-status = "todo"
+status = "implemented"
+family = "sequence-commands"
 
 [commands.Sign]
 code = 0x0000015d
@@ -520,11 +536,13 @@ family = "nv-certify"
 
 [commands.EventSequenceComplete]
 code = 0x00000185
-status = "todo"
+status = "implemented"
+family = "sequence-commands"
 
 [commands.HashSequenceStart]
 code = 0x00000186
-status = "todo"
+status = "implemented"
+family = "sequence-commands"
 
 [commands.PolicyPhysicalPresence]
 code = 0x00000187

@@ -14,8 +14,8 @@ crate-type = ["cdylib", "rlib"]
 libc = "0.2"
 aes = { version = "0.8", default-features = false }
 hmac = { version = "0.12", default-features = false }
-sha1 = { version = "0.10", default-features = false }
-sha2 = { version = "0.10", default-features = false }
+sha1 = { version = "0.10", default-features = false, features = ["compress"] }
+sha2 = { version = "0.10", default-features = false, features = ["compress"] }
 subtle = { version = "2.6", default-features = false }
 des = { version = "0.8", default-features = false }
 camellia = { version = "0.1", default-features = false }

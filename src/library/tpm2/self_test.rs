@@ -490,6 +490,20 @@ fn parks_on_the_gate_once(_test: PrimitiveTest) -> bool {
     true
 }
 
+pub(in crate::library::tpm2) fn self_test_algorithm(
+    runtime: &mut super::runtime::Tpm2Runtime,
+    algorithm: u16,
+) -> Result<(), TpmResult> {
+    match runtime.self_test.run_pending_algorithm(algorithm) {
+        Ok(()) => Ok(()),
+        Err(code) => {
+            let location = super::failure_mode::FailureLocation::for_self_test(&runtime.self_test);
+            super::failure_mode::enter_failure_mode(runtime, location);
+            Err(code)
+        }
+    }
+}
+
 #[cfg(test)]
 pub(in crate::library::tpm2) fn always_fails(_test: PrimitiveTest) -> bool {
     false
@@ -498,6 +512,11 @@ pub(in crate::library::tpm2) fn always_fails(_test: PrimitiveTest) -> bool {
 #[cfg(test)]
 pub(in crate::library::tpm2) fn fails_on_sha384(test: PrimitiveTest) -> bool {
     test != PrimitiveTest::Sha384
+}
+
+#[cfg(test)]
+pub(in crate::library::tpm2) fn fails_on_sha512(test: PrimitiveTest) -> bool {
+    test != PrimitiveTest::Sha512
 }
 
 #[cfg(test)]

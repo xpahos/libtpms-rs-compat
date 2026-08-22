@@ -5,10 +5,10 @@ use crate::library::constants::{
 
 use super::super::algorithm::{algorithm_enabled, hash_profile_name};
 use super::super::crypto::{COMPILED_HASHES, Hasher};
-use super::super::failure_mode::{FailureLocation, enter_failure_mode};
 use super::super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM, hierarchy_proof};
 use super::super::marshal::{BlobReader, BlobWriter, Tpm2bError};
 use super::super::runtime::Tpm2Runtime;
+use super::super::self_test::self_test_algorithm;
 use super::super::ticket::{
     CONTEXT_INTEGRITY_HASH_ALG, GENERATED_VALUE_SIZE, HashCheckTicket, compute_hash_check,
     ticket_is_safe,
@@ -70,17 +70,6 @@ pub(super) fn execute(
 fn ticket_required(input: &HashIn<'_>) -> bool {
     input.hierarchy != TPM_RH_NULL
         && (input.data.len() < GENERATED_VALUE_SIZE || ticket_is_safe(input.data))
-}
-
-fn self_test_algorithm(runtime: &mut Tpm2Runtime, algorithm: u16) -> Result<(), TpmResult> {
-    match runtime.self_test.run_pending_algorithm(algorithm) {
-        Ok(()) => Ok(()),
-        Err(code) => {
-            let location = FailureLocation::for_self_test(&runtime.self_test);
-            enter_failure_mode(runtime, location);
-            Err(code)
-        }
-    }
 }
 
 fn parse_parameters<'a>(

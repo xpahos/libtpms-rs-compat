@@ -13,6 +13,7 @@ mod kdf;
 mod prime;
 mod rand_state;
 mod rsa;
+mod sha_state;
 #[cfg(test)]
 pub(in crate::library::tpm2) mod work;
 
@@ -31,6 +32,7 @@ pub(super) use hmac::HmacState;
 pub(super) use kdf::{kdfa, kdfa_from, mgf1};
 pub(super) use rand_state::{LiveDrbg, SeededRand};
 pub(super) use rsa::{RsaKeyError, generate_rsa_key, rsa_private_key_op};
+pub(super) use sha_state::{SequenceHmac, ShaState, ShaStatePayload};
 
 #[cfg(test)]
 pub(super) use drbg::{CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_SEED_SIZE};

@@ -9,13 +9,16 @@ use super::create_loaded;
 use super::create_primary;
 use super::dictionary_attack_parameters;
 use super::dispatcher::CommandFrame;
+use super::event_sequence_complete;
 use super::evict_control;
 use super::flush_context;
 use super::get_capability;
 use super::get_random;
 use super::get_test_result;
 use super::hash;
+use super::hash_sequence_start;
 use super::hierarchy_change_auth;
+use super::hmac_start;
 use super::incremental_self_test;
 use super::nv_certify;
 use super::nv_change_auth;
@@ -31,6 +34,8 @@ use super::pcr_extend;
 use super::pcr_read;
 use super::pcr_reset;
 use super::self_test;
+use super::sequence_complete;
+use super::sequence_update;
 use super::shutdown;
 use super::sign;
 use super::startup;
@@ -54,6 +59,7 @@ pub(in crate::library::tpm2) const TPM_CC_DICTIONARY_ATTACK_PARAMETERS: u32 = 0x
 pub(in crate::library::tpm2) const TPM_CC_NV_CHANGE_AUTH: u32 = 0x0000_013b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EVENT: u32 = 0x0000_013c;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
+pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_COMPLETE: u32 = 0x0000_013e;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
@@ -62,6 +68,8 @@ pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ: u32 = 0x0000_014e;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_LOCK: u32 = 0x0000_014f;
 pub(in crate::library::tpm2) const TPM_CC_CREATE: u32 = 0x0000_0153;
+pub(in crate::library::tpm2) const TPM_CC_HMAC_START: u32 = 0x0000_015b;
+pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_UPDATE: u32 = 0x0000_015c;
 pub(in crate::library::tpm2) const TPM_CC_SIGN: u32 = 0x0000_015d;
 pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
@@ -72,6 +80,8 @@ pub(in crate::library::tpm2) const TPM_CC_HASH: u32 = 0x0000_017d;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 pub(in crate::library::tpm2) const TPM_CC_NV_CERTIFY: u32 = 0x0000_0184;
+pub(in crate::library::tpm2) const TPM_CC_EVENT_SEQUENCE_COMPLETE: u32 = 0x0000_0185;
+pub(in crate::library::tpm2) const TPM_CC_HASH_SEQUENCE_START: u32 = 0x0000_0186;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_LOADED: u32 = 0x0000_0191;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
@@ -82,6 +92,7 @@ use super::super::object_create::is_object_handle;
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
 const TPMA_CC_EXTENSIVE: u32 = 1 << 23;
+const TPMA_CC_FLUSHED: u32 = 1 << 24;
 const TPMA_CC_C_HANDLES_SHIFT: u32 = 25;
 const TPMA_CC_R_HANDLE: u32 = 1 << 28;
 
@@ -93,6 +104,10 @@ const fn tpma_cc(code: u32, nv: bool, command_handles: u32) -> u32 {
 
 const fn tpma_cc_with_response_handle(code: u32, nv: bool, command_handles: u32) -> u32 {
     tpma_cc(code, nv, command_handles) | TPMA_CC_R_HANDLE
+}
+
+const fn tpma_cc_flushed(code: u32, nv: bool, command_handles: u32) -> u32 {
+    tpma_cc(code, nv, command_handles) | TPMA_CC_FLUSHED
 }
 
 pub(super) type CommandHandler =
@@ -487,6 +502,20 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: pcr_reset::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_SEQUENCE_COMPLETE,
+        attributes: tpma_cc_flushed(TPM_CC_SEQUENCE_COMPLETE, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: sequence_complete::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_INCREMENTAL_SELF_TEST,
         attributes: tpma_cc(TPM_CC_INCREMENTAL_SELF_TEST, true, 0),
         physical_presence: false,
@@ -591,6 +620,34 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: create::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_HMAC_START,
+        attributes: tpma_cc_with_response_handle(TPM_CC_HMAC_START, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hmac_start::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_SEQUENCE_UPDATE,
+        attributes: tpma_cc(TPM_CC_SEQUENCE_UPDATE, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: sequence_update::execute,
     },
     CommandDescriptor {
         code: TPM_CC_SIGN,
@@ -719,6 +776,37 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Read,
         handler: nv_certify::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_EVENT_SEQUENCE_COMPLETE,
+        attributes: tpma_cc_flushed(TPM_CC_EVENT_SEQUENCE_COMPLETE, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::PcrAllowNull,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: true,
+                admin_role: false,
+            },
+        ],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: event_sequence_complete::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_HASH_SEQUENCE_START,
+        attributes: tpma_cc_with_response_handle(TPM_CC_HASH_SEQUENCE_START, false, 0),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hash_sequence_start::execute,
     },
     CommandDescriptor {
         code: TPM_CC_CREATE_LOADED,
@@ -880,6 +968,7 @@ mod tests {
                 TPM_CC_NV_CHANGE_AUTH,
                 TPM_CC_PCR_EVENT,
                 TPM_CC_PCR_RESET,
+                TPM_CC_SEQUENCE_COMPLETE,
                 TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
                 TPM_CC_STARTUP,
@@ -888,6 +977,8 @@ mod tests {
                 TPM_CC_NV_READ,
                 TPM_CC_NV_READ_LOCK,
                 TPM_CC_CREATE,
+                TPM_CC_HMAC_START,
+                TPM_CC_SEQUENCE_UPDATE,
                 TPM_CC_SIGN,
                 TPM_CC_FLUSH_CONTEXT,
                 TPM_CC_NV_READ_PUBLIC,
@@ -898,6 +989,8 @@ mod tests {
                 TPM_CC_PCR_READ,
                 TPM_CC_PCR_EXTEND,
                 TPM_CC_NV_CERTIFY,
+                TPM_CC_EVENT_SEQUENCE_COMPLETE,
+                TPM_CC_HASH_SEQUENCE_START,
                 TPM_CC_CREATE_LOADED
             ]
         );

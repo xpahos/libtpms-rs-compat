@@ -32,6 +32,7 @@ mod public;
 mod random;
 mod runtime;
 mod self_test;
+mod sequence;
 mod session;
 mod signature;
 mod state;

@@ -14,6 +14,7 @@ use super::super::object_create::{
     occupied_object_slot, persistent_hierarchy_is_enabled, persistent_object_entry,
 };
 use super::super::runtime::Tpm2Runtime;
+use super::super::sequence::cleanup_evicted;
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
 use super::session::{
@@ -40,10 +41,12 @@ pub(in crate::library::tpm2) fn dispatch(
     if !descriptor.lifecycle.allows(runtime) {
         return Response::error(TPM_RC_INITIALIZE);
     }
-    match run(runtime, descriptor, command) {
+    let response = match run(runtime, descriptor, command) {
         Ok(response) => response,
         Err(code) => Response::error(code),
-    }
+    };
+    cleanup_evicted(runtime);
+    response
 }
 
 fn run(

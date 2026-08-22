@@ -416,7 +416,7 @@ mod tests {
             .chunks(4)
             .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
             .collect();
-        assert_eq!(entries, [0x0440_014f, 0x0200_0153, 0x0200_015d]);
+        assert_eq!(entries, [0x0440_014f, 0x0200_0153, 0x1200_015b]);
     }
 
     #[test]

@@ -44,6 +44,8 @@ pub(super) const ATTR_DERIVATION: u32 = 1 << 16;
 pub(super) const ATTR_HMAC_SEQ: u32 = 1 << 8;
 pub(super) const ATTR_HASH_SEQ: u32 = 1 << 9;
 pub(super) const ATTR_EVENT_SEQ: u32 = 1 << 10;
+pub(super) const ATTR_TICKET_SAFE: u32 = 1 << 11;
+pub(super) const ATTR_FIRST_BLOCK: u32 = 1 << 12;
 pub(super) const ATTR_OCCUPIED: u32 = 1 << 15;
 
 pub(super) const HASH_STATE_COUNT: usize = 4;

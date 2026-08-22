@@ -123,7 +123,8 @@ pub(super) fn resolve_any_object<'a>(
 pub(super) fn object_auth_value<'a>(runtime: &'a Tpm2Runtime, handle: u32) -> Option<&'a [u8]> {
     match &resolve_any_object(runtime, handle)?.body {
         OwnedAnyObjectBody::Object(body) => Some(body.sensitive.auth_value.as_bytes()),
-        _ => None,
+        OwnedAnyObjectBody::Sequence(body) => Some(body.auth.as_bytes()),
+        OwnedAnyObjectBody::Unoccupied => None,
     }
 }
 
