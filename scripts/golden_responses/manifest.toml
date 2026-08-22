@@ -85,6 +85,13 @@ fixture = "src/library/tpm2/testdata/golden_responses/pcr_event.bin"
 reader = "src/library/tpm2/golden_responses/pcr_event.rs"
 commands = ["TPM2_PCR_Event"]
 
+[families."sign"]
+magic = "SGORACLE"
+scenario = "scripts/golden_responses/scenarios/sign.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/sign.bin"
+reader = "src/library/tpm2/golden_responses/sign.rs"
+commands = ["TPM2_Sign"]
+
 [commands.NV_UndefineSpaceSpecial]
 code = 0x0000011f
 status = "implemented"
@@ -355,7 +362,8 @@ status = "todo"
 
 [commands.Sign]
 code = 0x0000015d
-status = "todo"
+status = "implemented"
+family = "sign"
 
 [commands.Unseal]
 code = 0x0000015e

@@ -50,6 +50,8 @@ pub(in crate::library) const TPM_RC_SIZE: TpmResult = 0x095;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_SYMMETRIC: TpmResult = 0x096;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_TAG: TpmResult = 0x097;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_INSUFFICIENT: TpmResult = 0x09a;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_KEY: TpmResult = 0x09c;
@@ -58,6 +60,8 @@ pub(in crate::library) const TPM_RC_KEY: TpmResult = 0x09c;
 // gate never fires.
 #[allow(dead_code)]
 pub(in crate::library) const TPM_RC_PP: TpmResult = 0x090;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_TICKET: TpmResult = 0x0a0;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_RESERVED_BITS: TpmResult = 0x0a1;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]

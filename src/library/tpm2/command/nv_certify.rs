@@ -9,29 +9,24 @@ use super::super::hierarchy::TPM_RH_NULL;
 use super::super::marshal::BlobWriter;
 use super::super::nv::{nv_index_name, read_index_data};
 use super::super::object::{ATTR_EPS_HIERARCHY, ATTR_PPS_HIERARCHY};
-use super::super::object_create::{
-    is_transient_object_handle, occupied_object_slot, persistent_object_entry,
-};
 use super::super::orderly::{commit_clear_orderly, prepare_clear_orderly};
 use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedUserNvramEntry};
 use super::super::profile::ValidatedProfile;
-use super::super::random::{finish_live_rand, take_live_rand};
 use super::super::runtime::Tpm2Runtime;
 use super::super::signature::{
-    SigScheme, Signature, SigningState, is_anonymous_scheme, is_signing_object, marshal_signature,
+    SigScheme, Signature, is_anonymous_scheme, is_signing_object, marshal_signature,
     obfuscation_mask, parse_sig_scheme, select_sign_scheme, sign_digest,
 };
-use super::super::state::COMMIT_ARRAY_SIZE;
 use super::super::template::{TemplateReader, digest_size};
 use super::super::ticket::CONTEXT_INTEGRITY_HASH_ALG;
 use super::dispatcher::CommandFrame;
 use super::nv_common::{
-    MAX_NV_BUFFER_SIZE, TPM_RC_1, TPM_RC_2, TPM_RC_3, TPM_RC_4, TPM_RC_H, TPM_RC_P, handle_at,
+    MAX_NV_BUFFER_SIZE, TPM_RC_1, TPM_RC_2, TPM_RC_3, TPM_RC_4, TPM_RC_P, handle_at,
     read_access_checks, resolve,
 };
 use super::output::CommandOutput;
+use super::signing::{RC_SIGN_HANDLE, load_signing_state, publish_signing_outcome, signing_object};
 
-const RC_SIGN_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
 const RC_QUALIFYING_DATA: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_IN_SCHEME: TpmResult = TPM_RC_P + TPM_RC_2;
 const RC_SIZE_PARAM: TpmResult = TPM_RC_P + TPM_RC_3;
@@ -165,37 +160,6 @@ fn parse_parameters(
         size,
         offset,
     })
-}
-
-fn signing_object(
-    runtime: &Tpm2Runtime,
-    handle: u32,
-) -> Result<Option<Box<OwnedObjectBody>>, TpmResult> {
-    if handle == TPM_RH_NULL {
-        return Ok(None);
-    }
-    let object = if is_transient_object_handle(handle) {
-        let slot = occupied_object_slot(runtime, handle).ok_or(TPM_RC_FAILURE)?;
-        runtime.live.objects.get(slot).ok_or(TPM_RC_FAILURE)?
-    } else {
-        let entry = persistent_object_entry(runtime, handle).ok_or(TPM_RC_FAILURE)?;
-        match runtime
-            .state
-            .as_ref()
-            .ok_or(TPM_RC_FAILURE)?
-            .user_nvram
-            .entries
-            .get(entry)
-            .ok_or(TPM_RC_FAILURE)?
-        {
-            OwnedUserNvramEntry::Persistent { object, .. } => object,
-            OwnedUserNvramEntry::NvIndex { .. } => return Err(TPM_RC_FAILURE),
-        }
-    };
-    match &object.body {
-        OwnedAnyObjectBody::Object(body) => Ok(Some(body.clone())),
-        _ => Err(TPM_RC_KEY + RC_SIGN_HANDLE),
-    }
 }
 
 enum Attested {
@@ -361,43 +325,6 @@ fn attest_digest(hash_alg: u16, certify_info: &[u8]) -> Result<Vec<u8>, TpmResul
     Ok(hasher.finalize())
 }
 
-fn load_signing_state(runtime: &mut Tpm2Runtime) -> Result<SigningState, TpmResult> {
-    let rand = take_live_rand(runtime)?;
-    let reset = runtime.live.state_reset.as_ref().ok_or(TPM_RC_FAILURE)?;
-    Ok(SigningState {
-        rand,
-        commit_counter: reset.commit_counter,
-        commit_nonce: reset.commit_nonce.clone(),
-        commit_array: reset.commit_array,
-    })
-}
-
-fn publish_commit_array(
-    runtime: &mut Tpm2Runtime,
-    commit_array: [u8; COMMIT_ARRAY_SIZE],
-) -> Result<(), TpmResult> {
-    runtime
-        .live
-        .state_reset
-        .as_mut()
-        .ok_or(TPM_RC_FAILURE)?
-        .commit_array = commit_array;
-    Ok(())
-}
-
-fn publish_signing_outcome(
-    runtime: &mut Tpm2Runtime,
-    signing: SigningState,
-    signature: Result<Signature, TpmResult>,
-) -> Result<Signature, TpmResult> {
-    let SigningState {
-        rand, commit_array, ..
-    } = signing;
-    finish_live_rand(runtime, rand)?;
-    publish_commit_array(runtime, commit_array)?;
-    signature
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::nv_common::harness::*;
@@ -409,8 +336,10 @@ mod tests {
         NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE, TPMA_NV_READ_STCLEAR,
         marshal_sized_nv_public,
     };
+    use crate::library::tpm2::object_create::occupied_object_slot;
     use crate::library::tpm2::persistent::OwnedSecret;
     use crate::library::tpm2::restore_permanent_blob_for_test;
+    use crate::library::tpm2::state::COMMIT_ARRAY_SIZE;
 
     const RC_SIZE: u32 = 0x095;
     const RC_HANDLE1_KEY: u32 = 0x19c;

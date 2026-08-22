@@ -32,6 +32,7 @@ use super::pcr_read;
 use super::pcr_reset;
 use super::self_test;
 use super::shutdown;
+use super::sign;
 use super::startup;
 use super::stir_random;
 
@@ -61,6 +62,7 @@ pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ: u32 = 0x0000_014e;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_LOCK: u32 = 0x0000_014f;
 pub(in crate::library::tpm2) const TPM_CC_CREATE: u32 = 0x0000_0153;
+pub(in crate::library::tpm2) const TPM_CC_SIGN: u32 = 0x0000_015d;
 pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
@@ -591,6 +593,20 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: create::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_SIGN,
+        attributes: tpma_cc(TPM_CC_SIGN, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: sign::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_FLUSH_CONTEXT,
         attributes: tpma_cc(TPM_CC_FLUSH_CONTEXT, false, 0),
         physical_presence: false,
@@ -872,6 +888,7 @@ mod tests {
                 TPM_CC_NV_READ,
                 TPM_CC_NV_READ_LOCK,
                 TPM_CC_CREATE,
+                TPM_CC_SIGN,
                 TPM_CC_FLUSH_CONTEXT,
                 TPM_CC_NV_READ_PUBLIC,
                 TPM_CC_GET_CAPABILITY,

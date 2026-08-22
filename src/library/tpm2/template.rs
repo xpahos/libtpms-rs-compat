@@ -36,6 +36,7 @@ pub(super) const TPMA_OBJECT_ENCRYPTED_DUPLICATION: u32 = 1 << 11;
 pub(super) const TPMA_OBJECT_RESTRICTED: u32 = 1 << 16;
 pub(super) const TPMA_OBJECT_DECRYPT: u32 = 1 << 17;
 pub(super) const TPMA_OBJECT_SIGN: u32 = 1 << 18;
+pub(super) const TPMA_OBJECT_X509_SIGN: u32 = 1 << 19;
 
 const TPMA_OBJECT_RESERVED: u32 = 0xfff0_f009;
 

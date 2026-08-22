@@ -32,6 +32,8 @@ mod registry;
 mod self_test;
 mod session;
 mod shutdown;
+mod sign;
+mod signing;
 mod startup;
 mod stir_random;
 
