@@ -31,7 +31,7 @@ pub(super) use hash::{COMPILED_HASHES, Hasher};
 pub(super) use hmac::HmacState;
 pub(super) use kdf::{kdfa, kdfa_from, mgf1};
 pub(super) use rand_state::{LiveDrbg, SeededRand};
-pub(super) use rsa::{RsaKeyError, generate_rsa_key, rsa_private_key_op};
+pub(super) use rsa::{RsaKeyError, generate_rsa_key, rsa_private_key_op, rsa_public_key_op};
 pub(super) use sha_state::{SequenceHmac, ShaState, ShaStatePayload};
 
 #[cfg(test)]

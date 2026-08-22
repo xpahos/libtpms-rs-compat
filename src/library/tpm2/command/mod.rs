@@ -31,6 +31,7 @@ mod pcr_extend;
 mod pcr_read;
 mod pcr_reset;
 mod pcr_update;
+mod read_public;
 mod registry;
 mod self_test;
 mod sequence_complete;
@@ -41,6 +42,7 @@ mod sign;
 mod signing;
 mod startup;
 mod stir_random;
+mod verify_signature;
 
 pub(super) use dispatcher::dispatch;
 #[cfg(test)]

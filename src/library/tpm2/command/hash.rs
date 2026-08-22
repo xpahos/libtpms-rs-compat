@@ -10,7 +10,7 @@ use super::super::marshal::{BlobReader, BlobWriter, Tpm2bError};
 use super::super::runtime::Tpm2Runtime;
 use super::super::self_test::self_test_algorithm;
 use super::super::ticket::{
-    CONTEXT_INTEGRITY_HASH_ALG, GENERATED_VALUE_SIZE, HashCheckTicket, compute_hash_check,
+    CONTEXT_INTEGRITY_HASH_ALG, GENERATED_VALUE_SIZE, TPM_ST_HASHCHECK, Ticket, compute_hash_check,
     ticket_is_safe,
 };
 use super::dispatcher::CommandFrame;
@@ -56,7 +56,7 @@ pub(super) fn execute(
         compute_hash_check(input.hierarchy, proof, input.hash_alg, &out_hash)
             .ok_or(TPM_RC_FAILURE)?
     } else {
-        HashCheckTicket::empty()
+        Ticket::empty(TPM_ST_HASHCHECK)
     };
 
     let mut writer = BlobWriter::with_capacity(2 + out_hash.len() + 8 + validation.digest.len());

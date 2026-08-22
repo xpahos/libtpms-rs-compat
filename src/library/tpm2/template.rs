@@ -89,6 +89,10 @@ impl<'a> TemplateReader<'a> {
         ))
     }
 
+    pub(super) fn bytes(&mut self, length: usize) -> Result<&'a [u8], TpmResult> {
+        self.take(length)
+    }
+
     pub(super) fn tpm2b(&mut self, maximum: usize) -> Result<&'a [u8], TpmResult> {
         let length = usize::from(self.u16()?);
         if length > maximum {

@@ -85,6 +85,16 @@ fixture = "src/library/tpm2/testdata/golden_responses/pcr_event.bin"
 reader = "src/library/tpm2/golden_responses/pcr_event.rs"
 commands = ["TPM2_PCR_Event"]
 
+[families."read-public-verify-signature"]
+magic = "RVORACLE"
+scenario = "scripts/golden_responses/scenarios/read_public_verify_signature.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/read_public_verify_signature.bin"
+reader = "src/library/tpm2/golden_responses/read_public_verify_signature.rs"
+commands = [
+    "TPM2_ReadPublic",
+    "TPM2_VerifySignature",
+]
+
 [families."sequence-commands"]
 magic = "SQORACLE"
 scenario = "scripts/golden_responses/scenarios/sequence_commands.scenario"
@@ -461,7 +471,8 @@ status = "todo"
 
 [commands.ReadPublic]
 code = 0x00000173
-status = "todo"
+status = "implemented"
+family = "read-public-verify-signature"
 
 [commands.RSA_Encrypt]
 code = 0x00000174
@@ -473,7 +484,8 @@ status = "todo"
 
 [commands.VerifySignature]
 code = 0x00000177
-status = "todo"
+status = "implemented"
+family = "read-public-verify-signature"
 
 [commands.ECC_Parameters]
 code = 0x00000178

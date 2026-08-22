@@ -60,7 +60,9 @@ pub(in crate::library::tpm2) const ATTRIBUTE_DRBG_CONTINUOUS_TEST: &[u8] = b"drb
 pub(in crate::library::tpm2) const ATTRIBUTE_NO_ECC_KEY_DERIVATION: &[u8] =
     b"no-ecc-key-derivation";
 const ATTRIBUTE_NO_SHA1_SIGNING: &[u8] = b"no-sha1-signing";
+const ATTRIBUTE_NO_SHA1_VERIFICATION: &[u8] = b"no-sha1-verification";
 const ATTRIBUTE_NO_SHA1_HMAC_CREATION: &[u8] = b"no-sha1-hmac-creation";
+const ATTRIBUTE_NO_SHA1_HMAC_VERIFICATION: &[u8] = b"no-sha1-hmac-verification";
 const ATTRIBUTE_NO_SHA1_HMAC: &[u8] = b"no-sha1-hmac";
 const ATTRIBUTE_FIPS_HOST: &[u8] = b"fips-host";
 
@@ -1109,6 +1111,16 @@ impl ValidatedProfile {
 
     pub(super) fn forbids_sha1_hmac_creation(&self) -> bool {
         self.attribute_enabled(ATTRIBUTE_NO_SHA1_HMAC_CREATION)
+            || self.attribute_enabled(ATTRIBUTE_NO_SHA1_HMAC)
+    }
+
+    pub(super) fn forbids_sha1_verification(&self) -> bool {
+        self.attribute_enabled(ATTRIBUTE_NO_SHA1_VERIFICATION)
+            || self.attribute_enabled(ATTRIBUTE_FIPS_HOST)
+    }
+
+    pub(super) fn forbids_sha1_hmac_verification(&self) -> bool {
+        self.attribute_enabled(ATTRIBUTE_NO_SHA1_HMAC_VERIFICATION)
             || self.attribute_enabled(ATTRIBUTE_NO_SHA1_HMAC)
     }
 

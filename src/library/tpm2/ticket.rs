@@ -3,22 +3,23 @@ use super::crypto::HmacState;
 use super::hierarchy::TPM_RH_NULL;
 use super::marshal::{BlobWriteError, BlobWriter};
 
+pub(super) const TPM_ST_VERIFIED: u16 = 0x8022;
 pub(super) const TPM_ST_HASHCHECK: u16 = 0x8024;
 pub(super) const TPM_GENERATED_VALUE: u32 = 0xff54_4347;
 pub(super) const GENERATED_VALUE_SIZE: usize = size_of::<u32>();
 
 pub(super) const CONTEXT_INTEGRITY_HASH_ALG: u16 = TPM_ALG_SHA512;
 
-pub(super) struct HashCheckTicket {
+pub(super) struct Ticket {
     pub(super) tag: u16,
     pub(super) hierarchy: u32,
     pub(super) digest: Vec<u8>,
 }
 
-impl HashCheckTicket {
-    pub(super) fn empty() -> Self {
+impl Ticket {
+    pub(super) fn empty(tag: u16) -> Self {
         Self {
-            tag: TPM_ST_HASHCHECK,
+            tag,
             hierarchy: TPM_RH_NULL,
             digest: Vec::new(),
         }
@@ -28,6 +29,12 @@ impl HashCheckTicket {
         writer.write_u16(self.tag);
         writer.write_u32(self.hierarchy);
         writer.write_tpm2b(&self.digest)
+    }
+
+    pub(super) fn into_bytes(self) -> Result<Vec<u8>, BlobWriteError> {
+        let mut writer = BlobWriter::new();
+        self.marshal(&mut writer)?;
+        Ok(writer.into_bytes())
     }
 }
 
@@ -43,13 +50,30 @@ pub(super) fn compute_hash_check(
     proof: &[u8],
     hash_alg: u16,
     digest: &[u8],
-) -> Option<HashCheckTicket> {
+) -> Option<Ticket> {
     let mut hmac = HmacState::new(CONTEXT_INTEGRITY_HASH_ALG, proof)?;
     hmac.update(&TPM_ST_HASHCHECK.to_be_bytes());
     hmac.update(&hash_alg.to_be_bytes());
     hmac.update(digest);
-    Some(HashCheckTicket {
+    Some(Ticket {
         tag: TPM_ST_HASHCHECK,
+        hierarchy,
+        digest: hmac.finalize(),
+    })
+}
+
+pub(super) fn compute_verified(
+    hierarchy: u32,
+    proof: &[u8],
+    digest: &[u8],
+    key_name: &[u8],
+) -> Option<Ticket> {
+    let mut hmac = HmacState::new(CONTEXT_INTEGRITY_HASH_ALG, proof)?;
+    hmac.update(&TPM_ST_VERIFIED.to_be_bytes());
+    hmac.update(digest);
+    hmac.update(key_name);
+    Some(Ticket {
+        tag: TPM_ST_VERIFIED,
         hierarchy,
         digest: hmac.finalize(),
     })
@@ -61,7 +85,7 @@ mod tests {
     use super::super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
     use super::*;
 
-    fn ticket_bytes(ticket: &HashCheckTicket) -> Vec<u8> {
+    fn ticket_bytes(ticket: &Ticket) -> Vec<u8> {
         let mut writer = BlobWriter::new();
         ticket.marshal(&mut writer).expect("the ticket marshals");
         writer.into_bytes()
@@ -76,6 +100,7 @@ mod tests {
 
     #[test]
     fn the_constants_match_upstream() {
+        assert_eq!(TPM_ST_VERIFIED, 0x8022);
         assert_eq!(TPM_ST_HASHCHECK, 0x8024);
         assert_eq!(TPM_GENERATED_VALUE, 0xff54_4347);
         assert_eq!(GENERATED_VALUE_SIZE, 4);
@@ -109,7 +134,7 @@ mod tests {
 
     #[test]
     fn the_empty_ticket_is_a_null_hierarchy_hashcheck() {
-        let ticket = HashCheckTicket::empty();
+        let ticket = Ticket::empty(TPM_ST_HASHCHECK);
         assert_eq!(ticket.tag, TPM_ST_HASHCHECK);
         assert_eq!(ticket.hierarchy, TPM_RH_NULL);
         assert!(ticket.digest.is_empty());
@@ -168,6 +193,62 @@ mod tests {
             .expect("the compiled integrity algorithm");
         assert_eq!(owner.digest, endorsement.digest, "the proof is the key");
         assert_ne!(ticket_bytes(&owner), ticket_bytes(&endorsement));
+    }
+
+    #[test]
+    fn the_empty_verified_ticket_is_a_null_hierarchy_tag_only_ticket() {
+        let ticket = Ticket::empty(TPM_ST_VERIFIED);
+        assert_eq!(
+            ticket.into_bytes().expect("the ticket marshals"),
+            [0x80, 0x22, 0x40, 0, 0, 0x07, 0, 0]
+        );
+    }
+
+    #[test]
+    fn a_verified_ticket_macs_the_tag_the_digest_and_the_key_name() {
+        let proof = [0x5a; 64];
+        let digest = [0x11; 32];
+        let name = [0x22; 34];
+        let ticket = compute_verified(TPM_RH_OWNER, &proof, &digest, &name)
+            .expect("the compiled integrity algorithm");
+        assert_eq!(ticket.tag, TPM_ST_VERIFIED);
+        assert_eq!(ticket.hierarchy, TPM_RH_OWNER);
+
+        let mut hmac = HmacState::new(CONTEXT_INTEGRITY_HASH_ALG, &proof)
+            .expect("the compiled integrity algorithm");
+        hmac.update(&TPM_ST_VERIFIED.to_be_bytes());
+        hmac.update(&digest);
+        hmac.update(&name);
+        assert_eq!(
+            ticket.digest,
+            hmac.finalize(),
+            "upstream feeds the buffers without their size prefixes"
+        );
+        assert_eq!(ticket.digest.len(), 64);
+    }
+
+    #[test]
+    fn changing_the_digest_or_the_key_name_changes_the_verified_ticket() {
+        let base = compute_verified(TPM_RH_OWNER, &[0x5a; 64], &[0x11; 32], &[0x22; 34])
+            .expect("the compiled integrity algorithm");
+        for other in [
+            compute_verified(TPM_RH_OWNER, &[0x5b; 64], &[0x11; 32], &[0x22; 34]),
+            compute_verified(TPM_RH_OWNER, &[0x5a; 64], &[0x12; 32], &[0x22; 34]),
+            compute_verified(TPM_RH_OWNER, &[0x5a; 64], &[0x11; 32], &[0x23; 34]),
+        ] {
+            let other = other.expect("the compiled integrity algorithm");
+            assert_ne!(base.digest, other.digest);
+        }
+    }
+
+    #[test]
+    fn a_verified_ticket_is_not_a_hash_check_over_the_same_inputs() {
+        let verified = compute_verified(TPM_RH_OWNER, &[0x5a; 64], &[0x11; 32], &[])
+            .expect("the compiled integrity algorithm");
+        let hash_check =
+            compute_hash_check(TPM_RH_OWNER, &[0x5a; 64], TPM_ST_VERIFIED, &[0x11; 32])
+                .expect("the compiled integrity algorithm");
+        assert_ne!(verified.digest, hash_check.digest, "the tags differ");
     }
 
     #[test]

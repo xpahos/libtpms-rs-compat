@@ -157,6 +157,22 @@ pub(in crate::library::tpm2) fn rsa_private_key_op(
     exponent.private_key_op(value)
 }
 
+pub(in crate::library::tpm2) fn rsa_public_key_op(
+    modulus: &BigUint,
+    exponent: u32,
+    value: &BigUint,
+) -> Option<BigUint> {
+    if modulus.is_zero() || value >= modulus {
+        return None;
+    }
+    let exponent = if exponent == 0 {
+        RSA_DEFAULT_PUBLIC_EXPONENT
+    } else {
+        exponent
+    };
+    value.mod_exp(&BigUint::from_u64(u64::from(exponent)), modulus)
+}
+
 pub(in crate::library::tpm2) fn generate_rsa_key(
     key_bits: u16,
     exponent: u32,
@@ -280,6 +296,43 @@ mod tests {
     fn the_exponent_defaults_match_upstream() {
         assert_eq!(RSA_DEFAULT_PUBLIC_EXPONENT, 65537);
         assert_eq!(MAX_RSA_KEY_BITS, 3072);
+    }
+
+    #[test]
+    fn the_public_operation_undoes_the_private_one() {
+        let key = generate_rsa_key(1024, 0, true, &mut rand(b"public-op")).expect("a key");
+        let modulus = BigUint::from_be_bytes(&key.modulus);
+        let prime = BigUint::from_be_bytes(&key.prime);
+        let message = BigUint::from_u64(0x0123_4567_89ab_cdef);
+        let signed = rsa_private_key_op(&prime, &key.q, &key.d_p, &key.d_q, &key.q_inv, &message)
+            .expect("a private operation");
+        assert_eq!(
+            rsa_public_key_op(&modulus, 0, &signed),
+            Some(message),
+            "a zero exponent selects the default public exponent"
+        );
+    }
+
+    #[test]
+    fn the_public_operation_uses_the_declared_exponent() {
+        let modulus = BigUint::from_u64(3233);
+        let message = BigUint::from_u64(65);
+        assert_eq!(
+            rsa_public_key_op(&modulus, 17, &message),
+            message.mod_exp(&BigUint::from_u64(17), &modulus)
+        );
+        assert_eq!(
+            rsa_public_key_op(&modulus, 0, &message),
+            message.mod_exp(&BigUint::from_u64(65537), &modulus)
+        );
+    }
+
+    #[test]
+    fn a_value_outside_the_modulus_has_no_public_operation() {
+        let modulus = BigUint::from_u64(3233);
+        assert!(rsa_public_key_op(&modulus, 17, &modulus).is_none());
+        assert!(rsa_public_key_op(&modulus, 17, &BigUint::from_u64(3234)).is_none());
+        assert!(rsa_public_key_op(&BigUint::zero(), 17, &BigUint::from_u64(1)).is_none());
     }
 
     #[test]

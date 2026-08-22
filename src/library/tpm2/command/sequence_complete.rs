@@ -12,7 +12,7 @@ use super::super::sequence::{
     resolve_sequence_slot, sequence_hash_alg, slot_kind, ticket_safe,
 };
 use super::super::ticket::{
-    CONTEXT_INTEGRITY_HASH_ALG, HashCheckTicket, compute_hash_check, ticket_is_safe,
+    CONTEXT_INTEGRITY_HASH_ALG, TPM_ST_HASHCHECK, Ticket, compute_hash_check, ticket_is_safe,
 };
 use super::dispatcher::CommandFrame;
 use super::output::CommandOutput;
@@ -57,7 +57,7 @@ pub(super) fn execute(
         _ => {
             let mac = finalize_hmac(runtime, slot, input.buffer)?;
             self_test_algorithm(runtime, hash_alg)?;
-            (mac, HashCheckTicket::empty())
+            (mac, Ticket::empty(TPM_ST_HASHCHECK))
         }
     };
 
@@ -77,9 +77,9 @@ fn hash_check(
     hash_alg: u16,
     digest: &[u8],
     safe: bool,
-) -> Result<HashCheckTicket, TpmResult> {
+) -> Result<Ticket, TpmResult> {
     if hierarchy == TPM_RH_NULL || !safe {
-        return Ok(HashCheckTicket::empty());
+        return Ok(Ticket::empty(TPM_ST_HASHCHECK));
     }
     self_test_algorithm(runtime, CONTEXT_INTEGRITY_HASH_ALG)?;
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;

@@ -4,9 +4,7 @@ use crate::library::constants::{
     TPM_RC_TICKET, TPM_RC_VALUE,
 };
 
-use super::super::hierarchy::{
-    TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM, hierarchy_proof,
-};
+use super::super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use super::super::persistent::OwnedObjectBody;
 use super::super::profile::ValidatedProfile;
 use super::super::runtime::Tpm2Runtime;
@@ -17,11 +15,14 @@ use super::super::signature::{
 use super::super::template::{
     TPMA_OBJECT_RESTRICTED, TPMA_OBJECT_X509_SIGN, TemplateReader, digest_size,
 };
-use super::super::ticket::{HashCheckTicket, TPM_ST_HASHCHECK, compute_hash_check};
+use super::super::ticket::{TPM_ST_HASHCHECK, Ticket, compute_hash_check};
 use super::dispatcher::CommandFrame;
 use super::nv_common::{TPM_RC_1, TPM_RC_2, TPM_RC_3, TPM_RC_P, handle_at};
 use super::output::CommandOutput;
-use super::signing::{RC_SIGN_HANDLE, load_signing_state, publish_signing_outcome, signing_object};
+use super::signing::{
+    RC_SIGN_HANDLE, hierarchy_proof_for, load_signing_state, publish_signing_outcome,
+    signing_object,
+};
 
 const RC_DIGEST: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_IN_SCHEME: TpmResult = TPM_RC_P + TPM_RC_2;
@@ -32,7 +33,7 @@ const DIGEST_TPM2B_MAX: usize = 64;
 struct Parameters {
     digest: Vec<u8>,
     scheme: SigScheme,
-    validation: HashCheckTicket,
+    validation: Ticket,
 }
 
 pub(super) fn execute(
@@ -91,7 +92,7 @@ fn parse_parameters(
     })
 }
 
-fn parse_hash_check(reader: &mut TemplateReader<'_>) -> Result<HashCheckTicket, TpmResult> {
+fn parse_hash_check(reader: &mut TemplateReader<'_>) -> Result<Ticket, TpmResult> {
     let tag = reader.u16()?;
     if tag != TPM_ST_HASHCHECK {
         return Err(TPM_RC_TAG);
@@ -104,7 +105,7 @@ fn parse_hash_check(reader: &mut TemplateReader<'_>) -> Result<HashCheckTicket, 
         return Err(TPM_RC_VALUE);
     }
     let digest = reader.tpm2b(DIGEST_TPM2B_MAX)?.to_vec();
-    Ok(HashCheckTicket {
+    Ok(Ticket {
         tag,
         hierarchy,
         digest,
@@ -126,18 +127,7 @@ fn check_validation(
         };
     }
     let hierarchy = parameters.validation.hierarchy;
-    let proof = if hierarchy == TPM_RH_NULL {
-        runtime
-            .live
-            .state_reset
-            .as_ref()
-            .ok_or(TPM_RC_FAILURE)?
-            .null_proof
-            .as_bytes()
-    } else {
-        let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-        hierarchy_proof(&state.persistent, hierarchy).ok_or(TPM_RC_FAILURE)?
-    };
+    let proof = hierarchy_proof_for(runtime, hierarchy)?;
     let expected = compute_hash_check(hierarchy, proof, scheme.hash_alg, &parameters.digest)
         .ok_or(TPM_RC_FAILURE)?;
     if expected.digest != parameters.validation.digest {

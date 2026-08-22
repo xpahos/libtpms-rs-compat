@@ -287,6 +287,38 @@ impl CurveParameters {
         JacobianPoint { x, y, z }
     }
 
+    fn infinity() -> JacobianPoint {
+        JacobianPoint {
+            x: BigUint::from_u64(1),
+            y: BigUint::from_u64(1),
+            z: BigUint::zero(),
+        }
+    }
+
+    fn multiply_affine(&self, x: &BigUint, y: &BigUint, scalar: &BigUint) -> JacobianPoint {
+        let mut accumulator = Self::infinity();
+        for bit in (0..scalar.bit_len()).rev() {
+            accumulator = self.double(&accumulator);
+            if scalar.test_bit(bit) {
+                accumulator = self.add_affine(&accumulator, x, y);
+            }
+        }
+        accumulator
+    }
+
+    fn to_affine(&self, point: &JacobianPoint) -> Option<(BigUint, BigUint)> {
+        if point.z.is_zero() {
+            return None;
+        }
+        let z_inverse = point.z.mod_inverse(&self.prime)?;
+        let z_inverse_squared = self.mul(&z_inverse, &z_inverse);
+        let z_inverse_cubed = self.mul(&z_inverse_squared, &z_inverse);
+        Some((
+            self.mul(&point.x, &z_inverse_squared),
+            self.mul(&point.y, &z_inverse_cubed),
+        ))
+    }
+
     pub(in crate::library::tpm2) fn multiply_generator(
         &self,
         scalar: &BigUint,
@@ -294,27 +326,22 @@ impl CurveParameters {
         if scalar.is_zero() {
             return None;
         }
-        let mut accumulator = JacobianPoint {
-            x: BigUint::from_u64(1),
-            y: BigUint::from_u64(1),
-            z: BigUint::zero(),
-        };
-        for bit in (0..scalar.bit_len()).rev() {
-            accumulator = self.double(&accumulator);
-            if scalar.test_bit(bit) {
-                accumulator = self.add_affine(&accumulator, &self.generator_x, &self.generator_y);
-            }
+        self.to_affine(&self.multiply_affine(&self.generator_x, &self.generator_y, scalar))
+    }
+
+    pub(in crate::library::tpm2) fn multiply_sum(
+        &self,
+        generator_scalar: &BigUint,
+        point: (&BigUint, &BigUint),
+        point_scalar: &BigUint,
+    ) -> Option<(BigUint, BigUint)> {
+        let mut accumulator =
+            self.multiply_affine(&self.generator_x, &self.generator_y, generator_scalar);
+        let addend = self.multiply_affine(point.0, point.1, point_scalar);
+        if let Some((x, y)) = self.to_affine(&addend) {
+            accumulator = self.add_affine(&accumulator, &x, &y);
         }
-        if accumulator.z.is_zero() {
-            return None;
-        }
-        let z_inverse = accumulator.z.mod_inverse(&self.prime)?;
-        let z_inverse_squared = self.mul(&z_inverse, &z_inverse);
-        let z_inverse_cubed = self.mul(&z_inverse_squared, &z_inverse);
-        Some((
-            self.mul(&accumulator.x, &z_inverse_squared),
-            self.mul(&accumulator.y, &z_inverse_cubed),
-        ))
+        self.to_affine(&accumulator)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -508,6 +535,67 @@ mod tests {
                 .expect("a finite point");
             assert!(curve.is_point_on_curve(&x, &y), "scalar {scalar}");
         }
+    }
+
+    #[test]
+    fn a_sum_of_two_multiplications_agrees_with_repeated_addition() {
+        let curve = curve_parameters(TPM_ECC_NIST_P256).expect("a compiled curve");
+        let (qx, qy) = curve
+            .multiply_generator(&BigUint::from_u64(7))
+            .expect("a point");
+        for (left, right, total) in [(1u64, 1u64, 8u64), (3, 2, 17), (5, 4, 33)] {
+            let sum = curve
+                .multiply_sum(
+                    &BigUint::from_u64(left),
+                    (&qx, &qy),
+                    &BigUint::from_u64(right),
+                )
+                .expect("a point");
+            assert_eq!(
+                sum,
+                curve
+                    .multiply_generator(&BigUint::from_u64(total))
+                    .expect("a point"),
+                "[{left}]G + [{right}]([7]G) == [{total}]G"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_scalar_drops_its_term_from_the_sum() {
+        let curve = curve_parameters(TPM_ECC_NIST_P256).expect("a compiled curve");
+        let (qx, qy) = curve
+            .multiply_generator(&BigUint::from_u64(9))
+            .expect("a point");
+        assert_eq!(
+            curve
+                .multiply_sum(&BigUint::zero(), (&qx, &qy), &BigUint::from_u64(1))
+                .expect("a point"),
+            (qx.clone(), qy.clone()),
+            "the generator term vanishes"
+        );
+        assert_eq!(
+            curve
+                .multiply_sum(&BigUint::from_u64(9), (&qx, &qy), &BigUint::zero())
+                .expect("a point"),
+            (qx, qy),
+            "the point term vanishes"
+        );
+    }
+
+    #[test]
+    fn a_sum_that_reaches_infinity_has_no_affine_point() {
+        let curve = curve_parameters(TPM_ECC_NIST_P256).expect("a compiled curve");
+        let (qx, qy) = curve
+            .multiply_generator(&BigUint::from_u64(1))
+            .expect("the generator");
+        let negated = curve.order.sub_u64(1).expect("order - 1");
+        assert!(
+            curve
+                .multiply_sum(&BigUint::from_u64(1), (&qx, &qy), &negated)
+                .is_none(),
+            "[1]G + [n-1]G is the point at infinity"
+        );
     }
 
     #[test]

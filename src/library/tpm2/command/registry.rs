@@ -33,6 +33,7 @@ use super::pcr_event;
 use super::pcr_extend;
 use super::pcr_read;
 use super::pcr_reset;
+use super::read_public;
 use super::self_test;
 use super::sequence_complete;
 use super::sequence_update;
@@ -40,6 +41,7 @@ use super::shutdown;
 use super::sign;
 use super::startup;
 use super::stir_random;
+use super::verify_signature;
 
 pub(in crate::library::tpm2) const TPM_CC_NV_UNDEFINE_SPACE_SPECIAL: u32 = 0x0000_011f;
 pub(in crate::library::tpm2) const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
@@ -73,6 +75,8 @@ pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_UPDATE: u32 = 0x0000_015c;
 pub(in crate::library::tpm2) const TPM_CC_SIGN: u32 = 0x0000_015d;
 pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
+pub(in crate::library::tpm2) const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
+pub(in crate::library::tpm2) const TPM_CC_VERIFY_SIGNATURE: u32 = 0x0000_0177;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
 pub(in crate::library::tpm2) const TPM_CC_GET_TEST_RESULT: u32 = 0x0000_017c;
@@ -688,6 +692,34 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: nv_read::execute_read_public,
     },
     CommandDescriptor {
+        code: TPM_CC_READ_PUBLIC,
+        attributes: tpma_cc(TPM_CC_READ_PUBLIC, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: false,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: read_public::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_VERIFY_SIGNATURE,
+        attributes: tpma_cc(TPM_CC_VERIFY_SIGNATURE, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: false,
+            admin_role: false,
+        }],
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: verify_signature::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_GET_CAPABILITY,
         attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false, 0),
         physical_presence: false,
@@ -907,6 +939,14 @@ mod tests {
             Some(TPM_CC_STIR_RANDOM)
         );
         assert_eq!(
+            find(TPM_CC_READ_PUBLIC).map(|d| d.code),
+            Some(TPM_CC_READ_PUBLIC)
+        );
+        assert_eq!(
+            find(TPM_CC_VERIFY_SIGNATURE).map(|d| d.code),
+            Some(TPM_CC_VERIFY_SIGNATURE)
+        );
+        assert_eq!(
             find(TPM_CC_GET_CAPABILITY).map(|d| d.code),
             Some(TPM_CC_GET_CAPABILITY)
         );
@@ -982,6 +1022,8 @@ mod tests {
                 TPM_CC_SIGN,
                 TPM_CC_FLUSH_CONTEXT,
                 TPM_CC_NV_READ_PUBLIC,
+                TPM_CC_READ_PUBLIC,
+                TPM_CC_VERIFY_SIGNATURE,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
                 TPM_CC_GET_TEST_RESULT,

@@ -128,6 +128,21 @@ pub(super) fn object_auth_value<'a>(runtime: &'a Tpm2Runtime, handle: u32) -> Op
     }
 }
 
+pub(super) fn object_hierarchy(slot_attributes: u32, body: &OwnedObjectBody) -> u32 {
+    if let Some(hierarchy) = body.hierarchy {
+        return hierarchy;
+    }
+    if slot_attributes & ATTR_SPS_HIERARCHY != 0 {
+        TPM_RH_OWNER
+    } else if slot_attributes & ATTR_EPS_HIERARCHY != 0 {
+        TPM_RH_ENDORSEMENT
+    } else if slot_attributes & ATTR_PPS_HIERARCHY != 0 {
+        TPM_RH_PLATFORM
+    } else {
+        TPM_RH_NULL
+    }
+}
+
 pub(super) fn object_public_attributes(runtime: &Tpm2Runtime, handle: u32) -> Option<u32> {
     match &resolve_any_object(runtime, handle)?.body {
         OwnedAnyObjectBody::Object(body) => Some(body.public.object_attributes),

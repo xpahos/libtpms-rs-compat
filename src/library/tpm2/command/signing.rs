@@ -1,11 +1,9 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_KEY};
 
-use super::super::hierarchy::TPM_RH_NULL;
-use super::super::object_create::{
-    is_transient_object_handle, occupied_object_slot, persistent_object_entry,
-};
-use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedUserNvramEntry};
+use super::super::hierarchy::{TPM_RH_NULL, hierarchy_proof};
+use super::super::object_create::resolve_any_object;
+use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody};
 use super::super::random::{finish_live_rand, take_live_rand};
 use super::super::runtime::Tpm2Runtime;
 use super::super::signature::{Signature, SigningState};
@@ -21,28 +19,28 @@ pub(super) fn signing_object(
     if handle == TPM_RH_NULL {
         return Ok(None);
     }
-    let object = if is_transient_object_handle(handle) {
-        let slot = occupied_object_slot(runtime, handle).ok_or(TPM_RC_FAILURE)?;
-        runtime.live.objects.get(slot).ok_or(TPM_RC_FAILURE)?
-    } else {
-        let entry = persistent_object_entry(runtime, handle).ok_or(TPM_RC_FAILURE)?;
-        match runtime
-            .state
-            .as_ref()
-            .ok_or(TPM_RC_FAILURE)?
-            .user_nvram
-            .entries
-            .get(entry)
-            .ok_or(TPM_RC_FAILURE)?
-        {
-            OwnedUserNvramEntry::Persistent { object, .. } => object,
-            OwnedUserNvramEntry::NvIndex { .. } => return Err(TPM_RC_FAILURE),
-        }
-    };
+    let object = resolve_any_object(runtime, handle).ok_or(TPM_RC_FAILURE)?;
     match &object.body {
         OwnedAnyObjectBody::Object(body) => Ok(Some(body.clone())),
         _ => Err(TPM_RC_KEY + RC_SIGN_HANDLE),
     }
+}
+
+pub(super) fn hierarchy_proof_for(
+    runtime: &Tpm2Runtime,
+    hierarchy: u32,
+) -> Result<&[u8], TpmResult> {
+    if hierarchy == TPM_RH_NULL {
+        return Ok(runtime
+            .live
+            .state_reset
+            .as_ref()
+            .ok_or(TPM_RC_FAILURE)?
+            .null_proof
+            .as_bytes());
+    }
+    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+    hierarchy_proof(&state.persistent, hierarchy).ok_or(TPM_RC_FAILURE)
 }
 
 pub(super) fn load_signing_state(runtime: &mut Tpm2Runtime) -> Result<SigningState, TpmResult> {
