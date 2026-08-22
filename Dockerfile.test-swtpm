@@ -25,9 +25,6 @@ RUN apt-get update \
         softhsm2 \
         tss2 \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd --create-home --shell /bin/bash tester \
-    && mkdir -p /cache/target "$CARGO_HOME/registry" "$CARGO_HOME/git" \
-    && chown -R tester:tester /cache "$CARGO_HOME/registry" "$CARGO_HOME/git"
+RUN mkdir -p /cache/target "$CARGO_HOME/registry" "$CARGO_HOME/git"
 ENV CARGO_TARGET_DIR=/cache/target
-USER tester
-WORKDIR /home/tester
+WORKDIR /root

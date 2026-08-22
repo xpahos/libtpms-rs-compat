@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+if [ "$(id -u)" -ne 0 ]; then
+    echo "test-swtpm-docker: the container test runner must run as root (uid 0), got uid $(id -u);" \
+        "the upstream root-only tests exit 77 otherwise" >&2
+    exit 1
+fi
+
 src="${SRC_DIR:-/repo}"
 workspace="${WORKSPACE_DIR:-$HOME/workspace}"
 image_id="${SWTPM_DOCKER_IMAGE_ID:?}"
@@ -13,7 +19,6 @@ fi
 
 mkdir -p "$workspace"
 find "$src" -mindepth 1 -maxdepth 1 \
-    ! -name .git \
     ! -name target \
     ! -name build \
     ! -name .pytest_cache \
