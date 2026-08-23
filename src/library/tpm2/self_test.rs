@@ -4,8 +4,8 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 
 use super::algorithm::{
-    TPM_ALG_AES, TPM_ALG_OAEP, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512,
-    algorithm_enabled, hash_profile_name,
+    TPM_ALG_AES, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSA, TPM_ALG_RSAES, TPM_ALG_SHA1,
+    TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512, algorithm_enabled, hash_profile_name,
 };
 use super::capability::algorithms::enabled_algorithms;
 use super::pcr::BankHasher;
@@ -270,16 +270,23 @@ pub(in crate::library::tpm2) enum SelectedTestError {
     TestFailed,
 }
 
-pub(in crate::library::tpm2) use super::rsa_vectors::{OAEP_TEST_SEED_SIZE, OaepSelfTestStage};
+pub(in crate::library::tpm2) use super::rsa_vectors::{
+    OAEP_TEST_SEED_SIZE, PaddedRsaSelfTestStage, RSAES_TEST_PADDING_SIZE, RawRsaSelfTestStage,
+};
 
-pub(in crate::library::tpm2) type OaepRunner = fn(&[u8]) -> Result<(), OaepSelfTestStage>;
+pub(in crate::library::tpm2) type PaddedRsaRunner = fn(&[u8]) -> Result<(), PaddedRsaSelfTestStage>;
+pub(in crate::library::tpm2) type RawRsaRunner = fn() -> Result<(), RawRsaSelfTestStage>;
 
 pub(in crate::library::tpm2) struct SelfTestState {
     pub(in crate::library::tpm2) implemented: PrimitiveTestSet,
     pub(in crate::library::tpm2) pending: PrimitiveTestSet,
     pub(in crate::library::tpm2) failure: Option<SelfTestFailure>,
     pub(in crate::library::tpm2) oaep_pending: bool,
-    oaep_runner: OaepRunner,
+    pub(in crate::library::tpm2) rsaes_pending: bool,
+    pub(in crate::library::tpm2) raw_rsa_pending: bool,
+    oaep_runner: PaddedRsaRunner,
+    rsaes_runner: PaddedRsaRunner,
+    raw_rsa_runner: RawRsaRunner,
     enabled: Box<[u16]>,
     runner: PrimitiveRunner,
 }
@@ -292,7 +299,11 @@ impl SelfTestState {
             pending: implemented,
             failure: None,
             oaep_pending: true,
+            rsaes_pending: true,
+            raw_rsa_pending: true,
             oaep_runner: super::rsa_vectors::run_oaep_known_answer,
+            rsaes_runner: super::rsa_vectors::run_rsaes_known_answer,
+            raw_rsa_runner: super::rsa_vectors::run_rsaep_known_answer,
             enabled: enabled_algorithms(profile_algorithms).collect(),
             runner: PrimitiveTest::run,
         }
@@ -308,7 +319,11 @@ impl SelfTestState {
             pending: self.implemented,
             failure: None,
             oaep_pending: true,
+            rsaes_pending: true,
+            raw_rsa_pending: true,
             oaep_runner: super::rsa_vectors::run_oaep_known_answer,
+            rsaes_runner: super::rsa_vectors::run_rsaes_known_answer,
+            raw_rsa_runner: super::rsa_vectors::run_rsaep_known_answer,
             enabled: self.enabled.clone(),
             runner: PrimitiveTest::run,
         }
@@ -320,8 +335,18 @@ impl SelfTestState {
     }
 
     #[cfg(test)]
-    pub(in crate::library::tpm2) fn set_oaep_runner(&mut self, runner: OaepRunner) {
+    pub(in crate::library::tpm2) fn set_oaep_runner(&mut self, runner: PaddedRsaRunner) {
         self.oaep_runner = runner;
+    }
+
+    #[cfg(test)]
+    pub(in crate::library::tpm2) fn set_rsaes_runner(&mut self, runner: PaddedRsaRunner) {
+        self.rsaes_runner = runner;
+    }
+
+    #[cfg(test)]
+    pub(in crate::library::tpm2) fn set_raw_rsa_runner(&mut self, runner: RawRsaRunner) {
+        self.raw_rsa_runner = runner;
     }
 
     #[cfg(test)]
@@ -385,6 +410,13 @@ impl SelfTestState {
             self.pending.remove(test);
         }
         Ok(())
+    }
+
+    pub(in crate::library::tpm2) fn check_selection(
+        &self,
+        requested: &[u16],
+    ) -> Result<(), SelectedTestError> {
+        self.select(requested).map(|_| ())
     }
 
     fn select(&self, requested: &[u16]) -> Result<PrimitiveTestSet, SelectedTestError> {
@@ -515,16 +547,71 @@ pub(in crate::library::tpm2) fn self_test_rsa_oaep(
     run_oaep_test(runtime)
 }
 
+pub(in crate::library::tpm2) fn self_test_rsa_scheme(
+    runtime: &mut super::runtime::Tpm2Runtime,
+    scheme: u16,
+) -> Result<(), TpmResult> {
+    match scheme {
+        TPM_ALG_OAEP => self_test_rsa_oaep(runtime),
+        TPM_ALG_RSAES => run_rsaes_test_if_pending(runtime),
+        TPM_ALG_NULL => run_raw_rsa_test_if_pending(runtime),
+        _ => Ok(()),
+    }
+}
+
 fn run_oaep_test(runtime: &mut super::runtime::Tpm2Runtime) -> Result<(), TpmResult> {
     self_test_algorithm(runtime, TPM_ALG_SHA512)?;
     let seed = super::random::generate_random(runtime, OAEP_TEST_SEED_SIZE)?;
     match (runtime.self_test.oaep_runner)(&seed) {
         Ok(()) => {
             runtime.self_test.oaep_pending = false;
+            runtime.self_test.raw_rsa_pending = false;
             Ok(())
         }
         Err(stage) => {
-            super::failure_mode::enter_failure_mode(runtime, oaep_failure_location(stage));
+            super::failure_mode::enter_failure_mode(runtime, padded_failure_location(stage));
+            Err(TPM_RC_FAILURE)
+        }
+    }
+}
+
+fn run_rsaes_test_if_pending(runtime: &mut super::runtime::Tpm2Runtime) -> Result<(), TpmResult> {
+    if !runtime.self_test.rsaes_pending {
+        return Ok(());
+    }
+    run_rsaes_test(runtime)
+}
+
+fn run_rsaes_test(runtime: &mut super::runtime::Tpm2Runtime) -> Result<(), TpmResult> {
+    let padding = super::random::generate_random(runtime, RSAES_TEST_PADDING_SIZE)?;
+    match (runtime.self_test.rsaes_runner)(&padding) {
+        Ok(()) => {
+            runtime.self_test.rsaes_pending = false;
+            runtime.self_test.raw_rsa_pending = false;
+            Ok(())
+        }
+        Err(stage) => {
+            super::failure_mode::enter_failure_mode(runtime, padded_failure_location(stage));
+            Err(TPM_RC_FAILURE)
+        }
+    }
+}
+
+fn run_raw_rsa_test_if_pending(runtime: &mut super::runtime::Tpm2Runtime) -> Result<(), TpmResult> {
+    if !runtime.self_test.raw_rsa_pending {
+        return Ok(());
+    }
+    run_raw_rsa_test(runtime)
+}
+
+fn run_raw_rsa_test(runtime: &mut super::runtime::Tpm2Runtime) -> Result<(), TpmResult> {
+    match (runtime.self_test.raw_rsa_runner)() {
+        Ok(()) => {
+            runtime.self_test.raw_rsa_pending = false;
+            Ok(())
+        }
+        Err(stage) => {
+            super::failure_mode::enter_failure_mode(runtime, raw_failure_location(stage));
             Err(TPM_RC_FAILURE)
         }
     }
@@ -536,23 +623,43 @@ pub(in crate::library::tpm2) fn run_self_test(
 ) -> Result<(), TpmResult> {
     if full_test {
         runtime.self_test.oaep_pending = true;
+        runtime.self_test.rsaes_pending = true;
+        runtime.self_test.raw_rsa_pending = true;
+        run_raw_rsa_test_if_pending(runtime)?;
     }
     if let Err(code) = runtime.self_test.run(full_test) {
         enter_self_test_failure_mode(runtime);
         return Err(code);
     }
+    if !full_test {
+        run_raw_rsa_test_if_pending(runtime)?;
+    }
+    run_rsaes_test_if_pending(runtime)?;
     self_test_rsa_oaep(runtime)
+}
+
+fn raw_rsa_test_is_covered_by(requested: &[u16]) -> bool {
+    requested
+        .iter()
+        .any(|algorithm| matches!(*algorithm, TPM_ALG_RSAES | TPM_ALG_OAEP))
 }
 
 pub(in crate::library::tpm2) fn run_incremental_self_test(
     runtime: &mut super::runtime::Tpm2Runtime,
     requested: &[u16],
 ) -> Result<(), SelectedTestError> {
+    runtime.self_test.check_selection(requested)?;
+    if requested.contains(&TPM_ALG_RSA) && !raw_rsa_test_is_covered_by(requested) {
+        run_raw_rsa_test(runtime).map_err(|_| SelectedTestError::TestFailed)?;
+    }
     if let Err(error) = runtime.self_test.run_selected(requested) {
         if error == SelectedTestError::TestFailed {
             enter_self_test_failure_mode(runtime);
         }
         return Err(error);
+    }
+    if requested.contains(&TPM_ALG_RSAES) {
+        run_rsaes_test(runtime).map_err(|_| SelectedTestError::TestFailed)?;
     }
     if requested.contains(&TPM_ALG_OAEP) {
         run_oaep_test(runtime).map_err(|_| SelectedTestError::TestFailed)?;
@@ -565,14 +672,26 @@ fn enter_self_test_failure_mode(runtime: &mut super::runtime::Tpm2Runtime) {
     super::failure_mode::enter_failure_mode(runtime, location);
 }
 
-const fn oaep_failure_location(stage: OaepSelfTestStage) -> super::failure_mode::FailureLocation {
+const fn padded_failure_location(
+    stage: PaddedRsaSelfTestStage,
+) -> super::failure_mode::FailureLocation {
     use super::failure_mode::FailureLocation;
     match stage {
-        OaepSelfTestStage::Encrypt => FailureLocation::RsaOaepEncrypt,
-        OaepSelfTestStage::RoundTripDecrypt => FailureLocation::RsaOaepRoundTripDecrypt,
-        OaepSelfTestStage::RoundTripCompare => FailureLocation::RsaOaepRoundTripCompare,
-        OaepSelfTestStage::KnownAnswerDecrypt => FailureLocation::RsaOaepKnownAnswerDecrypt,
-        OaepSelfTestStage::KnownAnswerCompare => FailureLocation::RsaOaepKnownAnswerCompare,
+        PaddedRsaSelfTestStage::Encrypt => FailureLocation::RsaOaepEncrypt,
+        PaddedRsaSelfTestStage::RoundTripDecrypt => FailureLocation::RsaOaepRoundTripDecrypt,
+        PaddedRsaSelfTestStage::RoundTripCompare => FailureLocation::RsaOaepRoundTripCompare,
+        PaddedRsaSelfTestStage::KnownAnswerDecrypt => FailureLocation::RsaOaepKnownAnswerDecrypt,
+        PaddedRsaSelfTestStage::KnownAnswerCompare => FailureLocation::RsaOaepKnownAnswerCompare,
+    }
+}
+
+const fn raw_failure_location(stage: RawRsaSelfTestStage) -> super::failure_mode::FailureLocation {
+    use super::failure_mode::FailureLocation;
+    match stage {
+        RawRsaSelfTestStage::Encrypt => FailureLocation::RsaRawEncrypt,
+        RawRsaSelfTestStage::EncryptCompare => FailureLocation::RsaRawEncryptCompare,
+        RawRsaSelfTestStage::Decrypt => FailureLocation::RsaRawDecrypt,
+        RawRsaSelfTestStage::DecryptCompare => FailureLocation::RsaRawDecryptCompare,
     }
 }
 

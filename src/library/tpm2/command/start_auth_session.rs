@@ -959,49 +959,63 @@ mod tests {
         );
         assert!(!runtime.self_test.oaep_pending);
         assert_eq!(
+            runtime.live.orderly.drbg_state.reseed_counter,
+            requests + 1,
+            "the partial test still runs the untouched RSAES known-answer test"
+        );
+
+        let requests = runtime.live.orderly.drbg_state.reseed_counter;
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &PARTIAL_SELF_TEST)[6..10],
+            [0, 0, 0, 0]
+        );
+        assert_eq!(
             runtime.live.orderly.drbg_state.reseed_counter, requests,
-            "a partial self test does not rerun the cleared OAEP test"
+            "a partial self test does not rerun a cleared known-answer test"
         );
     }
 
     #[test]
     fn a_failing_oaep_self_test_enters_failure_mode_and_keeps_the_test_pending() {
         use crate::library::tpm2::failure_mode::FailureLocation;
-        use crate::library::tpm2::rsa_vectors::OaepSelfTestStage;
+        use crate::library::tpm2::rsa_vectors::PaddedRsaSelfTestStage;
 
         for (stage, location) in [
-            (OaepSelfTestStage::Encrypt, FailureLocation::RsaOaepEncrypt),
             (
-                OaepSelfTestStage::RoundTripDecrypt,
+                PaddedRsaSelfTestStage::Encrypt,
+                FailureLocation::RsaOaepEncrypt,
+            ),
+            (
+                PaddedRsaSelfTestStage::RoundTripDecrypt,
                 FailureLocation::RsaOaepRoundTripDecrypt,
             ),
             (
-                OaepSelfTestStage::RoundTripCompare,
+                PaddedRsaSelfTestStage::RoundTripCompare,
                 FailureLocation::RsaOaepRoundTripCompare,
             ),
             (
-                OaepSelfTestStage::KnownAnswerDecrypt,
+                PaddedRsaSelfTestStage::KnownAnswerDecrypt,
                 FailureLocation::RsaOaepKnownAnswerDecrypt,
             ),
             (
-                OaepSelfTestStage::KnownAnswerCompare,
+                PaddedRsaSelfTestStage::KnownAnswerCompare,
                 FailureLocation::RsaOaepKnownAnswerCompare,
             ),
         ] {
             let mut runtime = restored("RSA_KEY");
             runtime.self_test.set_oaep_runner(match stage {
-                OaepSelfTestStage::Encrypt => |_: &[u8]| Err(OaepSelfTestStage::Encrypt),
-                OaepSelfTestStage::RoundTripDecrypt => {
-                    |_: &[u8]| Err(OaepSelfTestStage::RoundTripDecrypt)
+                PaddedRsaSelfTestStage::Encrypt => |_: &[u8]| Err(PaddedRsaSelfTestStage::Encrypt),
+                PaddedRsaSelfTestStage::RoundTripDecrypt => {
+                    |_: &[u8]| Err(PaddedRsaSelfTestStage::RoundTripDecrypt)
                 }
-                OaepSelfTestStage::RoundTripCompare => {
-                    |_: &[u8]| Err(OaepSelfTestStage::RoundTripCompare)
+                PaddedRsaSelfTestStage::RoundTripCompare => {
+                    |_: &[u8]| Err(PaddedRsaSelfTestStage::RoundTripCompare)
                 }
-                OaepSelfTestStage::KnownAnswerDecrypt => {
-                    |_: &[u8]| Err(OaepSelfTestStage::KnownAnswerDecrypt)
+                PaddedRsaSelfTestStage::KnownAnswerDecrypt => {
+                    |_: &[u8]| Err(PaddedRsaSelfTestStage::KnownAnswerDecrypt)
                 }
-                OaepSelfTestStage::KnownAnswerCompare => {
-                    |_: &[u8]| Err(OaepSelfTestStage::KnownAnswerCompare)
+                PaddedRsaSelfTestStage::KnownAnswerCompare => {
+                    |_: &[u8]| Err(PaddedRsaSelfTestStage::KnownAnswerCompare)
                 }
             });
             let free_before = runtime.live.free_session_slots;
@@ -1036,12 +1050,12 @@ mod tests {
     fn a_successful_oaep_self_test_exercises_the_known_answer_before_clearing_the_flag() {
         use core::sync::atomic::{AtomicUsize, Ordering};
         static CALLS: AtomicUsize = AtomicUsize::new(0);
-        fn counting_runner(seed: &[u8]) -> Result<(), OaepSelfTestStage> {
+        fn counting_runner(seed: &[u8]) -> Result<(), PaddedRsaSelfTestStage> {
             CALLS.fetch_add(1, Ordering::SeqCst);
             assert_eq!(seed.len(), 64, "the reference draws a SHA-512 sized seed");
             crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
         }
-        use crate::library::tpm2::rsa_vectors::OaepSelfTestStage;
+        use crate::library::tpm2::rsa_vectors::PaddedRsaSelfTestStage;
 
         CALLS.store(0, Ordering::SeqCst);
         let mut runtime = restored("RSA_KEY");

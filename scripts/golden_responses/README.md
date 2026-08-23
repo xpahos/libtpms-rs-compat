@@ -237,7 +237,10 @@ To add a new section:
 3. Paste those bytes into the consuming command.
 4. Update and verify the fixture again.
 
-The `object-lifecycle` family uses this pattern.
+The `object-lifecycle` family uses this pattern. So does `rsa-encryption`: its
+`DEC_*` records consume the ciphertext returned by an earlier `ENC_*` record,
+and its authorized and parameter-encrypted sections consume the `nonceTPM` and
+the object name returned when the session and the key were created.
 
 ## Scenarios that reset or destroy state
 

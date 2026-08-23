@@ -33,6 +33,7 @@ mod process;
 mod profile;
 mod public;
 mod random;
+mod rsa_encryption;
 mod rsa_vectors;
 mod runtime;
 mod secret;

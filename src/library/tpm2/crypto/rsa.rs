@@ -294,6 +294,63 @@ pub(in crate::library::tpm2) fn oaep_decode(
     Some(db[hash_len + message_start as usize..].to_vec())
 }
 
+pub(in crate::library::tpm2) const RSAES_OVERHEAD: usize = 11;
+
+const RSAES_ZERO_REPLACEMENT: u8 = 0x55;
+
+pub(in crate::library::tpm2) fn rsaes_padding_length(
+    modulus_len: usize,
+    message_len: usize,
+) -> Option<usize> {
+    if message_len + RSAES_OVERHEAD > modulus_len {
+        return None;
+    }
+    Some(modulus_len - message_len - 3)
+}
+
+pub(in crate::library::tpm2) fn rsaes_encode(
+    modulus_len: usize,
+    message: &[u8],
+    padding: &[u8],
+) -> Option<Vec<u8>> {
+    let pad_len = rsaes_padding_length(modulus_len, message.len())?;
+    if padding.len() != pad_len {
+        return None;
+    }
+    let mut encoded = vec![0u8; modulus_len];
+    encoded[1] = 0x02;
+    for (index, &byte) in padding.iter().enumerate() {
+        encoded[2 + index] = if byte == 0 {
+            RSAES_ZERO_REPLACEMENT
+        } else {
+            byte
+        };
+    }
+    encoded[modulus_len - message.len()..].copy_from_slice(message);
+    Some(encoded)
+}
+
+pub(in crate::library::tpm2) fn rsaes_decode(coded: &[u8]) -> Option<Vec<u8>> {
+    let mut valid = Choice::from(u8::from(coded.len() >= RSAES_OVERHEAD));
+    valid &= coded.first().copied().unwrap_or(0xff).ct_eq(&0x00);
+    valid &= coded.get(1).copied().unwrap_or(0xff).ct_eq(&0x02);
+
+    let mut terminator_seen = Choice::from(0u8);
+    let mut message_start = 0u32;
+    for (index, &byte) in coded.iter().enumerate().skip(2) {
+        let is_terminator = byte.ct_eq(&0x00) & !terminator_seen;
+        message_start.conditional_assign(&(index as u32 + 1), is_terminator);
+        terminator_seen |= byte.ct_eq(&0x00);
+    }
+    valid &= terminator_seen;
+    valid &= Choice::from(u8::from(message_start >= 11));
+
+    if !bool::from(valid) {
+        return None;
+    }
+    Some(coded[message_start as usize..].to_vec())
+}
+
 pub(in crate::library::tpm2) fn rsa_public_key_op(
     modulus: &BigUint,
     exponent: u32,
@@ -597,6 +654,150 @@ mod oaep_tests {
         assert!(oaep_encode(HASH, LABEL, &[0u8; 191], &seed(), MODULUS_LEN).is_none());
         assert!(oaep_encode(HASH, LABEL, b"salt", &[0u8; 31], MODULUS_LEN).is_none());
         assert!(oaep_encode(HASH, LABEL, b"salt", &seed(), 65).is_none());
+    }
+}
+
+#[cfg(test)]
+mod rsaes_tests {
+    use super::*;
+
+    const MODULUS_LEN: usize = 256;
+
+    fn padding(length: usize) -> Vec<u8> {
+        (0..length).map(|index| (index as u8) | 0x01).collect()
+    }
+
+    fn encoded(message: &[u8]) -> Vec<u8> {
+        let pad_len = rsaes_padding_length(MODULUS_LEN, message.len()).expect("the message fits");
+        rsaes_encode(MODULUS_LEN, message, &padding(pad_len)).expect("the encode succeeds")
+    }
+
+    #[test]
+    fn the_padding_length_leaves_the_upstream_overhead() {
+        assert_eq!(RSAES_OVERHEAD, 11);
+        for message_len in [0usize, 1, 100, MODULUS_LEN - RSAES_OVERHEAD] {
+            assert_eq!(
+                rsaes_padding_length(MODULUS_LEN, message_len),
+                Some(MODULUS_LEN - message_len - 3)
+            );
+        }
+        for message_len in [
+            MODULUS_LEN - RSAES_OVERHEAD + 1,
+            MODULUS_LEN,
+            MODULUS_LEN + 1,
+        ] {
+            assert_eq!(rsaes_padding_length(MODULUS_LEN, message_len), None);
+        }
+    }
+
+    #[test]
+    fn an_encoded_block_has_the_pkcs1_v1_5_shape() {
+        let block = encoded(b"payload");
+        assert_eq!(block.len(), MODULUS_LEN);
+        assert_eq!(block[0], 0x00);
+        assert_eq!(block[1], 0x02);
+        let terminator = MODULUS_LEN - b"payload".len() - 1;
+        assert!(block[2..terminator].iter().all(|&byte| byte != 0));
+        assert_eq!(block[terminator], 0x00);
+        assert_eq!(&block[terminator + 1..], b"payload");
+    }
+
+    #[test]
+    fn a_zero_random_byte_is_replaced_so_the_pad_stays_non_zero() {
+        let pad_len = rsaes_padding_length(MODULUS_LEN, 4).expect("fits");
+        let mut zeros = vec![0u8; pad_len];
+        zeros[0] = 0;
+        let block = rsaes_encode(MODULUS_LEN, b"abcd", &zeros).expect("encodes");
+        assert!(block[2..MODULUS_LEN - 5].iter().all(|&byte| byte == 0x55));
+        assert_eq!(block[MODULUS_LEN - 5], 0x00);
+        assert_eq!(rsaes_decode(&block).as_deref(), Some(&b"abcd"[..]));
+    }
+
+    #[test]
+    fn a_padding_of_the_wrong_length_is_refused() {
+        let pad_len = rsaes_padding_length(MODULUS_LEN, 4).expect("fits");
+        for length in [0usize, pad_len - 1, pad_len + 1] {
+            assert!(rsaes_encode(MODULUS_LEN, b"abcd", &vec![0x11; length]).is_none());
+        }
+        assert!(rsaes_encode(MODULUS_LEN, &[0u8; MODULUS_LEN], &[]).is_none());
+    }
+
+    #[test]
+    fn every_admissible_message_length_round_trips() {
+        for length in [0usize, 1, 8, 128, MODULUS_LEN - RSAES_OVERHEAD] {
+            let message: Vec<u8> = (0..length).map(|index| index as u8).collect();
+            assert_eq!(
+                rsaes_decode(&encoded(&message)).as_deref(),
+                Some(&message[..]),
+                "length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrong_leading_pair_is_rejected() {
+        for (offset, value) in [(0usize, 0x01u8), (1, 0x00), (1, 0x01), (1, 0xff)] {
+            let mut block = encoded(b"abcd");
+            block[offset] = value;
+            assert!(
+                rsaes_decode(&block).is_none(),
+                "byte {offset} = {value:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pad_shorter_than_eight_bytes_is_rejected() {
+        for pad_len in 0usize..8 {
+            let mut block = vec![0u8; MODULUS_LEN];
+            block[1] = 0x02;
+            for byte in block.iter_mut().skip(2).take(pad_len) {
+                *byte = 0xaa;
+            }
+            assert!(rsaes_decode(&block).is_none(), "pad {pad_len}");
+        }
+        let mut block = vec![0u8; MODULUS_LEN];
+        block[1] = 0x02;
+        for byte in block.iter_mut().skip(2).take(8) {
+            *byte = 0xaa;
+        }
+        assert_eq!(
+            rsaes_decode(&block).map(|message| message.len()),
+            Some(MODULUS_LEN - 11)
+        );
+    }
+
+    #[test]
+    fn a_block_without_a_terminator_is_rejected() {
+        let mut block = vec![0xaau8; MODULUS_LEN];
+        block[0] = 0x00;
+        block[1] = 0x02;
+        assert!(rsaes_decode(&block).is_none());
+    }
+
+    #[test]
+    fn a_block_shorter_than_the_minimum_is_rejected() {
+        for length in 0usize..RSAES_OVERHEAD {
+            let mut block = vec![0xaau8; length];
+            if length > 0 {
+                block[0] = 0x00;
+            }
+            if length > 1 {
+                block[1] = 0x02;
+            }
+            assert!(rsaes_decode(&block).is_none(), "length {length}");
+        }
+    }
+
+    #[test]
+    fn the_first_zero_ends_the_pad_even_when_more_zeros_follow() {
+        let mut block = encoded(&[0x00, 0x00, 0x7f]);
+        assert_eq!(rsaes_decode(&block).as_deref(), Some(&[0, 0, 0x7f][..]));
+        block[20] = 0x00;
+        assert_eq!(
+            rsaes_decode(&block).map(|message| message.len()),
+            Some(MODULUS_LEN - 21)
+        );
     }
 }
 

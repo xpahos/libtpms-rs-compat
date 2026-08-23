@@ -1,10 +1,11 @@
 use super::crypto::{
     BigUint, RSA_DEFAULT_PUBLIC_EXPONENT, oaep_decode, oaep_encode, rsa_private_key_op,
-    rsa_public_key_op,
+    rsa_public_key_op, rsaes_decode, rsaes_encode,
 };
 
 pub(super) const OAEP_TEST_LABEL: &[u8] = b"OAEP Test Value\0";
 pub(in crate::library::tpm2) const OAEP_TEST_SEED_SIZE: usize = 64;
+pub(in crate::library::tpm2) const RSAES_TEST_PADDING_SIZE: usize = 189;
 
 const TEST_HASH_ALG: u16 = super::algorithm::TPM_ALG_SHA512;
 const TEST_MESSAGE_SIZE: usize = 64;
@@ -77,13 +78,59 @@ pub(super) const OAEP_KNOWN_CIPHERTEXT: [u8; 256] = [
     0x4b, 0x2b, 0x5b, 0x7b, 0x5c, 0x81, 0xa6, 0xbb, 0xc7, 0x43, 0xc0, 0xbe, 0xc0, 0x30, 0x7b, 0x55,
 ];
 
+pub(super) const RSAES_KNOWN_CIPHERTEXT: [u8; 256] = [
+    0x74, 0x83, 0xfa, 0x52, 0x65, 0x50, 0x68, 0xd0, 0x82, 0x05, 0x72, 0x70, 0x78, 0x1c, 0xac, 0x10,
+    0x23, 0xc5, 0x07, 0xf8, 0x93, 0xd2, 0xeb, 0x65, 0x87, 0xbb, 0x47, 0xc2, 0xfb, 0x30, 0x9e, 0x61,
+    0x4c, 0xac, 0x04, 0x57, 0x5a, 0x7c, 0xeb, 0x29, 0x08, 0x84, 0x86, 0x89, 0x1e, 0x8f, 0x07, 0x32,
+    0xa3, 0x8b, 0x70, 0xe7, 0xa2, 0x9f, 0x9c, 0x42, 0x71, 0x3d, 0x23, 0x59, 0x82, 0x5e, 0x8a, 0xde,
+    0xd6, 0xfb, 0xd8, 0xc5, 0x8b, 0xc0, 0xdb, 0x10, 0x38, 0x87, 0xd3, 0xbf, 0x04, 0xb0, 0x66, 0xb9,
+    0x85, 0x81, 0x54, 0x4c, 0x69, 0xdc, 0xba, 0x78, 0xf3, 0x4a, 0xdb, 0x25, 0xa2, 0xf2, 0x34, 0x55,
+    0xdd, 0xaa, 0xa5, 0xc4, 0xed, 0x55, 0x06, 0x0e, 0x2a, 0x30, 0x77, 0xab, 0x82, 0x79, 0xf0, 0xcd,
+    0x9d, 0x6f, 0x09, 0xa0, 0xc8, 0x82, 0xc9, 0xe0, 0x61, 0xda, 0x40, 0xcd, 0x17, 0x59, 0xc0, 0xef,
+    0x95, 0x6d, 0xa3, 0x6d, 0x1c, 0x2b, 0xee, 0x24, 0xef, 0xd8, 0x4a, 0x55, 0x6c, 0xd6, 0x26, 0x42,
+    0x32, 0x17, 0xfd, 0x6a, 0xb3, 0x4f, 0xde, 0x07, 0x2f, 0x10, 0xd4, 0xac, 0x14, 0xea, 0x89, 0x68,
+    0xcc, 0xd3, 0x07, 0xb7, 0xcf, 0xba, 0x39, 0x20, 0x63, 0x20, 0x7b, 0x44, 0x8b, 0x48, 0x60, 0x5d,
+    0x3a, 0x2a, 0x0a, 0xe9, 0x68, 0xab, 0x15, 0x46, 0x27, 0x64, 0xb5, 0x82, 0x06, 0x29, 0xe7, 0x25,
+    0xca, 0x46, 0x48, 0x6e, 0x2a, 0x34, 0x57, 0x4b, 0x81, 0x75, 0xae, 0xb6, 0xfd, 0x6f, 0x51, 0x5f,
+    0x04, 0x59, 0xc7, 0x15, 0x1f, 0xe0, 0x68, 0xf7, 0x36, 0x2d, 0xdf, 0xc8, 0x9d, 0x05, 0x27, 0x2d,
+    0x3f, 0x2b, 0x59, 0x5d, 0xcb, 0xf3, 0xc4, 0x92, 0x6e, 0x00, 0xa8, 0x8d, 0xd0, 0x69, 0xe5, 0x59,
+    0xda, 0xba, 0x4f, 0x38, 0xf5, 0xa0, 0x8b, 0xf1, 0x73, 0xe9, 0x0d, 0xee, 0x64, 0xe5, 0xa2, 0xd8,
+];
+
+pub(super) const RSAEP_KNOWN_CIPHERTEXT: [u8; 256] = [
+    0x73, 0xbd, 0x65, 0x49, 0xda, 0x7b, 0xb8, 0x50, 0x9e, 0x87, 0xf0, 0x0a, 0x8a, 0x9a, 0x07, 0xb6,
+    0x00, 0x82, 0x10, 0x14, 0x60, 0xd8, 0x01, 0xfc, 0xc5, 0x18, 0xea, 0x49, 0x5f, 0x13, 0xcf, 0x65,
+    0x66, 0x30, 0x6c, 0x60, 0x3f, 0x24, 0x3c, 0xfb, 0xe2, 0x31, 0x16, 0x99, 0x7e, 0x31, 0x98, 0xab,
+    0x93, 0xb8, 0x07, 0x53, 0xcc, 0xdb, 0x7f, 0x44, 0xd9, 0xee, 0x5d, 0xe8, 0x5f, 0x97, 0x5f, 0xe8,
+    0x1f, 0x88, 0x52, 0x24, 0x7b, 0xac, 0x62, 0x95, 0xb7, 0x7d, 0xf5, 0xf8, 0x9f, 0x5a, 0xa8, 0x24,
+    0x9a, 0x76, 0x71, 0x2a, 0x35, 0x2a, 0xa1, 0x08, 0xbb, 0x95, 0xe3, 0x64, 0xdc, 0xdb, 0xc2, 0x33,
+    0xa9, 0x5f, 0xbe, 0x4c, 0xc4, 0xcc, 0x28, 0xc9, 0x25, 0xff, 0xee, 0x17, 0x15, 0x9a, 0x50, 0x90,
+    0x0e, 0x15, 0xb4, 0xea, 0x6a, 0x09, 0xe6, 0xff, 0xa4, 0xee, 0xc7, 0x7e, 0xce, 0xa9, 0x73, 0xe4,
+    0xa0, 0x56, 0xbd, 0x53, 0x2a, 0xe4, 0xc0, 0x2b, 0xa8, 0x9b, 0x09, 0x30, 0x72, 0x62, 0x0f, 0xf9,
+    0xf6, 0xa1, 0x52, 0xd2, 0x8a, 0x37, 0xee, 0xa5, 0xc8, 0x47, 0xe1, 0x99, 0x21, 0x47, 0xeb, 0xdd,
+    0x37, 0xaa, 0xe4, 0xbd, 0x55, 0x46, 0x5a, 0x5a, 0x5d, 0xfb, 0x7b, 0xfc, 0xff, 0xbf, 0x26, 0x71,
+    0xf6, 0x1e, 0xad, 0xbc, 0xbf, 0x33, 0xca, 0xe1, 0x92, 0x8f, 0x2a, 0x89, 0x6c, 0x45, 0x24, 0xd1,
+    0xa6, 0x52, 0x56, 0x24, 0x5e, 0x90, 0x47, 0xe5, 0xcb, 0x12, 0xb0, 0x32, 0xf9, 0xa6, 0xbb, 0xea,
+    0x37, 0xa9, 0xbd, 0xef, 0x23, 0xef, 0x63, 0x07, 0x6c, 0xc4, 0x4e, 0x64, 0x3c, 0xc6, 0x11, 0x84,
+    0x7d, 0x65, 0xd6, 0x5d, 0x7a, 0x17, 0x58, 0xa5, 0xf7, 0x74, 0x3b, 0x42, 0xe3, 0xd2, 0xda, 0x5f,
+    0x6f, 0xe0, 0x1e, 0x4b, 0xcf, 0x46, 0xe2, 0xdf, 0x3e, 0x41, 0x8e, 0x0e, 0xb0, 0x3f, 0x8b, 0x65,
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::library::tpm2) enum OaepSelfTestStage {
+pub(in crate::library::tpm2) enum PaddedRsaSelfTestStage {
     Encrypt,
     RoundTripDecrypt,
     RoundTripCompare,
     KnownAnswerDecrypt,
     KnownAnswerCompare,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::library::tpm2) enum RawRsaSelfTestStage {
+    Encrypt,
+    EncryptCompare,
+    Decrypt,
+    DecryptCompare,
 }
 
 struct TestKey {
@@ -121,57 +168,113 @@ fn load_test_key() -> Option<TestKey> {
     })
 }
 
-fn decrypt(key: &TestKey, ciphertext: &[u8]) -> Option<Vec<u8>> {
+enum Padding<'a> {
+    Oaep { seed: &'a [u8] },
+    Rsaes { padding: &'a [u8] },
+}
+
+impl Padding<'_> {
+    fn encode(&self, message: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            Self::Oaep { seed } => oaep_encode(
+                TEST_HASH_ALG,
+                OAEP_TEST_LABEL,
+                message,
+                seed,
+                TEST_MODULUS.len(),
+            ),
+            Self::Rsaes { padding } => rsaes_encode(TEST_MODULUS.len(), message, padding),
+        }
+    }
+
+    fn decode(&self, padded: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            Self::Oaep { .. } => oaep_decode(TEST_HASH_ALG, OAEP_TEST_LABEL, padded),
+            Self::Rsaes { .. } => rsaes_decode(padded),
+        }
+    }
+}
+
+fn private_operation(key: &TestKey, ciphertext: &[u8]) -> Option<Vec<u8>> {
     let value = BigUint::from_be_bytes(ciphertext);
     if value >= key.modulus {
         return None;
     }
     let plain = rsa_private_key_op(&key.p, &key.q, &key.d_p, &key.d_q, &key.q_inv, &value)?;
-    let padded = plain.to_be_bytes(TEST_MODULUS.len())?;
-    oaep_decode(TEST_HASH_ALG, OAEP_TEST_LABEL, &padded)
+    plain.to_be_bytes(TEST_MODULUS.len())
+}
+
+fn decrypt(key: &TestKey, padding: &Padding<'_>, ciphertext: &[u8]) -> Option<Vec<u8>> {
+    padding.decode(&private_operation(key, ciphertext)?)
 }
 
 pub(in crate::library::tpm2) fn run_oaep_known_answer(
     seed: &[u8],
-) -> Result<(), OaepSelfTestStage> {
+) -> Result<(), PaddedRsaSelfTestStage> {
     run_known_answer(
         &TEST_VALUE[..TEST_MESSAGE_SIZE],
         &OAEP_KNOWN_CIPHERTEXT,
-        seed,
+        &Padding::Oaep { seed },
     )
+}
+
+pub(in crate::library::tpm2) fn run_rsaes_known_answer(
+    padding: &[u8],
+) -> Result<(), PaddedRsaSelfTestStage> {
+    run_known_answer(
+        &TEST_VALUE[..TEST_MESSAGE_SIZE],
+        &RSAES_KNOWN_CIPHERTEXT,
+        &Padding::Rsaes { padding },
+    )
+}
+
+pub(in crate::library::tpm2) fn run_rsaep_known_answer() -> Result<(), RawRsaSelfTestStage> {
+    let key = load_test_key().ok_or(RawRsaSelfTestStage::Encrypt)?;
+    let ciphertext = rsa_public_key_op(
+        &key.modulus,
+        RSA_DEFAULT_PUBLIC_EXPONENT,
+        &BigUint::from_be_bytes(&TEST_VALUE),
+    )
+    .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
+    .ok_or(RawRsaSelfTestStage::Encrypt)?;
+    if ciphertext != RSAEP_KNOWN_CIPHERTEXT {
+        return Err(RawRsaSelfTestStage::EncryptCompare);
+    }
+    let recovered = private_operation(&key, &ciphertext).ok_or(RawRsaSelfTestStage::Decrypt)?;
+    if recovered != TEST_VALUE {
+        return Err(RawRsaSelfTestStage::DecryptCompare);
+    }
+    Ok(())
 }
 
 fn run_known_answer(
     message: &[u8],
     known_ciphertext: &[u8],
-    seed: &[u8],
-) -> Result<(), OaepSelfTestStage> {
-    let key = load_test_key().ok_or(OaepSelfTestStage::Encrypt)?;
+    padding: &Padding<'_>,
+) -> Result<(), PaddedRsaSelfTestStage> {
+    let key = load_test_key().ok_or(PaddedRsaSelfTestStage::Encrypt)?;
 
-    let padded = oaep_encode(
-        TEST_HASH_ALG,
-        OAEP_TEST_LABEL,
-        message,
-        seed,
-        TEST_MODULUS.len(),
-    )
-    .ok_or(OaepSelfTestStage::Encrypt)?;
+    let padded = padding
+        .encode(message)
+        .ok_or(PaddedRsaSelfTestStage::Encrypt)?;
     let ciphertext = rsa_public_key_op(
         &key.modulus,
         RSA_DEFAULT_PUBLIC_EXPONENT,
         &BigUint::from_be_bytes(&padded),
     )
     .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
-    .ok_or(OaepSelfTestStage::Encrypt)?;
+    .ok_or(PaddedRsaSelfTestStage::Encrypt)?;
 
-    let recovered = decrypt(&key, &ciphertext).ok_or(OaepSelfTestStage::RoundTripDecrypt)?;
+    let recovered =
+        decrypt(&key, padding, &ciphertext).ok_or(PaddedRsaSelfTestStage::RoundTripDecrypt)?;
     if recovered != message {
-        return Err(OaepSelfTestStage::RoundTripCompare);
+        return Err(PaddedRsaSelfTestStage::RoundTripCompare);
     }
 
-    let known = decrypt(&key, known_ciphertext).ok_or(OaepSelfTestStage::KnownAnswerDecrypt)?;
+    let known = decrypt(&key, padding, known_ciphertext)
+        .ok_or(PaddedRsaSelfTestStage::KnownAnswerDecrypt)?;
     if known != message {
-        return Err(OaepSelfTestStage::KnownAnswerCompare);
+        return Err(PaddedRsaSelfTestStage::KnownAnswerCompare);
     }
     Ok(())
 }
@@ -179,9 +282,20 @@ fn run_known_answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::tpm2::crypto::rsaes_padding_length;
 
     fn seed() -> Vec<u8> {
         (0..OAEP_TEST_SEED_SIZE).map(|index| index as u8).collect()
+    }
+
+    fn oaep(seed: &[u8]) -> Padding<'_> {
+        Padding::Oaep { seed }
+    }
+
+    fn rsaes_padding() -> Vec<u8> {
+        (0..RSAES_TEST_PADDING_SIZE)
+            .map(|index| (index as u8) | 0x01)
+            .collect()
     }
 
     #[test]
@@ -208,8 +322,8 @@ mod tests {
             let mut message = TEST_VALUE[..TEST_MESSAGE_SIZE].to_vec();
             message[position] ^= 0x01;
             assert_eq!(
-                run_known_answer(&message, &OAEP_KNOWN_CIPHERTEXT, &seed()),
-                Err(OaepSelfTestStage::KnownAnswerCompare),
+                run_known_answer(&message, &OAEP_KNOWN_CIPHERTEXT, &oaep(&seed())),
+                Err(PaddedRsaSelfTestStage::KnownAnswerCompare),
                 "byte {position}"
             );
         }
@@ -220,8 +334,8 @@ mod tests {
         let mut corrupted = OAEP_KNOWN_CIPHERTEXT;
         corrupted[200] ^= 0x01;
         assert_eq!(
-            run_known_answer(&TEST_VALUE[..TEST_MESSAGE_SIZE], &corrupted, &seed()),
-            Err(OaepSelfTestStage::KnownAnswerDecrypt)
+            run_known_answer(&TEST_VALUE[..TEST_MESSAGE_SIZE], &corrupted, &oaep(&seed())),
+            Err(PaddedRsaSelfTestStage::KnownAnswerDecrypt)
         );
     }
 
@@ -245,8 +359,12 @@ mod tests {
         .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
         .expect("the public operation succeeds");
         assert_eq!(
-            run_known_answer(&TEST_VALUE[..TEST_MESSAGE_SIZE], &ciphertext, &seed()),
-            Err(OaepSelfTestStage::KnownAnswerCompare)
+            run_known_answer(
+                &TEST_VALUE[..TEST_MESSAGE_SIZE],
+                &ciphertext,
+                &oaep(&seed())
+            ),
+            Err(PaddedRsaSelfTestStage::KnownAnswerCompare)
         );
     }
 
@@ -254,14 +372,15 @@ mod tests {
     fn a_wrong_seed_length_is_reported_as_an_encryption_failure() {
         assert_eq!(
             run_oaep_known_answer(&[0u8; 32]),
-            Err(OaepSelfTestStage::Encrypt)
+            Err(PaddedRsaSelfTestStage::Encrypt)
         );
     }
 
     #[test]
     fn the_known_ciphertext_decodes_to_the_pinned_test_value() {
         let key = load_test_key().expect("the test key loads");
-        let recovered = decrypt(&key, &OAEP_KNOWN_CIPHERTEXT).expect("the pinned KVT decodes");
+        let recovered =
+            decrypt(&key, &oaep(&seed()), &OAEP_KNOWN_CIPHERTEXT).expect("the pinned KVT decodes");
         assert_eq!(recovered, TEST_VALUE[..TEST_MESSAGE_SIZE]);
     }
 
@@ -272,7 +391,8 @@ mod tests {
             let mut corrupted = OAEP_KNOWN_CIPHERTEXT;
             corrupted[position] ^= 0x01;
             assert!(
-                decrypt(&key, &corrupted).is_none_or(|value| value != TEST_VALUE[..64]),
+                decrypt(&key, &oaep(&seed()), &corrupted)
+                    .is_none_or(|value| value != TEST_VALUE[..64]),
                 "byte {position}"
             );
         }
@@ -301,5 +421,111 @@ mod tests {
             oaep_decode(TEST_HASH_ALG, OAEP_TEST_LABEL, &padded).as_deref(),
             Some(&TEST_VALUE[..TEST_MESSAGE_SIZE])
         );
+    }
+
+    #[test]
+    fn the_rsaes_padding_size_is_the_one_the_reference_draws() {
+        assert_eq!(
+            rsaes_padding_length(TEST_MODULUS.len(), TEST_MESSAGE_SIZE),
+            Some(RSAES_TEST_PADDING_SIZE)
+        );
+    }
+
+    #[test]
+    fn the_rsaes_known_answer_test_passes_for_any_padding() {
+        for offset in [0u8, 1, 0x37, 0xfe] {
+            let padding: Vec<u8> = (0..RSAES_TEST_PADDING_SIZE)
+                .map(|index| (index as u8).wrapping_add(offset))
+                .collect();
+            assert_eq!(
+                run_rsaes_known_answer(&padding),
+                Ok(()),
+                "padding offset {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrong_rsaes_padding_length_is_reported_as_an_encryption_failure() {
+        for length in [
+            0usize,
+            1,
+            RSAES_TEST_PADDING_SIZE - 1,
+            RSAES_TEST_PADDING_SIZE + 1,
+        ] {
+            assert_eq!(
+                run_rsaes_known_answer(&vec![0x5a; length]),
+                Err(PaddedRsaSelfTestStage::Encrypt),
+                "length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pinned_rsaes_ciphertext_decodes_to_the_pinned_test_value() {
+        let key = load_test_key().expect("the test key loads");
+        let padding = rsaes_padding();
+        let recovered = decrypt(
+            &key,
+            &Padding::Rsaes { padding: &padding },
+            &RSAES_KNOWN_CIPHERTEXT,
+        )
+        .expect("the pinned KVT decodes");
+        assert_eq!(recovered, TEST_VALUE[..TEST_MESSAGE_SIZE]);
+    }
+
+    #[test]
+    fn a_corrupted_rsaes_known_ciphertext_is_caught() {
+        let padding = rsaes_padding();
+        let mut corrupted = RSAES_KNOWN_CIPHERTEXT;
+        corrupted[200] ^= 0x01;
+        assert_eq!(
+            run_known_answer(
+                &TEST_VALUE[..TEST_MESSAGE_SIZE],
+                &corrupted,
+                &Padding::Rsaes { padding: &padding },
+            ),
+            Err(PaddedRsaSelfTestStage::KnownAnswerDecrypt)
+        );
+    }
+
+    #[test]
+    fn an_rsaes_known_ciphertext_for_a_different_message_fails_the_comparison() {
+        let key = load_test_key().expect("the test key loads");
+        let padding = rsaes_padding();
+        let padded = rsaes_encode(TEST_MODULUS.len(), &[0x5au8; TEST_MESSAGE_SIZE], &padding)
+            .expect("the encode succeeds");
+        let ciphertext = rsa_public_key_op(
+            &key.modulus,
+            RSA_DEFAULT_PUBLIC_EXPONENT,
+            &BigUint::from_be_bytes(&padded),
+        )
+        .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
+        .expect("the public operation succeeds");
+        assert_eq!(
+            run_known_answer(
+                &TEST_VALUE[..TEST_MESSAGE_SIZE],
+                &ciphertext,
+                &Padding::Rsaes { padding: &padding },
+            ),
+            Err(PaddedRsaSelfTestStage::KnownAnswerCompare)
+        );
+    }
+
+    #[test]
+    fn the_raw_known_answer_test_reproduces_the_pinned_ciphertext() {
+        assert_eq!(run_rsaep_known_answer(), Ok(()));
+        let key = load_test_key().expect("the test key loads");
+        assert_eq!(
+            private_operation(&key, &RSAEP_KNOWN_CIPHERTEXT).as_deref(),
+            Some(&TEST_VALUE[..])
+        );
+    }
+
+    #[test]
+    fn the_three_pinned_ciphertexts_differ() {
+        assert_ne!(OAEP_KNOWN_CIPHERTEXT, RSAES_KNOWN_CIPHERTEXT);
+        assert_ne!(OAEP_KNOWN_CIPHERTEXT, RSAEP_KNOWN_CIPHERTEXT);
+        assert_ne!(RSAES_KNOWN_CIPHERTEXT, RSAEP_KNOWN_CIPHERTEXT);
     }
 }

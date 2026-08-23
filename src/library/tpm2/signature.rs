@@ -356,7 +356,9 @@ fn pss_encode(
     Ok(out)
 }
 
-fn rsa_key_parts(body: &OwnedObjectBody) -> Option<(BigUint, BigUint, BigUint, BigUint, BigUint)> {
+pub(super) fn rsa_key_parts(
+    body: &OwnedObjectBody,
+) -> Option<(BigUint, BigUint, BigUint, BigUint, BigUint)> {
     let prime = body.sensitive.sensitive.as_ref()?;
     let exponent = body.private_exponent.as_ref()?;
     let p = BigUint::from_be_bytes(prime.as_bytes());
@@ -376,7 +378,7 @@ fn limbs_to_big(data: &[u8]) -> BigUint {
     value
 }
 
-fn rsa_modulus(body: &OwnedObjectBody) -> Option<&[u8]> {
+pub(super) fn rsa_modulus(body: &OwnedObjectBody) -> Option<&[u8]> {
     match &body.public.unique {
         OwnedPublicId::Rsa(modulus) => Some(modulus),
         _ => None,

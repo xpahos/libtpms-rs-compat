@@ -140,6 +140,16 @@ commands = [
     "TPM2_VerifySignature",
 ]
 
+[families."rsa-encryption"]
+magic = "REORACLE"
+scenario = "scripts/golden_responses/scenarios/rsa_encryption.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/rsa_encryption.bin"
+reader = "src/library/tpm2/golden_responses/rsa_encryption.rs"
+commands = [
+    "TPM2_RSA_Decrypt",
+    "TPM2_RSA_Encrypt",
+]
+
 [families."sequence-commands"]
 magic = "SQORACLE"
 scenario = "scripts/golden_responses/scenarios/sequence_commands.scenario"
@@ -427,7 +437,8 @@ status = "todo"
 
 [commands.RSA_Decrypt]
 code = 0x00000159
-status = "todo"
+status = "implemented"
+family = "rsa-encryption"
 
 [commands.HMAC_Start]
 code = 0x0000015b
@@ -537,7 +548,8 @@ family = "read-public-verify-signature"
 
 [commands.RSA_Encrypt]
 code = 0x00000174
-status = "todo"
+status = "implemented"
+family = "rsa-encryption"
 
 [commands.StartAuthSession]
 code = 0x00000176

@@ -41,6 +41,7 @@ mod policy_or;
 mod policy_pcr;
 mod read_public;
 mod registry;
+mod rsa_encryption;
 mod self_test;
 mod sequence_complete;
 mod sequence_update;

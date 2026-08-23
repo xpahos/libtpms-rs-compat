@@ -41,6 +41,7 @@ use super::policy_commands;
 use super::policy_or;
 use super::policy_pcr;
 use super::read_public;
+use super::rsa_encryption;
 use super::self_test;
 use super::sequence_complete;
 use super::sequence_update;
@@ -88,6 +89,7 @@ pub(in crate::library::tpm2) const TPM_CC_NV_READ_LOCK: u32 = 0x0000_014f;
 pub(in crate::library::tpm2) const TPM_CC_OBJECT_CHANGE_AUTH: u32 = 0x0000_0150;
 pub(in crate::library::tpm2) const TPM_CC_CREATE: u32 = 0x0000_0153;
 pub(in crate::library::tpm2) const TPM_CC_LOAD: u32 = 0x0000_0157;
+pub(in crate::library::tpm2) const TPM_CC_RSA_DECRYPT: u32 = 0x0000_0159;
 pub(in crate::library::tpm2) const TPM_CC_HMAC_START: u32 = 0x0000_015b;
 pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_UPDATE: u32 = 0x0000_015c;
 pub(in crate::library::tpm2) const TPM_CC_SIGN: u32 = 0x0000_015d;
@@ -101,6 +103,7 @@ pub(in crate::library::tpm2) const TPM_CC_POLICY_AUTH_VALUE: u32 = 0x0000_016b;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_COMMAND_CODE: u32 = 0x0000_016c;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_OR: u32 = 0x0000_0171;
 pub(in crate::library::tpm2) const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
+pub(in crate::library::tpm2) const TPM_CC_RSA_ENCRYPT: u32 = 0x0000_0174;
 pub(in crate::library::tpm2) const TPM_CC_START_AUTH_SESSION: u32 = 0x0000_0176;
 pub(in crate::library::tpm2) const TPM_CC_VERIFY_SIGNATURE: u32 = 0x0000_0177;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
@@ -902,6 +905,22 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: load::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_RSA_DECRYPT,
+        attributes: tpma_cc(TPM_CC_RSA_DECRYPT, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: rsa_encryption::execute_decrypt,
+    },
+    CommandDescriptor {
         code: TPM_CC_HMAC_START,
         attributes: tpma_cc_with_response_handle(TPM_CC_HMAC_START, false, 1),
         physical_presence: false,
@@ -1084,6 +1103,22 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: read_public::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_RSA_ENCRYPT,
+        attributes: tpma_cc(TPM_CC_RSA_ENCRYPT, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: false,
+            admin_role: false,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: rsa_encryption::execute_encrypt,
     },
     CommandDescriptor {
         code: TPM_CC_START_AUTH_SESSION,
@@ -1499,6 +1534,7 @@ mod tests {
                 TPM_CC_OBJECT_CHANGE_AUTH,
                 TPM_CC_CREATE,
                 TPM_CC_LOAD,
+                TPM_CC_RSA_DECRYPT,
                 TPM_CC_HMAC_START,
                 TPM_CC_SEQUENCE_UPDATE,
                 TPM_CC_SIGN,
@@ -1512,6 +1548,7 @@ mod tests {
                 TPM_CC_POLICY_COMMAND_CODE,
                 TPM_CC_POLICY_OR,
                 TPM_CC_READ_PUBLIC,
+                TPM_CC_RSA_ENCRYPT,
                 TPM_CC_START_AUTH_SESSION,
                 TPM_CC_VERIFY_SIGNATURE,
                 TPM_CC_GET_CAPABILITY,

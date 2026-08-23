@@ -11,6 +11,7 @@ pub(in crate::library::tpm2) mod object_lifecycle;
 pub(in crate::library::tpm2) mod pcr_event;
 pub(in crate::library::tpm2) mod policy_sessions;
 pub(in crate::library::tpm2) mod read_public_verify_signature;
+pub(in crate::library::tpm2) mod rsa_encryption;
 pub(in crate::library::tpm2) mod sequence_commands;
 pub(in crate::library::tpm2) mod sign;
 

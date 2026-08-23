@@ -50,34 +50,34 @@ mod tests {
         Tpm2Runtime, commit_manufactured_state, empty_state_runtime,
     };
     use crate::library::tpm2::self_test::{
-        OaepRunner, OaepSelfTestStage, PrimitiveTest, always_fails, fails_on_sha384,
+        PaddedRsaRunner, PaddedRsaSelfTestStage, PrimitiveTest, always_fails, fails_on_sha384,
         fails_on_sha512,
     };
 
     fn oaep_failure_table() -> [(
-        OaepRunner,
+        PaddedRsaRunner,
         crate::library::tpm2::failure_mode::FailureLocation,
     ); 5] {
         use crate::library::tpm2::failure_mode::FailureLocation;
         [
             (
-                |_: &[u8]| Err(OaepSelfTestStage::Encrypt),
+                |_: &[u8]| Err(PaddedRsaSelfTestStage::Encrypt),
                 FailureLocation::RsaOaepEncrypt,
             ),
             (
-                |_: &[u8]| Err(OaepSelfTestStage::RoundTripDecrypt),
+                |_: &[u8]| Err(PaddedRsaSelfTestStage::RoundTripDecrypt),
                 FailureLocation::RsaOaepRoundTripDecrypt,
             ),
             (
-                |_: &[u8]| Err(OaepSelfTestStage::RoundTripCompare),
+                |_: &[u8]| Err(PaddedRsaSelfTestStage::RoundTripCompare),
                 FailureLocation::RsaOaepRoundTripCompare,
             ),
             (
-                |_: &[u8]| Err(OaepSelfTestStage::KnownAnswerDecrypt),
+                |_: &[u8]| Err(PaddedRsaSelfTestStage::KnownAnswerDecrypt),
                 FailureLocation::RsaOaepKnownAnswerDecrypt,
             ),
             (
-                |_: &[u8]| Err(OaepSelfTestStage::KnownAnswerCompare),
+                |_: &[u8]| Err(PaddedRsaSelfTestStage::KnownAnswerCompare),
                 FailureLocation::RsaOaepKnownAnswerCompare,
             ),
         ]
@@ -373,6 +373,170 @@ mod tests {
         assert_eq!(snapshot(&runtime), before);
     }
 
+    mod rsa_ordering {
+        use super::*;
+        use crate::library::tpm2::failure_mode::FailureLocation;
+        use crate::library::tpm2::rsa_vectors::RawRsaSelfTestStage;
+        use core::cell::Cell;
+
+        thread_local! {
+            static ORDER: std::cell::RefCell<Vec<&'static str>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+            static PRIMITIVES: Cell<usize> = const { Cell::new(0) };
+        }
+
+        fn note(step: &'static str) {
+            ORDER.with(|order| order.borrow_mut().push(step));
+        }
+
+        fn taken() -> Vec<&'static str> {
+            ORDER.with(|order| core::mem::take(&mut *order.borrow_mut()))
+        }
+
+        fn recording_primitive(_test: PrimitiveTest) -> bool {
+            if PRIMITIVES.with(Cell::get) == 0 {
+                note("primitive");
+            }
+            PRIMITIVES.with(|count| count.set(count.get() + 1));
+            true
+        }
+
+        fn recording_raw() -> Result<(), RawRsaSelfTestStage> {
+            note("raw");
+            crate::library::tpm2::rsa_vectors::run_rsaep_known_answer()
+        }
+
+        fn failing_raw() -> Result<(), RawRsaSelfTestStage> {
+            note("raw");
+            Err(RawRsaSelfTestStage::Decrypt)
+        }
+
+        fn recording_rsaes(padding: &[u8]) -> Result<(), PaddedRsaSelfTestStage> {
+            note("rsaes");
+            crate::library::tpm2::rsa_vectors::run_rsaes_known_answer(padding)
+        }
+
+        fn recording_oaep(seed: &[u8]) -> Result<(), PaddedRsaSelfTestStage> {
+            note("oaep");
+            crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
+        }
+
+        fn recording_runtime() -> Box<Tpm2Runtime> {
+            taken();
+            PRIMITIVES.with(|count| count.set(0));
+            let mut runtime = started_runtime();
+            runtime.self_test.set_runner(recording_primitive);
+            runtime.self_test.set_raw_rsa_runner(recording_raw);
+            runtime.self_test.set_rsaes_runner(recording_rsaes);
+            runtime.self_test.set_oaep_runner(recording_oaep);
+            runtime
+        }
+
+        #[test]
+        fn a_full_test_runs_the_raw_test_before_the_ordinary_primitives() {
+            let mut runtime = recording_runtime();
+            assert_eq!(run(&mut runtime, &FULL_TEST_COMMAND), SUCCESS_RESPONSE);
+            assert_eq!(taken(), ["raw", "primitive", "rsaes", "oaep"]);
+            assert!(!runtime.self_test.raw_rsa_pending);
+            assert!(!runtime.self_test.rsaes_pending);
+            assert!(!runtime.self_test.oaep_pending);
+        }
+
+        #[test]
+        fn a_partial_test_runs_the_raw_test_after_the_ordinary_primitives() {
+            let mut runtime = recording_runtime();
+            assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
+            assert_eq!(taken(), ["primitive", "raw", "rsaes", "oaep"]);
+        }
+
+        #[test]
+        fn a_partial_test_runs_the_raw_test_once_the_padded_tests_are_complete() {
+            let mut runtime = recording_runtime();
+            runtime.self_test.raw_rsa_pending = true;
+            runtime.self_test.rsaes_pending = false;
+            runtime.self_test.oaep_pending = false;
+            assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
+            assert_eq!(taken(), ["primitive", "raw"]);
+            assert!(!runtime.self_test.raw_rsa_pending);
+        }
+
+        #[test]
+        fn a_padded_test_clears_the_raw_pending_state() {
+            for (pending, expected) in [("rsaes", "rsaes"), ("oaep", "oaep")] {
+                let mut runtime = recording_runtime();
+                runtime.self_test.raw_rsa_pending = false;
+                runtime.self_test.rsaes_pending = pending == "rsaes";
+                runtime.self_test.oaep_pending = pending == "oaep";
+                assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
+                assert_eq!(taken(), ["primitive", expected]);
+                assert!(!runtime.self_test.raw_rsa_pending);
+                assert!(!runtime.self_test.rsaes_pending);
+                assert!(!runtime.self_test.oaep_pending);
+            }
+        }
+
+        #[test]
+        fn a_repeated_partial_test_reruns_no_completed_rsa_test() {
+            let mut runtime = recording_runtime();
+            assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
+            assert_eq!(taken(), ["primitive", "raw", "rsaes", "oaep"]);
+            let requests = runtime.live.orderly.drbg_state.reseed_counter;
+            assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
+            assert_eq!(taken(), [] as [&str; 0]);
+            assert_eq!(runtime.live.orderly.drbg_state.reseed_counter, requests);
+        }
+
+        #[test]
+        fn a_failing_raw_test_stops_a_partial_test_before_the_padded_tests() {
+            let mut runtime = recording_runtime();
+            runtime.self_test.set_raw_rsa_runner(failing_raw);
+            assert_eq!(
+                run_code(&mut runtime, &PARTIAL_TEST_COMMAND),
+                TPM_RC_FAILURE
+            );
+            assert_eq!(taken(), ["primitive", "raw"]);
+            assert!(runtime.failure_mode);
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::RsaRawDecrypt.diagnostics()
+            );
+            assert!(runtime.self_test.raw_rsa_pending);
+            assert!(runtime.self_test.rsaes_pending);
+            assert!(runtime.self_test.oaep_pending);
+        }
+
+        #[test]
+        fn a_failing_padded_test_stays_pending_at_its_reference_failure_site() {
+            for scheme in ["rsaes", "oaep"] {
+                let mut runtime = recording_runtime();
+                runtime.self_test.raw_rsa_pending = false;
+                runtime.self_test.rsaes_pending = scheme == "rsaes";
+                runtime.self_test.oaep_pending = scheme == "oaep";
+                if scheme == "rsaes" {
+                    runtime
+                        .self_test
+                        .set_rsaes_runner(|_| Err(PaddedRsaSelfTestStage::KnownAnswerCompare));
+                } else {
+                    runtime
+                        .self_test
+                        .set_oaep_runner(|_| Err(PaddedRsaSelfTestStage::KnownAnswerCompare));
+                }
+                assert_eq!(
+                    run_code(&mut runtime, &PARTIAL_TEST_COMMAND),
+                    TPM_RC_FAILURE
+                );
+                assert!(runtime.failure_mode);
+                assert_eq!(
+                    runtime.failure_diagnostics,
+                    FailureLocation::RsaOaepKnownAnswerCompare.diagnostics()
+                );
+                assert_eq!(runtime.self_test.rsaes_pending, scheme == "rsaes");
+                assert_eq!(runtime.self_test.oaep_pending, scheme == "oaep");
+                assert!(!runtime.self_test.raw_rsa_pending, "{scheme}");
+            }
+        }
+    }
+
     mod oaep {
         use super::*;
         use crate::library::tpm2::failure_mode::FailureLocation;
@@ -383,7 +547,7 @@ mod tests {
             static CALLS: Cell<usize> = const { Cell::new(0) };
         }
 
-        fn counting_runner(seed: &[u8]) -> Result<(), OaepSelfTestStage> {
+        fn counting_runner(seed: &[u8]) -> Result<(), PaddedRsaSelfTestStage> {
             CALLS.with(|calls| calls.set(calls.get() + 1));
             assert_eq!(seed.len(), 64, "the reference draws a SHA-512 sized seed");
             crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
@@ -414,8 +578,8 @@ mod tests {
             assert!(!runtime.failure_mode);
             assert_eq!(
                 drbg_requests(&runtime),
-                requests + 1,
-                "the reference draws one OAEP seed per test"
+                requests + 2,
+                "the reference draws one RSAES pad and one OAEP seed per full test"
             );
         }
 

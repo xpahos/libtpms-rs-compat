@@ -46,6 +46,8 @@ pub(in crate::library) const TPM_RC_NONCE: TpmResult = 0x08f;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_SCHEME: TpmResult = 0x092;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_SELECTOR: TpmResult = 0x098;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_SIGNATURE: TpmResult = 0x09b;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_SIZE: TpmResult = 0x095;
@@ -270,8 +272,10 @@ mod tests {
             TPM_RC_HANDLE,
             TPM_RC_RANGE,
             TPM_RC_VALUE,
+            TPM_RC_SELECTOR,
         ] {
             assert_ne!(code & RC_FMT1, 0, "code {code:#05x} takes a modifier");
         }
+        assert_eq!(TPM_RC_SELECTOR, RC_FMT1 + 0x018);
     }
 }
