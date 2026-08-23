@@ -16,7 +16,7 @@ use super::super::object_create::{
 };
 use super::super::runtime::Tpm2Runtime;
 use super::super::sequence::cleanup_evicted;
-use super::super::session::{SESSION_ATTR_IS_POLICY, loaded_session};
+use super::super::session::{SESSION_ATTR_IS_POLICY, is_policy_session_handle, loaded_session};
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
@@ -195,6 +195,21 @@ fn check_load_status(
                 })?;
             }
             HandleKind::EntityAllowNull => check_entity_present(runtime, handle, index)?,
+            HandleKind::Context => {
+                if is_transient_object_handle(handle) {
+                    check_object_present(runtime, handle, index)?;
+                } else {
+                    match loaded_session(&runtime.live, handle) {
+                        Some(session) => {
+                            let is_policy = session.attributes & SESSION_ATTR_IS_POLICY != 0;
+                            if is_policy != is_policy_session_handle(handle) {
+                                return Err(TPM_RC_HANDLE + indexed);
+                            }
+                        }
+                        None => return Err(TPM_RC_REFERENCE_H0 + index as u32),
+                    }
+                }
+            }
             HandleKind::PolicySession => match loaded_session(&runtime.live, handle) {
                 Some(session) if session.attributes & SESSION_ATTR_IS_POLICY != 0 => {}
                 Some(_) => return Err(TPM_RC_HANDLE + indexed),
@@ -308,7 +323,7 @@ mod tests {
 
     #[test]
     fn known_but_unimplemented_command_answers_command_code() {
-        assert_eq!(dispatch_code(0x0000_0157).code(), TPM_RC_COMMAND_CODE);
+        assert_eq!(dispatch_code(0x0000_0158).code(), TPM_RC_COMMAND_CODE);
     }
 
     #[test]
@@ -358,7 +373,7 @@ mod tests {
     fn unsupported_commands_do_not_mutate_the_runtime() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
-        for code in [0x2000_0000, 0x0000_0157, 0xffff_ffff, 0x0000_0000] {
+        for code in [0x2000_0000, 0x0000_0158, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
             let response = dispatch(&mut runtime, &parsed);
@@ -374,7 +389,7 @@ mod tests {
 
     #[test]
     fn session_tagged_commands_take_the_same_path() {
-        let bytes = framed(0x8002, 0x0000_0157, &[0x00; 4]);
+        let bytes = framed(0x8002, 0x0000_0158, &[0x00; 4]);
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         let mut runtime = empty_state_runtime();

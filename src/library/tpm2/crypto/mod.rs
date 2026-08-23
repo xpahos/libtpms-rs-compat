@@ -33,7 +33,10 @@ pub(super) use kdf::kdfe;
 pub(super) use kdf::{kdfa, kdfa_from, mgf1};
 pub(super) use rand_state::{LiveDrbg, SeededRand};
 pub(super) use rsa::{RSA_DEFAULT_PUBLIC_EXPONENT, oaep_decode, oaep_encode};
-pub(super) use rsa::{RsaKeyError, generate_rsa_key, rsa_private_key_op, rsa_public_key_op};
+pub(super) use rsa::{
+    RsaKeyError, generate_rsa_key, recover_rsa_private_exponent, rsa_private_key_op,
+    rsa_public_key_op,
+};
 pub(super) use sha_state::{SequenceHmac, ShaState, ShaStatePayload};
 
 #[cfg(test)]

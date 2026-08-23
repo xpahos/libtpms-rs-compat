@@ -124,6 +124,26 @@ make ci
 This is a reference update, so review every changed family. The Rust tests may
 also need changes if the new reference behavior is different.
 
+### Scenarios that replay captured blobs
+
+Some commands only accept opaque bytes that an earlier command produced:
+`TPM2_Load` needs the `outPrivate` of a `TPM2_Create`, `TPM2_ContextLoad` needs
+the blob a `TPM2_ContextSave` returned, and a parameter-encrypted command needs
+the `nonceTPM` the reference chose for its session. A scenario is static text,
+so those bytes are pasted into it as literal hex.
+
+That is safe because the reference container is deterministic: the same command
+prefix always produces the same bytes. The `object-lifecycle` scenario is built
+that way, and the ordering rule that keeps it reproducible is:
+
+- every section that consumes a captured blob starts with `restore`, so adding
+  such a section never shifts the state of the section that produced the blob;
+- the producing command keeps its own `send` record, so the Rust tests read the
+  blob back out of the fixture instead of hard-coding it a second time.
+
+To extend such a family, append the new section, run `update`, `dump` the
+producing record, paste the new bytes, and run `update` again.
+
 ### Investigating a mismatch
 
 Use `diff` for a short record-level summary:

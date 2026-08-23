@@ -78,6 +78,20 @@ fixture = "src/library/tpm2/testdata/golden_responses/nv_certify.bin"
 reader = "src/library/tpm2/golden_responses/nv.rs"
 commands = ["TPM2_NV_Certify"]
 
+[families."object-lifecycle"]
+magic = "OLORACLE"
+scenario = "scripts/golden_responses/scenarios/object_lifecycle.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/object_lifecycle.bin"
+reader = "src/library/tpm2/golden_responses/object_lifecycle.rs"
+commands = [
+    "TPM2_ObjectChangeAuth",
+    "TPM2_Load",
+    "TPM2_Unseal",
+    "TPM2_ContextLoad",
+    "TPM2_ContextSave",
+    "TPM2_LoadExternal",
+]
+
 [families."pcr-event"]
 magic = "PEORACLE"
 scenario = "scripts/golden_responses/scenarios/pcr_event.scenario"
@@ -351,7 +365,8 @@ family = "nv-commands"
 
 [commands.ObjectChangeAuth]
 code = 0x00000150
-status = "todo"
+status = "implemented"
+family = "object-lifecycle"
 
 [commands.PolicySecret]
 code = 0x00000151
@@ -381,7 +396,8 @@ status = "todo"
 
 [commands.Load]
 code = 0x00000157
-status = "todo"
+status = "implemented"
+family = "object-lifecycle"
 
 [commands.Quote]
 code = 0x00000158
@@ -409,7 +425,8 @@ family = "sign"
 
 [commands.Unseal]
 code = 0x0000015e
-status = "todo"
+status = "implemented"
+family = "object-lifecycle"
 
 [commands.PolicySigned]
 code = 0x00000160
@@ -417,11 +434,13 @@ status = "todo"
 
 [commands.ContextLoad]
 code = 0x00000161
-status = "todo"
+status = "implemented"
+family = "object-lifecycle"
 
 [commands.ContextSave]
 code = 0x00000162
-status = "todo"
+status = "implemented"
+family = "object-lifecycle"
 
 [commands.ECDH_KeyGen]
 code = 0x00000163
@@ -438,7 +457,8 @@ family = "flush-context"
 
 [commands.LoadExternal]
 code = 0x00000167
-status = "todo"
+status = "implemented"
+family = "object-lifecycle"
 
 [commands.MakeCredential]
 code = 0x00000168

@@ -10,6 +10,7 @@ use super::super::object_create::{
     ObjectSecrets, PRIMARY_OBJECT_CREATION, create_object, find_empty_object_slot, primary_seed,
     store_created_object,
 };
+pub(super) use super::super::object_load::add_modifier;
 use super::super::pcr::{HASH_COUNT, PCR_SELECT_MAX, PCR_SELECT_MIN, compute_current_digest};
 use super::super::persistent::OwnedPcrSelection;
 use super::super::profile::ATTRIBUTE_DRBG_CONTINUOUS_TEST;
@@ -25,9 +26,6 @@ use super::output::CommandOutput;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
-const RC_FMT1: TpmResult = 0x080;
-const RC_MODIFIER_MASK: TpmResult = 0xf40;
-
 const RC_IN_SENSITIVE: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_IN_PUBLIC: TpmResult = TPM_RC_P + TPM_RC_1 * 2;
 const RC_OUTSIDE_INFO: TpmResult = TPM_RC_P + TPM_RC_1 * 3;
@@ -36,14 +34,6 @@ const RC_CREATION_PCR: TpmResult = TPM_RC_P + TPM_RC_1 * 4;
 const MAX_OUTSIDE_INFO: usize = 2 + 64;
 
 pub(super) const TPM_ST_CREATION: u16 = 0x8021;
-
-pub(super) fn add_modifier(code: TpmResult, modifier: TpmResult) -> TpmResult {
-    if code & RC_FMT1 != 0 && code & RC_MODIFIER_MASK == 0 {
-        code + modifier
-    } else {
-        code
-    }
-}
 
 pub(super) struct Parameters {
     pub(super) user_auth: Vec<u8>,

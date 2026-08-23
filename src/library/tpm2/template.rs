@@ -89,6 +89,12 @@ impl<'a> TemplateReader<'a> {
         ))
     }
 
+    pub(super) fn u64(&mut self) -> Result<u64, TpmResult> {
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("eight bytes"),
+        ))
+    }
+
     pub(super) fn bytes(&mut self, length: usize) -> Result<&'a [u8], TpmResult> {
         self.take(length)
     }

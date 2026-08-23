@@ -2,7 +2,7 @@ mod attributes;
 mod host;
 mod image;
 mod index;
-mod layout;
+pub(in crate::library::tpm2) mod layout;
 mod orderly_ram;
 mod public_area;
 mod store;

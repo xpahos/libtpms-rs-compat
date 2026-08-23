@@ -157,14 +157,14 @@ pub(super) struct CreatedObject {
     pub(super) name: Vec<u8>,
 }
 
-fn hash_block_size(hash_alg: u16) -> Option<usize> {
+pub(super) fn hash_block_size(hash_alg: u16) -> Option<usize> {
     match digest_size(hash_alg)? {
         20 | 32 => Some(64),
         _ => Some(128),
     }
 }
 
-fn owned_prime(value: &BigUint) -> OwnedBnPrime {
+pub(super) fn owned_prime(value: &BigUint) -> OwnedBnPrime {
     let mut data = Vec::with_capacity(value.limb_count() * 8);
     for index in 0..value.limb_count() {
         let limb = value.shr(index * 64).low_u64();
@@ -351,7 +351,7 @@ pub(super) fn compute_qualified_name_from(
     Ok(qualified)
 }
 
-fn parent_kind_attributes(public: &OwnedTpmtPublic) -> u32 {
+pub(super) fn parent_kind_attributes(public: &OwnedTpmtPublic) -> u32 {
     if public.object_attributes & TPMA_OBJECT_RESTRICTED != 0
         && public.object_attributes & TPMA_OBJECT_DECRYPT != 0
         && public.name_alg != TPM_ALG_NULL
@@ -459,10 +459,12 @@ pub(super) fn store_created_object(
     Ok(())
 }
 
-const STORAGE_KEY_LABEL: &[u8] = b"STORAGE\0";
-const INTEGRITY_KEY_LABEL: &[u8] = b"INTEGRITY\0";
+pub(super) const STORAGE_KEY_LABEL: &[u8] = b"STORAGE\0";
+pub(super) const INTEGRITY_KEY_LABEL: &[u8] = b"INTEGRITY\0";
 
-fn parent_storage_symmetric(parent_public: &OwnedTpmtPublic) -> Result<(u16, u16), TpmResult> {
+pub(super) fn parent_storage_symmetric(
+    parent_public: &OwnedTpmtPublic,
+) -> Result<(u16, u16), TpmResult> {
     let symmetric = match &parent_public.parameters {
         PublicParms::Rsa { symmetric, .. } | PublicParms::Ecc { symmetric, .. } => symmetric,
         PublicParms::SymCipher(sym) => sym,

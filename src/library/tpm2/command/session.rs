@@ -28,6 +28,7 @@ use super::super::nv::{
     TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_WRITTEN, is_nv_index_handle, is_pin_index,
     read_uint64_data, resolve_index,
 };
+use super::super::object::ATTR_PUBLIC_ONLY;
 use super::super::object_create::{
     is_object_handle, object_auth_value, object_public_attributes, resolve_any_object,
 };
@@ -275,7 +276,7 @@ fn object_auth_value_is_available(
         return Ok(true);
     }
     let attributes = object_public_attributes(runtime, handle).ok_or(TPM_RC_FAILURE)?;
-    if object_auth_value(runtime, handle).is_none() {
+    if object.attributes & ATTR_PUBLIC_ONLY != 0 || object_auth_value(runtime, handle).is_none() {
         return Ok(false);
     }
     Ok(attributes & TPMA_OBJECT_USER_WITH_AUTH != 0

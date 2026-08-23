@@ -159,6 +159,51 @@ pub(in crate::library::tpm2) fn rsa_private_key_op(
     exponent.private_key_op(value)
 }
 
+pub(in crate::library::tpm2) struct RecoveredExponent {
+    pub(in crate::library::tpm2) q: BigUint,
+    pub(in crate::library::tpm2) d_p: BigUint,
+    pub(in crate::library::tpm2) d_q: BigUint,
+    pub(in crate::library::tpm2) q_inv: BigUint,
+}
+
+pub(in crate::library::tpm2) fn recover_rsa_private_exponent(
+    modulus: &[u8],
+    prime: &[u8],
+    exponent: u32,
+) -> Option<RecoveredExponent> {
+    let public_exponent = BigUint::from_u64(u64::from(if exponent == 0 {
+        RSA_DEFAULT_PUBLIC_EXPONENT
+    } else {
+        exponent
+    }));
+    let n = BigUint::from_be_bytes(modulus);
+    let p = BigUint::from_be_bytes(prime);
+    if p.is_zero() {
+        return None;
+    }
+    let (q, remainder) = n.div_rem(&p)?;
+    if !remainder.is_zero() {
+        return None;
+    }
+    let stored_q = q.clone();
+    let mut z = PrivateExponent {
+        p,
+        q,
+        d_p: BigUint::zero(),
+        d_q: BigUint::zero(),
+        q_inv: BigUint::zero(),
+    };
+    if !z.compute(&public_exponent) {
+        return None;
+    }
+    Some(RecoveredExponent {
+        q: stored_q,
+        d_p: z.d_p,
+        d_q: z.d_q,
+        q_inv: z.q_inv,
+    })
+}
+
 fn hash_length(hash_alg: u16) -> Option<usize> {
     super::hash::COMPILED_HASHES
         .iter()

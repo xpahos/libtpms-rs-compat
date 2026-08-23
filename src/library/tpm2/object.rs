@@ -41,6 +41,7 @@ pub(super) const ATTR_ST_CLEAR: u32 = 1 << 7;
 pub(super) const ATTR_IS_PARENT: u32 = 1 << 13;
 pub(super) const ATTR_PRIVATE_EXP: u32 = 1 << 14;
 pub(super) const ATTR_DERIVATION: u32 = 1 << 16;
+pub(super) const ATTR_EXTERNAL: u32 = 1 << 17;
 pub(super) const ATTR_HMAC_SEQ: u32 = 1 << 8;
 pub(super) const ATTR_HASH_SEQ: u32 = 1 << 9;
 pub(super) const ATTR_EVENT_SEQ: u32 = 1 << 10;

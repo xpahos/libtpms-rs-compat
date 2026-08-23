@@ -56,6 +56,8 @@ pub(in crate::library) const TPM_RC_TAG: TpmResult = 0x097;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_INSUFFICIENT: TpmResult = 0x09a;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_INTEGRITY: TpmResult = 0x09f;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_KEY: TpmResult = 0x09c;
 // TODO: Returned by the upstream physical-presence gate once TPM2_PP_Commands
 // populates the pp-list bitmap; every command's list bit is clear today, so the
@@ -122,6 +124,10 @@ pub(in crate::library) const TPM_RC_PCR_CHANGED: TpmResult = 0x128;
 pub(in crate::library) const TPM_RC_AUTH_CONTEXT: TpmResult = 0x145;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NO_RESULT: TpmResult = 0x154;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_SENSITIVE: TpmResult = 0x155;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_TOO_MANY_CONTEXTS: TpmResult = 0x12e;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_CONTEXT_GAP: TpmResult = 0x901;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -190,6 +196,16 @@ mod tests {
         assert_eq!(TPM_RC_NV_SPACE, RC_VER1 + 0x04b);
         assert_eq!(TPM_RC_NV_DEFINED, RC_VER1 + 0x04c);
         assert_eq!(TPM_RC_NO_RESULT, RC_VER1 + 0x054);
+        assert_eq!(TPM_RC_SENSITIVE, RC_VER1 + 0x055);
+        assert_eq!(TPM_RC_TOO_MANY_CONTEXTS, RC_VER1 + 0x02e);
+    }
+
+    #[test]
+    fn the_integrity_code_is_a_format_one_code() {
+        assert_eq!(TPM_RC_INTEGRITY, RC_FMT1 + 0x01f);
+        assert_ne!(TPM_RC_INTEGRITY & RC_FMT1, 0);
+        assert_eq!(TPM_RC_SENSITIVE & RC_FMT1, 0);
+        assert_eq!(TPM_RC_TOO_MANY_CONTEXTS & RC_FMT1, 0);
     }
 
     #[test]

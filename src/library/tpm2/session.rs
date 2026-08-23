@@ -2,7 +2,8 @@ use subtle::ConstantTimeEq;
 
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_CONTEXT_GAP, TPM_RC_SESSION_HANDLES, TPM_RC_SESSION_MEMORY,
+    TPM_RC_CONTEXT_GAP, TPM_RC_FAILURE, TPM_RC_SESSION_HANDLES, TPM_RC_SESSION_MEMORY,
+    TPM_RC_TOO_MANY_CONTEXTS,
 };
 
 use super::crypto::COMPILED_HASHES;
@@ -230,6 +231,100 @@ fn set_oldest_saved_session(live: &mut LiveState) {
         }
     }
     live.oldest_saved_session = oldest;
+}
+
+pub(super) fn sequence_number_for_saved_context_is_valid(
+    live: &LiveState,
+    saved_handle: u32,
+    sequence: u64,
+) -> bool {
+    let mask = live.context_slot_mask;
+    let max_context_gap = u64::from(mask) + 1;
+    let Some(reset) = live.state_reset.as_ref() else {
+        return false;
+    };
+    let index = (saved_handle & HR_HANDLE_MASK) as usize;
+    if index >= MAX_ACTIVE_SESSIONS {
+        return false;
+    }
+    let entry = reset.context_array[index];
+    usize::from(entry) > MAX_LOADED_SESSIONS
+        && entry == (sequence as u16) & mask
+        && sequence <= reset.context_counter
+        && reset.context_counter - sequence <= max_context_gap
+}
+
+pub(super) fn session_context_save(live: &mut LiveState, handle: u32) -> Result<u64, TpmResult> {
+    let mask = live.context_slot_mask;
+    let oldest = live.oldest_saved_session as usize;
+    let reset = live.state_reset.as_mut().ok_or(TPM_RC_FAILURE)?;
+    if oldest < MAX_ACTIVE_SESSIONS
+        && reset.context_array[oldest] == (reset.context_counter as u16) & mask
+    {
+        return Err(TPM_RC_CONTEXT_GAP);
+    }
+    let context_id = reset.context_counter;
+    let context_index = (handle & HR_HANDLE_MASK) as usize;
+    if context_index >= MAX_ACTIVE_SESSIONS {
+        return Err(TPM_RC_FAILURE);
+    }
+    let ram_slot = usize::from(reset.context_array[context_index])
+        .checked_sub(1)
+        .ok_or(TPM_RC_FAILURE)?;
+    reset.context_array[context_index] = (reset.context_counter as u16) & mask;
+    reset.context_counter = reset.context_counter.wrapping_add(1);
+    if reset.context_counter == 0 {
+        reset.context_counter -= 1;
+        return Err(TPM_RC_TOO_MANY_CONTEXTS);
+    }
+    if (reset.context_counter as u16) & mask == 0 {
+        reset.context_counter += MAX_LOADED_SESSIONS as u64 + 1;
+    }
+    if live.oldest_saved_session as usize >= MAX_ACTIVE_SESSIONS {
+        live.oldest_saved_session = context_index as u32;
+    }
+    let slot = live.sessions.get_mut(ram_slot).ok_or(TPM_RC_FAILURE)?;
+    slot.occupied = false;
+    slot.session = None;
+    live.free_session_slots += 1;
+    Ok(context_id)
+}
+
+pub(super) fn session_context_load(
+    live: &mut LiveState,
+    handle: u32,
+    session: OwnedSession,
+) -> Result<(), TpmResult> {
+    if live.free_session_slots == 0 {
+        return Err(TPM_RC_SESSION_MEMORY);
+    }
+    let ram_slot = free_ram_slot(live).ok_or(TPM_RC_SESSION_MEMORY)?;
+    let context_index = (handle & HR_HANDLE_MASK) as usize;
+    if context_index >= MAX_ACTIVE_SESSIONS {
+        return Err(TPM_RC_FAILURE);
+    }
+    let mask = live.context_slot_mask;
+    let oldest = live.oldest_saved_session as usize;
+    {
+        let reset = live.state_reset.as_ref().ok_or(TPM_RC_FAILURE)?;
+        if oldest < MAX_ACTIVE_SESSIONS
+            && live.free_session_slots == 1
+            && (reset.context_counter as u16) & mask == reset.context_array[oldest]
+            && context_index != oldest
+        {
+            return Err(TPM_RC_CONTEXT_GAP);
+        }
+    }
+    let reset = live.state_reset.as_mut().ok_or(TPM_RC_FAILURE)?;
+    reset.context_array[context_index] = ram_slot as u16 + 1;
+    if context_index == oldest {
+        set_oldest_saved_session(live);
+    }
+    let slot = live.sessions.get_mut(ram_slot).ok_or(TPM_RC_FAILURE)?;
+    slot.session = Some(session);
+    slot.occupied = true;
+    live.free_session_slots -= 1;
+    Ok(())
 }
 
 pub(super) fn flush_session(live: &mut LiveState, handle: u32) {
