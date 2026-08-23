@@ -1,3 +1,4 @@
+pub(in crate::library::tpm2) mod attestation;
 pub(in crate::library::tpm2) mod create;
 pub(in crate::library::tpm2) mod create_loaded;
 pub(in crate::library::tpm2) mod create_primary;

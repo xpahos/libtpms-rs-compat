@@ -68,6 +68,10 @@ pub(super) fn is_policy_session_handle(handle: u32) -> bool {
     (POLICY_SESSION_FIRST..=POLICY_SESSION_LAST).contains(&handle)
 }
 
+pub(super) fn is_hmac_session_handle(handle: u32) -> bool {
+    (HMAC_SESSION_FIRST..=HMAC_SESSION_LAST).contains(&handle)
+}
+
 pub(super) fn digests_equal(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && bool::from(left.ct_eq(right))
 }

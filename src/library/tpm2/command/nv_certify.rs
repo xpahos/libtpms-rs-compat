@@ -1,42 +1,30 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY, TPM_RC_NV_RANGE, TPM_RC_SCHEME, TPM_RC_SIZE,
-    TPM_RC_VALUE,
+    TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_NV_RANGE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
 use super::super::crypto::Hasher;
-use super::super::hierarchy::TPM_RH_NULL;
-use super::super::marshal::BlobWriter;
 use super::super::nv::{nv_index_name, read_index_data};
-use super::super::object::{ATTR_EPS_HIERARCHY, ATTR_PPS_HIERARCHY};
-use super::super::orderly::{commit_clear_orderly, prepare_clear_orderly};
-use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedUserNvramEntry};
 use super::super::profile::ValidatedProfile;
 use super::super::runtime::Tpm2Runtime;
-use super::super::signature::{
-    SigScheme, Signature, is_anonymous_scheme, is_signing_object, marshal_signature,
-    obfuscation_mask, parse_sig_scheme, select_sign_scheme, sign_digest,
+use super::super::signature::{SigScheme, select_sign_scheme};
+use super::super::template::TemplateReader;
+use super::attest::{
+    Attested, check_signing_object, fill_in_attest_info, parse_qualifying_data, parse_scheme,
+    sign_and_respond,
 };
-use super::super::template::{TemplateReader, digest_size};
-use super::super::ticket::CONTEXT_INTEGRITY_HASH_ALG;
 use super::dispatcher::CommandFrame;
 use super::nv_common::{
     MAX_NV_BUFFER_SIZE, TPM_RC_1, TPM_RC_2, TPM_RC_3, TPM_RC_4, TPM_RC_P, handle_at,
     read_access_checks, resolve,
 };
 use super::output::CommandOutput;
-use super::signing::{RC_SIGN_HANDLE, load_signing_state, publish_signing_outcome, signing_object};
+use super::signing::{RC_SIGN_HANDLE, signing_object};
 
 const RC_QUALIFYING_DATA: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_IN_SCHEME: TpmResult = TPM_RC_P + TPM_RC_2;
 const RC_SIZE_PARAM: TpmResult = TPM_RC_P + TPM_RC_3;
 const RC_OFFSET_PARAM: TpmResult = TPM_RC_P + TPM_RC_4;
-
-const TPM_GENERATED_VALUE: u32 = 0xff54_4347;
-const TPM_ST_ATTEST_NV: u16 = 0x8014;
-const TPM_ST_ATTEST_NV_DIGEST: u16 = 0x801c;
-
-const DATA_TPM2B_MAX: usize = 2 + 64;
 
 struct Parameters {
     qualifying_data: Vec<u8>,
@@ -58,11 +46,7 @@ pub(super) fn execute(
     )?;
 
     let sign_object = signing_object(runtime, sign_handle)?;
-    if let Some(body) = sign_object.as_deref()
-        && !is_signing_object(body)
-    {
-        return Err(TPM_RC_KEY + RC_SIGN_HANDLE);
-    }
+    check_signing_object(sign_object.as_deref(), RC_SIGN_HANDLE)?;
     let scheme = select_sign_scheme(sign_object.as_deref(), parameters.scheme)
         .ok_or(TPM_RC_SCHEME + RC_IN_SCHEME)?;
 
@@ -85,7 +69,7 @@ pub(super) fn execute(
             usize::from(parameters.offset),
             usize::from(parameters.size),
         )?;
-        Attested::Contents {
+        Attested::Nv {
             index_name,
             offset: parameters.offset,
             contents,
@@ -98,7 +82,7 @@ pub(super) fn execute(
             0,
             usize::from(resolved.public.data_size),
         )?);
-        Attested::Digest {
+        Attested::NvDigest {
             index_name,
             digest: hasher.finalize(),
         }
@@ -111,32 +95,7 @@ pub(super) fn execute(
         &parameters.qualifying_data,
         attested,
     )?;
-    let certify_info = marshal_attest(&attest);
-
-    let signature =
-        if sign_object.is_some() && scheme.scheme != crate::library::tpm2::public::TPM_ALG_NULL {
-            let digest = attest_digest(scheme.hash_alg, &certify_info)?;
-            let mut signing = load_signing_state(runtime)?;
-            let signature = sign_digest(
-                sign_object.as_deref(),
-                &scheme,
-                &digest,
-                &runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?.profile,
-                &mut signing,
-            );
-            let signature = publish_signing_outcome(runtime, signing, signature)?;
-            let orderly_state = prepare_clear_orderly(runtime)?;
-            commit_clear_orderly(runtime, orderly_state)?;
-            signature
-        } else {
-            Signature::Null
-        };
-
-    let mut out = BlobWriter::new();
-    out.write_u16(certify_info.len() as u16);
-    out.write_bytes(&certify_info);
-    out.write_bytes(&marshal_signature(&signature));
-    Ok(CommandOutput::from_parameters(out.into_bytes()))
+    sign_and_respond(runtime, sign_object.as_deref(), &scheme, &attest)
 }
 
 fn parse_parameters(
@@ -144,11 +103,8 @@ fn parse_parameters(
     profile: &ValidatedProfile,
 ) -> Result<Parameters, TpmResult> {
     let mut reader = TemplateReader::new(parameters);
-    let qualifying_data = reader
-        .tpm2b(DATA_TPM2B_MAX)
-        .map_err(|code| code + RC_QUALIFYING_DATA)?
-        .to_vec();
-    let scheme = parse_sig_scheme(&mut reader, profile).map_err(|code| code + RC_IN_SCHEME)?;
+    let qualifying_data = parse_qualifying_data(&mut reader, RC_QUALIFYING_DATA)?;
+    let scheme = parse_scheme(&mut reader, profile, RC_IN_SCHEME)?;
     let size = reader.u16().map_err(|code| code + RC_SIZE_PARAM)?;
     let offset = reader.u16().map_err(|code| code + RC_OFFSET_PARAM)?;
     if !reader.remaining().is_empty() {
@@ -162,182 +118,23 @@ fn parse_parameters(
     })
 }
 
-enum Attested {
-    Contents {
-        index_name: Vec<u8>,
-        offset: u16,
-        contents: Vec<u8>,
-    },
-    Digest {
-        index_name: Vec<u8>,
-        digest: Vec<u8>,
-    },
-}
-
-struct Attest {
-    attest_type: u16,
-    qualified_signer: Vec<u8>,
-    extra_data: Vec<u8>,
-    clock: u64,
-    reset_count: u32,
-    restart_count: u32,
-    safe: u8,
-    firmware_version: u64,
-    attested: Attested,
-}
-
-fn fill_in_attest_info(
-    runtime: &Tpm2Runtime,
-    sign_object: Option<&OwnedObjectBody>,
-    scheme: &SigScheme,
-    qualifying_data: &[u8],
-    attested: Attested,
-) -> Result<Attest, TpmResult> {
-    let anonymous = is_anonymous_scheme(scheme.scheme);
-    let qualified_signer = match sign_object {
-        None => TPM_RH_NULL.to_be_bytes().to_vec(),
-        Some(_) if anonymous => Vec::new(),
-        Some(body) => body.qualified_name.clone(),
-    };
-
-    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-    let mut reset_count = state.persistent.reset_count;
-    let mut firmware_version =
-        (u64::from(state.persistent.firmware_v1) << 32) | u64::from(state.persistent.firmware_v2);
-    let mut restart_count = runtime
-        .live
-        .state_reset
-        .as_ref()
-        .ok_or(TPM_RC_FAILURE)?
-        .restart_count;
-
-    let hierarchy_attributes = sign_object.map_or(0, |_| loaded_hierarchy(runtime, sign_object));
-    if sign_object.is_none()
-        || hierarchy_attributes & (ATTR_EPS_HIERARCHY | ATTR_PPS_HIERARCHY) == 0
-    {
-        let mask = obfuscation_mask(
-            CONTEXT_INTEGRITY_HASH_ALG,
-            state.persistent.sh_proof.as_bytes(),
-            &qualified_signer,
-        )
-        .ok_or(TPM_RC_HASH)?;
-        firmware_version = firmware_version.wrapping_add(mask[0]);
-        reset_count = reset_count.wrapping_add((mask[1] >> 32) as u32);
-        restart_count = restart_count.wrapping_add(mask[1] as u32);
-    }
-
-    Ok(Attest {
-        attest_type: match attested {
-            Attested::Contents { .. } => TPM_ST_ATTEST_NV,
-            Attested::Digest { .. } => TPM_ST_ATTEST_NV_DIGEST,
-        },
-        qualified_signer,
-        extra_data: if anonymous {
-            Vec::new()
-        } else {
-            qualifying_data.to_vec()
-        },
-        clock: runtime.live.orderly.clock,
-        reset_count,
-        restart_count,
-        safe: if runtime.nv_available {
-            runtime.live.orderly.clock_safe
-        } else {
-            0
-        },
-        firmware_version,
-        attested,
-    })
-}
-
-fn loaded_hierarchy(runtime: &Tpm2Runtime, sign_object: Option<&OwnedObjectBody>) -> u32 {
-    let Some(body) = sign_object else {
-        return 0;
-    };
-    for object in &runtime.live.objects {
-        if let OwnedAnyObjectBody::Object(loaded) = &object.body
-            && loaded.name == body.name
-        {
-            return object.attributes;
-        }
-    }
-    runtime
-        .state
-        .as_ref()
-        .map(|state| {
-            state
-                .user_nvram
-                .entries
-                .iter()
-                .find_map(|entry| match entry {
-                    OwnedUserNvramEntry::Persistent { object, .. } => match &object.body {
-                        OwnedAnyObjectBody::Object(stored) if stored.name == body.name => {
-                            Some(object.attributes)
-                        }
-                        _ => None,
-                    },
-                    OwnedUserNvramEntry::NvIndex { .. } => None,
-                })
-                .unwrap_or(0)
-        })
-        .unwrap_or(0)
-}
-
-fn marshal_attest(attest: &Attest) -> Vec<u8> {
-    let mut writer = BlobWriter::new();
-    writer.write_u32(TPM_GENERATED_VALUE);
-    writer.write_u16(attest.attest_type);
-    writer.write_u16(attest.qualified_signer.len() as u16);
-    writer.write_bytes(&attest.qualified_signer);
-    writer.write_u16(attest.extra_data.len() as u16);
-    writer.write_bytes(&attest.extra_data);
-    writer.write_bytes(&attest.clock.to_be_bytes());
-    writer.write_u32(attest.reset_count);
-    writer.write_u32(attest.restart_count);
-    writer.write_u8(attest.safe);
-    writer.write_bytes(&attest.firmware_version.to_be_bytes());
-    match &attest.attested {
-        Attested::Contents {
-            index_name,
-            offset,
-            contents,
-        } => {
-            writer.write_u16(index_name.len() as u16);
-            writer.write_bytes(index_name);
-            writer.write_u16(*offset);
-            writer.write_u16(contents.len() as u16);
-            writer.write_bytes(contents);
-        }
-        Attested::Digest { index_name, digest } => {
-            writer.write_u16(index_name.len() as u16);
-            writer.write_bytes(index_name);
-            writer.write_u16(digest.len() as u16);
-            writer.write_bytes(digest);
-        }
-    }
-    writer.into_bytes()
-}
-
-fn attest_digest(hash_alg: u16, certify_info: &[u8]) -> Result<Vec<u8>, TpmResult> {
-    digest_size(hash_alg).ok_or(TPM_RC_HASH)?;
-    let mut hasher = Hasher::new(hash_alg).ok_or(TPM_RC_HASH)?;
-    hasher.update(certify_info);
-    Ok(hasher.finalize())
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::nv_common::harness::*;
     use super::super::registry::{CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_CERTIFY, find};
+    use super::super::signing::{load_signing_state, publish_signing_outcome};
     use super::*;
     use crate::library::tpm2::golden_responses::nv::certify_vector;
-    use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
+    use crate::library::tpm2::hierarchy::{
+        TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
+    };
     use crate::library::tpm2::nv::{
         NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE, TPMA_NV_READ_STCLEAR,
         marshal_sized_nv_public,
     };
     use crate::library::tpm2::object_create::occupied_object_slot;
     use crate::library::tpm2::persistent::OwnedSecret;
+    use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedObjectBody};
     use crate::library::tpm2::restore_permanent_blob_for_test;
     use crate::library::tpm2::state::COMMIT_ARRAY_SIZE;
 

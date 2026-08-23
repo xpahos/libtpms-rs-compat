@@ -18,10 +18,11 @@ use super::super::runtime::Tpm2Runtime;
 use super::super::sequence::cleanup_evicted;
 use super::super::session::{SESSION_ATTR_IS_POLICY, is_policy_session_handle, loaded_session};
 use super::super::volatile::IMPLEMENTATION_PCR;
+use super::command_audit;
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
 use super::session::{
-    CommandContext, authorize_sessions, build_response_sessions, clear_exclusive_audit,
+    CommandContext, SessionArea, authorize_sessions, build_response_sessions,
     decrypt_first_parameter, parse_session_area, record_session_state,
 };
 use super::transaction;
@@ -66,12 +67,36 @@ fn run(
         if descriptor.handles.iter().any(|spec| spec.user_auth) {
             return Err(TPM_RC_AUTH_MISSING);
         }
+        let context = CommandContext {
+            code: command.command_code,
+            handles: &handles,
+            parameters: rest,
+        };
+        let audit_cp_hash = command_audit::prepare(runtime, &context)?;
         let frame = CommandFrame {
             handles,
             parameters: rest,
         };
-        let (out_handles, out_parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
-        clear_exclusive_audit(runtime, descriptor);
+        let transaction = audit_cp_hash.as_ref().map(|_| transaction::begin(runtime));
+        let (out_handles, mut out_parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
+        let mut area = SessionArea::none();
+        match build_response_sessions(
+            runtime,
+            descriptor,
+            command.command_code,
+            &mut out_parameters,
+            &mut area,
+            false,
+            audit_cp_hash.as_deref(),
+        ) {
+            Ok(_) => {}
+            Err(code) => {
+                if let Some(transaction) = transaction {
+                    transaction::roll_back(runtime, transaction);
+                }
+                return Err(code);
+            }
+        }
         return Ok(Response::success_with_handles(
             TPM_ST_NO_SESSIONS,
             out_handles,
@@ -89,6 +114,7 @@ fn run(
     let outcome = authorize_sessions(runtime, descriptor, &handles, &context, &mut area);
     record_session_state(runtime, &area);
     outcome?;
+    let audit_cp_hash = command_audit::prepare(runtime, &context)?;
 
     let decrypted = decrypt_first_parameter(runtime, descriptor, &area, parameters)?;
     let frame = CommandFrame {
@@ -104,6 +130,7 @@ fn run(
         &mut out_parameters,
         &mut area,
         true,
+        audit_cp_hash.as_deref(),
     ) {
         Ok(auth_response) => auth_response,
         Err(code) => {
@@ -217,6 +244,11 @@ fn check_load_status(
                 Some(_) => return Err(TPM_RC_HANDLE + indexed),
                 None => return Err(TPM_RC_REFERENCE_H0 + index as u32),
             },
+            HandleKind::HmacSession => match loaded_session(&runtime.live, handle) {
+                Some(session) if session.attributes & SESSION_ATTR_IS_POLICY == 0 => {}
+                Some(_) => return Err(TPM_RC_HANDLE + indexed),
+                None => return Err(TPM_RC_REFERENCE_H0 + index as u32),
+            },
             _ => {}
         }
     }
@@ -325,7 +357,7 @@ mod tests {
 
     #[test]
     fn known_but_unimplemented_command_answers_command_code() {
-        assert_eq!(dispatch_code(0x0000_0158).code(), TPM_RC_COMMAND_CODE);
+        assert_eq!(dispatch_code(0x0000_0147).code(), TPM_RC_COMMAND_CODE);
     }
 
     #[test]
@@ -375,7 +407,7 @@ mod tests {
     fn unsupported_commands_do_not_mutate_the_runtime() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
-        for code in [0x2000_0000, 0x0000_0158, 0xffff_ffff, 0x0000_0000] {
+        for code in [0x2000_0000, 0x0000_0147, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
             let response = dispatch(&mut runtime, &parsed);
@@ -391,7 +423,7 @@ mod tests {
 
     #[test]
     fn session_tagged_commands_take_the_same_path() {
-        let bytes = framed(0x8002, 0x0000_0158, &[0x00; 4]);
+        let bytes = framed(0x8002, 0x0000_0147, &[0x00; 4]);
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         let mut runtime = empty_state_runtime();

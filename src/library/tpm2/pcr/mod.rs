@@ -147,6 +147,40 @@ pub(super) fn filter_selection(
     }
 }
 
+pub(super) fn parse_selection_list(
+    reader: &mut super::template::TemplateReader<'_>,
+    profile_algorithms: &[u8],
+    error_index: crate::ffi_types::TpmResult,
+) -> Result<Vec<super::persistent::OwnedPcrSelection>, crate::ffi_types::TpmResult> {
+    use super::algorithm::{algorithm_enabled, hash_profile_name};
+    use crate::library::constants::{TPM_RC_HASH, TPM_RC_SIZE, TPM_RC_VALUE};
+
+    let count = reader.u32().map_err(|code| code + error_index)?;
+    if count > HASH_COUNT as u32 {
+        return Err(TPM_RC_SIZE + error_index);
+    }
+    let mut selections = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let hash_alg = reader.u16().map_err(|code| code + error_index)?;
+        let enabled = bank_slot(hash_alg).is_some()
+            && hash_profile_name(hash_alg)
+                .is_some_and(|name| algorithm_enabled(profile_algorithms, name));
+        if !enabled {
+            return Err(TPM_RC_HASH + error_index);
+        }
+        let sizeof_select = usize::from(reader.u8().map_err(|code| code + error_index)?);
+        if !(PCR_SELECT_MIN..=PCR_SELECT_MAX).contains(&sizeof_select) {
+            return Err(TPM_RC_VALUE + error_index);
+        }
+        let select = reader
+            .bytes(sizeof_select)
+            .map_err(|code| code + error_index)?
+            .to_vec();
+        selections.push(super::persistent::OwnedPcrSelection { hash_alg, select });
+    }
+    Ok(selections)
+}
+
 pub(super) fn compute_current_digest(
     runtime: &super::runtime::Tpm2Runtime,
     hash_alg: u16,

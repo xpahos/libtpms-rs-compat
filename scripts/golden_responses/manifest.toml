@@ -1,6 +1,21 @@
 [reference]
 docker_platform = "linux/arm64"
 
+[families."attestation"]
+magic = "ATORACLE"
+scenario = "scripts/golden_responses/scenarios/attestation.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/attestation.bin"
+reader = "src/library/tpm2/golden_responses/attestation.rs"
+commands = [
+    "TPM2_GetCommandAuditDigest",
+    "TPM2_SetCommandCodeAuditStatus",
+    "TPM2_Certify",
+    "TPM2_CertifyCreation",
+    "TPM2_GetTime",
+    "TPM2_GetSessionAuditDigest",
+    "TPM2_Quote",
+]
+
 [families."create"]
 magic = "CRORACLE"
 scenario = "scripts/golden_responses/scenarios/create.scenario"
@@ -263,7 +278,8 @@ family = "nv-commands"
 
 [commands.GetCommandAuditDigest]
 code = 0x00000133
-status = "todo"
+status = "implemented"
+family = "attestation"
 
 [commands.NV_Increment]
 code = 0x00000134
@@ -326,7 +342,8 @@ status = "todo"
 
 [commands.SetCommandCodeAuditStatus]
 code = 0x00000140
-status = "todo"
+status = "implemented"
+family = "attestation"
 
 [commands.FieldUpgradeData]
 code = 0x00000141
@@ -363,7 +380,8 @@ status = "todo"
 
 [commands.Certify]
 code = 0x00000148
-status = "todo"
+status = "implemented"
+family = "attestation"
 
 [commands.PolicyNV]
 code = 0x00000149
@@ -371,7 +389,8 @@ status = "todo"
 
 [commands.CertifyCreation]
 code = 0x0000014a
-status = "todo"
+status = "implemented"
+family = "attestation"
 
 [commands.Duplicate]
 code = 0x0000014b
@@ -379,11 +398,13 @@ status = "todo"
 
 [commands.GetTime]
 code = 0x0000014c
-status = "todo"
+status = "implemented"
+family = "attestation"
 
 [commands.GetSessionAuditDigest]
 code = 0x0000014d
-status = "todo"
+status = "implemented"
+family = "attestation"
 
 [commands.NV_Read]
 code = 0x0000014e
@@ -433,7 +454,8 @@ family = "object-lifecycle"
 
 [commands.Quote]
 code = 0x00000158
-status = "todo"
+status = "implemented"
+family = "attestation"
 
 [commands.RSA_Decrypt]
 code = 0x00000159

@@ -3,6 +3,8 @@ use crate::ffi_types::TpmResult;
 use super::super::hierarchy::is_hierarchy_auth_handle;
 use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
+use super::certify;
+use super::certify_creation;
 use super::change_eps;
 use super::context;
 use super::create;
@@ -14,8 +16,11 @@ use super::event_sequence_complete;
 use super::evict_control;
 use super::flush_context;
 use super::get_capability;
+use super::get_command_audit_digest;
 use super::get_random;
+use super::get_session_audit_digest;
 use super::get_test_result;
+use super::get_time;
 use super::hash;
 use super::hash_sequence_start;
 use super::hierarchy_admin;
@@ -40,11 +45,13 @@ use super::pcr_reset;
 use super::policy_commands;
 use super::policy_or;
 use super::policy_pcr;
+use super::quote;
 use super::read_public;
 use super::rsa_encryption;
 use super::self_test;
 use super::sequence_complete;
 use super::sequence_update;
+use super::set_command_code_audit_status;
 use super::shutdown;
 use super::sign;
 use super::start_auth_session;
@@ -68,6 +75,7 @@ pub(in crate::library::tpm2) const TPM_CC_PCR_SET_AUTH_POLICY: u32 = 0x0000_012c
 pub(in crate::library::tpm2) const TPM_CC_SET_PRIMARY_POLICY: u32 = 0x0000_012e;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub(in crate::library::tpm2) const TPM_CC_NV_GLOBAL_WRITE_LOCK: u32 = 0x0000_0132;
+pub(in crate::library::tpm2) const TPM_CC_GET_COMMAND_AUDIT_DIGEST: u32 = 0x0000_0133;
 pub(in crate::library::tpm2) const TPM_CC_NV_INCREMENT: u32 = 0x0000_0134;
 pub(in crate::library::tpm2) const TPM_CC_NV_SET_BITS: u32 = 0x0000_0135;
 pub(in crate::library::tpm2) const TPM_CC_NV_EXTEND: u32 = 0x0000_0136;
@@ -79,16 +87,22 @@ pub(in crate::library::tpm2) const TPM_CC_NV_CHANGE_AUTH: u32 = 0x0000_013b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EVENT: u32 = 0x0000_013c;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_COMPLETE: u32 = 0x0000_013e;
+pub(in crate::library::tpm2) const TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS: u32 = 0x0000_0140;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
+pub(in crate::library::tpm2) const TPM_CC_CERTIFY: u32 = 0x0000_0148;
+pub(in crate::library::tpm2) const TPM_CC_CERTIFY_CREATION: u32 = 0x0000_014a;
+pub(in crate::library::tpm2) const TPM_CC_GET_TIME: u32 = 0x0000_014c;
+pub(in crate::library::tpm2) const TPM_CC_GET_SESSION_AUDIT_DIGEST: u32 = 0x0000_014d;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ: u32 = 0x0000_014e;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_LOCK: u32 = 0x0000_014f;
 pub(in crate::library::tpm2) const TPM_CC_OBJECT_CHANGE_AUTH: u32 = 0x0000_0150;
 pub(in crate::library::tpm2) const TPM_CC_CREATE: u32 = 0x0000_0153;
 pub(in crate::library::tpm2) const TPM_CC_LOAD: u32 = 0x0000_0157;
+pub(in crate::library::tpm2) const TPM_CC_QUOTE: u32 = 0x0000_0158;
 pub(in crate::library::tpm2) const TPM_CC_RSA_DECRYPT: u32 = 0x0000_0159;
 pub(in crate::library::tpm2) const TPM_CC_HMAC_START: u32 = 0x0000_015b;
 pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_UPDATE: u32 = 0x0000_015c;
@@ -127,7 +141,7 @@ use super::super::hierarchy::{
 };
 use super::super::nv::is_nv_index_handle;
 use super::super::object_create::is_object_handle;
-use super::super::session::{is_policy_session_handle, is_session_handle};
+use super::super::session::{is_hmac_session_handle, is_policy_session_handle, is_session_handle};
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
@@ -174,6 +188,7 @@ pub(super) enum HandleKind {
     Hierarchy,
     BaseHierarchy,
     Clear,
+    Endorsement,
     Lockout,
     Platform,
     Provision,
@@ -187,6 +202,7 @@ pub(super) enum HandleKind {
     NvAuth,
     EntityAllowNull,
     PolicySession,
+    HmacSession,
 }
 
 const TPM_RH_AUTH_00: u32 = 0x4000_0010;
@@ -201,6 +217,7 @@ impl HandleKind {
                 matches!(handle, TPM_RH_OWNER | TPM_RH_ENDORSEMENT | TPM_RH_PLATFORM)
             }
             Self::Clear => matches!(handle, TPM_RH_LOCKOUT | TPM_RH_PLATFORM),
+            Self::Endorsement => handle == TPM_RH_ENDORSEMENT,
             Self::Lockout => handle == TPM_RH_LOCKOUT,
             Self::Platform => handle == TPM_RH_PLATFORM,
             Self::Provision => matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM),
@@ -231,6 +248,7 @@ impl HandleKind {
                     || (TPM_RH_AUTH_00..=TPM_RH_AUTH_FF).contains(&handle)
             }
             Self::PolicySession => is_policy_session_handle(handle),
+            Self::HmacSession => is_hmac_session_handle(handle),
         }
     }
 }
@@ -533,6 +551,29 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: nv_lock::execute_global_write_lock,
     },
     CommandDescriptor {
+        code: TPM_CC_GET_COMMAND_AUDIT_DIGEST,
+        attributes: tpma_cc(TPM_CC_GET_COMMAND_AUDIT_DIGEST, true, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Endorsement,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: true,
+                admin_role: false,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: get_command_audit_digest::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_NV_INCREMENT,
         attributes: tpma_cc(TPM_CC_NV_INCREMENT, true, 2),
         physical_presence: false,
@@ -744,6 +785,22 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: sequence_complete::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
+        attributes: tpma_cc(TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, true, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Provision,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: set_command_code_audit_status::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_INCREMENTAL_SELF_TEST,
         attributes: tpma_cc(TPM_CC_INCREMENTAL_SELF_TEST, true, 0),
         physical_presence: false,
@@ -802,6 +859,103 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: stir_random::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_CERTIFY,
+        attributes: tpma_cc(TPM_CC_CERTIFY, false, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: true,
+                admin_role: true,
+            },
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: true,
+                admin_role: false,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: certify::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_CERTIFY_CREATION,
+        attributes: tpma_cc(TPM_CC_CERTIFY_CREATION, false, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: certify_creation::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_GET_TIME,
+        attributes: tpma_cc(TPM_CC_GET_TIME, false, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Endorsement,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: true,
+                admin_role: false,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: get_time::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_GET_SESSION_AUDIT_DIGEST,
+        attributes: tpma_cc(TPM_CC_GET_SESSION_AUDIT_DIGEST, false, 3),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Endorsement,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: true,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::HmacSession,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: get_session_audit_digest::execute,
     },
     CommandDescriptor {
         code: TPM_CC_NV_READ,
@@ -903,6 +1057,22 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: load::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_QUOTE,
+        attributes: tpma_cc(TPM_CC_QUOTE, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::ObjectAllowNull,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: quote::execute,
     },
     CommandDescriptor {
         code: TPM_CC_RSA_DECRYPT,
@@ -1513,6 +1683,7 @@ mod tests {
                 TPM_CC_SET_PRIMARY_POLICY,
                 TPM_CC_CREATE_PRIMARY,
                 TPM_CC_NV_GLOBAL_WRITE_LOCK,
+                TPM_CC_GET_COMMAND_AUDIT_DIGEST,
                 TPM_CC_NV_INCREMENT,
                 TPM_CC_NV_SET_BITS,
                 TPM_CC_NV_EXTEND,
@@ -1524,16 +1695,22 @@ mod tests {
                 TPM_CC_PCR_EVENT,
                 TPM_CC_PCR_RESET,
                 TPM_CC_SEQUENCE_COMPLETE,
+                TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
                 TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
                 TPM_CC_STARTUP,
                 TPM_CC_SHUTDOWN,
                 TPM_CC_STIR_RANDOM,
+                TPM_CC_CERTIFY,
+                TPM_CC_CERTIFY_CREATION,
+                TPM_CC_GET_TIME,
+                TPM_CC_GET_SESSION_AUDIT_DIGEST,
                 TPM_CC_NV_READ,
                 TPM_CC_NV_READ_LOCK,
                 TPM_CC_OBJECT_CHANGE_AUTH,
                 TPM_CC_CREATE,
                 TPM_CC_LOAD,
+                TPM_CC_QUOTE,
                 TPM_CC_RSA_DECRYPT,
                 TPM_CC_HMAC_START,
                 TPM_CC_SEQUENCE_UPDATE,
@@ -2092,7 +2269,7 @@ mod tests {
 
     #[test]
     fn physical_presence_applicability_matches_the_vendored_attribute_table() {
-        const PP_COMMANDS: [u32; 16] = [
+        const PP_COMMANDS: [u32; 17] = [
             TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
             TPM_CC_EVICT_CONTROL,
             TPM_CC_HIERARCHY_CONTROL,
@@ -2108,6 +2285,7 @@ mod tests {
             TPM_CC_SET_PRIMARY_POLICY,
             TPM_CC_CREATE_PRIMARY,
             TPM_CC_NV_GLOBAL_WRITE_LOCK,
+            TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
             TPM_CC_CREATE_LOADED,
         ];
         for descriptor in implemented() {

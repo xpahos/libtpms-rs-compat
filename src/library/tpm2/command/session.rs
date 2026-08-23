@@ -105,6 +105,17 @@ pub(super) struct SessionArea<'a> {
     audit_index: usize,
 }
 
+impl SessionArea<'_> {
+    pub(super) fn none() -> Self {
+        Self {
+            sessions: Vec::new(),
+            decrypt_index: UNDEFINED_INDEX,
+            encrypt_index: UNDEFINED_INDEX,
+            audit_index: UNDEFINED_INDEX,
+        }
+    }
+}
+
 fn session_handle_in_range(handle: u32) -> bool {
     is_session_handle(handle) && (handle & 0x00ff_ffff) < MAX_ACTIVE_SESSIONS as u32
 }
@@ -224,7 +235,7 @@ pub(super) fn parse_session_area<'a>(
     Ok(area)
 }
 
-fn exclusive_audit_session(runtime: &Tpm2Runtime) -> u32 {
+pub(super) fn exclusive_audit_session(runtime: &Tpm2Runtime) -> u32 {
     runtime
         .restored_volatile
         .as_ref()
@@ -395,7 +406,7 @@ pub(super) struct CommandContext<'a> {
     pub(super) parameters: &'a [u8],
 }
 
-fn compute_cp_hash(
+pub(super) fn compute_cp_hash(
     runtime: &mut Tpm2Runtime,
     context: &CommandContext<'_>,
     hash_alg: u16,
@@ -410,7 +421,7 @@ fn compute_cp_hash(
     Ok(hasher.finalize())
 }
 
-fn compute_rp_hash(
+pub(super) fn compute_rp_hash(
     runtime: &mut Tpm2Runtime,
     code: u32,
     parameters: &[u8],
@@ -904,12 +915,14 @@ pub(super) fn build_response_sessions(
     parameters: &mut Vec<u8>,
     area: &mut SessionArea<'_>,
     tagged: bool,
+    audit_cp_hash: Option<&[u8]>,
 ) -> Result<Vec<u8>, TpmResult> {
     if tagged {
         update_all_nonce_tpm(runtime, area)?;
         encrypt_first_parameter(runtime, area, parameters)?;
     }
     update_audit_sessions(runtime, descriptor, code, parameters, area)?;
+    super::command_audit::update(runtime, descriptor, audit_cp_hash, parameters)?;
     if !tagged {
         return Ok(Vec::new());
     }
@@ -1145,12 +1158,6 @@ fn extend_audit_digest(
     #[cfg(test)]
     fault_point(ResponseFault::AuditExtend)?;
     Ok(())
-}
-
-pub(super) fn clear_exclusive_audit(runtime: &mut Tpm2Runtime, descriptor: &CommandDescriptor) {
-    if descriptor.sessions_allowed {
-        set_exclusive_audit_session(runtime, TPM_RH_UNASSIGNED);
-    }
 }
 
 #[cfg(test)]
