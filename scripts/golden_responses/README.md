@@ -1,91 +1,62 @@
 # Golden response tests
 
-This directory contains compatibility tests for the Rust TPM implementation.
-The tests answer a simple question:
+These tests check that the Rust TPM behaves exactly like the reference C
+implementation in `libtpms/`.
 
-> Given the same TPM state and the same command, does the Rust implementation
-> return exactly the same bytes as the reference C implementation?
+For each test family, we:
 
-The reference implementation is the unmodified `libtpms/` submodule. We run it
-in a deterministic Docker container, save its responses and state blobs as
-binary fixtures, and replay those fixtures from Rust tests.
+1. Run a scenario against libtpms in a deterministic Docker container.
+2. Save the responses and selected TPM state blobs in a binary fixture.
+3. Replay the same commands in Rust.
+4. Compare the Rust output with the saved bytes.
 
-The data flow is:
+The full path is:
 
 ```text
-scenario -> reference libtpms container -> binary fixture -> Rust test
+scenario -> reference libtpms -> binary fixture -> Rust test
 ```
 
-Fixtures are generated files. Do not edit or merge them by hand.
+The `.bin` fixtures are generated files. Do not edit or merge them by hand.
 
-## Quick start
+## The commands you will normally use
 
-Run the fast repository audit:
+Check the repository metadata and fixture structure:
 
 ```sh
 make golden-audit
 ```
 
-Run every scenario against the reference container and check that the output
-still matches the committed fixtures:
+This check is fast, does not use Docker, and does not change files. Normal
+`make build` and `make build-release` run it automatically.
+
+Re-run every scenario against libtpms and compare the result with the committed
+fixtures:
 
 ```sh
 make test-golden
 ```
 
-Regenerate one fixture after intentionally changing its scenario or reference:
+This uses Docker, but does not change fixtures.
+
+Regenerate one fixture after an intentional scenario change:
 
 ```sh
 make update-golden FAMILY=create-primary
 ```
 
-Regenerate every fixture after an intentional reference update:
+Regenerate all fixtures after intentionally updating libtpms or the capture
+environment:
 
 ```sh
 make update-golden-all
 ```
 
-The direct CLI refuses an all-family update without
-`--confirm-reference-update`. The Make target supplies that flag explicitly.
-This is deliberate: changing every reference result should never happen by
-accident.
+Updating every family is deliberately harder to do by accident. The underlying
+command requires `--confirm-reference-update`; the Make target supplies it.
 
-## When to use each command
+## Typical workflows
 
-The public interface is `golden.py`:
-
-```sh
-python3 scripts/golden_responses/golden.py <command>
-```
-
-| Command | What it does |
-| --- | --- |
-| `audit` | Checks repository metadata and fixtures. Fast, does not run Docker, and does not write files. |
-| `build` | Audits the repository, then finds or builds the reference image and validates it. |
-| `verify <family>` | Captures one family and compares it with the committed fixture. Does not write. |
-| `verify --all` | Verifies every family. Does not write. |
-| `update <family>` | Captures one family and safely replaces its fixture. |
-| `update --all --confirm-reference-update` | Captures all families before replacing any fixture. |
-| `diff <family>` | Shows which named records differ without changing files. |
-| `dump <family> [record]` | Prints a fixture as `NAME <hex>` records. |
-| `list` | Lists families, record counts, scenarios, fixtures, and covered commands. |
-
-The Make targets are wrappers around these commands:
-
-```text
-make golden-audit
-make test-golden
-make update-golden FAMILY=<name>
-make update-golden-all
-make ci
-```
-
-Normal `make build` and `make build-release` run the static audit first. They do
-not require Docker.
-
-## Common workflows
-
-### Checking a Rust change
+### You changed the Rust implementation
 
 Run:
 
@@ -95,13 +66,13 @@ cargo test
 make test-golden
 ```
 
-If `verify` reports a byte difference and the reference inputs did not change,
-the committed fixture remains the expected result. Fix the Rust behavior; do
-not update the fixture just to make the test pass.
+If a golden test fails but neither the scenario nor reference libtpms changed,
+the committed fixture is still the expected answer. Fix the Rust code. Do not
+regenerate the fixture just to make the test pass.
 
-### Changing a scenario
+### You changed a scenario
 
-After intentionally changing a `.scenario` file:
+First inspect which records changed, then regenerate that family:
 
 ```sh
 python3 scripts/golden_responses/golden.py diff <family>
@@ -109,238 +80,306 @@ make update-golden FAMILY=<family>
 make test-golden
 ```
 
-Review the fixture change together with the scenario change.
+Commit the scenario and fixture changes together.
 
-### Updating libtpms or the capture environment
+### You updated libtpms or the capture image
 
-Update the `libtpms` submodule and/or the pinned inputs in `Dockerfile`, then
-run:
+Run:
 
 ```sh
 make update-golden-all
 make ci
 ```
 
-This is a reference update, so review every changed family. The Rust tests may
-also need changes if the new reference behavior is different.
+Review every changed family. A reference update may also require changes in the
+Rust implementation and its tests.
 
-### Scenarios that replay captured blobs
+### A golden test does not match
 
-Some commands only accept opaque bytes that an earlier command produced:
-`TPM2_Load` needs the `outPrivate` of a `TPM2_Create`, `TPM2_ContextLoad` needs
-the blob a `TPM2_ContextSave` returned, and a parameter-encrypted command needs
-the `nonceTPM` the reference chose for its session. A scenario is static text,
-so those bytes are pasted into it as literal hex.
-
-That is safe because the reference container is deterministic: the same command
-prefix always produces the same bytes. The `object-lifecycle` scenario is built
-that way, and the ordering rule that keeps it reproducible is:
-
-- every section that consumes a captured blob starts with `restore`, so adding
-  such a section never shifts the state of the section that produced the blob;
-- the producing command keeps its own `send` record, so the Rust tests read the
-  blob back out of the fixture instead of hard-coding it a second time.
-
-To extend such a family, append the new section, run `update`, `dump` the
-producing record, paste the new bytes, and run `update` again.
-
-### Investigating a mismatch
-
-Use `diff` for a short record-level summary:
+Show a short list of changed records:
 
 ```sh
 python3 scripts/golden_responses/golden.py diff create-primary
 ```
 
-Use `dump` when you need the actual bytes:
+Print all records, or one selected record, as hexadecimal bytes:
 
 ```sh
 python3 scripts/golden_responses/golden.py dump create-primary
 python3 scripts/golden_responses/golden.py dump create-primary RECORD_NAME
 ```
 
-## What is stored where
+## Command-line interface
 
-- `manifest.toml` connects each family to its scenario, fixture, Rust reader,
-  magic value, and covered TPM commands.
-- `scenarios/*.scenario` describes what the reference TPM should do.
-- `runner.c` interprets scenarios and calls the reference libtpms.
-- `fixture_format.py` converts named records to and from the binary fixture
-  format.
-- `src/library/tpm2/testdata/golden_responses/*.bin` contains the generated
-  fixtures.
-- `src/library/tpm2/golden_responses/*.rs` loads those fixtures for Rust tests.
-- `Dockerfile` defines the reference build environment.
-- `entropy_shim.c` makes entropy and TPM time deterministic during capture.
+The Make targets call `golden.py`. It can also be used directly:
 
-Every fixture has exactly one tracked scenario. There is no legacy generator
-or alternate capture path.
-
-## Scenarios
-
-A scenario is a small text program. The runner prints named records in this
-form:
-
-```text
-NAME hexadecimal-bytes
+```sh
+python3 scripts/golden_responses/golden.py <command>
 ```
 
-The fixture packer sorts the records by name, so the same scenario output
-always produces the same binary file.
-
-Available operations are:
-
-| Operation | Meaning |
+| Command | Purpose |
 | --- | --- |
-| `profile <json>` | Clear NVRAM and manufacture a TPM with the given profile. |
-| `send NAME <hex>` | Send a TPM command and save its response as `NAME`. |
-| `raw <hex>` | Send a command without saving the response. |
-| `permall NAME` | Save the permanent-state blob. |
-| `snapshot NAME` | Save and remember permanent and volatile state. |
-| `checkpoint NAME` | Remember both state blobs without writing records. |
-| `restore NAME` | Restore permanent and volatile state from a checkpoint. |
+| `audit` | Check metadata, scenarios, readers, and fixtures without Docker. |
+| `build` | Audit the repository, then build or reuse the reference image and validate it. |
+| `verify <family>` | Capture one family and compare it with its fixture. |
+| `verify --all` | Capture and compare every family. |
+| `update <family>` | Capture one family and replace its fixture safely. |
+| `update --all --confirm-reference-update` | Capture and replace every fixture. |
+| `diff <family>` | List records that differ from a fresh reference capture. |
+| `dump <family> [record]` | Print fixture records as hexadecimal text. |
+| `list` | List families, files, record counts, and covered TPM commands. |
+
+The corresponding public Make targets are:
+
+```text
+make golden-audit
+make test-golden
+make update-golden FAMILY=<name>
+make update-golden-all
+make ci
+```
+
+## Files in this directory
+
+- `manifest.toml` lists the families and connects each scenario to its fixture,
+  Rust reader, magic value, and TPM commands.
+- `scenarios/*.scenario` contains the command sequences sent to libtpms.
+- `runner.c` reads scenarios and calls libtpms.
+- `fixture_format.py` reads and writes the binary fixture format.
+- `Dockerfile` builds the reference environment.
+- `entropy_shim.c` makes entropy and clocks deterministic during capture.
+- `golden.py` provides the audit, capture, comparison, and update commands.
+
+Generated fixtures live in:
+
+```text
+src/library/tpm2/testdata/golden_responses/*.bin
+```
+
+Rust fixture readers live in:
+
+```text
+src/library/tpm2/golden_responses/*.rs
+```
+
+Every fixture has exactly one scenario. There is no second generator or hidden
+capture path.
+
+## Scenario format
+
+A scenario is a small text program. Its saved output consists of named records:
+
+```text
+RECORD_NAME hexadecimal-bytes
+```
+
+The fixture writer sorts records by name before writing the `.bin` file. This
+keeps the fixture stable when the scenario produces the same results.
+
+Supported operations:
+
+| Operation | What it does |
+| --- | --- |
+| `profile <json>` | Erase NVRAM and manufacture a TPM with this profile. |
+| `send NAME <hex>` | Send a TPM command and save the complete response as `NAME`. |
+| `raw <hex>` | Send a command without saving its response. |
+| `permall NAME` | Save the current permanent-state blob. |
+| `snapshot NAME` | Save permanent and volatile state as records and remember both for `restore`. |
+| `checkpoint NAME` | Remember permanent and volatile state without adding fixture records. |
+| `restore NAME` | Restore both state blobs from a snapshot or checkpoint. |
 | `restore-permanent NAME` | Restore only permanent state. |
-| `reboot` | Terminate and initialize the TPM while keeping NVRAM. |
-| `advance <ms>` | Advance deterministic TPM time. |
-| `locality <n>` | Change the locality reported by the platform callback. |
-| `remember-session` | Remember the last response as an authorization session. |
-| `audited-getrandom NAME` | Run `TPM2_GetRandom` through that session. |
+| `reboot` | Reinitialize the TPM while keeping NVRAM. |
+| `advance <ms>` | Move the deterministic TPM clock forward. |
+| `locality <n>` | Change the locality returned by the platform callback. |
+| `remember-session` | Treat the previous response as the authorization session used by later helpers. |
+| `audited-getrandom NAME` | Run `TPM2_GetRandom` through the remembered session. |
 | `exclusive-audit NAME` | Save the exclusive-audit value from volatile state. |
-| `fail-stores <0\|1>` | Enable or disable simulated NVRAM write failures. |
-| `patch-failure-code <n>` | Change the saved failure-mode code and restore it. |
+| `fail-stores <0\|1>` | Turn simulated NVRAM write failures on or off. |
+| `patch-failure-code <n>` | Replace the saved failure-mode code and restore the state. |
 | `version` | Save the libtpms version. |
 
-Record names use upper-case ASCII letters, digits, and underscores:
+Record names may contain upper-case ASCII letters, digits, and underscores.
+By convention:
 
-- `PERMALL_*` records contain permanent state;
-- `VOLATILE_*` records contain volatile state;
-- all other records contain complete TPM responses or small values explicitly
-  emitted by the runner.
+- `PERMALL_*` contains permanent state;
+- `VOLATILE_*` contains volatile state;
+- other records contain TPM responses or small values emitted by the runner.
 
-The static audit checks scenario syntax before Docker runs. It rejects unknown
-operations, bad arguments, duplicate record names, invalid checkpoint use, and
-families that claim a TPM command their scenario never sends.
+`golden-audit` checks scenario syntax before Docker starts. It rejects unknown
+operations, invalid arguments, duplicate records, invalid checkpoint use, and
+families whose scenarios do not send the commands claimed in `manifest.toml`.
+Malformed TPM packets are allowed because error handling also needs coverage.
+A packet with a truncated TPM header does not count as command coverage.
 
-Some scenarios intentionally send malformed TPM packets. Such packets are
-valid scenario input, but a truncated header cannot count as command coverage.
+## Reusing bytes produced by an earlier command
 
-## Why the container is deterministic
+Some commands need opaque data produced by another command. For example:
 
-TPM manufacturing uses random entropy, and libtpms reads system clocks. A
-normal container would therefore produce different state blobs on different
-runs.
+- `TPM2_Load` needs `outPrivate` returned by `TPM2_Create`;
+- `TPM2_ContextLoad` needs a blob returned by `TPM2_ContextSave`;
+- parameter encryption needs the `nonceTPM` chosen when the session started.
 
-The capture image removes those sources of variation:
+Scenario files are static, so these values are pasted into the scenario as
+hexadecimal bytes. This remains reproducible because the reference container is
+deterministic.
 
-- `entropy_shim.c` replaces OpenSSL random-byte calls with a deterministic
-  stream seeded by `GOLDEN_ENTROPY_SEED`;
-- the same shim freezes monotonic and CPU clocks until a scenario explicitly
-  advances them;
-- libfaketime freezes the wall clock;
-- the Docker base image, Debian snapshot, packages, compiler flags, libtpms
-  commit, target platform, entropy seed, and clock settings are pinned.
+Keep such sections independent:
 
-The deterministic random stream is only a test tool. It is not cryptographically
-secure and is never used by the Rust library in production.
+1. Start every section that consumes a captured blob with `restore`.
+2. Keep the producing command as a named `send` record.
+3. Let the Rust test read the produced value from that fixture record instead
+   of copying it into Rust code.
 
-Before capture, image validation checks the compiled clock and entropy behavior,
-the installed package versions, the platform, and the image identity. It also
-runs a probe scenario in two fresh containers and requires identical output.
+To add a new section:
 
-## How the reference image is identified
+1. Append the producing command and update the fixture.
+2. Use `dump` to obtain the produced bytes.
+3. Paste those bytes into the consuming command.
+4. Update and verify the fixture again.
 
-`golden.py` builds its own temporary Docker context from:
+The `object-lifecycle` family uses this pattern.
+
+## Scenarios that reset or destroy state
+
+Commands such as `TPM2_Clear` and `TPM2_ChangePPS` remove or replace state that
+later checks may need. The `hierarchy-management` scenario therefore consists
+of independent sections. Each destructive section starts with:
+
+```text
+restore READY
+```
+
+`snapshot READY`, taken immediately after `TPM2_Startup(TPM_SU_CLEAR)`, saves
+both permanent and volatile reference state. Restoring both is important: the
+volatile blob includes the reference DRBG state. After a restore, commands such
+as `TPM2_CreatePrimary` produce the same key bytes again.
+
+Commands that replace hierarchy seeds create new state that cannot be compared
+with a separately manufactured Rust TPM. Instead, the scenario checks their
+effects through normal TPM commands:
+
+- `TPM2_GetCapability` checks flags, handles, and dictionary-attack properties;
+- `TPM2_PCR_Read` checks the PCR update counter;
+- `TPM2_NV_ReadPublic` and `TPM2_ReadPublic` check which entities remain;
+- `TPM2_Shutdown(TPM_SU_STATE)` followed by `TPM2_Startup(TPM_SU_STATE)` checks
+  whether a command cleared orderly state.
+
+The final `hierarchy-management` section uses the `null` profile to cover the
+old state format. This also preserves a compatibility detail in libtpms:
+
+- state format level 1 stores persistent objects in the legacy layout;
+- level 2 and newer store them as `ANY_OBJECT`;
+- `NvFlushHierarchy()` still reads hierarchy attributes at the old offset;
+- in an `ANY_OBJECT` entry, that offset contains header bytes, so persistent
+  objects are not deleted by `TPM2_ChangeEPS`, `TPM2_ChangePPS`, or
+  `TPM2_Clear`.
+
+The `LEGACY_*` records cover the level-1 result. The `PPS_*` and `CLR_*` records
+cover the newer format. This odd behavior is intentional compatibility with the
+vendored libtpms, not a fixture mistake.
+
+## Why captures are reproducible
+
+A normal TPM manufacture uses random entropy and the system clocks. Without
+extra controls, two containers would produce different fixtures.
+
+The reference image removes those differences:
+
+- `entropy_shim.c` replaces OpenSSL random bytes with a deterministic stream
+  seeded by `GOLDEN_ENTROPY_SEED`;
+- the shim freezes monotonic and CPU clocks until the scenario advances them;
+- libfaketime freezes wall-clock time;
+- the base image, Debian snapshot, packages, compiler flags, libtpms commit,
+  target platform, entropy seed, and clock settings are pinned.
+
+The deterministic random generator is only used while creating test fixtures.
+It is not secure and is never used by the Rust library in production.
+
+Before a capture starts, `golden.py` validates the image, package versions,
+platform, clock behavior, and entropy behavior. It also runs the same probe in
+two fresh containers and requires identical output.
+
+## How the Docker image is cached
+
+`golden.py` creates a temporary Docker build context from:
 
 - tracked files under `scripts/golden_responses/`, except `manifest.toml`;
-- a `git archive HEAD` of the `libtpms` submodule.
+- `git archive HEAD` from the `libtpms` submodule.
 
-Untracked build products, ignored files, and submodule `.git` data cannot enter
-the image. The context contents and target platform are hashed, and the hash is
-stored both in the image tag and its `golden.identity` label. An image is reused
-only when its label and platform match.
+Untracked files, build output, and submodule `.git` data cannot enter the image.
+The context and target platform are hashed. That hash is stored in both the
+image tag and the `golden.identity` label. An existing image is reused only when
+both its identity and platform match.
 
-`manifest.toml` is intentionally not part of the image hash. It describes how
-the image and fixtures are expected to fit together; the audit checks those
-claims independently.
+`manifest.toml` is not part of the image hash because it describes how scenarios
+and fixtures use the image; it does not change the reference executable. The
+audit validates the manifest separately.
 
-Only submodules included in the context must be clean. Currently that is
-`libtpms`. Changes inside `swtpm` do not affect golden capture and are checked by
-the separate swtpm test workflow.
+Only submodules included in the Docker context must be clean. Currently this is
+only `libtpms`. Changes in `swtpm` belong to the separate swtpm test workflow.
 
-## What the audit checks
+## What `golden-audit` checks
 
-`golden.py audit` is a static check. It works on a fresh checkout without Docker
-and never modifies the repository. Among other things, it verifies that:
+The audit works without Docker and never writes files. It verifies, among other
+things, that:
 
-- the manifest has the expected fields and safe repository-relative paths;
-- every scenario, reader, and fixture exists and is tracked;
-- each binary fixture is well formed and has the declared magic;
-- every Rust reader opens the fixture and magic assigned to its family;
-- fixture paths, magic values, and command ownership are not accidentally
-  shared;
-- implemented commands agree with the upstream command table and Rust registry;
-- scenarios really send the commands they claim to cover;
-- the Dockerfile pins its base image, snapshot, packages, build flags, entropy,
-  and clock setup;
-- files that enter the reference image have not drifted from the audited
-  submodule commit.
+- manifest paths are valid and stay inside the repository;
+- every declared scenario, fixture, and Rust reader exists and is tracked;
+- fixtures are structurally valid and use the declared magic value;
+- each Rust reader opens the correct fixture with the correct magic;
+- fixture paths, magic values, and TPM command ownership are unique;
+- implemented commands agree with the upstream table and Rust registry;
+- scenarios actually send the commands they claim to cover;
+- reference-image inputs and pins have not drifted.
 
-Reader validation checks the `magic` and `include_bytes!` path from the same
-`Fixture::new` declaration. A matching string in an unrelated test does not
-count. Code inside the real `#[cfg(test)] mod tests { ... }` module is ignored,
-while production declarations before or after that module are still checked.
-If the small Rust scanner cannot understand a relevant declaration safely, the
-audit fails instead of guessing.
+Reader checks inspect the `magic` and `include_bytes!` values in the same
+`Fixture::new` declaration. Test-only declarations do not count. If the audit
+cannot parse a relevant declaration safely, it fails instead of guessing.
 
-Commands that use Docker (`build`, `verify`, `update`, and `diff`) first run the
-static audit and then validate the resolved image itself.
+Commands that use Docker (`build`, `verify`, `update`, and `diff`) run this
+audit first and then validate the resolved image.
 
-## Safe fixture updates
+## How fixture updates avoid partial changes
 
-Updating several fixtures is transactional:
+An update captures every selected family before replacing any fixture. It then:
 
-1. Capture every selected family before touching committed files.
-2. For every destination, back up the old file and prepare the new file beside
-   it while remembering the original file mode.
-3. After every replacement is prepared, atomically install them with
-   `os.replace`.
-4. Read every replacement back and verify its contents.
-5. Remove backups and temporary files after the update is committed.
+1. Creates backups and prepares all replacement files.
+2. Installs each replacement atomically with `os.replace`.
+3. Reads every new fixture back and validates it.
+4. Removes backups and temporary files after the whole update succeeds.
 
-If capture, replacement, validation, or `Ctrl-C` fails before the commit point,
-the command restores every file it already replaced. A newly created fixture is
-removed. Original file modes are preserved as reported by the filesystem.
+If capture, replacement, validation, or `Ctrl-C` fails before completion, the
+tool restores every fixture it already replaced. Newly created fixtures are
+removed. Existing file modes are preserved.
 
-If rollback itself cannot restore a file, its backup is kept and its path is
-printed so it can be recovered manually. Cleanup errors after a successful
-commit never roll back the new fixtures.
+If a backup cannot be restored, the tool keeps it and prints its path for manual
+recovery. A cleanup error after a successful update does not undo valid new
+fixtures.
 
-`verify`, `diff`, and `audit` never write fixture files.
+`audit`, `verify`, and `diff` never change fixture files.
 
-## Merge conflicts in fixtures
+## Resolving fixture merge conflicts
 
-Do not merge the bytes of a `.bin` file. A fixture is derived output, so neither
-side is authoritative on its own.
-
-Resolve the scenario, manifest, and reference inputs first. Then take either
-side of the binary conflict temporarily and regenerate the family:
+Never merge the raw bytes of a `.bin` file. Resolve conflicts in the scenario,
+manifest, and reference inputs first. Then temporarily choose either binary
+side and regenerate the fixture:
 
 ```sh
 python3 scripts/golden_responses/golden.py update <family>
 python3 scripts/golden_responses/golden.py verify --all
 ```
 
-Use `dump` or `diff` to understand the change, not to construct a merged binary.
+Use `dump` and `diff` to understand a fixture, not to assemble one manually.
 
-## Relationship to the other tests
+## How these tests fit into the repository
 
-These fixtures cover deterministic command responses and TPM state. They sit
-between unit tests and the full swtpm functional suite:
+The test layers have different jobs:
 
-1. `cargo test` checks Rust implementation details and invariants.
-2. Golden response tests compare Rust byte-for-byte with reference libtpms.
-3. `make test-swtpm` checks the Rust library as a drop-in `libtpms.so`.
+1. `cargo test` checks Rust functions, state transitions, and invariants.
+2. Golden tests compare deterministic Rust output byte-for-byte with libtpms.
+3. `make test-swtpm` checks the Rust library as a replacement `libtpms.so` in a
+   complete swtpm workflow.
 
-Cancellation, the swtpm control channel, and concurrency are intentionally left
-to the swtpm suite because they depend on process interaction rather than a
-deterministic command stream.
+Cancellation, control-channel behavior, and concurrency remain in the swtpm
+suite because they depend on process interaction rather than a deterministic
+sequence of TPM commands.

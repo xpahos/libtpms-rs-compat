@@ -14,6 +14,7 @@ mod get_test_result;
 mod hash;
 mod hash_sequence_start;
 mod header;
+mod hierarchy_admin;
 mod hierarchy_change_auth;
 mod hmac_start;
 mod incremental_self_test;

@@ -298,6 +298,15 @@ pub(super) fn attach_volatile_blob_for_test(
     attach_volatile_blob(runtime, blob, &OsClock, VolatileDecodeBoundary::Restore)
 }
 
+#[cfg(test)]
+pub(super) fn attach_volatile_blob_for_replay(
+    runtime: &mut Tpm2Runtime,
+    blob: &[u8],
+    clock: &dyn HostClock,
+) -> Result<(), TpmResult> {
+    attach_volatile_blob(runtime, blob, clock, VolatileDecodeBoundary::Restore)
+}
+
 fn attach_volatile_blob(
     runtime: &mut Tpm2Runtime,
     blob: &[u8],

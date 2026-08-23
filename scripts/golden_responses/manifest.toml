@@ -50,6 +50,21 @@ fixture = "src/library/tpm2/testdata/golden_responses/get_test_result.bin"
 reader = "src/library/tpm2/golden_responses/get_test_result.rs"
 commands = ["TPM2_GetTestResult"]
 
+[families."hierarchy-management"]
+magic = "HMORACLE"
+scenario = "scripts/golden_responses/scenarios/hierarchy_management.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/hierarchy_management.bin"
+reader = "src/library/tpm2/golden_responses/hierarchy_management.rs"
+commands = [
+    "TPM2_HierarchyControl",
+    "TPM2_ChangePPS",
+    "TPM2_Clear",
+    "TPM2_ClearControl",
+    "TPM2_PCR_SetAuthPolicy",
+    "TPM2_SetPrimaryPolicy",
+    "TPM2_DictionaryAttackLockReset",
+]
+
 [families."nv-commands"]
 magic = "NVORACLE"
 scenario = "scripts/golden_responses/scenarios/nv_commands.scenario"
@@ -157,7 +172,8 @@ family = "evict-control"
 
 [commands.HierarchyControl]
 code = 0x00000121
-status = "todo"
+status = "implemented"
+family = "hierarchy-management"
 
 [commands.NV_UndefineSpace]
 code = 0x00000122
@@ -171,15 +187,18 @@ reason = "pinned by module tests predating the fixture format"
 
 [commands.ChangePPS]
 code = 0x00000125
-status = "todo"
+status = "implemented"
+family = "hierarchy-management"
 
 [commands.Clear]
 code = 0x00000126
-status = "todo"
+status = "implemented"
+family = "hierarchy-management"
 
 [commands.ClearControl]
 code = 0x00000127
-status = "todo"
+status = "implemented"
+family = "hierarchy-management"
 
 [commands.ClockSet]
 code = 0x00000128
@@ -202,7 +221,8 @@ reason = "pinned by module tests predating the fixture format"
 
 [commands.PCR_SetAuthPolicy]
 code = 0x0000012c
-status = "todo"
+status = "implemented"
+family = "hierarchy-management"
 
 [commands.PP_Commands]
 code = 0x0000012d
@@ -210,7 +230,8 @@ status = "todo"
 
 [commands.SetPrimaryPolicy]
 code = 0x0000012e
-status = "todo"
+status = "implemented"
+family = "hierarchy-management"
 
 [commands.FieldUpgradeStart]
 code = 0x0000012f
@@ -261,7 +282,8 @@ family = "nv-commands"
 
 [commands.DictionaryAttackLockReset]
 code = 0x00000139
-status = "todo"
+status = "implemented"
+family = "hierarchy-management"
 
 [commands.DictionaryAttackParameters]
 code = 0x0000013a

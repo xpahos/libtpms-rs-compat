@@ -163,10 +163,12 @@ fn check_load_status(
             continue;
         };
         let indexed = TPM_RC_H + TPM_RC_1 * (index as u32 + 1);
+        if matches!(handle, TPM_RH_OWNER | TPM_RH_ENDORSEMENT | TPM_RH_PLATFORM)
+            && !hierarchy_is_enabled(runtime, handle)
+        {
+            return Err(TPM_RC_HIERARCHY + indexed);
+        }
         match spec.kind {
-            HandleKind::Hierarchy if !hierarchy_is_enabled(runtime, handle) => {
-                return Err(TPM_RC_HIERARCHY + indexed);
-            }
             HandleKind::Object => check_object_present(runtime, handle, index)?,
             HandleKind::ObjectAllowNull if handle != TPM_RH_NULL => {
                 check_object_present(runtime, handle, index)?;

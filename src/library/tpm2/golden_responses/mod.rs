@@ -5,6 +5,7 @@ pub(in crate::library::tpm2) mod dictionary_attack;
 pub(in crate::library::tpm2) mod evict_control;
 pub(in crate::library::tpm2) mod flush_context;
 pub(in crate::library::tpm2) mod get_test_result;
+pub(in crate::library::tpm2) mod hierarchy_management;
 pub(in crate::library::tpm2) mod nv;
 pub(in crate::library::tpm2) mod object_lifecycle;
 pub(in crate::library::tpm2) mod pcr_event;

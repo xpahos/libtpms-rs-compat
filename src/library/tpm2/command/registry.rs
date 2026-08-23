@@ -18,6 +18,7 @@ use super::get_random;
 use super::get_test_result;
 use super::hash;
 use super::hash_sequence_start;
+use super::hierarchy_admin;
 use super::hierarchy_change_auth;
 use super::hmac_start;
 use super::incremental_self_test;
@@ -53,11 +54,17 @@ use super::verify_signature;
 
 pub(in crate::library::tpm2) const TPM_CC_NV_UNDEFINE_SPACE_SPECIAL: u32 = 0x0000_011f;
 pub(in crate::library::tpm2) const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
+pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CONTROL: u32 = 0x0000_0121;
 pub(in crate::library::tpm2) const TPM_CC_NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
 pub(in crate::library::tpm2) const TPM_CC_CHANGE_EPS: u32 = 0x0000_0124;
+pub(in crate::library::tpm2) const TPM_CC_CHANGE_PPS: u32 = 0x0000_0125;
+pub(in crate::library::tpm2) const TPM_CC_CLEAR: u32 = 0x0000_0126;
+pub(in crate::library::tpm2) const TPM_CC_CLEAR_CONTROL: u32 = 0x0000_0127;
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 pub(in crate::library::tpm2) const TPM_CC_NV_DEFINE_SPACE: u32 = 0x0000_012a;
 pub(in crate::library::tpm2) const TPM_CC_PCR_ALLOCATE: u32 = 0x0000_012b;
+pub(in crate::library::tpm2) const TPM_CC_PCR_SET_AUTH_POLICY: u32 = 0x0000_012c;
+pub(in crate::library::tpm2) const TPM_CC_SET_PRIMARY_POLICY: u32 = 0x0000_012e;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub(in crate::library::tpm2) const TPM_CC_NV_GLOBAL_WRITE_LOCK: u32 = 0x0000_0132;
 pub(in crate::library::tpm2) const TPM_CC_NV_INCREMENT: u32 = 0x0000_0134;
@@ -65,6 +72,7 @@ pub(in crate::library::tpm2) const TPM_CC_NV_SET_BITS: u32 = 0x0000_0135;
 pub(in crate::library::tpm2) const TPM_CC_NV_EXTEND: u32 = 0x0000_0136;
 pub(in crate::library::tpm2) const TPM_CC_NV_WRITE: u32 = 0x0000_0137;
 pub(in crate::library::tpm2) const TPM_CC_NV_WRITE_LOCK: u32 = 0x0000_0138;
+pub(in crate::library::tpm2) const TPM_CC_DICTIONARY_ATTACK_LOCK_RESET: u32 = 0x0000_0139;
 pub(in crate::library::tpm2) const TPM_CC_DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0000_013a;
 pub(in crate::library::tpm2) const TPM_CC_NV_CHANGE_AUTH: u32 = 0x0000_013b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EVENT: u32 = 0x0000_013c;
@@ -161,6 +169,8 @@ impl CommandLifecycle {
 pub(super) enum HandleKind {
     HierarchyAuth,
     Hierarchy,
+    BaseHierarchy,
+    Clear,
     Lockout,
     Platform,
     Provision,
@@ -184,6 +194,10 @@ impl HandleKind {
         match self {
             Self::HierarchyAuth => is_hierarchy_auth_handle(handle),
             Self::Hierarchy => is_hierarchy_handle(handle),
+            Self::BaseHierarchy => {
+                matches!(handle, TPM_RH_OWNER | TPM_RH_ENDORSEMENT | TPM_RH_PLATFORM)
+            }
+            Self::Clear => matches!(handle, TPM_RH_LOCKOUT | TPM_RH_PLATFORM),
             Self::Lockout => handle == TPM_RH_LOCKOUT,
             Self::Platform => handle == TPM_RH_PLATFORM,
             Self::Provision => matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM),
@@ -301,6 +315,22 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: evict_control::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_HIERARCHY_CONTROL,
+        attributes: tpma_cc(TPM_CC_HIERARCHY_CONTROL, true, 1) | TPMA_CC_EXTENSIVE,
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::BaseHierarchy,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hierarchy_admin::control::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_NV_UNDEFINE_SPACE,
         attributes: tpma_cc(TPM_CC_NV_UNDEFINE_SPACE, true, 2),
         physical_presence: true,
@@ -338,6 +368,54 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: change_eps::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_CHANGE_PPS,
+        attributes: tpma_cc(TPM_CC_CHANGE_PPS, true, 1) | TPMA_CC_EXTENSIVE,
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Platform,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hierarchy_admin::change_pps::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_CLEAR,
+        attributes: tpma_cc(TPM_CC_CLEAR, true, 1) | TPMA_CC_EXTENSIVE,
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Clear,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hierarchy_admin::clear::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_CLEAR_CONTROL,
+        attributes: tpma_cc(TPM_CC_CLEAR_CONTROL, true, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Clear,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hierarchy_admin::clear_control::execute,
     },
     CommandDescriptor {
         code: TPM_CC_HIERARCHY_CHANGE_AUTH,
@@ -386,6 +464,38 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: pcr_allocate::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_PCR_SET_AUTH_POLICY,
+        attributes: tpma_cc(TPM_CC_PCR_SET_AUTH_POLICY, true, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Platform,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hierarchy_admin::pcr_policy::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_SET_PRIMARY_POLICY,
+        attributes: tpma_cc(TPM_CC_SET_PRIMARY_POLICY, true, 1),
+        physical_presence: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::HierarchyAuth,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hierarchy_admin::primary_policy::execute,
     },
     CommandDescriptor {
         code: TPM_CC_CREATE_PRIMARY,
@@ -533,6 +643,22 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Write,
         handler: nv_lock::execute_write_lock,
+    },
+    CommandDescriptor {
+        code: TPM_CC_DICTIONARY_ATTACK_LOCK_RESET,
+        attributes: tpma_cc(TPM_CC_DICTIONARY_ATTACK_LOCK_RESET, true, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Lockout,
+            user_auth: true,
+            admin_role: false,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: hierarchy_admin::lock_reset::execute,
     },
     CommandDescriptor {
         code: TPM_CC_DICTIONARY_ATTACK_PARAMETERS,
@@ -1339,11 +1465,17 @@ mod tests {
             [
                 TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
                 TPM_CC_EVICT_CONTROL,
+                TPM_CC_HIERARCHY_CONTROL,
                 TPM_CC_NV_UNDEFINE_SPACE,
                 TPM_CC_CHANGE_EPS,
+                TPM_CC_CHANGE_PPS,
+                TPM_CC_CLEAR,
+                TPM_CC_CLEAR_CONTROL,
                 TPM_CC_HIERARCHY_CHANGE_AUTH,
                 TPM_CC_NV_DEFINE_SPACE,
                 TPM_CC_PCR_ALLOCATE,
+                TPM_CC_PCR_SET_AUTH_POLICY,
+                TPM_CC_SET_PRIMARY_POLICY,
                 TPM_CC_CREATE_PRIMARY,
                 TPM_CC_NV_GLOBAL_WRITE_LOCK,
                 TPM_CC_NV_INCREMENT,
@@ -1351,6 +1483,7 @@ mod tests {
                 TPM_CC_NV_EXTEND,
                 TPM_CC_NV_WRITE,
                 TPM_CC_NV_WRITE_LOCK,
+                TPM_CC_DICTIONARY_ATTACK_LOCK_RESET,
                 TPM_CC_DICTIONARY_ATTACK_PARAMETERS,
                 TPM_CC_NV_CHANGE_AUTH,
                 TPM_CC_PCR_EVENT,
@@ -1427,11 +1560,17 @@ mod tests {
     }
 
     #[test]
-    fn change_eps_is_the_only_extensive_command() {
+    fn the_extensive_commands_match_the_vendored_attribute_table() {
+        const EXTENSIVE: [u32; 4] = [
+            TPM_CC_HIERARCHY_CONTROL,
+            TPM_CC_CHANGE_EPS,
+            TPM_CC_CHANGE_PPS,
+            TPM_CC_CLEAR,
+        ];
         for descriptor in implemented() {
             assert_eq!(
                 descriptor.attributes & TPMA_CC_EXTENSIVE != 0,
-                descriptor.code == TPM_CC_CHANGE_EPS,
+                EXTENSIVE.contains(&descriptor.code),
                 "code {:#x}",
                 descriptor.code
             );
@@ -1916,14 +2055,20 @@ mod tests {
 
     #[test]
     fn physical_presence_applicability_matches_the_vendored_attribute_table() {
-        const PP_COMMANDS: [u32; 10] = [
+        const PP_COMMANDS: [u32; 16] = [
             TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
             TPM_CC_EVICT_CONTROL,
+            TPM_CC_HIERARCHY_CONTROL,
             TPM_CC_NV_UNDEFINE_SPACE,
             TPM_CC_CHANGE_EPS,
+            TPM_CC_CHANGE_PPS,
+            TPM_CC_CLEAR,
+            TPM_CC_CLEAR_CONTROL,
             TPM_CC_HIERARCHY_CHANGE_AUTH,
             TPM_CC_NV_DEFINE_SPACE,
             TPM_CC_PCR_ALLOCATE,
+            TPM_CC_PCR_SET_AUTH_POLICY,
+            TPM_CC_SET_PRIMARY_POLICY,
             TPM_CC_CREATE_PRIMARY,
             TPM_CC_NV_GLOBAL_WRITE_LOCK,
             TPM_CC_CREATE_LOADED,

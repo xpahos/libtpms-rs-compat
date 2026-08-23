@@ -38,6 +38,7 @@ const DRTM_LOCALITY: u8 = 4;
 pub(super) struct PcrPlatformAttributes {
     pub(super) state_save: bool,
     pub(super) do_not_increment_pcr_counter: bool,
+    pub(super) policy_auth_group: u8,
     pub(super) auth_values_group: u8,
     pub(super) reset_locality: u8,
     pub(super) extend_locality: u8,
@@ -47,6 +48,7 @@ const fn static_rtm_pcr() -> PcrPlatformAttributes {
     PcrPlatformAttributes {
         state_save: true,
         do_not_increment_pcr_counter: false,
+        policy_auth_group: 0,
         auth_values_group: 0,
         reset_locality: 0x00,
         extend_locality: 0x1f,
@@ -61,6 +63,7 @@ const fn dynamic_pcr(
     PcrPlatformAttributes {
         state_save: false,
         do_not_increment_pcr_counter,
+        policy_auth_group: 0,
         auth_values_group: 0,
         reset_locality,
         extend_locality,
@@ -97,6 +100,13 @@ pub(super) fn pcr_is_state_saved(pcr: usize) -> bool {
 
 pub(super) fn pcr_auth_value_group(pcr: usize) -> Option<usize> {
     match pcr_platform_attributes(pcr).auth_values_group {
+        0 => None,
+        group => Some(usize::from(group) - 1),
+    }
+}
+
+pub(super) fn pcr_policy_group(pcr: usize) -> Option<usize> {
+    match pcr_platform_attributes(pcr).policy_auth_group {
         0 => None,
         group => Some(usize::from(group) - 1),
     }

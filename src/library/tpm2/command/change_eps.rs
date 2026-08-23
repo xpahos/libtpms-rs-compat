@@ -1,42 +1,19 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE};
 
-use super::super::hierarchy::TPM_RH_PLATFORM;
-use super::super::nv::build_nv_image;
-use super::super::object::{ATTR_EPS_HIERARCHY, ATTR_OCCUPIED};
+use super::super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM};
 use super::super::orderly::prepare_clear_orderly;
-use super::super::persistent::{
-    OwnedAnyObject, OwnedAnyObjectBody, OwnedPersistentState, OwnedSecret, OwnedUserNvramEntry,
-    user_nvram_required_capacity,
-};
-use super::super::random::regenerate_secret;
+use super::super::persistent::OwnedSecret;
 use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
+use super::hierarchy_admin::{
+    PRIMARY_SEED_SIZE, PROOF_SIZE, commit_persistent_state, flush_loaded_hierarchy_objects,
+    hierarchy_object_attribute, regenerate_hierarchy_secrets, remove_hierarchy_persistent_objects,
+    with_rollback,
+};
 use super::output::CommandOutput;
 
 const TPM_ALG_NULL: u16 = 0x0010;
-
-const PRIMARY_SEED_SIZE: usize = 64;
-const PROOF_SIZE: usize = 64;
-
-struct EndorsementSeed {
-    ep_seed: Option<OwnedSecret>,
-    eh_proof: Option<OwnedSecret>,
-    seed_compat_level: u8,
-    orderly_state: Option<u16>,
-}
-
-struct Backup {
-    ep_seed: Option<OwnedSecret>,
-    eh_proof: Option<OwnedSecret>,
-    ep_seed_compat_level: u8,
-    endorsement_auth: OwnedSecret,
-    endorsement_alg: u16,
-    endorsement_policy: Vec<u8>,
-    orderly_state: u16,
-    flushed: Vec<(usize, OwnedUserNvramEntry)>,
-    required_capacity: u64,
-}
 
 pub(super) fn execute(
     runtime: &mut Tpm2Runtime,
@@ -71,141 +48,38 @@ fn change_endorsement_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmR
         .profile
         .seed_compat_level();
 
-    let drbg = runtime.live.orderly.drbg_state.clone();
-    reseed_endorsement_hierarchy(runtime, seed_compat_level, orderly_state).inspect_err(|_| {
-        if runtime.failure_mode {
-            runtime.live.orderly.drbg_state = drbg;
+    let mut secrets =
+        regenerate_hierarchy_secrets(runtime, &[PRIMARY_SEED_SIZE, PROOF_SIZE])?.into_iter();
+    let ep_seed = secrets.next().ok_or(TPM_RC_FAILURE)?;
+    let eh_proof = secrets.next().ok_or(TPM_RC_FAILURE)?;
+
+    with_rollback(runtime, |runtime| {
+        let attribute = hierarchy_object_attribute(TPM_RH_ENDORSEMENT).ok_or(TPM_RC_FAILURE)?;
+        let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
+        if let Some(ep_seed) = ep_seed {
+            state.persistent.ep_seed = ep_seed;
         }
+        state.persistent.ep_seed_compat_level = seed_compat_level;
+        if let Some(eh_proof) = eh_proof {
+            state.persistent.eh_proof = eh_proof;
+        }
+        state.persistent.endorsement_auth = OwnedSecret::from_vec(Vec::new());
+        state.persistent.endorsement_alg = TPM_ALG_NULL;
+        state.persistent.endorsement_policy = Vec::new();
+        if let Some(orderly_state) = orderly_state {
+            state.persistent.orderly_state = orderly_state;
+        }
+        remove_hierarchy_persistent_objects(state, attribute)?;
+
+        runtime
+            .live
+            .state_clear
+            .as_mut()
+            .ok_or(TPM_RC_FAILURE)?
+            .eh_enable = true;
+        flush_loaded_hierarchy_objects(&mut runtime.live.objects, attribute);
+        commit_persistent_state(runtime)
     })
-}
-
-fn reseed_endorsement_hierarchy(
-    runtime: &mut Tpm2Runtime,
-    seed_compat_level: u8,
-    orderly_state: Option<u16>,
-) -> Result<(), TpmResult> {
-    let seed = EndorsementSeed {
-        ep_seed: regenerate_secret(runtime, PRIMARY_SEED_SIZE)?.map(OwnedSecret::from_vec),
-        eh_proof: regenerate_secret(runtime, PROOF_SIZE)?.map(OwnedSecret::from_vec),
-        seed_compat_level,
-        orderly_state,
-    };
-
-    let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
-    let backup = apply(state, seed)?;
-    let image = match build_nv_image(state) {
-        Ok(image) => image,
-        Err(_) => {
-            restore(state, backup);
-            return Err(TPM_RC_FAILURE);
-        }
-    };
-
-    runtime.nv_memory = image;
-    flush_loaded_endorsement_objects(&mut runtime.live.objects);
-    if let Some(clear) = runtime.live.state_clear.as_mut() {
-        clear.eh_enable = true;
-    }
-    runtime.nv_update_pending = true;
-    Ok(())
-}
-
-fn belongs_to_endorsement(entry: &OwnedUserNvramEntry) -> bool {
-    match entry {
-        OwnedUserNvramEntry::NvIndex { .. } => false,
-        OwnedUserNvramEntry::Persistent { object, .. } => {
-            object.attributes & ATTR_EPS_HIERARCHY != 0
-        }
-    }
-}
-
-fn apply(state: &mut OwnedPersistentState, seed: EndorsementSeed) -> Result<Backup, TpmResult> {
-    let flushed_capacity = user_nvram_required_capacity(
-        state
-            .user_nvram
-            .entries
-            .iter()
-            .filter(|entry| !belongs_to_endorsement(entry)),
-    )
-    .ok_or(TPM_RC_FAILURE)?;
-
-    let persistent = &mut state.persistent;
-    let ep_seed = seed
-        .ep_seed
-        .map(|new| core::mem::replace(&mut persistent.ep_seed, new));
-    let eh_proof = seed
-        .eh_proof
-        .map(|new| core::mem::replace(&mut persistent.eh_proof, new));
-    let ep_seed_compat_level =
-        core::mem::replace(&mut persistent.ep_seed_compat_level, seed.seed_compat_level);
-    let endorsement_auth = core::mem::replace(
-        &mut persistent.endorsement_auth,
-        OwnedSecret::from_vec(Vec::new()),
-    );
-    let endorsement_alg = core::mem::replace(&mut persistent.endorsement_alg, TPM_ALG_NULL);
-    let endorsement_policy = core::mem::take(&mut persistent.endorsement_policy);
-    let orderly_state = persistent.orderly_state;
-    if let Some(cleared) = seed.orderly_state {
-        persistent.orderly_state = cleared;
-    }
-
-    let mut flushed = Vec::new();
-    let mut kept = Vec::with_capacity(state.user_nvram.entries.len());
-    for (index, entry) in core::mem::take(&mut state.user_nvram.entries)
-        .into_iter()
-        .enumerate()
-    {
-        if belongs_to_endorsement(&entry) {
-            flushed.push((index, entry));
-        } else {
-            kept.push(entry);
-        }
-    }
-    state.user_nvram.entries = kept;
-    let required_capacity =
-        core::mem::replace(&mut state.user_nvram.required_capacity, flushed_capacity);
-
-    Ok(Backup {
-        ep_seed,
-        eh_proof,
-        ep_seed_compat_level,
-        endorsement_auth,
-        endorsement_alg,
-        endorsement_policy,
-        orderly_state,
-        flushed,
-        required_capacity,
-    })
-}
-
-fn restore(state: &mut OwnedPersistentState, backup: Backup) {
-    let persistent = &mut state.persistent;
-    if let Some(ep_seed) = backup.ep_seed {
-        persistent.ep_seed = ep_seed;
-    }
-    if let Some(eh_proof) = backup.eh_proof {
-        persistent.eh_proof = eh_proof;
-    }
-    persistent.ep_seed_compat_level = backup.ep_seed_compat_level;
-    persistent.endorsement_auth = backup.endorsement_auth;
-    persistent.endorsement_alg = backup.endorsement_alg;
-    persistent.endorsement_policy = backup.endorsement_policy;
-    persistent.orderly_state = backup.orderly_state;
-
-    for (index, entry) in backup.flushed {
-        state.user_nvram.entries.insert(index, entry);
-    }
-    state.user_nvram.required_capacity = backup.required_capacity;
-}
-
-fn flush_loaded_endorsement_objects(objects: &mut [OwnedAnyObject]) {
-    const FLUSHED: u32 = ATTR_OCCUPIED | ATTR_EPS_HIERARCHY;
-    for object in objects {
-        if object.attributes & FLUSHED == FLUSHED {
-            object.attributes &= !ATTR_OCCUPIED;
-            object.body = OwnedAnyObjectBody::Unoccupied;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -239,16 +113,23 @@ mod tests {
     };
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::marshal::BlobReader;
+    use crate::library::tpm2::nv::build_nv_image;
     use crate::library::tpm2::nv::{USER_NVRAM_CAPACITY, any_object_image};
+    use crate::library::tpm2::object::{ATTR_EPS_HIERARCHY, ATTR_OCCUPIED};
     use crate::library::tpm2::object::{ATTR_PPS_HIERARCHY, ATTR_SPS_HIERARCHY, parse_any_object};
     use crate::library::tpm2::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE};
     use crate::library::tpm2::parse_persistent_all_payload;
     use crate::library::tpm2::persistent::own_any_object;
     use crate::library::tpm2::persistent::{
+        OwnedAnyObject, OwnedAnyObjectBody, OwnedPersistentState, OwnedUserNvramEntry,
+        user_nvram_required_capacity,
+    };
+    use crate::library::tpm2::persistent::{
         OwnedNvIndex, PersistentAllEnvelope, materialize_persistent_state, persistent_all_store,
     };
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::public::StateFormatLimit;
+    use crate::library::tpm2::random::regenerate_secret;
     use crate::library::tpm2::runtime::{commit_manufactured_state, commit_restored_state};
     use crate::library::tpm2::volatile::CURRENT_OBJECT_VERSION;
 
@@ -915,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_endorsement_objects_are_removed_and_everything_else_survives() {
+    fn persistent_endorsement_objects_survive_the_marshalled_object_format() {
         let mut runtime = started_runtime_with(Some(DEFAULT_V1_PROFILE));
         push_nvram(
             &mut runtime,
@@ -929,6 +810,8 @@ mod tests {
                 persistent_entry(0x8100_0005, occupied_object(0)),
             ],
         );
+        let before = nvram_handles(&runtime);
+        let capacity_before = runtime.state().user_nvram.required_capacity;
 
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
@@ -937,23 +820,13 @@ mod tests {
 
         assert_eq!(
             nvram_handles(&runtime),
-            [
-                0x0100_0001,
-                0x8100_0002,
-                0x0100_0002,
-                0x8100_0003,
-                0x8100_0005
-            ],
-            "the endorsement evict objects go, indexes and other hierarchies stay"
+            before,
+            "NvFlushHierarchy() reads the ANY_OBJECT header where it expects the \
+             attribute word, so no evict object matches the endorsement hierarchy"
         );
         assert_eq!(
             runtime.state().user_nvram.required_capacity,
-            user_nvram_required_capacity(&runtime.state().user_nvram.entries).unwrap(),
-            "the recorded capacity follows the shortened list"
-        );
-        assert_eq!(
-            runtime.nv_memory,
-            build_nv_image(runtime.state()).expect("the state serializes")
+            capacity_before
         );
     }
 
@@ -1497,6 +1370,7 @@ mod tests {
 
         let mut runtime = empty_state_runtime();
         runtime.startup_received = true;
+        runtime.live.ph_enable = true;
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
             error_response(TPM_RC_FAILURE)

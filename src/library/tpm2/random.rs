@@ -1196,6 +1196,8 @@ mod tests {
             (".failure_mode = ", &["failure_mode.rs", "runtime.rs"]),
         ];
 
+        const TEST_ONLY_MODULES: &[&str] = &["command/hierarchy_admin/harness.rs"];
+
         fn production_slice(source: &str) -> &str {
             let mut cut = source.len();
             let mut search_from = 0;
@@ -1227,6 +1229,9 @@ mod tests {
                     .to_string_lossy()
                     .replace('\\', "/");
                 let source = std::fs::read_to_string(&path).expect("the source file reads");
+                if TEST_ONLY_MODULES.contains(&relative.as_str()) {
+                    continue;
+                }
                 let production = production_slice(&source);
                 for (needle, allowed) in rules {
                     if production.contains(needle) && !allowed.contains(&relative.as_str()) {

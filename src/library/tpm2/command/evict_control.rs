@@ -320,6 +320,7 @@ mod tests {
     const RC_PARAM1_VALUE: u32 = 0x1c4;
     const RC_PARAM1_RANGE: u32 = 0x1cd;
     const RC_PARAM1_INSUFFICIENT: u32 = 0x1da;
+    const RC_HIERARCHY_H1: u32 = 0x185;
     const RC_HANDLE2_ATTRIBUTES: u32 = 0x282;
     const RC_HANDLE2_VALUE: u32 = 0x284;
     const RC_HANDLE2_HIERARCHY: u32 = 0x285;
@@ -1542,7 +1543,13 @@ mod tests {
         runtime.live.state_clear.as_mut().unwrap().sh_enable = false;
         assert_eq!(
             evict(&mut runtime, TPM_RH_OWNER, OWNER_HANDLE, OWNER_HANDLE),
-            error_response(RC_HANDLE2_HANDLE)
+            error_response(RC_HIERARCHY_H1),
+            "the disabled owner authorization handle is reported first"
+        );
+        assert_eq!(
+            evict(&mut runtime, TPM_RH_PLATFORM, OWNER_HANDLE, OWNER_HANDLE),
+            error_response(RC_HANDLE2_HANDLE),
+            "platformAuth still reaches the hidden owner evict object"
         );
     }
 
@@ -1562,7 +1569,13 @@ mod tests {
                 PLATFORM_HANDLE,
                 PLATFORM_HANDLE
             ),
-            error_response(RC_HANDLE2_HANDLE)
+            error_response(RC_HIERARCHY_H1),
+            "the disabled platform authorization handle is reported first"
+        );
+        assert_eq!(
+            evict(&mut runtime, TPM_RH_OWNER, PLATFORM_HANDLE, PLATFORM_HANDLE),
+            error_response(RC_HANDLE2_HANDLE),
+            "ownerAuth still reaches the hidden platform evict object"
         );
     }
 
@@ -1913,10 +1926,17 @@ mod tests {
 
     #[test]
     fn a_runtime_without_decoded_state_never_panics() {
+        use crate::library::tpm2::live::power_on_state_clear;
         use crate::library::tpm2::runtime::empty_state_runtime;
 
         let mut runtime = empty_state_runtime();
         runtime.startup_received = true;
+        runtime.live.ph_enable = true;
+        let mut clear = power_on_state_clear();
+        clear.sh_enable = true;
+        clear.eh_enable = true;
+        clear.ph_enable_nv = true;
+        runtime.live.state_clear = Some(clear);
         assert_eq!(
             evict(&mut runtime, TPM_RH_OWNER, 0x8000_0000, OWNER_HANDLE),
             error_response(RC_REFERENCE_H1)

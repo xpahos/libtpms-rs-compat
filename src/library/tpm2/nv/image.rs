@@ -707,6 +707,29 @@ pub(in crate::library::tpm2) fn any_object_image(
     Ok(w.out)
 }
 
+// TODO: Report the mismatch upstream: NvFlushHierarchy() reads
+// `sizeof(OBJECT_ATTRIBUTES)` bytes at `offsetof(OBJECT, attributes)` of a
+// stored evict object, but libtpms stores evict objects through
+// NvObjectToBuffer(). Only the legacy RSA3072 image starts with the attribute
+// word; the ANY_OBJECT image starts with its NV_HEADER, so the hierarchy bits
+// read there are always clear.
+pub(in crate::library::tpm2) fn stored_object_attributes(
+    object: &OwnedAnyObject,
+    object_format: PersistentObjectFormat,
+) -> u32 {
+    match object_format {
+        PersistentObjectFormat::LegacyRsa3072 => object.attributes,
+        PersistentObjectFormat::AnyObject { .. } => {
+            let mut w = WireWriter::new();
+            w.nv_header(ANY_OBJECT_VERSION, ANY_OBJECT_MAGIC, 1);
+            let mut word = [0u8; 4];
+            let prefix = w.out.get(..4).unwrap_or(&[]);
+            word[..prefix.len()].copy_from_slice(prefix);
+            u32::from_le_bytes(word)
+        }
+    }
+}
+
 pub(in crate::library::tpm2) fn persistent_object_image(
     object: &OwnedAnyObject,
     object_format: PersistentObjectFormat,

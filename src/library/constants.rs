@@ -109,6 +109,8 @@ pub(in crate::library) const TPM_RC_NV_SPACE: TpmResult = 0x14b;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NV_DEFINED: TpmResult = 0x14c;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_DISABLED: TpmResult = 0x120;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_EXCLUSIVE: TpmResult = 0x121;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_AUTH_TYPE: TpmResult = 0x124;
@@ -198,6 +200,8 @@ mod tests {
         assert_eq!(TPM_RC_NO_RESULT, RC_VER1 + 0x054);
         assert_eq!(TPM_RC_SENSITIVE, RC_VER1 + 0x055);
         assert_eq!(TPM_RC_TOO_MANY_CONTEXTS, RC_VER1 + 0x02e);
+        assert_eq!(TPM_RC_DISABLED, RC_VER1 + 0x020);
+        assert_eq!(TPM_RC_EXCLUSIVE, RC_VER1 + 0x021);
     }
 
     #[test]
