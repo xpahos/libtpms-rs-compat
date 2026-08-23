@@ -4479,6 +4479,8 @@ mod tests {
     const TPM_ALG_SHA384: u16 = 0x000c;
     #[cfg(feature = "tpm2")]
     const TPM_ALG_SHA512: u16 = 0x000d;
+    #[cfg(feature = "tpm2")]
+    const TPM_ALG_OAEP: u16 = 0x0017;
 
     #[cfg(feature = "tpm2")]
     fn started_library() -> Library {
@@ -4554,7 +4556,7 @@ mod tests {
         );
         assert_eq!(
             library.pending_self_test_algorithms(),
-            [TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_SHA512],
+            [TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP],
             "both selected primitives ran to completion"
         );
         assert!(

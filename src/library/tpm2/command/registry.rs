@@ -33,12 +33,16 @@ use super::pcr_event;
 use super::pcr_extend;
 use super::pcr_read;
 use super::pcr_reset;
+use super::policy_commands;
+use super::policy_or;
+use super::policy_pcr;
 use super::read_public;
 use super::self_test;
 use super::sequence_complete;
 use super::sequence_update;
 use super::shutdown;
 use super::sign;
+use super::start_auth_session;
 use super::startup;
 use super::stir_random;
 use super::verify_signature;
@@ -75,23 +79,34 @@ pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_UPDATE: u32 = 0x0000_015c;
 pub(in crate::library::tpm2) const TPM_CC_SIGN: u32 = 0x0000_015d;
 pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
+pub(in crate::library::tpm2) const TPM_CC_POLICY_AUTH_VALUE: u32 = 0x0000_016b;
+pub(in crate::library::tpm2) const TPM_CC_POLICY_COMMAND_CODE: u32 = 0x0000_016c;
+pub(in crate::library::tpm2) const TPM_CC_POLICY_OR: u32 = 0x0000_0171;
 pub(in crate::library::tpm2) const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
+pub(in crate::library::tpm2) const TPM_CC_START_AUTH_SESSION: u32 = 0x0000_0176;
 pub(in crate::library::tpm2) const TPM_CC_VERIFY_SIGNATURE: u32 = 0x0000_0177;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
 pub(in crate::library::tpm2) const TPM_CC_GET_TEST_RESULT: u32 = 0x0000_017c;
 pub(in crate::library::tpm2) const TPM_CC_HASH: u32 = 0x0000_017d;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
+pub(in crate::library::tpm2) const TPM_CC_POLICY_PCR: u32 = 0x0000_017f;
+pub(in crate::library::tpm2) const TPM_CC_POLICY_RESTART: u32 = 0x0000_0180;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 pub(in crate::library::tpm2) const TPM_CC_NV_CERTIFY: u32 = 0x0000_0184;
 pub(in crate::library::tpm2) const TPM_CC_EVENT_SEQUENCE_COMPLETE: u32 = 0x0000_0185;
 pub(in crate::library::tpm2) const TPM_CC_HASH_SEQUENCE_START: u32 = 0x0000_0186;
+pub(in crate::library::tpm2) const TPM_CC_POLICY_GET_DIGEST: u32 = 0x0000_0189;
+pub(in crate::library::tpm2) const TPM_CC_POLICY_PASSWORD: u32 = 0x0000_018c;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_LOADED: u32 = 0x0000_0191;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
-use super::super::hierarchy::{TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM, is_hierarchy_handle};
+use super::super::hierarchy::{
+    TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM, is_hierarchy_handle,
+};
 use super::super::nv::is_nv_index_handle;
 use super::super::object_create::is_object_handle;
+use super::super::session::is_policy_session_handle;
 
 const TPMA_CC_COMMAND_INDEX_MASK: u32 = 0x0000_ffff;
 const TPMA_CC_NV: u32 = 1 << 22;
@@ -146,7 +161,12 @@ pub(super) enum HandleKind {
     PcrAllowNull,
     NvIndex,
     NvAuth,
+    EntityAllowNull,
+    PolicySession,
 }
+
+const TPM_RH_AUTH_00: u32 = 0x4000_0010;
+const TPM_RH_AUTH_FF: u32 = 0x4000_010f;
 
 impl HandleKind {
     pub(super) fn accepts(self, handle: u32) -> bool {
@@ -165,6 +185,20 @@ impl HandleKind {
             Self::NvAuth => {
                 matches!(handle, TPM_RH_OWNER | TPM_RH_PLATFORM) || is_nv_index_handle(handle)
             }
+            Self::EntityAllowNull => {
+                matches!(
+                    handle,
+                    TPM_RH_OWNER
+                        | TPM_RH_ENDORSEMENT
+                        | TPM_RH_PLATFORM
+                        | TPM_RH_LOCKOUT
+                        | TPM_RH_NULL
+                ) || is_object_handle(handle)
+                    || is_nv_index_handle(handle)
+                    || (handle as usize) < IMPLEMENTATION_PCR
+                    || (TPM_RH_AUTH_00..=TPM_RH_AUTH_FF).contains(&handle)
+            }
+            Self::PolicySession => is_policy_session_handle(handle),
         }
     }
 }
@@ -174,6 +208,12 @@ pub(super) struct HandleSpec {
     pub(super) user_auth: bool,
     pub(super) admin_role: bool,
 }
+
+const POLICY_SESSION_HANDLE: HandleSpec = HandleSpec {
+    kind: HandleKind::PolicySession,
+    user_auth: false,
+    admin_role: false,
+};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum NvAccess {
@@ -191,6 +231,8 @@ pub(in crate::library::tpm2) struct CommandDescriptor {
     pub(in crate::library::tpm2) physical_presence: bool,
     pub(super) lifecycle: CommandLifecycle,
     pub(super) handles: &'static [HandleSpec],
+    pub(super) decrypt_size: u16,
+    pub(super) encrypt_size: u16,
     pub(super) sessions_allowed: bool,
     pub(super) nv_access: NvAccess,
     pub(super) handler: CommandHandler,
@@ -214,6 +256,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: nv_undefine_space::execute_special,
@@ -235,6 +279,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: evict_control::execute,
@@ -256,6 +302,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: nv_undefine_space::execute,
@@ -270,6 +318,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: change_eps::execute,
@@ -284,6 +334,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: hierarchy_change_auth::execute,
@@ -298,6 +350,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: nv_define_space::execute,
@@ -312,6 +366,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: pcr_allocate::execute,
@@ -326,6 +382,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: create_primary::execute,
@@ -340,6 +398,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: nv_lock::execute_global_write_lock,
@@ -361,6 +421,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Write,
         handler: nv_write::execute_increment,
@@ -382,6 +444,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Write,
         handler: nv_write::execute_set_bits,
@@ -403,6 +467,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Write,
         handler: nv_write::execute_extend,
@@ -424,6 +490,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Write,
         handler: nv_write::execute_write,
@@ -445,6 +513,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Write,
         handler: nv_lock::execute_write_lock,
@@ -459,6 +529,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: dictionary_attack_parameters::execute,
@@ -473,6 +545,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: true,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: nv_change_auth::execute,
@@ -487,6 +561,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: pcr_event::execute,
@@ -501,6 +577,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: pcr_reset::execute,
@@ -515,6 +593,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: sequence_complete::execute,
@@ -525,6 +605,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: incremental_self_test::execute,
@@ -535,6 +617,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: self_test::execute,
@@ -545,6 +629,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresNotStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: false,
         nv_access: NvAccess::Neither,
         handler: startup::execute,
@@ -555,6 +641,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: shutdown::execute,
@@ -565,6 +653,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: stir_random::execute,
@@ -586,6 +676,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Read,
         handler: nv_read::execute_read,
@@ -607,6 +699,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Read,
         handler: nv_lock::execute_read_lock,
@@ -621,6 +715,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: create::execute,
@@ -635,6 +731,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: hmac_start::execute,
@@ -649,6 +747,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: sequence_update::execute,
@@ -663,6 +763,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: sign::execute,
@@ -673,6 +775,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: false,
         nv_access: NvAccess::Neither,
         handler: flush_context::execute,
@@ -687,9 +791,47 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: false,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: nv_read::execute_read_public,
+    },
+    CommandDescriptor {
+        code: TPM_CC_POLICY_AUTH_VALUE,
+        attributes: tpma_cc(TPM_CC_POLICY_AUTH_VALUE, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[POLICY_SESSION_HANDLE],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: policy_commands::execute_auth_value,
+    },
+    CommandDescriptor {
+        code: TPM_CC_POLICY_COMMAND_CODE,
+        attributes: tpma_cc(TPM_CC_POLICY_COMMAND_CODE, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[POLICY_SESSION_HANDLE],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: policy_commands::execute_command_code,
+    },
+    CommandDescriptor {
+        code: TPM_CC_POLICY_OR,
+        attributes: tpma_cc(TPM_CC_POLICY_OR, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[POLICY_SESSION_HANDLE],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: policy_or::execute,
     },
     CommandDescriptor {
         code: TPM_CC_READ_PUBLIC,
@@ -701,9 +843,34 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: false,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: read_public::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_START_AUTH_SESSION,
+        attributes: tpma_cc_with_response_handle(TPM_CC_START_AUTH_SESSION, false, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: false,
+                admin_role: false,
+            },
+            HandleSpec {
+                kind: HandleKind::EntityAllowNull,
+                user_auth: false,
+                admin_role: false,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: start_auth_session::execute,
     },
     CommandDescriptor {
         code: TPM_CC_VERIFY_SIGNATURE,
@@ -715,6 +882,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: false,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: verify_signature::execute,
@@ -725,6 +894,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: get_capability::execute,
@@ -735,6 +906,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: get_random::execute,
@@ -745,6 +918,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: get_test_result::execute,
@@ -755,6 +930,8 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 2,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: hash::execute,
@@ -765,9 +942,35 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: pcr_read::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_POLICY_PCR,
+        attributes: tpma_cc(TPM_CC_POLICY_PCR, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[POLICY_SESSION_HANDLE],
+        decrypt_size: 2,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: policy_pcr::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_POLICY_RESTART,
+        attributes: tpma_cc(TPM_CC_POLICY_RESTART, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[POLICY_SESSION_HANDLE],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: policy_commands::execute_restart,
     },
     CommandDescriptor {
         code: TPM_CC_PCR_EXTEND,
@@ -779,6 +982,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 0,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: pcr_extend::execute,
@@ -805,6 +1010,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 2,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Read,
         handler: nv_certify::execute,
@@ -826,6 +1033,8 @@ static COMMANDS: &[CommandDescriptor] = &[
                 admin_role: false,
             },
         ],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: event_sequence_complete::execute,
@@ -836,9 +1045,35 @@ static COMMANDS: &[CommandDescriptor] = &[
         physical_presence: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
+        decrypt_size: 2,
+        encrypt_size: 0,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: hash_sequence_start::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_POLICY_GET_DIGEST,
+        attributes: tpma_cc(TPM_CC_POLICY_GET_DIGEST, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[POLICY_SESSION_HANDLE],
+        decrypt_size: 0,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: policy_commands::execute_get_digest,
+    },
+    CommandDescriptor {
+        code: TPM_CC_POLICY_PASSWORD,
+        attributes: tpma_cc(TPM_CC_POLICY_PASSWORD, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[POLICY_SESSION_HANDLE],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: policy_commands::execute_password,
     },
     CommandDescriptor {
         code: TPM_CC_CREATE_LOADED,
@@ -850,6 +1085,8 @@ static COMMANDS: &[CommandDescriptor] = &[
             user_auth: true,
             admin_role: false,
         }],
+        decrypt_size: 2,
+        encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: create_loaded::execute,
@@ -1022,17 +1259,25 @@ mod tests {
                 TPM_CC_SIGN,
                 TPM_CC_FLUSH_CONTEXT,
                 TPM_CC_NV_READ_PUBLIC,
+                TPM_CC_POLICY_AUTH_VALUE,
+                TPM_CC_POLICY_COMMAND_CODE,
+                TPM_CC_POLICY_OR,
                 TPM_CC_READ_PUBLIC,
+                TPM_CC_START_AUTH_SESSION,
                 TPM_CC_VERIFY_SIGNATURE,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
                 TPM_CC_GET_TEST_RESULT,
                 TPM_CC_HASH,
                 TPM_CC_PCR_READ,
+                TPM_CC_POLICY_PCR,
+                TPM_CC_POLICY_RESTART,
                 TPM_CC_PCR_EXTEND,
                 TPM_CC_NV_CERTIFY,
                 TPM_CC_EVENT_SEQUENCE_COMPLETE,
                 TPM_CC_HASH_SEQUENCE_START,
+                TPM_CC_POLICY_GET_DIGEST,
+                TPM_CC_POLICY_PASSWORD,
                 TPM_CC_CREATE_LOADED
             ]
         );

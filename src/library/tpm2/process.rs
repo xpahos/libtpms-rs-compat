@@ -190,9 +190,9 @@ mod tests {
         0x80, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00, 0x00, 0x01, 0x00,
         0x0b,
     ];
-    const INCREMENTAL_SHA256_RESPONSE: [u8; 22] = [
-        0x80, 0x01, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
-        0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d,
+    const INCREMENTAL_SHA256_RESPONSE: [u8; 24] = [
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00,
+        0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d, 0x00, 0x17,
     ];
 
     #[test]
@@ -362,8 +362,8 @@ mod tests {
         assert_eq!(
             run_process(&mut runtime, 0, &input(&INCREMENTAL_SHA256)).unwrap(),
             [
-                0x80, 0x01, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
-                0x00, 0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d
+                0x80, 0x01, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
+                0x00, 0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d, 0x00, 0x17
             ]
         );
         assert!(!runtime.failure_mode);
@@ -374,6 +374,27 @@ mod tests {
         );
     }
 
+    fn self_test_capable_runtime() -> Box<Tpm2Runtime> {
+        use crate::library::tpm2::manufacture::manufacture_state;
+        use crate::library::tpm2::profile::validate_user_profile;
+        use crate::library::tpm2::runtime::commit_manufactured_state;
+
+        let profile = validate_user_profile(None).expect("the default profile validates");
+        let state = manufacture_state(profile, self_test_entropy).expect("the state is built");
+        let mut runtime = commit_manufactured_state(state).expect("the state is committed");
+        runtime.entropy = self_test_entropy;
+        runtime.startup_received = true;
+        runtime
+    }
+
+    fn self_test_entropy(buffer: &mut [u8]) -> Result<(), u32> {
+        let len = buffer.len() as u8;
+        for (index, byte) in buffer.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_add(len) ^ 0x27;
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_successful_self_test_leaves_normal_dispatch_untouched() {
         const SUCCESS: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
@@ -381,8 +402,7 @@ mod tests {
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x01, 0x43, 0x01,
         ];
 
-        let mut runtime = empty_state_runtime();
-        runtime.startup_received = true;
+        let mut runtime = self_test_capable_runtime();
         assert_eq!(
             run_process(&mut runtime, 0, &input(&FULL_SELF_TEST)).unwrap(),
             SUCCESS

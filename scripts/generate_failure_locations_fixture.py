@@ -22,6 +22,7 @@ FUNCTIONS = {
     "ExecuteCommand",
     "TestHash",
     "TestSymmetricAlgorithm",
+    "TestRsaEncryptDecrypt",
     "DRBG_Generate",
     "EncryptDRBG",
 }

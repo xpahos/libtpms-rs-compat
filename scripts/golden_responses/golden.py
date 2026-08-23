@@ -21,6 +21,8 @@ SCRIPTS = HERE.parent
 ROOT = SCRIPTS.parent
 MANIFEST = HERE / "manifest.toml"
 ATTRIBUTE_DATA = ROOT / "libtpms" / "src" / "tpm2" / "CommandAttributeData.h"
+COMMAND_LIST = ROOT / "libtpms" / "src" / "tpm2" / "TpmProfile_CommandList.h"
+UPSTREAM_CODES_RS = ROOT / "src" / "library" / "tpm2" / "command" / "upstream_codes.rs"
 REGISTRY = ROOT / "src" / "library" / "tpm2" / "command" / "registry.rs"
 VERSION_RS = ROOT / "src" / "version.rs"
 CONFIGURE_AC = ROOT / "libtpms" / "configure.ac"
@@ -224,6 +226,36 @@ def parse_upstream_entries():
 def parse_upstream():
     for name, _alias, code in parse_upstream_entries():
         yield name, code
+
+
+def parse_reference_disabled():
+    text = COMMAND_LIST.read_text("utf-8")
+    return {match.group(1) for match in re.finditer(r"#define\s+CC_(\w+)\s+CC_NO", text)}
+
+
+def parse_reference_implemented():
+    text = ATTRIBUTE_DATA.read_text("utf-8")
+    disabled = parse_reference_disabled()
+    codes = []
+    guard = None
+    for line in text.splitlines():
+        opened = re.match(r"#if \(PAD_LIST\s*\|\|\s*\(?(.*?)\)?\)\s*$", line)
+        if opened:
+            guard = re.findall(r"CC_(\w+)", opened.group(1))
+            continue
+        if re.match(r"#if \(PAD_LIST\s*\)", line):
+            guard = []
+            continue
+        entry = re.search(r"TPMA_CC_INITIALIZER\(0x([0-9a-fA-F]{4})", line)
+        if entry and guard is not None and any(name not in disabled for name in guard):
+            codes.append(int(entry.group(1), 16))
+    return codes
+
+
+def parse_rust_upstream_codes():
+    text = UPSTREAM_CODES_RS.read_text("utf-8")
+    body = text.split("];", 1)[0]
+    return [int(value.replace("_", ""), 16) for value in re.findall(r"0x([0-9a-f_]+),", body)]
 
 
 def parse_upstream_aliases():
@@ -1613,6 +1645,26 @@ def collect_violations(manifest, facts=None, packer=None):
             violate("upstream", f"{name}: upstream names the alias {expected}, the manifest says {declared}")
         elif declared is None and expected is not None:
             violate("upstream", f"{name}: upstream also names {code:#06x} CC_{expected}")
+
+    reference_codes = parse_reference_implemented()
+    rust_codes = parse_rust_upstream_codes()
+    if rust_codes != reference_codes:
+        missing = sorted(set(reference_codes) - set(rust_codes))
+        extra = sorted(set(rust_codes) - set(reference_codes))
+        if missing:
+            violate(
+                "upstream",
+                "upstream_codes.rs is missing "
+                + ", ".join(f"{code:#06x}" for code in missing),
+            )
+        if extra:
+            violate(
+                "upstream",
+                "upstream_codes.rs lists non-reference "
+                + ", ".join(f"{code:#06x}" for code in extra),
+            )
+        if not missing and not extra:
+            violate("upstream", "upstream_codes.rs is not sorted like the reference table")
 
     registry = parse_registry()
     implemented = {

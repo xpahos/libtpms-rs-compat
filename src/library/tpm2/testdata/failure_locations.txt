@@ -7,6 +7,16 @@ libtpms/src/tpm2/AlgorithmTests.c	136	TestHash	FAIL(FATAL_ERROR_INTERNAL)
 libtpms/src/tpm2/AlgorithmTests.c	155	TestHash	SELF_TEST_FAILURE
 libtpms/src/tpm2/AlgorithmTests.c	259	TestSymmetricAlgorithm	SELF_TEST_FAILURE
 libtpms/src/tpm2/AlgorithmTests.c	272	TestSymmetricAlgorithm	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	445	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	447	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	452	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	454	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	482	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	491	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	497	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	502	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	508	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
+libtpms/src/tpm2/AlgorithmTests.c	512	TestRsaEncryptDecrypt	SELF_TEST_FAILURE
 libtpms/src/tpm2/ExecCommand.c	318	ExecuteCommand	FAIL(FATAL_ERROR_INTERNAL)
 libtpms/src/tpm2/crypto/openssl/CryptRand.c	387	EncryptDRBG	FAIL_BOOL(FATAL_ERROR_ENTROPY)
 libtpms/src/tpm2/crypto/openssl/CryptRand.c	912	DRBG_Generate	FAIL_IMMEDIATE(FATAL_ERROR_INTERNAL, 0)

@@ -1,3 +1,11 @@
+use subtle::ConstantTimeEq;
+
+use crate::ffi_types::TpmResult;
+use crate::library::constants::{
+    TPM_RC_CONTEXT_GAP, TPM_RC_SESSION_HANDLES, TPM_RC_SESSION_MEMORY,
+};
+
+use super::crypto::COMPILED_HASHES;
 use super::live::LiveState;
 use super::marshal::{BlobReader, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, PersistentField, StateSection, parse_nv_header};
@@ -5,7 +13,7 @@ use super::public::{
     DIGEST_SIZE, NAME_SIZE, StateFormatLimit, SymDefObject, parse_sym_def, read_tpm2b,
 };
 use super::state::MAX_ACTIVE_SESSIONS;
-use super::volatile::MAX_LOADED_SESSIONS;
+use super::volatile::{MAX_LOADED_SESSIONS, OwnedSession};
 
 pub(super) const SESSION_MAGIC: u32 = 0x44be_9f45;
 pub(super) const SESSION_VERSION: u16 = 2;
@@ -23,9 +31,167 @@ const HR_HANDLE_MASK: u32 = 0x00ff_ffff;
 
 const BLOCK_SKIP_SINCE_VERSION: u16 = 2;
 
+pub(super) const SESSION_ATTR_IS_POLICY: u32 = 1 << 0;
+pub(super) const SESSION_ATTR_IS_AUDIT: u32 = 1 << 1;
+pub(super) const SESSION_ATTR_IS_BOUND: u32 = 1 << 2;
+pub(super) const SESSION_ATTR_IS_CP_HASH_DEFINED: u32 = 1 << 3;
+pub(super) const SESSION_ATTR_IS_AUTH_VALUE_NEEDED: u32 = 1 << 4;
+pub(super) const SESSION_ATTR_IS_PASSWORD_NEEDED: u32 = 1 << 5;
+pub(super) const SESSION_ATTR_IS_PP_REQUIRED: u32 = 1 << 6;
+pub(super) const SESSION_ATTR_IS_TRIAL_POLICY: u32 = 1 << 7;
+pub(super) const SESSION_ATTR_IS_DA_BOUND: u32 = 1 << 8;
+pub(super) const SESSION_ATTR_IS_LOCKOUT_BOUND: u32 = 1 << 9;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const SESSION_ATTR_INCLUDE_AUTH: u32 = 1 << 10;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const SESSION_ATTR_CHECK_NV_WRITTEN: u32 = 1 << 11;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const SESSION_ATTR_NV_WRITTEN_STATE: u32 = 1 << 12;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const SESSION_ATTR_IS_TEMPLATE_HASH_DEFINED: u32 = 1 << 13;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const SESSION_ATTR_IS_NAME_HASH_DEFINED: u32 = 1 << 14;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const SESSION_ATTR_IS_PARAMETERS_HASH_DEFINED: u32 = 1 << 15;
+
+pub(super) const TPM_SE_HMAC: u8 = 0x00;
+pub(super) const TPM_SE_POLICY: u8 = 0x01;
+pub(super) const TPM_SE_TRIAL: u8 = 0x03;
+
 pub(super) fn is_session_handle(handle: u32) -> bool {
     (HMAC_SESSION_FIRST..=HMAC_SESSION_LAST).contains(&handle)
         || (POLICY_SESSION_FIRST..=POLICY_SESSION_LAST).contains(&handle)
+}
+
+pub(super) fn is_policy_session_handle(handle: u32) -> bool {
+    (POLICY_SESSION_FIRST..=POLICY_SESSION_LAST).contains(&handle)
+}
+
+pub(super) fn digests_equal(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && bool::from(left.ct_eq(right))
+}
+
+pub(super) fn digest_size(hash_alg: u16) -> Option<usize> {
+    COMPILED_HASHES
+        .iter()
+        .find(|(algorithm, _)| *algorithm == hash_alg)
+        .map(|(_, size)| *size)
+}
+
+fn loaded_ram_slot(live: &LiveState, handle: u32) -> Option<usize> {
+    let (_, context) = context_slot(live, handle)?;
+    if context == 0 || usize::from(context) > MAX_LOADED_SESSIONS {
+        return None;
+    }
+    usize::from(context).checked_sub(1)
+}
+
+pub(super) fn loaded_session<'a>(live: &'a LiveState, handle: u32) -> Option<&'a OwnedSession> {
+    let slot = loaded_ram_slot(live, handle)?;
+    live.sessions.get(slot)?.session.as_ref()
+}
+
+pub(super) fn loaded_session_mut<'a>(
+    live: &'a mut LiveState,
+    handle: u32,
+) -> Option<&'a mut OwnedSession> {
+    let slot = loaded_ram_slot(live, handle)?;
+    live.sessions.get_mut(slot)?.session.as_mut()
+}
+
+fn free_ram_slot(live: &LiveState) -> Option<usize> {
+    live.sessions.iter().position(|slot| !slot.occupied)
+}
+
+fn assign_context_slot(live: &mut LiveState, ram_slot: usize) -> Result<(u32, u16), TpmResult> {
+    let mask = live.context_slot_mask;
+    let reset = live.state_reset.as_mut().ok_or(TPM_RC_SESSION_HANDLES)?;
+    if (live.oldest_saved_session as usize) < MAX_ACTIVE_SESSIONS
+        && live.free_session_slots == 1
+        && let Some(&oldest) = reset.context_array.get(live.oldest_saved_session as usize)
+        && (reset.context_counter as u16) & mask == oldest
+    {
+        return Err(TPM_RC_CONTEXT_GAP);
+    }
+    for index in 0..MAX_ACTIVE_SESSIONS {
+        if reset.context_array[index] == 0 {
+            let previous = reset.context_array[index];
+            reset.context_array[index] = (ram_slot as u16 + 1) & mask;
+            return Ok((index as u32, previous));
+        }
+    }
+    Err(TPM_RC_SESSION_HANDLES)
+}
+
+pub(super) struct AllocatedSession {
+    pub(super) context_index: u32,
+    pub(super) ram_slot: usize,
+    previous_free_slots: u32,
+    previous_occupied: bool,
+    previous_session: Option<OwnedSession>,
+    previous_context: u16,
+}
+
+pub(super) fn allocate_session(live: &mut LiveState) -> Result<AllocatedSession, TpmResult> {
+    if live.free_session_slots == 0 {
+        return Err(TPM_RC_SESSION_MEMORY);
+    }
+    let ram_slot = free_ram_slot(live).ok_or(TPM_RC_SESSION_MEMORY)?;
+    let previous_free_slots = live.free_session_slots;
+    let previous_occupied = live.sessions[ram_slot].occupied;
+    let (context_index, previous_context) = assign_context_slot(live, ram_slot)?;
+    let previous_session = live.sessions[ram_slot].session.take();
+    live.free_session_slots -= 1;
+    live.sessions[ram_slot].occupied = true;
+    Ok(AllocatedSession {
+        context_index,
+        ram_slot,
+        previous_free_slots,
+        previous_occupied,
+        previous_session,
+        previous_context,
+    })
+}
+
+pub(super) fn publish_session(
+    live: &mut LiveState,
+    allocated: AllocatedSession,
+    session: OwnedSession,
+) {
+    live.sessions[allocated.ram_slot].session = Some(session);
+}
+
+pub(super) fn release_session(live: &mut LiveState, allocated: AllocatedSession) {
+    if let Some(reset) = live.state_reset.as_mut()
+        && let Some(entry) = reset
+            .context_array
+            .get_mut(allocated.context_index as usize)
+    {
+        *entry = allocated.previous_context;
+    }
+    if let Some(slot) = live.sessions.get_mut(allocated.ram_slot) {
+        slot.occupied = allocated.previous_occupied;
+        slot.session = allocated.previous_session;
+    }
+    live.free_session_slots = allocated.previous_free_slots;
+}
+
+pub(super) fn reset_policy_data(session: &mut OwnedSession) {
+    let preserved = session.attributes
+        & (SESSION_ATTR_IS_TRIAL_POLICY | SESSION_ATTR_IS_DA_BOUND | SESSION_ATTR_IS_LOCKOUT_BOUND);
+    session.command_code = 0;
+    session.command_locality = 0;
+    session.bound_entity.clear();
+    session.timeout = 0;
+    session.pcr_counter = 0;
+    session.audit_digest.fill(0);
+    session.attributes = SESSION_ATTR_IS_POLICY | preserved;
+}
+
+pub(super) fn set_start_time(session: &mut OwnedSession, time: u64, epoch: u32) {
+    session.start_time = time;
+    session.epoch = epoch;
+    session.timeout = 0;
 }
 
 fn context_slot(live: &LiveState, handle: u32) -> Option<(usize, u16)> {
@@ -376,6 +542,40 @@ mod tests {
     };
 
     const TAIL_SENTINEL: [u8; 3] = [0xb1, 0xb2, 0xb3];
+
+    #[test]
+    fn digest_comparison_checks_the_length_before_the_bytes() {
+        assert!(digests_equal(&[], &[]));
+        assert!(digests_equal(&[0xa5; 32], &[0xa5; 32]));
+        assert!(!digests_equal(&[0xa5; 32], &[0xa5; 20]));
+        assert!(!digests_equal(&[0xa5; 20], &[0xa5; 32]));
+        let base = [0x10u8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
+        for position in 0..base.len() {
+            let mut other = base;
+            other[position] ^= 0x80;
+            assert!(!digests_equal(&base, &other), "byte {position}");
+        }
+    }
+
+    #[test]
+    fn the_attribute_bits_match_the_vendored_little_endian_bitfield() {
+        assert_eq!(SESSION_ATTR_IS_POLICY, 0x0000_0001);
+        assert_eq!(SESSION_ATTR_IS_AUDIT, 0x0000_0002);
+        assert_eq!(SESSION_ATTR_IS_BOUND, 0x0000_0004);
+        assert_eq!(SESSION_ATTR_IS_CP_HASH_DEFINED, 0x0000_0008);
+        assert_eq!(SESSION_ATTR_IS_AUTH_VALUE_NEEDED, 0x0000_0010);
+        assert_eq!(SESSION_ATTR_IS_PASSWORD_NEEDED, 0x0000_0020);
+        assert_eq!(SESSION_ATTR_IS_PP_REQUIRED, 0x0000_0040);
+        assert_eq!(SESSION_ATTR_IS_TRIAL_POLICY, 0x0000_0080);
+        assert_eq!(SESSION_ATTR_IS_DA_BOUND, 0x0000_0100);
+        assert_eq!(SESSION_ATTR_IS_LOCKOUT_BOUND, 0x0000_0200);
+        assert_eq!(SESSION_ATTR_INCLUDE_AUTH, 0x0000_0400);
+        assert_eq!(SESSION_ATTR_CHECK_NV_WRITTEN, 0x0000_0800);
+        assert_eq!(SESSION_ATTR_NV_WRITTEN_STATE, 0x0000_1000);
+        assert_eq!(SESSION_ATTR_IS_TEMPLATE_HASH_DEFINED, 0x0000_2000);
+        assert_eq!(SESSION_ATTR_IS_NAME_HASH_DEFINED, 0x0000_4000);
+        assert_eq!(SESSION_ATTR_IS_PARAMETERS_HASH_DEFINED, 0x0000_8000);
+    }
 
     fn parse_slot(data: &[u8]) -> Result<(SessionSlot<'_>, usize), PersistentAllError> {
         let mut reader = BlobReader::new(data);

@@ -5,8 +5,9 @@ use crate::library::constants::{
     TPM_RC_VALUE,
 };
 
-use super::super::hierarchy::{TPM_RH_NULL, TPM_RH_UNASSIGNED};
-use super::super::live::RestoredVolatile;
+use super::super::hierarchy::{
+    TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
+};
 use super::super::marshal::BlobReader;
 use super::super::nv::{index_is_accessible, is_nv_index_handle};
 use super::super::object_create::{
@@ -15,11 +16,15 @@ use super::super::object_create::{
 };
 use super::super::runtime::Tpm2Runtime;
 use super::super::sequence::cleanup_evicted;
+use super::super::session::{SESSION_ATTR_IS_POLICY, loaded_session};
+use super::super::volatile::IMPLEMENTATION_PCR;
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
 use super::session::{
-    authorize_sessions, parse_session_area, password_auth_response, record_session_state,
+    CommandContext, authorize_sessions, build_response_sessions, clear_exclusive_audit,
+    decrypt_first_parameter, parse_session_area, record_session_state,
 };
+use super::transaction;
 
 const TPM_RC_H: TpmResult = 0x000;
 const TPM_RC_1: TpmResult = 0x100;
@@ -56,41 +61,77 @@ fn run(
 ) -> Result<Response, TpmResult> {
     let (handles, rest) = parse_handles(descriptor, command.payload)?;
     check_load_status(runtime, descriptor, &handles)?;
-    let (session_count, parameters) =
-        check_authorization(runtime, descriptor, command, &handles, rest)?;
-    let frame = CommandFrame {
-        handles,
+
+    if command.tag != TPM_ST_SESSIONS {
+        if descriptor.handles.iter().any(|spec| spec.user_auth) {
+            return Err(TPM_RC_AUTH_MISSING);
+        }
+        let frame = CommandFrame {
+            handles,
+            parameters: rest,
+        };
+        let (out_handles, out_parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
+        clear_exclusive_audit(runtime, descriptor);
+        return Ok(Response::success_with_handles(
+            TPM_ST_NO_SESSIONS,
+            out_handles,
+            out_parameters,
+        ));
+    }
+
+    let (auth_area, parameters) = split_authorization_area(descriptor, rest)?;
+    let mut area = parse_session_area(runtime, descriptor, auth_area)?;
+    let context = CommandContext {
+        code: command.command_code,
+        handles: &handles,
         parameters,
     };
-    let (handles, parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
-    update_audit_session_status(runtime, descriptor);
-    Ok(if command.tag == TPM_ST_SESSIONS {
-        mark_password_response_sessions(runtime, session_count);
-        Response::success_with_sessions(handles, parameters, password_auth_response(session_count))
-    } else {
-        Response::success_with_handles(TPM_ST_NO_SESSIONS, handles, parameters)
-    })
+    let outcome = authorize_sessions(runtime, descriptor, &handles, &context, &mut area);
+    record_session_state(runtime, &area);
+    outcome?;
+
+    let decrypted = decrypt_first_parameter(runtime, descriptor, &area, parameters)?;
+    let frame = CommandFrame {
+        handles,
+        parameters: decrypted.as_deref().unwrap_or(parameters),
+    };
+    let transaction = transaction::begin(runtime);
+    let (out_handles, mut out_parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
+    let auth_response = match build_response_sessions(
+        runtime,
+        descriptor,
+        command.command_code,
+        &mut out_parameters,
+        &mut area,
+        true,
+    ) {
+        Ok(auth_response) => auth_response,
+        Err(code) => {
+            transaction::roll_back(runtime, transaction);
+            return Err(code);
+        }
+    };
+    record_session_state(runtime, &area);
+    Ok(Response::success_with_sessions(
+        out_handles,
+        out_parameters,
+        auth_response,
+    ))
 }
 
-const TPMA_SESSION_CONTINUE_SESSION: u8 = 0x01;
-
-fn update_audit_session_status(runtime: &mut Tpm2Runtime, descriptor: &CommandDescriptor) {
+fn split_authorization_area<'a>(
+    descriptor: &CommandDescriptor,
+    rest: &'a [u8],
+) -> Result<(&'a [u8], &'a [u8]), TpmResult> {
+    let (size_bytes, after_size) = rest.split_first_chunk::<4>().ok_or(TPM_RC_INSUFFICIENT)?;
+    let auth_size = u32::from_be_bytes(*size_bytes) as usize;
+    if auth_size < MIN_AUTH_AREA_SIZE || auth_size > after_size.len() {
+        return Err(TPM_RC_SIZE);
+    }
     if !descriptor.sessions_allowed {
-        return;
+        return Err(TPM_RC_AUTH_CONTEXT);
     }
-    runtime
-        .restored_volatile
-        .get_or_insert_with(RestoredVolatile::power_on)
-        .exclusive_audit_session = TPM_RH_UNASSIGNED;
-}
-
-fn mark_password_response_sessions(runtime: &mut Tpm2Runtime, session_count: usize) {
-    let restored = runtime
-        .restored_volatile
-        .get_or_insert_with(RestoredVolatile::power_on);
-    for index in 0..session_count.min(restored.session_process.attributes.len()) {
-        restored.session_process.attributes[index] |= TPMA_SESSION_CONTINUE_SESSION;
-    }
+    Ok((&after_size[..auth_size], &after_size[auth_size..]))
 }
 
 fn parse_handles<'a>(
@@ -153,8 +194,43 @@ fn check_load_status(
                     }
                 })?;
             }
+            HandleKind::EntityAllowNull => check_entity_present(runtime, handle, index)?,
+            HandleKind::PolicySession => match loaded_session(&runtime.live, handle) {
+                Some(session) if session.attributes & SESSION_ATTR_IS_POLICY != 0 => {}
+                Some(_) => return Err(TPM_RC_HANDLE + indexed),
+                None => return Err(TPM_RC_REFERENCE_H0 + index as u32),
+            },
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn check_entity_present(runtime: &Tpm2Runtime, handle: u32, index: usize) -> Result<(), TpmResult> {
+    let indexed = TPM_RC_H + TPM_RC_1 * (index as u32 + 1);
+    if is_object_handle(handle) {
+        return check_object_present(runtime, handle, index);
+    }
+    if is_nv_index_handle(handle) {
+        return index_is_accessible(runtime, handle).map_err(|code| {
+            if code == TPM_RC_HANDLE {
+                code + indexed
+            } else {
+                code
+            }
+        });
+    }
+    if (handle as usize) < IMPLEMENTATION_PCR || handle == TPM_RH_LOCKOUT {
+        return Ok(());
+    }
+    if !matches!(
+        handle,
+        TPM_RH_OWNER | TPM_RH_ENDORSEMENT | TPM_RH_PLATFORM | TPM_RH_NULL
+    ) {
+        return Err(TPM_RC_VALUE + indexed);
+    }
+    if !hierarchy_is_enabled(runtime, handle) {
+        return Err(TPM_RC_HIERARCHY + indexed);
     }
     Ok(())
 }
@@ -177,33 +253,6 @@ fn check_object_present(runtime: &Tpm2Runtime, handle: u32, index: usize) -> Res
         return Err(indexed_handle);
     }
     Ok(())
-}
-
-fn check_authorization<'a>(
-    runtime: &mut Tpm2Runtime,
-    descriptor: &CommandDescriptor,
-    command: &Command<'_>,
-    handles: &[u32],
-    rest: &'a [u8],
-) -> Result<(usize, &'a [u8]), TpmResult> {
-    if command.tag != TPM_ST_SESSIONS {
-        if descriptor.handles.iter().any(|spec| spec.user_auth) {
-            return Err(TPM_RC_AUTH_MISSING);
-        }
-        return Ok((0, rest));
-    }
-    let (size_bytes, after_size) = rest.split_first_chunk::<4>().ok_or(TPM_RC_INSUFFICIENT)?;
-    let auth_size = u32::from_be_bytes(*size_bytes) as usize;
-    if auth_size < MIN_AUTH_AREA_SIZE || auth_size > after_size.len() {
-        return Err(TPM_RC_SIZE);
-    }
-    if !descriptor.sessions_allowed {
-        return Err(TPM_RC_AUTH_CONTEXT);
-    }
-    let sessions = parse_session_area(&after_size[..auth_size])?;
-    record_session_state(runtime, descriptor, handles, &sessions);
-    authorize_sessions(runtime, descriptor, handles, &sessions)?;
-    Ok((sessions.len(), &after_size[auth_size..]))
 }
 
 #[cfg(test)]
@@ -259,7 +308,7 @@ mod tests {
 
     #[test]
     fn known_but_unimplemented_command_answers_command_code() {
-        assert_eq!(dispatch_code(0x0000_0176).code(), TPM_RC_COMMAND_CODE);
+        assert_eq!(dispatch_code(0x0000_0157).code(), TPM_RC_COMMAND_CODE);
     }
 
     #[test]
@@ -309,7 +358,7 @@ mod tests {
     fn unsupported_commands_do_not_mutate_the_runtime() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
-        for code in [0x2000_0000, 0x0000_0176, 0xffff_ffff, 0x0000_0000] {
+        for code in [0x2000_0000, 0x0000_0157, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
             let response = dispatch(&mut runtime, &parsed);
@@ -325,7 +374,7 @@ mod tests {
 
     #[test]
     fn session_tagged_commands_take_the_same_path() {
-        let bytes = framed(0x8002, 0x0000_0176, &[0x00; 4]);
+        let bytes = framed(0x8002, 0x0000_0157, &[0x00; 4]);
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         let mut runtime = empty_state_runtime();

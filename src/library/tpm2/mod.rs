@@ -8,6 +8,7 @@ mod command_bitmap;
 mod compile_constants;
 mod crypto;
 mod dictionary_attack;
+mod entity;
 mod failure_mode;
 #[cfg(test)]
 mod golden_responses;
@@ -30,7 +31,9 @@ mod process;
 mod profile;
 mod public;
 mod random;
+mod rsa_vectors;
 mod runtime;
+mod secret;
 mod self_test;
 mod sequence;
 mod session;

@@ -159,6 +159,15 @@ impl AlgorithmPolicy<'_> {
         allow_null: bool,
     ) -> Result<SymDefObject, TpmResult> {
         let algorithm = reader.u16()?;
+        self.sym_object_body(algorithm, reader, allow_null)
+    }
+
+    fn sym_object_body(
+        &self,
+        algorithm: u16,
+        reader: &mut TemplateReader<'_>,
+        allow_null: bool,
+    ) -> Result<SymDefObject, TpmResult> {
         let compiled = matches!(algorithm, TPM_ALG_AES | TPM_ALG_CAMELLIA | TPM_ALG_TDES);
         if !((compiled && self.enabled(algorithm)) || (algorithm == TPM_ALG_NULL && allow_null)) {
             return Err(TPM_RC_SYMMETRIC);
@@ -191,6 +200,29 @@ impl AlgorithmPolicy<'_> {
             key_bits: Some(key_bits),
             mode: Some(mode),
         })
+    }
+
+    pub(super) fn hash_algorithm(&self, reader: &mut TemplateReader<'_>) -> Result<u16, TpmResult> {
+        self.hash(reader, false)
+    }
+
+    pub(super) fn sym_session(
+        &self,
+        reader: &mut TemplateReader<'_>,
+    ) -> Result<SymDefObject, TpmResult> {
+        let algorithm = reader.u16()?;
+        if algorithm == TPM_ALG_XOR {
+            if !self.enabled(TPM_ALG_XOR) {
+                return Err(TPM_RC_SYMMETRIC);
+            }
+            let hash_alg = self.hash(reader, false)?;
+            return Ok(SymDefObject {
+                algorithm,
+                key_bits: Some(hash_alg),
+                mode: None,
+            });
+        }
+        self.sym_object_body(algorithm, reader, true)
     }
 
     fn asym_scheme_details(

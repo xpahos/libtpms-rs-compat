@@ -344,7 +344,17 @@ impl CurveParameters {
         self.to_affine(&accumulator)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::library::tpm2) fn multiply_point(
+        &self,
+        point: (&BigUint, &BigUint),
+        scalar: &BigUint,
+    ) -> Option<(BigUint, BigUint)> {
+        if scalar.is_zero() {
+            return None;
+        }
+        self.to_affine(&self.multiply_affine(point.0, point.1, scalar))
+    }
+
     pub(in crate::library::tpm2) fn is_point_on_curve(&self, x: &BigUint, y: &BigUint) -> bool {
         let left = self.mul(y, y);
         let x_cubed = self.mul(&self.mul(x, x), x);

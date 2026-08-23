@@ -55,6 +55,39 @@ pub(in crate::library::tpm2) fn kdfa_from(
     Some(out)
 }
 
+pub(in crate::library::tpm2) fn kdfe(
+    hash_alg: u16,
+    z: &[u8],
+    label: &[u8],
+    party_u_info: &[u8],
+    party_v_info: &[u8],
+    size_in_bits: u32,
+) -> Option<Vec<u8>> {
+    let digest_size = super::hash::COMPILED_HASHES
+        .iter()
+        .find(|(algorithm, _)| *algorithm == hash_alg)
+        .map(|(_, size)| *size)?;
+
+    let wanted = usize::try_from(size_in_bits.div_ceil(8)).ok()?;
+    let mut out = Vec::with_capacity(wanted.next_multiple_of(digest_size));
+    let mut counter: u32 = 0;
+    while out.len() < wanted {
+        counter = counter.checked_add(1)?;
+        let mut hasher = Hasher::new(hash_alg)?;
+        hasher.update(&counter.to_be_bytes());
+        hasher.update(z);
+        hasher.update(label);
+        hasher.update(party_u_info);
+        hasher.update(party_v_info);
+        out.extend_from_slice(&hasher.finalize());
+    }
+    out.truncate(wanted);
+    if size_in_bits % 8 != 0 {
+        out[0] &= (1u8 << (size_in_bits % 8)) - 1;
+    }
+    Some(out)
+}
+
 pub(in crate::library::tpm2) fn mgf1(hash_alg: u16, seed: &[u8], length: usize) -> Option<Vec<u8>> {
     let digest_size = super::hash::COMPILED_HASHES
         .iter()

@@ -16,7 +16,7 @@ const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
 
 pub(super) const CLOCK_NOMINAL: u32 = 30_000;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct LiveState {
     pub(super) ph_enable: bool,
     pub(super) startup_locality3: bool,
@@ -176,7 +176,7 @@ impl LiveState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(super) struct RestoredVolatile {
     pub(super) header_version: u16,

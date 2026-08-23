@@ -96,6 +96,29 @@ pub(in crate::library::tpm2) fn sym_cfb_encrypt(
     Ok(())
 }
 
+pub(in crate::library::tpm2) fn sym_cfb_decrypt(
+    algorithm: u16,
+    key: &[u8],
+    iv: &[u8],
+    data: &mut [u8],
+) -> Result<(), TpmResult> {
+    let cipher = SymCipher::new(algorithm, key)?;
+    let block_size = cipher.block_size();
+    if iv.len() != block_size {
+        return Err(TPM_RC_SYMMETRIC);
+    }
+    let mut feedback = iv.to_vec();
+    for chunk in data.chunks_mut(block_size) {
+        let cipher_text = chunk.to_vec();
+        cipher.encrypt_block(&mut feedback);
+        for (byte, mask) in chunk.iter_mut().zip(feedback.iter()) {
+            *byte ^= mask;
+        }
+        feedback[..cipher_text.len()].copy_from_slice(&cipher_text);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

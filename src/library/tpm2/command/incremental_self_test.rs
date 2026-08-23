@@ -1,10 +1,9 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 
-use super::super::failure_mode::{FailureLocation, enter_failure_mode};
 use super::super::marshal::BlobReader;
 use super::super::runtime::Tpm2Runtime;
-use super::super::self_test::SelectedTestError;
+use super::super::self_test::{SelectedTestError, run_incremental_self_test};
 use super::dispatcher::CommandFrame;
 use super::output::CommandOutput;
 
@@ -19,18 +18,14 @@ pub(super) fn execute(
     frame: &CommandFrame<'_>,
 ) -> Result<CommandOutput, TpmResult> {
     let to_test = parse_to_test(frame.parameters)?;
-    match runtime.self_test.run_selected(&to_test) {
+    match run_incremental_self_test(runtime, &to_test) {
         Ok(()) => Ok(CommandOutput::from_parameters(marshal_to_do_list(
             &runtime.self_test.pending_algorithms(),
         ))),
         Err(SelectedTestError::UnsupportedAlgorithm(_)) => {
             Err(TPM_RC_VALUE + RC_INCREMENTAL_SELF_TEST_TO_TEST)
         }
-        Err(SelectedTestError::TestFailed) => {
-            let location = FailureLocation::for_self_test(&runtime.self_test);
-            enter_failure_mode(runtime, location);
-            Err(TPM_RC_FAILURE)
-        }
+        Err(SelectedTestError::TestFailed) => Err(TPM_RC_FAILURE),
     }
 }
 
@@ -73,14 +68,19 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::cancel::CancelSignal;
     use crate::library::constants::TPM_RC_INITIALIZE;
+    use crate::library::tpm2::algorithm::TPM_ALG_OAEP;
     use crate::library::tpm2::algorithm::{
         TPM_ALG_AES, TPM_ALG_ECC, TPM_ALG_ERROR, TPM_ALG_RSA, TPM_ALG_SHA1, TPM_ALG_SHA256,
         TPM_ALG_SHA384, TPM_ALG_SHA512,
     };
+    use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::{DEFAULT_ALGORITHMS_PROFILE, validate_user_profile};
-    use crate::library::tpm2::runtime::{Tpm2Runtime, empty_state_runtime};
+    use crate::library::tpm2::runtime::{
+        Tpm2Runtime, commit_manufactured_state, empty_state_runtime,
+    };
     use crate::library::tpm2::self_test::{
         PrimitiveTest, SelfTestFailure, SelfTestState, always_fails, fails_on_sha384,
+        fails_on_sha512,
     };
     use core::cell::Cell;
 
@@ -88,9 +88,9 @@ mod tests {
         0x80, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00, 0x00, 0x01, 0x00,
         0x0b,
     ];
-    const SWTPM_BIOS_RESPONSE: [u8; 22] = [
-        0x80, 0x01, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
-        0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d,
+    const SWTPM_BIOS_RESPONSE: [u8; 24] = [
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00,
+        0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d, 0x00, 0x17,
     ];
 
     const INSUFFICIENT_PARAMETER_1: u32 = 0x1da;
@@ -145,9 +145,21 @@ mod tests {
     }
 
     fn started_runtime() -> Box<Tpm2Runtime> {
-        let mut runtime = empty_state_runtime();
+        let profile = validate_user_profile(None).expect("the default profile validates");
+        let state =
+            manufacture_state(profile, deterministic_entropy).expect("the state is manufactured");
+        let mut runtime = commit_manufactured_state(state).expect("the state is committed");
+        runtime.entropy = deterministic_entropy;
         runtime.startup_received = true;
         runtime
+    }
+
+    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), u32> {
+        let len = buffer.len() as u8;
+        for (index, byte) in buffer.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_add(len) ^ 0x27;
+        }
+        Ok(())
     }
 
     #[track_caller]
@@ -260,7 +272,7 @@ mod tests {
         runtime.cancel = CancelSignal::signaled();
         assert_eq!(
             to_do_list(&mut runtime, &[TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_AES]),
-            [TPM_ALG_SHA384, TPM_ALG_SHA512]
+            [TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP]
         );
         assert_eq!(RUN_COUNT.with(Cell::get), 3, "every selected test ran");
         assert!(!runtime.failure_mode);
@@ -332,7 +344,8 @@ mod tests {
                 TPM_ALG_AES,
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
-                TPM_ALG_SHA512
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
             ]
         );
         assert!(executed().is_empty());
@@ -351,7 +364,7 @@ mod tests {
             let remaining = to_do_list(&mut runtime, &[algorithm]);
             assert_eq!(executed(), [expected], "algorithm {algorithm:#06x}");
             assert!(!remaining.contains(&algorithm));
-            assert_eq!(remaining.len(), 4);
+            assert_eq!(remaining.len(), 5);
         }
     }
 
@@ -360,7 +373,7 @@ mod tests {
         let mut runtime = recording_runtime();
         assert_eq!(
             to_do_list(&mut runtime, &[TPM_ALG_SHA512, TPM_ALG_AES]),
-            [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384]
+            [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_OAEP]
         );
         assert_eq!(executed(), [PrimitiveTest::Aes256, PrimitiveTest::Sha512]);
     }
@@ -378,7 +391,13 @@ mod tests {
                     TPM_ALG_SHA256
                 ]
             ),
-            [TPM_ALG_SHA1, TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_SHA512]
+            [
+                TPM_ALG_SHA1,
+                TPM_ALG_AES,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
+            ]
         );
         assert_eq!(executed(), [PrimitiveTest::Sha256]);
         assert_eq!(RUN_COUNT.with(Cell::get), 1);
@@ -389,7 +408,7 @@ mod tests {
                 &mut runtime,
                 &[TPM_ALG_SHA256, TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_AES]
             ),
-            [TPM_ALG_SHA1, TPM_ALG_SHA384, TPM_ALG_SHA512]
+            [TPM_ALG_SHA1, TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP]
         );
         assert_eq!(RUN_COUNT.with(Cell::get), 2);
     }
@@ -397,13 +416,13 @@ mod tests {
     #[test]
     fn an_explicitly_requested_completed_primitive_is_tested_again() {
         let mut runtime = started_runtime();
-        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 4);
+        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 5);
         assert!(!runtime.self_test.pending.contains(PrimitiveTest::Sha256));
 
         EXECUTED.with(|executed| executed.set(0));
         RUN_COUNT.with(|count| count.set(0));
         runtime.self_test.set_runner(recording_runner);
-        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 4);
+        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 5);
         assert_eq!(executed(), [PrimitiveTest::Sha256]);
         assert_eq!(RUN_COUNT.with(Cell::get), 1);
     }
@@ -423,7 +442,8 @@ mod tests {
                 TPM_ALG_AES,
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
-                TPM_ALG_SHA512
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
             ]
         );
     }
@@ -439,12 +459,14 @@ mod tests {
                     TPM_ALG_SHA256,
                     TPM_ALG_SHA384,
                     TPM_ALG_SHA512,
-                    TPM_ALG_AES
+                    TPM_ALG_AES,
+                    TPM_ALG_OAEP
                 ]
             ),
             Vec::new()
         );
         assert!(runtime.self_test.pending.is_empty());
+        assert!(!runtime.self_test.oaep_pending);
         assert_eq!(
             run(&mut runtime, &framed(0x8001, &to_test(&[]))),
             [
@@ -486,7 +508,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
         assert_eq!(
             to_do_list(&mut runtime, &[TPM_ALG_SHA256]),
-            [TPM_ALG_AES, TPM_ALG_SHA384],
+            [TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_OAEP],
             "only the profile-enabled primitives with a Rust test remain"
         );
     }
@@ -503,11 +525,179 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_AES,
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
-                TPM_ALG_SHA512
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
             ]
         );
         assert!(!reported.contains(&TPM_ALG_RSA));
         assert!(!reported.contains(&TPM_ALG_ECC));
+    }
+
+    mod oaep {
+        use super::*;
+        use crate::library::tpm2::failure_mode::FailureLocation;
+        use crate::library::tpm2::self_test::{OaepRunner, OaepSelfTestStage};
+
+        thread_local! {
+            static CALLS: Cell<usize> = const { Cell::new(0) };
+        }
+
+        fn counting_runner(seed: &[u8]) -> Result<(), OaepSelfTestStage> {
+            CALLS.with(|calls| calls.set(calls.get() + 1));
+            assert_eq!(seed.len(), 64, "the reference draws a SHA-512 sized seed");
+            crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
+        }
+
+        fn counting_runtime() -> Box<Tpm2Runtime> {
+            CALLS.with(|calls| calls.set(0));
+            let mut runtime = started_runtime();
+            runtime.self_test.set_oaep_runner(counting_runner);
+            runtime
+        }
+
+        fn calls() -> usize {
+            CALLS.with(Cell::get)
+        }
+
+        #[test]
+        fn an_explicit_oaep_request_runs_the_known_answer_test() {
+            let mut runtime = counting_runtime();
+            let requests = runtime.live.orderly.drbg_state.reseed_counter;
+            let reported = to_do_list(&mut runtime, &[TPM_ALG_OAEP]);
+            assert_eq!(calls(), 1);
+            assert!(!runtime.self_test.oaep_pending);
+            assert!(!reported.contains(&TPM_ALG_OAEP));
+            assert_eq!(
+                runtime.live.orderly.drbg_state.reseed_counter,
+                requests + 1,
+                "the reference draws one OAEP seed"
+            );
+        }
+
+        #[test]
+        fn an_explicit_oaep_request_also_clears_the_default_test_hash() {
+            let mut runtime = counting_runtime();
+            assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha512));
+            assert_eq!(
+                to_do_list(&mut runtime, &[TPM_ALG_OAEP]),
+                [TPM_ALG_SHA1, TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384],
+                "TestRsaEncryptDecrypt tests the default hash before OAEP"
+            );
+        }
+
+        #[test]
+        fn an_explicitly_requested_completed_oaep_test_is_run_again() {
+            let mut runtime = counting_runtime();
+            assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_OAEP]).len(), 4);
+            assert_eq!(calls(), 1);
+            assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_OAEP]).len(), 4);
+            assert_eq!(calls(), 2, "an explicit request is never skipped");
+        }
+
+        #[test]
+        fn a_list_carrying_oaep_runs_the_hash_tests_first() {
+            let mut runtime = counting_runtime();
+            runtime.self_test.set_runner(recording_runner);
+            EXECUTED.with(|executed| executed.set(0));
+            RUN_COUNT.with(|count| count.set(0));
+            assert_eq!(
+                to_do_list(&mut runtime, &[TPM_ALG_OAEP, TPM_ALG_SHA512]),
+                [TPM_ALG_SHA1, TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384]
+            );
+            assert_eq!(executed(), [PrimitiveTest::Sha512]);
+            assert_eq!(calls(), 1);
+        }
+
+        #[test]
+        fn a_failing_known_answer_test_fails_the_tpm_at_its_own_vendored_site() {
+            for (runner, location) in table() {
+                let mut runtime = started_runtime();
+                runtime.self_test.set_oaep_runner(runner);
+                assert_eq!(
+                    run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_OAEP]))),
+                    FAILURE,
+                    "{location:?}"
+                );
+                assert!(runtime.failure_mode, "{location:?}");
+                assert_eq!(runtime.failure_diagnostics, location.diagnostics());
+                assert!(runtime.self_test.oaep_pending, "{location:?}");
+                assert!(runtime.self_test.failure.is_none());
+            }
+        }
+
+        #[test]
+        fn the_sha512_dependency_fails_before_the_known_answer_test() {
+            let mut runtime = counting_runtime();
+            runtime.self_test.set_runner(fails_on_sha512);
+            assert_eq!(
+                run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_OAEP]))),
+                FAILURE
+            );
+            assert_eq!(calls(), 0);
+            assert!(runtime.self_test.oaep_pending);
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::HashSelfTest.diagnostics()
+            );
+        }
+
+        #[test]
+        fn an_unusable_drbg_fails_the_known_answer_test_before_it_starts() {
+            let mut runtime = counting_runtime();
+            runtime.live.orderly.drbg_state.drbg_magic ^= 0xffff_ffff;
+            assert_eq!(
+                run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_OAEP]))),
+                FAILURE
+            );
+            assert_eq!(calls(), 0);
+            assert!(runtime.self_test.oaep_pending);
+            assert_eq!(
+                runtime.failure_diagnostics,
+                FailureLocation::DrbgInvalidState.diagnostics()
+            );
+        }
+
+        #[test]
+        fn a_profile_without_rsa_rejects_an_oaep_request_before_anything_runs() {
+            let algorithms: Vec<u8> = DEFAULT_ALGORITHMS_PROFILE
+                .split(|&byte| byte == b',')
+                .filter(|token| *token != b"oaep")
+                .collect::<Vec<&[u8]>>()
+                .join(&b',');
+            let mut runtime = counting_runtime();
+            runtime.self_test = SelfTestState::for_algorithms(&algorithms);
+            assert_eq!(
+                run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_OAEP]))),
+                VALUE_PARAMETER_1
+            );
+            assert_eq!(calls(), 0);
+            assert!(!runtime.failure_mode);
+        }
+
+        fn table() -> [(OaepRunner, FailureLocation); 5] {
+            [
+                (
+                    |_: &[u8]| Err(OaepSelfTestStage::Encrypt),
+                    FailureLocation::RsaOaepEncrypt,
+                ),
+                (
+                    |_: &[u8]| Err(OaepSelfTestStage::RoundTripDecrypt),
+                    FailureLocation::RsaOaepRoundTripDecrypt,
+                ),
+                (
+                    |_: &[u8]| Err(OaepSelfTestStage::RoundTripCompare),
+                    FailureLocation::RsaOaepRoundTripCompare,
+                ),
+                (
+                    |_: &[u8]| Err(OaepSelfTestStage::KnownAnswerDecrypt),
+                    FailureLocation::RsaOaepKnownAnswerDecrypt,
+                ),
+                (
+                    |_: &[u8]| Err(OaepSelfTestStage::KnownAnswerCompare),
+                    FailureLocation::RsaOaepKnownAnswerCompare,
+                ),
+            ]
+        }
     }
 
     #[test]
@@ -575,7 +765,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     fn the_upstream_maximum_count_is_accepted_and_validated() {
         let mut runtime = started_runtime();
         let algorithms = [TPM_ALG_SHA256; 64];
-        assert_eq!(to_do_list(&mut runtime, &algorithms).len(), 4);
+        assert_eq!(to_do_list(&mut runtime, &algorithms).len(), 5);
         assert_eq!(
             run_code(&mut runtime, &framed(0x8001, &to_test(&[0xffff; 64]))),
             VALUE_PARAMETER_1
@@ -664,7 +854,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(run(&mut runtime, &SWTPM_BIOS_COMMAND), SWTPM_BIOS_RESPONSE);
-        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA1]).len(), 3);
+        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA1]).len(), 4);
         assert_eq!(snapshot(&runtime), before);
     }
 
@@ -692,7 +882,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_AES,
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
-                TPM_ALG_SHA512
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
             ]
         );
     }

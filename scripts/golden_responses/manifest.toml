@@ -85,6 +85,22 @@ fixture = "src/library/tpm2/testdata/golden_responses/pcr_event.bin"
 reader = "src/library/tpm2/golden_responses/pcr_event.rs"
 commands = ["TPM2_PCR_Event"]
 
+[families."policy-sessions"]
+magic = "PSORACLE"
+scenario = "scripts/golden_responses/scenarios/policy_sessions.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/policy_sessions.bin"
+reader = "src/library/tpm2/golden_responses/policy_sessions.rs"
+commands = [
+    "TPM2_PolicyAuthValue",
+    "TPM2_PolicyCommandCode",
+    "TPM2_PolicyOR",
+    "TPM2_StartAuthSession",
+    "TPM2_PolicyPCR",
+    "TPM2_PolicyRestart",
+    "TPM2_PolicyGetDigest",
+    "TPM2_PolicyPassword",
+]
+
 [families."read-public-verify-signature"]
 magic = "RVORACLE"
 scenario = "scripts/golden_responses/scenarios/read_public_verify_signature.scenario"
@@ -439,11 +455,13 @@ status = "todo"
 
 [commands.PolicyAuthValue]
 code = 0x0000016b
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyCommandCode]
 code = 0x0000016c
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyCounterTimer]
 code = 0x0000016d
@@ -463,7 +481,8 @@ status = "todo"
 
 [commands.PolicyOR]
 code = 0x00000171
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyTicket]
 code = 0x00000172
@@ -480,7 +499,8 @@ status = "todo"
 
 [commands.StartAuthSession]
 code = 0x00000176
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.VerifySignature]
 code = 0x00000177
@@ -522,11 +542,13 @@ reason = "pinned by module tests predating the fixture format"
 
 [commands.PolicyPCR]
 code = 0x0000017f
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyRestart]
 code = 0x00000180
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.ReadClock]
 code = 0x00000181
@@ -566,7 +588,8 @@ status = "todo"
 
 [commands.PolicyGetDigest]
 code = 0x00000189
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.TestParms]
 code = 0x0000018a
@@ -578,7 +601,8 @@ status = "todo"
 
 [commands.PolicyPassword]
 code = 0x0000018c
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.ZGen_2Phase]
 code = 0x0000018d

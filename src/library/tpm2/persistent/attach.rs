@@ -86,7 +86,7 @@ pub(in crate::library::tpm2) struct OwnedCommandBitmap {
     pub(in crate::library::tpm2) bytes: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedPersistentData {
     pub(in crate::library::tpm2) section_version: u16,
@@ -684,7 +684,7 @@ impl OwnedUserNvramEntry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedUserNvram {
     pub(in crate::library::tpm2) entries: Vec<OwnedUserNvramEntry>,
@@ -758,7 +758,7 @@ fn own_user_nvram(user: &UserNvram<'_>) -> Result<OwnedUserNvram, TpmResult> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedPersistentState {
     pub(in crate::library::tpm2) profile: ValidatedProfile,

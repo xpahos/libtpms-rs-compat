@@ -25,6 +25,11 @@ pub(in crate::library::tpm2) enum FailureLocation {
     NvCommit,
     HashSelfTest,
     SymmetricSelfTest,
+    RsaOaepEncrypt,
+    RsaOaepRoundTripDecrypt,
+    RsaOaepRoundTripCompare,
+    RsaOaepKnownAnswerDecrypt,
+    RsaOaepKnownAnswerCompare,
     DrbgInvalidState,
     DrbgEntropy,
 }
@@ -34,11 +39,46 @@ const fn function_word(name: &[u8; 4]) -> u32 {
 }
 
 impl FailureLocation {
+    #[cfg(test)]
+    pub(in crate::library::tpm2) const ALL: [Self; 10] = [
+        Self::NvCommit,
+        Self::HashSelfTest,
+        Self::SymmetricSelfTest,
+        Self::RsaOaepEncrypt,
+        Self::RsaOaepRoundTripDecrypt,
+        Self::RsaOaepRoundTripCompare,
+        Self::RsaOaepKnownAnswerDecrypt,
+        Self::RsaOaepKnownAnswerCompare,
+        Self::DrbgInvalidState,
+        Self::DrbgEntropy,
+    ];
+
+    #[cfg(test)]
+    const fn position(self) -> usize {
+        match self {
+            Self::NvCommit => 0,
+            Self::HashSelfTest => 1,
+            Self::SymmetricSelfTest => 2,
+            Self::RsaOaepEncrypt => 3,
+            Self::RsaOaepRoundTripDecrypt => 4,
+            Self::RsaOaepRoundTripCompare => 5,
+            Self::RsaOaepKnownAnswerDecrypt => 6,
+            Self::RsaOaepKnownAnswerCompare => 7,
+            Self::DrbgInvalidState => 8,
+            Self::DrbgEntropy => 9,
+        }
+    }
+
     pub(in crate::library::tpm2) const fn diagnostics(self) -> FailureDiagnostics {
         let (name, line, code) = match self {
             Self::NvCommit => (b"Exec", 318, FATAL_ERROR_INTERNAL),
             Self::HashSelfTest => (b"Test", 155, FATAL_ERROR_SELF_TEST),
             Self::SymmetricSelfTest => (b"Test", 259, FATAL_ERROR_SELF_TEST),
+            Self::RsaOaepEncrypt => (b"Test", 491, FATAL_ERROR_SELF_TEST),
+            Self::RsaOaepRoundTripDecrypt => (b"Test", 497, FATAL_ERROR_SELF_TEST),
+            Self::RsaOaepRoundTripCompare => (b"Test", 502, FATAL_ERROR_SELF_TEST),
+            Self::RsaOaepKnownAnswerDecrypt => (b"Test", 508, FATAL_ERROR_SELF_TEST),
+            Self::RsaOaepKnownAnswerCompare => (b"Test", 512, FATAL_ERROR_SELF_TEST),
             Self::DrbgInvalidState => (b"DRBG", 940, FATAL_ERROR_INTERNAL),
             Self::DrbgEntropy => (b"Encr", 387, FATAL_ERROR_ENTROPY),
         };
@@ -687,18 +727,44 @@ mod tests {
                 .collect()
         }
 
-        fn diagnostics_for(function: &str, line: u32) -> FailureDiagnostics {
+        fn fatal_error_code(form: &str) -> u32 {
+            if form == "SELF_TEST_FAILURE" {
+                return FATAL_ERROR_SELF_TEST;
+            }
+            let arguments = form
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .map(|(inside, _)| inside)
+                .unwrap_or_else(|| panic!("{form} carries no fatal error code"));
+            match arguments.split(',').next().map(str::trim) {
+                Some("FATAL_ERROR_INTERNAL") => FATAL_ERROR_INTERNAL,
+                Some("FATAL_ERROR_ENTROPY") => FATAL_ERROR_ENTROPY,
+                Some("FATAL_ERROR_SELF_TEST") => FATAL_ERROR_SELF_TEST,
+                other => panic!("unexpected fatal error code {other:?}"),
+            }
+        }
+
+        fn diagnostics_for(function: &str, line: u32, form: &str) -> FailureDiagnostics {
             let word: [u8; 4] = function.as_bytes()[..4].try_into().expect("four bytes");
-            let code = match function {
-                "ExecuteCommand" | "DRBG_Generate" => FATAL_ERROR_INTERNAL,
-                "EncryptDRBG" => FATAL_ERROR_ENTROPY,
-                "TestHash" | "TestSymmetricAlgorithm" => FATAL_ERROR_SELF_TEST,
-                other => panic!("unexpected pinned function {other}"),
-            };
             FailureDiagnostics {
                 function: u32::from_le_bytes(word),
                 line,
-                code,
+                code: fatal_error_code(form),
+            }
+        }
+
+        fn vendored_site(location: FailureLocation) -> (&'static str, u32) {
+            match location {
+                FailureLocation::NvCommit => ("ExecuteCommand", 318),
+                FailureLocation::HashSelfTest => ("TestHash", 155),
+                FailureLocation::SymmetricSelfTest => ("TestSymmetricAlgorithm", 259),
+                FailureLocation::RsaOaepEncrypt => ("TestRsaEncryptDecrypt", 491),
+                FailureLocation::RsaOaepRoundTripDecrypt => ("TestRsaEncryptDecrypt", 497),
+                FailureLocation::RsaOaepRoundTripCompare => ("TestRsaEncryptDecrypt", 502),
+                FailureLocation::RsaOaepKnownAnswerDecrypt => ("TestRsaEncryptDecrypt", 508),
+                FailureLocation::RsaOaepKnownAnswerCompare => ("TestRsaEncryptDecrypt", 512),
+                FailureLocation::DrbgInvalidState => ("DRBG_Generate", 940),
+                FailureLocation::DrbgEntropy => ("EncryptDRBG", 387),
             }
         }
 
@@ -716,22 +782,19 @@ mod tests {
                              re-derive the FailureLocation mapping"
                         )
                     })
+                    .clone()
             };
-            for (location, function, line) in [
-                (FailureLocation::NvCommit, "ExecuteCommand", 318),
-                (FailureLocation::HashSelfTest, "TestHash", 155),
-                (
-                    FailureLocation::SymmetricSelfTest,
-                    "TestSymmetricAlgorithm",
-                    259,
-                ),
-                (FailureLocation::DrbgInvalidState, "DRBG_Generate", 940),
-                (FailureLocation::DrbgEntropy, "EncryptDRBG", 387),
-            ] {
-                find(function, line);
+            for (index, location) in FailureLocation::ALL.into_iter().enumerate() {
+                assert_eq!(
+                    location.position(),
+                    index,
+                    "{location:?} is missing from FailureLocation::ALL"
+                );
+                let (function, line) = vendored_site(location);
+                let (_, _, _, form) = find(function, line);
                 assert_eq!(
                     location.diagnostics(),
-                    diagnostics_for(function, line),
+                    diagnostics_for(function, line, &form),
                     "{function}:{line}"
                 );
             }

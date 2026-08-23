@@ -1,3 +1,5 @@
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+
 use crate::ffi_types::TpmResult;
 
 use super::bignum::BigUint;
@@ -157,6 +159,96 @@ pub(in crate::library::tpm2) fn rsa_private_key_op(
     exponent.private_key_op(value)
 }
 
+fn hash_length(hash_alg: u16) -> Option<usize> {
+    super::hash::COMPILED_HASHES
+        .iter()
+        .find(|(algorithm, _)| *algorithm == hash_alg)
+        .map(|(_, size)| *size)
+}
+
+fn label_digest(hash_alg: u16, label: &[u8]) -> Option<Vec<u8>> {
+    let mut hasher = super::hash::Hasher::new(hash_alg)?;
+    hasher.update(label);
+    Some(hasher.finalize())
+}
+
+pub(in crate::library::tpm2) fn oaep_encode(
+    hash_alg: u16,
+    label: &[u8],
+    message: &[u8],
+    seed: &[u8],
+    modulus_len: usize,
+) -> Option<Vec<u8>> {
+    let hash_len = hash_length(hash_alg)?;
+    if seed.len() != hash_len || modulus_len < 2 * hash_len + 2 {
+        return None;
+    }
+    let db_len = modulus_len - hash_len - 1;
+    if message.len() + 2 * hash_len + 2 > modulus_len {
+        return None;
+    }
+
+    let mut db = vec![0u8; db_len];
+    db[..hash_len].copy_from_slice(&label_digest(hash_alg, label)?);
+    db[db_len - message.len() - 1] = 0x01;
+    db[db_len - message.len()..].copy_from_slice(message);
+
+    let db_mask = super::kdf::mgf1(hash_alg, seed, db_len)?;
+    for (byte, mask) in db.iter_mut().zip(db_mask.iter()) {
+        *byte ^= mask;
+    }
+    let seed_mask = super::kdf::mgf1(hash_alg, &db, hash_len)?;
+
+    let mut padded = vec![0u8; modulus_len];
+    for index in 0..hash_len {
+        padded[1 + index] = seed[index] ^ seed_mask[index];
+    }
+    padded[hash_len + 1..].copy_from_slice(&db);
+    Some(padded)
+}
+
+pub(in crate::library::tpm2) fn oaep_decode(
+    hash_alg: u16,
+    label: &[u8],
+    padded: &[u8],
+) -> Option<Vec<u8>> {
+    let hash_len = hash_length(hash_alg)?;
+    if padded.len() < 2 * hash_len + 2 {
+        return None;
+    }
+
+    let mut seed = super::kdf::mgf1(hash_alg, &padded[hash_len + 1..], hash_len)?;
+    for (index, byte) in seed.iter_mut().enumerate() {
+        *byte ^= padded[1 + index];
+    }
+
+    let mut db = super::kdf::mgf1(hash_alg, &seed, padded.len() - hash_len - 1)?;
+    for (index, byte) in db.iter_mut().enumerate() {
+        *byte ^= padded[hash_len + 1 + index];
+    }
+
+    let mut valid = padded[0].ct_eq(&0);
+    valid &= label_digest(hash_alg, label)?.ct_eq(&db[..hash_len]);
+
+    let mut delimiter_seen = Choice::from(0u8);
+    let mut padding_is_clean = Choice::from(1u8);
+    let mut message_start = 0u32;
+    for (index, &byte) in db[hash_len..].iter().enumerate() {
+        let is_delimiter = byte.ct_eq(&0x01);
+        let is_padding = byte.ct_eq(&0x00);
+        let first_delimiter = is_delimiter & !delimiter_seen;
+        padding_is_clean &= delimiter_seen | is_padding | is_delimiter;
+        message_start.conditional_assign(&(index as u32 + 1), first_delimiter);
+        delimiter_seen |= is_delimiter;
+    }
+    valid &= delimiter_seen & padding_is_clean;
+
+    if !bool::from(valid) {
+        return None;
+    }
+    Some(db[hash_len + message_start as usize..].to_vec())
+}
+
 pub(in crate::library::tpm2) fn rsa_public_key_op(
     modulus: &BigUint,
     exponent: u32,
@@ -275,6 +367,192 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
         });
     }
     Err(RsaKeyError::NoResult)
+}
+
+#[cfg(test)]
+mod oaep_tests {
+    use super::*;
+    use crate::library::tpm2::algorithm::{TPM_ALG_NULL, TPM_ALG_SHA256};
+
+    const MODULUS_LEN: usize = 256;
+    const HASH: u16 = TPM_ALG_SHA256;
+    const LABEL: &[u8] = b"SECRET\0";
+
+    fn seed() -> Vec<u8> {
+        (0..32u8).map(|index| index ^ 0x37).collect()
+    }
+
+    fn encoded(message: &[u8]) -> Vec<u8> {
+        oaep_encode(HASH, LABEL, message, &seed(), MODULUS_LEN).expect("the encode succeeds")
+    }
+
+    fn strip(padded: &[u8]) -> Vec<u8> {
+        let hash_len = hash_length(HASH).expect("a compiled hash");
+        let mut seed = super::super::kdf::mgf1(HASH, &padded[hash_len + 1..], hash_len)
+            .expect("mgf1 succeeds");
+        for (index, byte) in seed.iter_mut().enumerate() {
+            *byte ^= padded[1 + index];
+        }
+        let mut db = super::super::kdf::mgf1(HASH, &seed, padded.len() - hash_len - 1)
+            .expect("mgf1 succeeds");
+        for (index, byte) in db.iter_mut().enumerate() {
+            *byte ^= padded[hash_len + 1 + index];
+        }
+        db
+    }
+
+    fn reencode(leading: u8, db: &[u8]) -> Vec<u8> {
+        let hash_len = hash_length(HASH).expect("a compiled hash");
+        let mut padded = vec![0u8; MODULUS_LEN];
+        padded[0] = leading;
+        let mut masked_db = db.to_vec();
+        let db_mask = super::super::kdf::mgf1(HASH, &seed(), db.len()).expect("mgf1 succeeds");
+        for (byte, mask) in masked_db.iter_mut().zip(db_mask.iter()) {
+            *byte ^= mask;
+        }
+        let seed_mask = super::super::kdf::mgf1(HASH, &masked_db, hash_len).expect("mgf1 succeeds");
+        for index in 0..hash_len {
+            padded[1 + index] = seed()[index] ^ seed_mask[index];
+        }
+        padded[hash_len + 1..].copy_from_slice(&masked_db);
+        padded
+    }
+
+    #[test]
+    fn a_valid_encoded_salt_round_trips() {
+        for length in [0usize, 1, 32, 64, 190] {
+            let message: Vec<u8> = (0..length).map(|index| index as u8).collect();
+            let padded = encoded(&message);
+            assert_eq!(padded.len(), MODULUS_LEN, "message of {length} bytes");
+            assert_eq!(
+                oaep_decode(HASH, LABEL, &padded).as_deref(),
+                Some(&message[..]),
+                "message of {length} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unsupported_hash_or_short_block_fails_on_public_inputs_alone() {
+        let padded = encoded(b"salt");
+        assert!(oaep_decode(TPM_ALG_NULL, LABEL, &padded).is_none());
+        assert!(oaep_decode(HASH, LABEL, &padded[..65]).is_none());
+        assert!(oaep_decode(HASH, LABEL, &[]).is_none());
+    }
+
+    #[test]
+    fn a_wrong_leading_byte_is_rejected() {
+        let db = strip(&encoded(b"salt"));
+        for leading in [0x01u8, 0x80, 0xff] {
+            assert!(oaep_decode(HASH, LABEL, &reencode(leading, &db)).is_none());
+        }
+    }
+
+    #[test]
+    fn a_wrong_label_hash_is_rejected() {
+        let padded = encoded(b"salt");
+        assert!(oaep_decode(HASH, b"OTHER\0", &padded).is_none());
+        let mut db = strip(&padded);
+        db[0] ^= 0x01;
+        assert!(oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none());
+        let mut db = strip(&padded);
+        db[31] ^= 0x80;
+        assert!(oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none());
+    }
+
+    #[test]
+    fn a_missing_delimiter_is_rejected() {
+        let hash_len = hash_length(HASH).expect("a compiled hash");
+        let mut db = strip(&encoded(b"salt"));
+        for byte in db[hash_len..].iter_mut() {
+            *byte = 0x00;
+        }
+        assert!(oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none());
+    }
+
+    #[test]
+    fn nonzero_padding_before_the_delimiter_is_rejected() {
+        let hash_len = hash_length(HASH).expect("a compiled hash");
+        let padded = encoded(b"salt");
+        let original = strip(&padded);
+        let delimiter = hash_len
+            + original[hash_len..]
+                .iter()
+                .position(|&byte| byte == 0x01)
+                .expect("the encoder writes a delimiter");
+        for position in [hash_len, hash_len + 1, delimiter - 1] {
+            let mut db = original.clone();
+            db[position] = 0x02;
+            assert!(
+                oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none(),
+                "padding byte {position}"
+            );
+        }
+    }
+
+    #[test]
+    fn delimiters_at_different_positions_decode_their_own_message() {
+        let hash_len = hash_length(HASH).expect("a compiled hash");
+        let db_len = MODULUS_LEN - hash_len - 1;
+        for delimiter in [hash_len, hash_len + 1, db_len - 2, db_len - 1] {
+            let mut db = vec![0u8; db_len];
+            db[..hash_len].copy_from_slice(&label_digest(HASH, LABEL).expect("the label hashes"));
+            db[delimiter] = 0x01;
+            for (offset, byte) in db[delimiter + 1..].iter_mut().enumerate() {
+                *byte = offset as u8 | 0x80;
+            }
+            let expected: Vec<u8> = (0..db_len - delimiter - 1)
+                .map(|offset| offset as u8 | 0x80)
+                .collect();
+            assert_eq!(
+                oaep_decode(HASH, LABEL, &reencode(0, &db)).as_deref(),
+                Some(&expected[..]),
+                "delimiter at {delimiter}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_invalid_encoding_reports_the_same_absent_result() {
+        let hash_len = hash_length(HASH).expect("a compiled hash");
+        let original = strip(&encoded(b"salt"));
+        let mut invalid: Vec<Vec<u8>> = Vec::new();
+        invalid.push(reencode(0x01, &original));
+        let mut db = original.clone();
+        db[3] ^= 0xff;
+        invalid.push(reencode(0, &db));
+        let mut db = original.clone();
+        for byte in db[hash_len..].iter_mut() {
+            *byte = 0x00;
+        }
+        invalid.push(reencode(0, &db));
+        let mut db = original.clone();
+        db[hash_len] = 0x7f;
+        invalid.push(reencode(0, &db));
+        for (index, padded) in invalid.iter().enumerate() {
+            assert!(
+                oaep_decode(HASH, LABEL, padded).is_none(),
+                "invalid encoding {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_encoded_message_is_rejected() {
+        let padded = encoded(b"salt");
+        for length in [0usize, 1, 65, 66, 128, MODULUS_LEN - 1] {
+            let truncated = &padded[..length];
+            let decoded = oaep_decode(HASH, LABEL, truncated);
+            assert!(decoded.is_none(), "length {length}");
+        }
+    }
+
+    #[test]
+    fn the_encoder_rejects_messages_that_cannot_fit() {
+        assert!(oaep_encode(HASH, LABEL, &[0u8; 191], &seed(), MODULUS_LEN).is_none());
+        assert!(oaep_encode(HASH, LABEL, b"salt", &[0u8; 31], MODULUS_LEN).is_none());
+        assert!(oaep_encode(HASH, LABEL, b"salt", &seed(), 65).is_none());
+    }
 }
 
 #[cfg(test)]

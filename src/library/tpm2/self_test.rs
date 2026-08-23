@@ -4,8 +4,8 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 
 use super::algorithm::{
-    TPM_ALG_AES, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512, algorithm_enabled,
-    hash_profile_name,
+    TPM_ALG_AES, TPM_ALG_OAEP, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512,
+    algorithm_enabled, hash_profile_name,
 };
 use super::capability::algorithms::enabled_algorithms;
 use super::pcr::BankHasher;
@@ -270,10 +270,16 @@ pub(in crate::library::tpm2) enum SelectedTestError {
     TestFailed,
 }
 
+pub(in crate::library::tpm2) use super::rsa_vectors::{OAEP_TEST_SEED_SIZE, OaepSelfTestStage};
+
+pub(in crate::library::tpm2) type OaepRunner = fn(&[u8]) -> Result<(), OaepSelfTestStage>;
+
 pub(in crate::library::tpm2) struct SelfTestState {
     pub(in crate::library::tpm2) implemented: PrimitiveTestSet,
     pub(in crate::library::tpm2) pending: PrimitiveTestSet,
     pub(in crate::library::tpm2) failure: Option<SelfTestFailure>,
+    pub(in crate::library::tpm2) oaep_pending: bool,
+    oaep_runner: OaepRunner,
     enabled: Box<[u16]>,
     runner: PrimitiveRunner,
 }
@@ -285,6 +291,8 @@ impl SelfTestState {
             implemented,
             pending: implemented,
             failure: None,
+            oaep_pending: true,
+            oaep_runner: super::rsa_vectors::run_oaep_known_answer,
             enabled: enabled_algorithms(profile_algorithms).collect(),
             runner: PrimitiveTest::run,
         }
@@ -299,6 +307,8 @@ impl SelfTestState {
             implemented: self.implemented,
             pending: self.implemented,
             failure: None,
+            oaep_pending: true,
+            oaep_runner: super::rsa_vectors::run_oaep_known_answer,
             enabled: self.enabled.clone(),
             runner: PrimitiveTest::run,
         }
@@ -307,6 +317,11 @@ impl SelfTestState {
     #[cfg(test)]
     pub(in crate::library::tpm2) fn set_runner(&mut self, runner: PrimitiveRunner) {
         self.runner = runner;
+    }
+
+    #[cfg(test)]
+    pub(in crate::library::tpm2) fn set_oaep_runner(&mut self, runner: OaepRunner) {
+        self.oaep_runner = runner;
     }
 
     #[cfg(test)]
@@ -390,6 +405,7 @@ impl SelfTestState {
             .into_iter()
             .filter(|&test| self.pending.contains(test))
             .map(PrimitiveTest::algorithm)
+            .chain(self.oaep_pending.then_some(TPM_ALG_OAEP))
             .collect();
         algorithms.sort_unstable();
         algorithms
@@ -488,6 +504,76 @@ fn parks_on_the_gate_once(_test: PrimitiveTest) -> bool {
         .recv_timeout(GATE_TIMEOUT)
         .expect("the test thread released the parked command");
     true
+}
+
+pub(in crate::library::tpm2) fn self_test_rsa_oaep(
+    runtime: &mut super::runtime::Tpm2Runtime,
+) -> Result<(), TpmResult> {
+    if !runtime.self_test.oaep_pending {
+        return Ok(());
+    }
+    run_oaep_test(runtime)
+}
+
+fn run_oaep_test(runtime: &mut super::runtime::Tpm2Runtime) -> Result<(), TpmResult> {
+    self_test_algorithm(runtime, TPM_ALG_SHA512)?;
+    let seed = super::random::generate_random(runtime, OAEP_TEST_SEED_SIZE)?;
+    match (runtime.self_test.oaep_runner)(&seed) {
+        Ok(()) => {
+            runtime.self_test.oaep_pending = false;
+            Ok(())
+        }
+        Err(stage) => {
+            super::failure_mode::enter_failure_mode(runtime, oaep_failure_location(stage));
+            Err(TPM_RC_FAILURE)
+        }
+    }
+}
+
+pub(in crate::library::tpm2) fn run_self_test(
+    runtime: &mut super::runtime::Tpm2Runtime,
+    full_test: bool,
+) -> Result<(), TpmResult> {
+    if full_test {
+        runtime.self_test.oaep_pending = true;
+    }
+    if let Err(code) = runtime.self_test.run(full_test) {
+        enter_self_test_failure_mode(runtime);
+        return Err(code);
+    }
+    self_test_rsa_oaep(runtime)
+}
+
+pub(in crate::library::tpm2) fn run_incremental_self_test(
+    runtime: &mut super::runtime::Tpm2Runtime,
+    requested: &[u16],
+) -> Result<(), SelectedTestError> {
+    if let Err(error) = runtime.self_test.run_selected(requested) {
+        if error == SelectedTestError::TestFailed {
+            enter_self_test_failure_mode(runtime);
+        }
+        return Err(error);
+    }
+    if requested.contains(&TPM_ALG_OAEP) {
+        run_oaep_test(runtime).map_err(|_| SelectedTestError::TestFailed)?;
+    }
+    Ok(())
+}
+
+fn enter_self_test_failure_mode(runtime: &mut super::runtime::Tpm2Runtime) {
+    let location = super::failure_mode::FailureLocation::for_self_test(&runtime.self_test);
+    super::failure_mode::enter_failure_mode(runtime, location);
+}
+
+const fn oaep_failure_location(stage: OaepSelfTestStage) -> super::failure_mode::FailureLocation {
+    use super::failure_mode::FailureLocation;
+    match stage {
+        OaepSelfTestStage::Encrypt => FailureLocation::RsaOaepEncrypt,
+        OaepSelfTestStage::RoundTripDecrypt => FailureLocation::RsaOaepRoundTripDecrypt,
+        OaepSelfTestStage::RoundTripCompare => FailureLocation::RsaOaepRoundTripCompare,
+        OaepSelfTestStage::KnownAnswerDecrypt => FailureLocation::RsaOaepKnownAnswerDecrypt,
+        OaepSelfTestStage::KnownAnswerCompare => FailureLocation::RsaOaepKnownAnswerCompare,
+    }
 }
 
 pub(in crate::library::tpm2) fn self_test_algorithm(
@@ -1017,7 +1103,13 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         assert!(state.pending.contains(PrimitiveTest::Sha512));
         assert_eq!(
             state.pending_algorithms(),
-            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512],
+            [
+                TPM_ALG_AES,
+                TPM_ALG_SHA256,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
+            ],
             "the reported list stays numerically sorted"
         );
     }
@@ -1184,16 +1276,21 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_AES,
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
-                TPM_ALG_SHA512
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
             ]
         );
         assert_eq!(state.run_selected(&[TPM_ALG_SHA1, TPM_ALG_SHA384]), Ok(()));
         assert_eq!(
             state.pending_algorithms(),
-            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA512]
+            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA512, TPM_ALG_OAEP]
         );
         assert_eq!(state.run(true), Ok(()));
-        assert_eq!(state.pending_algorithms(), Vec::new());
+        assert_eq!(
+            state.pending_algorithms(),
+            [TPM_ALG_OAEP],
+            "the primitive engine never clears the OAEP known-answer test"
+        );
     }
 
     #[test]
@@ -1202,7 +1299,13 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         let mut state = SelfTestState::for_algorithms(&algorithms);
         assert_eq!(
             state.pending_algorithms(),
-            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512]
+            [
+                TPM_ALG_AES,
+                TPM_ALG_SHA256,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
+            ]
         );
         assert_eq!(
             state.run_selected(&[TPM_ALG_SHA1]),
@@ -1374,7 +1477,13 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         assert_eq!(state.run_pending_algorithm(TPM_ALG_SHA256), Ok(()));
         assert_eq!(
             state.pending_algorithms(),
-            [TPM_ALG_SHA1, TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_SHA512]
+            [
+                TPM_ALG_SHA1,
+                TPM_ALG_AES,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP
+            ]
         );
     }
 

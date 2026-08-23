@@ -18,7 +18,7 @@ mod sha_state;
 pub(in crate::library::tpm2) mod work;
 
 pub(super) use bignum::BigUint;
-pub(super) use cfb::{sym_block_size, sym_cfb_encrypt};
+pub(super) use cfb::{sym_block_size, sym_cfb_decrypt, sym_cfb_encrypt};
 pub(super) use des::{generate_tdes_key, validate_tdes_key};
 pub(super) use df::df_buffer;
 pub(super) use drbg::{DRBG_MAGIC, Drbg, ReseedError, StirError};
@@ -29,8 +29,10 @@ pub(super) use ecc::{
 pub(in crate::library) use entropy::{EntropySource, os_entropy};
 pub(super) use hash::{COMPILED_HASHES, Hasher};
 pub(super) use hmac::HmacState;
+pub(super) use kdf::kdfe;
 pub(super) use kdf::{kdfa, kdfa_from, mgf1};
 pub(super) use rand_state::{LiveDrbg, SeededRand};
+pub(super) use rsa::{RSA_DEFAULT_PUBLIC_EXPONENT, oaep_decode, oaep_encode};
 pub(super) use rsa::{RsaKeyError, generate_rsa_key, rsa_private_key_op, rsa_public_key_op};
 pub(super) use sha_state::{SequenceHmac, ShaState, ShaStatePayload};
 
