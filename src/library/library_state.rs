@@ -732,8 +732,9 @@ fn host_locality_raw(callbacks: &LibtpmsCallbacks) -> u32 {
         return 0;
     };
     let mut locality: crate::ffi_types::TpmModifierIndicator = 0;
-    // SAFETY: the copied callback has the exact C ABI signature, and the
-    // out-pointer references a live local for the duration of the call.
+    // SAFETY: the registered callback has the exact C ABI signature and must
+    // not unwind, and the out-pointer references a live local for the
+    // duration of the call.
     let _ = unsafe { callback(&mut locality, 0) };
     locality
 }
@@ -749,8 +750,9 @@ fn host_physical_presence(callbacks: &LibtpmsCallbacks) -> bool {
         return false;
     };
     let mut asserted: crate::ffi_types::TpmBool = 0;
-    // SAFETY: the copied callback has the exact C ABI signature, and the
-    // out-pointer references a live local for the duration of the call.
+    // SAFETY: the registered callback has the exact C ABI signature and must
+    // not unwind, and the out-pointer references a live local for the
+    // duration of the call.
     let result = unsafe { callback(&mut asserted, 0) };
     result == crate::library::constants::TPM_SUCCESS && asserted != 0
 }
@@ -2234,6 +2236,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn volatile_state_falls_back_to_the_permanent_state_in_the_backend() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let library = tpm2_library();
         library.register_callbacks(LibtpmsCallbacks {
             tpm_nvram_init: Some(nvram_init_ok),

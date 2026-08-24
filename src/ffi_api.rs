@@ -198,16 +198,59 @@ pub(crate) fn get_info(flags: TpmlibInfoFlags) -> *mut c_char {
     }
 }
 
-unsafe fn copy_callbacks(callbacks: *const LibtpmsCallbacks) -> LibtpmsCallbacks {
-    // SAFETY: the caller guarantees `callbacks` points to a struct whose
-    // first field declares how many bytes of it are valid.
-    let declared = unsafe { (*callbacks).size_of_struct };
-    let copy_len =
+const CALLBACK_FIELD_ENDS: [usize; 8] = {
+    const LAYOUT: LibtpmsCallbacks = LibtpmsCallbacks::empty();
+    macro_rules! field_end {
+        ($field:ident) => {
+            core::mem::offset_of!(LibtpmsCallbacks, $field) + core::mem::size_of_val(&LAYOUT.$field)
+        };
+    }
+    [
+        field_end!(size_of_struct),
+        field_end!(tpm_nvram_init),
+        field_end!(tpm_nvram_loaddata),
+        field_end!(tpm_nvram_storedata),
+        field_end!(tpm_nvram_deletename),
+        field_end!(tpm_io_init),
+        field_end!(tpm_io_getlocality),
+        field_end!(tpm_io_getphysicalpresence),
+    ]
+};
+
+fn callbacks_copy_len(declared: c_int) -> usize {
+    let capped =
         usize::try_from(declared).map_or(0, |n| n.min(core::mem::size_of::<LibtpmsCallbacks>()));
+    CALLBACK_FIELD_ENDS
+        .into_iter()
+        .filter(|end| *end <= capped)
+        .max()
+        .unwrap_or(0)
+}
+
+/// # Safety
+///
+/// `callbacks` must be non-null and its `size_of_struct` field must be
+/// readable. Only the prefix `callbacks_copy_len(size_of_struct)` selects has
+/// to be readable for this call: the declared size is capped to the known
+/// `LibtpmsCallbacks` layout and rounded down to a complete field, so a caller
+/// declaring more than it owns - `i32::MAX` included - only has to back that
+/// capped prefix. Each callback field completely inside that prefix must hold
+/// either NULL, which reads back as `None`, or a function pointer matching
+/// that field's C ABI signature. A non-NULL pointer must point to code with
+/// that signature, must remain callable for as long as it stays registered,
+/// and must not unwind across the C ABI boundary.
+unsafe fn copy_callbacks(callbacks: *const LibtpmsCallbacks) -> LibtpmsCallbacks {
+    // SAFETY: `size_of_struct` is readable per this function's contract; the
+    // read is unaligned because a C caller owes Rust no alignment guarantee.
+    let declared = unsafe { core::ptr::addr_of!((*callbacks).size_of_struct).read_unaligned() };
+    let copy_len = callbacks_copy_len(declared);
     let mut stored = core::mem::MaybeUninit::<LibtpmsCallbacks>::zeroed();
-    // SAFETY: `copy_len` bytes are valid to read per the size contract and
-    // fit in `stored`; all-zero bytes are a valid LibtpmsCallbacks (0 size,
-    // all callbacks None), so the partial overwrite leaves it valid.
+    // SAFETY: `copy_len` is what `callbacks_copy_len` selected, which this
+    // function's contract declares readable, and it is at most
+    // `size_of::<LibtpmsCallbacks>()`, so it fits `stored`. All-zero bytes are
+    // a valid LibtpmsCallbacks (0 size, all callbacks None) and `copy_len` ends
+    // on a field boundary, so every field left untouched stays None instead of
+    // holding a partial pointer.
     unsafe {
         core::ptr::copy_nonoverlapping(
             callbacks.cast::<u8>(),
@@ -250,9 +293,10 @@ pub(crate) unsafe fn decode_blob(
         return TPM_FAIL;
     };
     // SAFETY: forwarded from TPMLIB_DecodeBlob, whose contract requires a
-    // NUL-terminated string valid for this call; null was rejected above.
-    let data = unsafe { copy_c_string(data) };
-    let decoded = match library::decode_blob(kind, &data) {
+    // NUL-terminated string that stays valid for this call; null was rejected
+    // above. `decode_blob` reads the bytes before this call returns.
+    let data = unsafe { core::ffi::CStr::from_ptr(data) }.to_bytes();
+    let decoded = match library::decode_blob(kind, data) {
         Ok(decoded) => decoded,
         Err(code) => return code,
     };
@@ -276,18 +320,6 @@ fn blob_kind(blob_type: TpmlibBlobType) -> Option<EncodedBlobKind> {
     }
 }
 
-/// # Safety
-///
-/// `data` must be non-null and point to a NUL-terminated string that stays
-/// valid for the duration of the call.
-unsafe fn copy_c_string(data: *const c_char) -> Vec<u8> {
-    // SAFETY: the string is non-null, NUL-terminated and live per this
-    // function's contract; the copy ends the caller's involvement.
-    unsafe { core::ffi::CStr::from_ptr(data) }
-        .to_bytes()
-        .to_vec()
-}
-
 pub(crate) fn set_debug_fd(fd: c_int) {
     crate::debug_logging::set_fd(fd);
 }
@@ -302,6 +334,7 @@ pub(crate) unsafe fn set_debug_prefix(prefix: *const c_char) -> TpmResult {
     }
     // SAFETY: the C API contract requires a non-null, NUL-terminated string
     // that remains valid for this call; the null case was handled above.
+    // `set_prefix` copies the bytes before this call returns.
     crate::debug_logging::set_prefix(Some(unsafe { core::ffi::CStr::from_ptr(prefix) }))
 }
 
@@ -387,6 +420,7 @@ pub(crate) unsafe fn set_profile(profile: *const c_char) -> TpmResult {
     }
     // SAFETY: the C API contract requires a non-null, NUL-terminated string
     // that remains valid for this call; the null case was handled above.
+    // `set_profile` copies the bytes it keeps before this call returns.
     let bytes = unsafe { core::ffi::CStr::from_ptr(profile) }.to_bytes();
     library::set_profile(Some(bytes))
 }
@@ -493,6 +527,75 @@ mod tests {
         let stored = unsafe { copy_callbacks(&table) };
         assert_eq!(stored.size_of_struct, 0);
         assert!(stored.tpm_nvram_init.is_none());
+    }
+
+    #[test]
+    fn a_declared_size_that_would_tear_a_callback_stops_at_the_previous_field() {
+        let full = core::mem::size_of::<LibtpmsCallbacks>() as c_int;
+        let first_callback = core::mem::offset_of!(LibtpmsCallbacks, tpm_nvram_init) as c_int;
+        for declared in [first_callback + 1, full - 1] {
+            let mut table = full_table();
+            table.size_of_struct = declared;
+            // SAFETY: `table` has more live bytes than it declares.
+            let stored = unsafe { copy_callbacks(&table) };
+            assert_eq!(
+                stored.size_of_struct, declared,
+                "the size field itself always fits"
+            );
+            assert!(
+                stored.tpm_io_getphysicalpresence.is_none(),
+                "declared {declared}: no partially copied callback"
+            );
+        }
+
+        let mut table = full_table();
+        table.size_of_struct = first_callback + 1;
+        // SAFETY: same live table, one byte into its first callback.
+        let stored = unsafe { copy_callbacks(&table) };
+        assert!(
+            stored.tpm_nvram_init.is_none(),
+            "a callback the declared size only half covers is dropped"
+        );
+    }
+
+    #[test]
+    fn every_declared_size_copies_a_whole_number_of_fields() {
+        let full = core::mem::size_of::<LibtpmsCallbacks>();
+        for declared in 0..=(full as c_int + 8) {
+            let copy_len = callbacks_copy_len(declared);
+            assert!(copy_len <= full, "declared {declared} escaped the layout");
+            assert!(
+                copy_len <= usize::try_from(declared).unwrap_or(0),
+                "declared {declared} read beyond what the caller promised"
+            );
+            assert!(
+                copy_len == 0 || CALLBACK_FIELD_ENDS.contains(&copy_len),
+                "declared {declared} stopped mid-field at {copy_len}"
+            );
+        }
+        for declared in [-1, i32::MIN, i32::MIN + 1] {
+            assert_eq!(callbacks_copy_len(declared), 0, "declared {declared}");
+        }
+        assert_eq!(callbacks_copy_len(i32::MAX), full);
+    }
+
+    #[test]
+    fn a_misaligned_callback_table_is_read_without_undefined_behaviour() {
+        let table = full_table();
+        let mut unaligned = vec![0u8; core::mem::size_of::<LibtpmsCallbacks>() + 1];
+        // SAFETY: `table` is a live struct and `unaligned` has room for its
+        // bytes at offset one.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                core::ptr::from_ref(&table).cast::<u8>(),
+                unaligned.as_mut_ptr().add(1),
+                core::mem::size_of::<LibtpmsCallbacks>(),
+            );
+        }
+        // SAFETY: the misaligned pointer is backed by a full table's worth of
+        // live bytes; the implementation reads them without assuming alignment.
+        let stored = unsafe { copy_callbacks(unaligned.as_ptr().add(1).cast()) };
+        assert_eq!(stored.size_of_struct, table.size_of_struct);
     }
 
     #[test]
@@ -1074,6 +1177,25 @@ mod tests {
         assert_eq!(unsafe { set_debug_prefix(core::ptr::null()) }, TPM_SUCCESS);
     }
 
+    #[test]
+    fn a_debug_prefix_of_many_kilobytes_is_kept_whole() {
+        let _state = crate::debug_logging::test_support::DebugStateGuard::hold();
+        let mut caller = vec![b'p'; 5000];
+        caller.push(0);
+        // SAFETY: `caller` is NUL-terminated and remains live for the call.
+        assert_eq!(
+            unsafe { set_debug_prefix(caller.as_ptr().cast()) },
+            TPM_SUCCESS
+        );
+        assert_eq!(
+            crate::debug_logging::prefix().as_deref(),
+            Some(&caller[..5000])
+        );
+
+        // SAFETY: restore the process-global setting for other tests.
+        assert_eq!(unsafe { set_debug_prefix(core::ptr::null()) }, TPM_SUCCESS);
+    }
+
     struct ProcessOutputs {
         respbuffer: *mut c_uchar,
         resp_size: u32,
@@ -1467,18 +1589,34 @@ mod tests {
     }
 
     #[test]
-    fn the_copied_c_string_stops_at_the_terminator_and_outlives_the_caller() {
-        let mut caller = b"-----BEGIN INITSTATE-----\0trailing".to_vec();
-        // SAFETY: `caller` is NUL-terminated and stays live for the call.
-        let copied = unsafe { copy_c_string(caller.as_ptr().cast()) };
-        assert_eq!(copied, b"-----BEGIN INITSTATE-----");
+    fn a_multi_hundred_kilobyte_blob_string_decodes_in_full() {
+        let payload: Vec<u8> = (0..200_000u32).map(|index| (index % 251) as u8).collect();
+        let mut caller = Vec::new();
+        caller.extend_from_slice(b"-----BEGIN INITSTATE-----\n");
+        caller.extend_from_slice(base64_for_tests(&payload).as_bytes());
+        caller.extend_from_slice(b"\n-----END INITSTATE-----\0");
+        assert!(caller.len() > 64 * 1024);
 
-        caller[0] = b'X';
-        caller.clear();
-        assert_eq!(copied, b"-----BEGIN INITSTATE-----");
+        let mut blob = DecodedBlob::new();
+        assert_eq!(blob.call(&caller, BLOB_TYPE_INITSTATE), TPM_SUCCESS);
+        assert_eq!(blob.decoded(), payload);
+    }
 
-        // SAFETY: the byte string is statically live and NUL-terminated.
-        assert_eq!(unsafe { copy_c_string(c"".as_ptr()) }, b"");
+    fn base64_for_tests(data: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut encoded = Vec::new();
+        for group in data.chunks(3) {
+            let mut bits = 0u32;
+            for (index, byte) in group.iter().enumerate() {
+                bits |= u32::from(*byte) << (16 - 8 * index);
+            }
+            for index in 0..group.len() + 1 {
+                encoded.push(ALPHABET[(bits >> (18 - 6 * index)) as usize & 0x3f]);
+            }
+            encoded.resize(encoded.len() + (3 - group.len()), b'=');
+        }
+        String::from_utf8(encoded).expect("the alphabet is ASCII")
     }
 
     #[test]

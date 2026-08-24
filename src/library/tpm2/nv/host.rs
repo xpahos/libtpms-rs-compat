@@ -66,8 +66,8 @@ impl HostNvram {
             return Ok(NvramWrite::NotRegistered);
         };
         // SAFETY: TPMLIB_RegisterCallbacks copied a function pointer with
-        // the exact C ABI signature. The host must keep its code loaded
-        // while the callback is registered.
+        // the exact C ABI signature, which must not unwind. The host must
+        // keep its code loaded while the callback is registered.
         match unsafe { init() } {
             TPM_SUCCESS => Ok(NvramWrite::Done),
             code => Err(code),
@@ -83,8 +83,9 @@ impl HostNvram {
         };
         let mut data: *mut c_uchar = ptr::null_mut();
         let mut length: u32 = 0;
-        // SAFETY: registered by the host via TPMLIB_RegisterCallbacks; the
-        // out-pointers are valid locals and the name is NUL-terminated.
+        // SAFETY: registered by the host via TPMLIB_RegisterCallbacks and
+        // must not unwind; the out-pointers are valid locals and the name is
+        // NUL-terminated.
         let result = unsafe {
             loaddata(
                 &mut data,
