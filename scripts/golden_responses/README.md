@@ -155,6 +155,7 @@ Available operations are:
 | `reboot` | Reinitialize the TPM without erasing NVRAM. |
 | `advance <ms>` | Advance the deterministic TPM clock. |
 | `locality <n>` | Change the locality returned by the platform callback. |
+| `physical-presence <0\|1>` | Change the physical presence reported by the platform callback. |
 | `remember-session` | Remember the session created by the preceding command. |
 | `audited-getrandom NAME` | Run `TPM2_GetRandom` through the remembered session. |
 | `exclusive-audit NAME` | Save the exclusive-audit handle from volatile state. |
@@ -434,6 +435,55 @@ empty, so the reference accepts an empty session HMAC and the parameter key is
 `nonceTPM` returned by `G_SESSION`, `F_SESSION`, and `I_SESSION` and therefore
 need the two-pass workflow described above. Each of them restores `G_READY`,
 `F_READY`, or `I_READY` so every command sees the same `nonceTPM`.
+
+## Notes about the platform-state family
+
+The `platform-state` family covers `TPM2_ClockSet`, `TPM2_ClockRateAdjust`,
+`TPM2_ReadClock`, `TPM2_PP_Commands`, `TPM2_SetAlgorithmSet`,
+`TPM2_PCR_SetAuthValue`, and `TPM2_ACT_SetTimeout`. Its scenario is a sequence
+of independent sections; each one starts from `restore READY`, the snapshot
+taken right after `TPM2_Startup(TPM_SU_CLEAR)`.
+
+Three findings drive how the family is built.
+
+`TPM2_ACT_SetTimeout` is not implemented by the reference. The pinned profile
+sets `CC_ACT_SetTimeout` to `CC_NO`, so every request answers
+`TPM_RC_COMMAND_CODE`, whatever the handle or the timeout. The `ACT_*` records
+pin that, and the Rust dispatcher matches it by leaving the command
+unregistered. `TPM_CAP_ACT` is implemented, though: it accepts any handle in
+`TPM_RH_ACT_0..TPM_RH_ACT_F`, answers an empty list, and rejects anything else
+with `TPM_RC_VALUE` for parameter two.
+
+`TPM2_PCR_SetAuthValue` always fails. The vendored platform PCR table puts every
+PCR in authorization group zero, so `PCRBelongsAuthGroup()` never matches and the
+command answers a bare `TPM_RC_VALUE` before it can reach the orderly-state
+check. The `PSAV_*` records cover every implemented PCR, both authorization
+value extremes, and the unmarshaling errors that are reported first.
+
+`TPM2_PP_Commands` requires asserted physical presence, because the vendored
+attribute table gives it `PP_REQUIRED` and manufacturing installs that bit in
+`ppList`. Capturing anything but `TPM_RC_PP` therefore needs the
+`physical-presence` scenario operation. The `PPC_*` section turns presence on
+and off around each step, so the same fixture holds the refusals, the accepted
+mutations, and the follow-up `TPM2_ClearControl` and `TPM2_HierarchyControl`
+commands that show the updated bitmap gating dispatch. Presence is returned to 0
+at the end of the section, like the `locality` operation.
+
+Clock records are compared byte for byte. The container's monotonic clock only
+moves when the scenario says `advance`, and restoring volatile state also
+restores the timer baseline, so a Rust test that restores the same snapshot and
+repeats the same advances reads the same `TPMS_TIME_INFO`. The `RATE_*` records
+use that to show the adjustment rate changing how fast the reported clock runs,
+including saturation at the platform limit. The `CLK_*` section reboots without
+an orderly shutdown to show `TPM2_ClockSet` making the clock safe again.
+
+Two records in this family are not compared byte for byte by the Rust tests.
+`CCATTR_0198` asks `TPM_CAP_COMMANDS` about the unimplemented ACT command; the
+reference answers with `TPM2_ECC_Encrypt`, which the Rust dispatcher does not
+implement yet, so the test only checks that both skip `0x0198`. The
+`PERMALL_*_RESTART` snapshots are compared field by field instead of byte for
+byte, because a reboot re-seeds the DRBG from host entropy and the Rust test
+entropy is not the container's.
 
 ## Notes about destructive scenarios
 

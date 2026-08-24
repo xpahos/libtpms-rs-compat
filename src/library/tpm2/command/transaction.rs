@@ -1,5 +1,9 @@
+use crate::ffi_types::TpmResult;
+use crate::library::constants::TPM_RC_FAILURE;
+
 use super::super::clock::{RuntimeClock, TpmTimer};
 use super::super::live::{LiveState, RestoredVolatile};
+use super::super::nv::build_nv_image;
 use super::super::persistent::{OwnedPcrAllocation, OwnedPersistentState};
 use super::super::runtime::Tpm2Runtime;
 
@@ -50,4 +54,31 @@ pub(super) fn roll_back(runtime: &mut Tpm2Runtime, transaction: CommandTransacti
     runtime.clock = transaction.clock;
     runtime.timer = transaction.timer;
     runtime.removed_session_associations = transaction.removed_session_associations;
+}
+
+pub(in crate::library::tpm2::command) fn commit_persistent_state(
+    runtime: &mut Tpm2Runtime,
+) -> Result<(), TpmResult> {
+    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+    let image = build_nv_image(state).map_err(|_| TPM_RC_FAILURE)?;
+    runtime.nv_memory = image;
+    runtime.nv_update_pending = true;
+    Ok(())
+}
+
+pub(in crate::library::tpm2::command) fn with_rollback<F, T>(
+    runtime: &mut Tpm2Runtime,
+    apply: F,
+) -> Result<T, TpmResult>
+where
+    F: FnOnce(&mut Tpm2Runtime) -> Result<T, TpmResult>,
+{
+    let backup = begin(runtime);
+    match apply(runtime) {
+        Ok(value) => Ok(value),
+        Err(code) => {
+            roll_back(runtime, backup);
+            Err(code)
+        }
+    }
 }

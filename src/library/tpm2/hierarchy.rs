@@ -8,6 +8,8 @@ pub(super) const TPM_RH_LOCKOUT: u32 = 0x4000_000a;
 pub(super) const TPM_RH_ENDORSEMENT: u32 = 0x4000_000b;
 pub(super) const TPM_RH_PLATFORM: u32 = 0x4000_000c;
 pub(super) const TPM_RH_PLATFORM_NV: u32 = 0x4000_000d;
+pub(super) const TPM_RH_ACT_0: u32 = 0x4000_0110;
+pub(super) const TPM_RH_ACT_F: u32 = 0x4000_011f;
 
 pub(super) const IMPLEMENTED_PERMANENT_HANDLES: [u32; 7] = [
     TPM_RH_OWNER,

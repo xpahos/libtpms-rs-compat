@@ -1159,6 +1159,7 @@ SCENARIO_OPS = {
     "exclusive-audit": "record",
     "advance": "number",
     "locality": "number",
+    "physical-presence": "flag",
     "fail-stores": "flag",
     "patch-failure-code": "number",
     "send": "labelled",

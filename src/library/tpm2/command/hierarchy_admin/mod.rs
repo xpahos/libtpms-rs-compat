@@ -10,7 +10,7 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 
 use super::super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
-use super::super::nv::{build_nv_image, stored_object_attributes};
+use super::super::nv::stored_object_attributes;
 use super::super::object::{
     ATTR_EPS_HIERARCHY, ATTR_OCCUPIED, ATTR_PPS_HIERARCHY, ATTR_SPS_HIERARCHY,
 };
@@ -21,7 +21,6 @@ use super::super::persistent::{
 use super::super::profile::PersistentObjectFormat;
 use super::super::random::regenerate_secret;
 use super::super::runtime::Tpm2Runtime;
-use super::transaction;
 
 pub(in crate::library::tpm2::command) const PRIMARY_SEED_SIZE: usize = 64;
 pub(in crate::library::tpm2::command) const PROOF_SIZE: usize = 64;
@@ -118,32 +117,9 @@ pub(in crate::library::tpm2::command) fn recompute_user_nvram_capacity(
     Ok(())
 }
 
-pub(in crate::library::tpm2::command) fn commit_persistent_state(
-    runtime: &mut Tpm2Runtime,
-) -> Result<(), TpmResult> {
-    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-    let image = build_nv_image(state).map_err(|_| TPM_RC_FAILURE)?;
-    runtime.nv_memory = image;
-    runtime.nv_update_pending = true;
-    Ok(())
-}
-
-pub(in crate::library::tpm2::command) fn with_rollback<F, T>(
-    runtime: &mut Tpm2Runtime,
-    apply: F,
-) -> Result<T, TpmResult>
-where
-    F: FnOnce(&mut Tpm2Runtime) -> Result<T, TpmResult>,
-{
-    let backup = transaction::begin(runtime);
-    match apply(runtime) {
-        Ok(value) => Ok(value),
-        Err(code) => {
-            transaction::roll_back(runtime, backup);
-            Err(code)
-        }
-    }
-}
+pub(in crate::library::tpm2::command) use super::transaction::{
+    commit_persistent_state, with_rollback,
+};
 
 #[cfg(test)]
 pub(in crate::library::tpm2::command) mod harness;

@@ -45,6 +45,7 @@ mod pcr_extend;
 mod pcr_read;
 mod pcr_reset;
 mod pcr_update;
+mod platform_state;
 mod policy_authorization;
 mod policy_authorize;
 mod policy_commands;

@@ -157,6 +157,21 @@ fixture = "src/library/tpm2/testdata/golden_responses/pcr_event.bin"
 reader = "src/library/tpm2/golden_responses/pcr_event.rs"
 commands = ["TPM2_PCR_Event"]
 
+[families."platform-state"]
+magic = "PLORACLE"
+scenario = "scripts/golden_responses/scenarios/platform_state.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/platform_state.bin"
+reader = "src/library/tpm2/golden_responses/platform_state.rs"
+commands = [
+    "TPM2_ClockSet",
+    "TPM2_PP_Commands",
+    "TPM2_ClockRateAdjust",
+    "TPM2_SetAlgorithmSet",
+    "TPM2_ReadClock",
+    "TPM2_PCR_SetAuthValue",
+    "TPM2_ACT_SetTimeout",
+]
+
 [families."policy-sessions"]
 magic = "PSORACLE"
 scenario = "scripts/golden_responses/scenarios/policy_sessions.scenario"
@@ -278,7 +293,8 @@ family = "hierarchy-management"
 
 [commands.ClockSet]
 code = 0x00000128
-status = "todo"
+status = "implemented"
+family = "platform-state"
 
 [commands.HierarchyChangeAuth]
 code = 0x00000129
@@ -302,7 +318,8 @@ family = "hierarchy-management"
 
 [commands.PP_Commands]
 code = 0x0000012d
-status = "todo"
+status = "implemented"
+family = "platform-state"
 
 [commands.SetPrimaryPolicy]
 code = 0x0000012e
@@ -315,7 +332,8 @@ status = "todo"
 
 [commands.ClockRateAdjust]
 code = 0x00000130
-status = "todo"
+status = "implemented"
+family = "platform-state"
 
 [commands.CreatePrimary]
 code = 0x00000131
@@ -389,7 +407,8 @@ family = "sequence-commands"
 
 [commands.SetAlgorithmSet]
 code = 0x0000013f
-status = "todo"
+status = "implemented"
+family = "platform-state"
 
 [commands.SetCommandCodeAuditStatus]
 code = 0x00000140
@@ -693,7 +712,8 @@ family = "policy-sessions"
 
 [commands.ReadClock]
 code = 0x00000181
-status = "todo"
+status = "implemented"
+family = "platform-state"
 
 [commands.PCR_Extend]
 code = 0x00000182
@@ -702,7 +722,8 @@ reason = "pinned by module tests predating the fixture format"
 
 [commands.PCR_SetAuthValue]
 code = 0x00000183
-status = "todo"
+status = "implemented"
+family = "platform-state"
 
 [commands.NV_Certify]
 code = 0x00000184
@@ -799,7 +820,9 @@ status = "todo"
 
 [commands.ACT_SetTimeout]
 code = 0x00000198
-status = "todo"
+status = "waived"
+family = "platform-state"
+reason = "the reference profile compiles it out with CC_ACT_SetTimeout CC_NO, so every request answers TPM_RC_COMMAND_CODE"
 
 [commands.ECC_Encrypt]
 code = 0x00000199

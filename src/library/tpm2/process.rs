@@ -21,6 +21,17 @@ impl PlatformInputs {
             physical_presence: false,
         }
     }
+
+    #[cfg(test)]
+    pub(in crate::library) fn with_physical_presence(
+        locality: u8,
+        physical_presence: bool,
+    ) -> Self {
+        Self {
+            locality,
+            physical_presence,
+        }
+    }
 }
 
 pub(in crate::library) fn process(

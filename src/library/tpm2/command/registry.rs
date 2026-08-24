@@ -45,6 +45,7 @@ use super::pcr_event;
 use super::pcr_extend;
 use super::pcr_read;
 use super::pcr_reset;
+use super::platform_state;
 use super::policy_authorization;
 use super::policy_authorize;
 use super::policy_commands;
@@ -76,11 +77,14 @@ pub(in crate::library::tpm2) const TPM_CC_CHANGE_EPS: u32 = 0x0000_0124;
 pub(in crate::library::tpm2) const TPM_CC_CHANGE_PPS: u32 = 0x0000_0125;
 pub(in crate::library::tpm2) const TPM_CC_CLEAR: u32 = 0x0000_0126;
 pub(in crate::library::tpm2) const TPM_CC_CLEAR_CONTROL: u32 = 0x0000_0127;
+pub(in crate::library::tpm2) const TPM_CC_CLOCK_SET: u32 = 0x0000_0128;
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 pub(in crate::library::tpm2) const TPM_CC_NV_DEFINE_SPACE: u32 = 0x0000_012a;
 pub(in crate::library::tpm2) const TPM_CC_PCR_ALLOCATE: u32 = 0x0000_012b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_SET_AUTH_POLICY: u32 = 0x0000_012c;
+pub(in crate::library::tpm2) const TPM_CC_PP_COMMANDS: u32 = 0x0000_012d;
 pub(in crate::library::tpm2) const TPM_CC_SET_PRIMARY_POLICY: u32 = 0x0000_012e;
+pub(in crate::library::tpm2) const TPM_CC_CLOCK_RATE_ADJUST: u32 = 0x0000_0130;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub(in crate::library::tpm2) const TPM_CC_NV_GLOBAL_WRITE_LOCK: u32 = 0x0000_0132;
 pub(in crate::library::tpm2) const TPM_CC_GET_COMMAND_AUDIT_DIGEST: u32 = 0x0000_0133;
@@ -95,6 +99,7 @@ pub(in crate::library::tpm2) const TPM_CC_NV_CHANGE_AUTH: u32 = 0x0000_013b;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EVENT: u32 = 0x0000_013c;
 pub(in crate::library::tpm2) const TPM_CC_PCR_RESET: u32 = 0x0000_013d;
 pub(in crate::library::tpm2) const TPM_CC_SEQUENCE_COMPLETE: u32 = 0x0000_013e;
+pub(in crate::library::tpm2) const TPM_CC_SET_ALGORITHM_SET: u32 = 0x0000_013f;
 pub(in crate::library::tpm2) const TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS: u32 = 0x0000_0140;
 pub(in crate::library::tpm2) const TPM_CC_INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
 pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
@@ -149,7 +154,9 @@ pub(in crate::library::tpm2) const TPM_CC_HASH: u32 = 0x0000_017d;
 pub(in crate::library::tpm2) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_PCR: u32 = 0x0000_017f;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_RESTART: u32 = 0x0000_0180;
+pub(in crate::library::tpm2) const TPM_CC_READ_CLOCK: u32 = 0x0000_0181;
 pub(in crate::library::tpm2) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
+pub(in crate::library::tpm2) const TPM_CC_PCR_SET_AUTH_VALUE: u32 = 0x0000_0183;
 pub(in crate::library::tpm2) const TPM_CC_NV_CERTIFY: u32 = 0x0000_0184;
 pub(in crate::library::tpm2) const TPM_CC_EVENT_SEQUENCE_COMPLETE: u32 = 0x0000_0185;
 pub(in crate::library::tpm2) const TPM_CC_HASH_SEQUENCE_START: u32 = 0x0000_0186;
@@ -325,10 +332,8 @@ pub(super) enum NvAccess {
 pub(in crate::library::tpm2) struct CommandDescriptor {
     pub(in crate::library::tpm2) code: u32,
     pub(in crate::library::tpm2) attributes: u32,
-    // TODO: Consume this when TPM2_PP_Commands and the physical-presence gate
-    // are implemented.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::library::tpm2) physical_presence: bool,
+    pub(in crate::library::tpm2) physical_presence_required: bool,
     pub(super) lifecycle: CommandLifecycle,
     pub(super) handles: &'static [HandleSpec],
     pub(super) decrypt_size: u16,
@@ -343,6 +348,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
         attributes: tpma_cc(TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, true, 2),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -366,6 +372,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_EVICT_CONTROL,
         attributes: tpma_cc(TPM_CC_EVICT_CONTROL, true, 2),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -389,6 +396,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_HIERARCHY_CONTROL,
         attributes: tpma_cc(TPM_CC_HIERARCHY_CONTROL, true, 1) | TPMA_CC_EXTENSIVE,
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::BaseHierarchy,
@@ -405,6 +413,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_UNDEFINE_SPACE,
         attributes: tpma_cc(TPM_CC_NV_UNDEFINE_SPACE, true, 2),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -428,6 +437,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CHANGE_EPS,
         attributes: tpma_cc(TPM_CC_CHANGE_EPS, true, 1) | TPMA_CC_EXTENSIVE,
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
@@ -444,6 +454,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CHANGE_PPS,
         attributes: tpma_cc(TPM_CC_CHANGE_PPS, true, 1) | TPMA_CC_EXTENSIVE,
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
@@ -460,6 +471,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CLEAR,
         attributes: tpma_cc(TPM_CC_CLEAR, true, 1) | TPMA_CC_EXTENSIVE,
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Clear,
@@ -476,6 +488,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CLEAR_CONTROL,
         attributes: tpma_cc(TPM_CC_CLEAR_CONTROL, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Clear,
@@ -489,9 +502,27 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: hierarchy_admin::clear_control::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_CLOCK_SET,
+        attributes: tpma_cc(TPM_CC_CLOCK_SET, true, 1),
+        physical_presence: true,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Provision,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: platform_state::clock::execute_clock_set,
+    },
+    CommandDescriptor {
         code: TPM_CC_HIERARCHY_CHANGE_AUTH,
         attributes: tpma_cc(TPM_CC_HIERARCHY_CHANGE_AUTH, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::HierarchyAuth,
@@ -508,6 +539,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_DEFINE_SPACE,
         attributes: tpma_cc(TPM_CC_NV_DEFINE_SPACE, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Provision,
@@ -524,6 +556,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_PCR_ALLOCATE,
         attributes: tpma_cc(TPM_CC_PCR_ALLOCATE, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
@@ -540,6 +573,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_PCR_SET_AUTH_POLICY,
         attributes: tpma_cc(TPM_CC_PCR_SET_AUTH_POLICY, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
@@ -553,9 +587,27 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: hierarchy_admin::pcr_policy::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_PP_COMMANDS,
+        attributes: tpma_cc(TPM_CC_PP_COMMANDS, true, 1),
+        physical_presence: false,
+        physical_presence_required: true,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Platform,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: platform_state::pp_commands::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_SET_PRIMARY_POLICY,
         attributes: tpma_cc(TPM_CC_SET_PRIMARY_POLICY, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::HierarchyAuth,
@@ -569,9 +621,27 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: hierarchy_admin::primary_policy::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_CLOCK_RATE_ADJUST,
+        attributes: tpma_cc(TPM_CC_CLOCK_RATE_ADJUST, false, 1),
+        physical_presence: true,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Provision,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: platform_state::clock::execute_clock_rate_adjust,
+    },
+    CommandDescriptor {
         code: TPM_CC_CREATE_PRIMARY,
         attributes: tpma_cc_with_response_handle(TPM_CC_CREATE_PRIMARY, false, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Hierarchy,
@@ -588,6 +658,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_GLOBAL_WRITE_LOCK,
         attributes: tpma_cc(TPM_CC_NV_GLOBAL_WRITE_LOCK, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Provision,
@@ -604,6 +675,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_GET_COMMAND_AUDIT_DIGEST,
         attributes: tpma_cc(TPM_CC_GET_COMMAND_AUDIT_DIGEST, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -627,6 +699,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_INCREMENT,
         attributes: tpma_cc(TPM_CC_NV_INCREMENT, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -650,6 +723,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_SET_BITS,
         attributes: tpma_cc(TPM_CC_NV_SET_BITS, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -673,6 +747,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_EXTEND,
         attributes: tpma_cc(TPM_CC_NV_EXTEND, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -696,6 +771,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_WRITE,
         attributes: tpma_cc(TPM_CC_NV_WRITE, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -719,6 +795,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_WRITE_LOCK,
         attributes: tpma_cc(TPM_CC_NV_WRITE_LOCK, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -742,6 +819,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_DICTIONARY_ATTACK_LOCK_RESET,
         attributes: tpma_cc(TPM_CC_DICTIONARY_ATTACK_LOCK_RESET, true, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Lockout,
@@ -758,6 +836,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_DICTIONARY_ATTACK_PARAMETERS,
         attributes: tpma_cc(TPM_CC_DICTIONARY_ATTACK_PARAMETERS, true, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Lockout,
@@ -774,6 +853,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_CHANGE_AUTH,
         attributes: tpma_cc(TPM_CC_NV_CHANGE_AUTH, true, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::NvIndex,
@@ -790,6 +870,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_PCR_EVENT,
         attributes: tpma_cc(TPM_CC_PCR_EVENT, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::PcrAllowNull,
@@ -806,6 +887,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_PCR_RESET,
         attributes: tpma_cc(TPM_CC_PCR_RESET, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Pcr,
@@ -822,6 +904,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_SEQUENCE_COMPLETE,
         attributes: tpma_cc_flushed(TPM_CC_SEQUENCE_COMPLETE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -835,9 +918,27 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: sequence_complete::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_SET_ALGORITHM_SET,
+        attributes: tpma_cc(TPM_CC_SET_ALGORITHM_SET, true, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Platform,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: platform_state::algorithm_set::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
         attributes: tpma_cc(TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, true, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Provision,
@@ -854,6 +955,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_INCREMENTAL_SELF_TEST,
         attributes: tpma_cc(TPM_CC_INCREMENTAL_SELF_TEST, true, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -866,6 +968,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_SELF_TEST,
         attributes: tpma_cc(TPM_CC_SELF_TEST, true, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -878,6 +981,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_STARTUP,
         attributes: tpma_cc(TPM_CC_STARTUP, true, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresNotStarted,
         handles: &[],
         decrypt_size: 0,
@@ -890,6 +994,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_SHUTDOWN,
         attributes: tpma_cc(TPM_CC_SHUTDOWN, true, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -902,6 +1007,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_STIR_RANDOM,
         attributes: tpma_cc(TPM_CC_STIR_RANDOM, true, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 2,
@@ -914,6 +1020,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CERTIFY,
         attributes: tpma_cc(TPM_CC_CERTIFY, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -937,6 +1044,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_NV,
         attributes: tpma_cc(TPM_CC_POLICY_NV, false, 3),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -961,6 +1069,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CERTIFY_CREATION,
         attributes: tpma_cc(TPM_CC_CERTIFY_CREATION, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -984,6 +1093,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_DUPLICATE,
         attributes: tpma_cc(TPM_CC_DUPLICATE, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1007,6 +1117,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_GET_TIME,
         attributes: tpma_cc(TPM_CC_GET_TIME, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1030,6 +1141,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_GET_SESSION_AUDIT_DIGEST,
         attributes: tpma_cc(TPM_CC_GET_SESSION_AUDIT_DIGEST, false, 3),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1058,6 +1170,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_READ,
         attributes: tpma_cc(TPM_CC_NV_READ, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1081,6 +1194,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_READ_LOCK,
         attributes: tpma_cc(TPM_CC_NV_READ_LOCK, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1104,6 +1218,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_OBJECT_CHANGE_AUTH,
         attributes: tpma_cc(TPM_CC_OBJECT_CHANGE_AUTH, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1127,6 +1242,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_SECRET,
         attributes: tpma_cc(TPM_CC_POLICY_SECRET, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1146,6 +1262,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_REWRAP,
         attributes: tpma_cc(TPM_CC_REWRAP, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1169,6 +1286,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CREATE,
         attributes: tpma_cc(TPM_CC_CREATE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1185,6 +1303,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_HMAC,
         attributes: tpma_cc(TPM_CC_HMAC, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1201,6 +1320,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_IMPORT,
         attributes: tpma_cc(TPM_CC_IMPORT, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1217,6 +1337,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_LOAD,
         attributes: tpma_cc_with_response_handle(TPM_CC_LOAD, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1233,6 +1354,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_QUOTE,
         attributes: tpma_cc(TPM_CC_QUOTE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::ObjectAllowNull,
@@ -1249,6 +1371,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_RSA_DECRYPT,
         attributes: tpma_cc(TPM_CC_RSA_DECRYPT, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1265,6 +1388,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_HMAC_START,
         attributes: tpma_cc_with_response_handle(TPM_CC_HMAC_START, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1281,6 +1405,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_SEQUENCE_UPDATE,
         attributes: tpma_cc(TPM_CC_SEQUENCE_UPDATE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1297,6 +1422,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_SIGN,
         attributes: tpma_cc(TPM_CC_SIGN, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1313,6 +1439,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_UNSEAL,
         attributes: tpma_cc(TPM_CC_UNSEAL, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1329,6 +1456,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_SIGNED,
         attributes: tpma_cc(TPM_CC_POLICY_SIGNED, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1348,6 +1476,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CONTEXT_LOAD,
         attributes: tpma_cc_with_response_handle(TPM_CC_CONTEXT_LOAD, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -1360,6 +1489,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CONTEXT_SAVE,
         attributes: tpma_cc(TPM_CC_CONTEXT_SAVE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Context,
@@ -1376,6 +1506,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_ENCRYPT_DECRYPT,
         attributes: tpma_cc(TPM_CC_ENCRYPT_DECRYPT, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1392,6 +1523,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_FLUSH_CONTEXT,
         attributes: tpma_cc(TPM_CC_FLUSH_CONTEXT, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -1404,6 +1536,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_LOAD_EXTERNAL,
         attributes: tpma_cc_with_response_handle(TPM_CC_LOAD_EXTERNAL, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 2,
@@ -1416,6 +1549,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_NV_READ_PUBLIC,
         attributes: tpma_cc(TPM_CC_NV_READ_PUBLIC, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::NvIndex,
@@ -1432,6 +1566,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_AUTHORIZE,
         attributes: tpma_cc(TPM_CC_POLICY_AUTHORIZE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1444,6 +1579,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_AUTH_VALUE,
         attributes: tpma_cc(TPM_CC_POLICY_AUTH_VALUE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1456,6 +1592,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_COMMAND_CODE,
         attributes: tpma_cc(TPM_CC_POLICY_COMMAND_CODE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1468,6 +1605,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_COUNTER_TIMER,
         attributes: tpma_cc(TPM_CC_POLICY_COUNTER_TIMER, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1480,6 +1618,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_CP_HASH,
         attributes: tpma_cc(TPM_CC_POLICY_CP_HASH, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1492,6 +1631,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_LOCALITY,
         attributes: tpma_cc(TPM_CC_POLICY_LOCALITY, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1504,6 +1644,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_NAME_HASH,
         attributes: tpma_cc(TPM_CC_POLICY_NAME_HASH, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1516,6 +1657,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_OR,
         attributes: tpma_cc(TPM_CC_POLICY_OR, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1528,6 +1670,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_TICKET,
         attributes: tpma_cc(TPM_CC_POLICY_TICKET, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1540,6 +1683,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_READ_PUBLIC,
         attributes: tpma_cc(TPM_CC_READ_PUBLIC, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1556,6 +1700,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_RSA_ENCRYPT,
         attributes: tpma_cc(TPM_CC_RSA_ENCRYPT, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1572,6 +1717,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_START_AUTH_SESSION,
         attributes: tpma_cc_with_response_handle(TPM_CC_START_AUTH_SESSION, false, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1595,6 +1741,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_VERIFY_SIGNATURE,
         attributes: tpma_cc(TPM_CC_VERIFY_SIGNATURE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1611,6 +1758,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_GET_CAPABILITY,
         attributes: tpma_cc(TPM_CC_GET_CAPABILITY, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -1623,6 +1771,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_GET_RANDOM,
         attributes: tpma_cc(TPM_CC_GET_RANDOM, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -1635,6 +1784,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_GET_TEST_RESULT,
         attributes: tpma_cc(TPM_CC_GET_TEST_RESULT, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -1647,6 +1797,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_HASH,
         attributes: tpma_cc(TPM_CC_HASH, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 2,
@@ -1659,6 +1810,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_PCR_READ,
         attributes: tpma_cc(TPM_CC_PCR_READ, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -1671,6 +1823,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_PCR,
         attributes: tpma_cc(TPM_CC_POLICY_PCR, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1683,6 +1836,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_RESTART,
         attributes: tpma_cc(TPM_CC_POLICY_RESTART, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1692,9 +1846,23 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: policy_commands::execute_restart,
     },
     CommandDescriptor {
+        code: TPM_CC_READ_CLOCK,
+        attributes: tpma_cc(TPM_CC_READ_CLOCK, false, 0),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: platform_state::clock::execute_read_clock,
+    },
+    CommandDescriptor {
         code: TPM_CC_PCR_EXTEND,
         attributes: tpma_cc(TPM_CC_PCR_EXTEND, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::PcrAllowNull,
@@ -1708,9 +1876,27 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: pcr_extend::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_PCR_SET_AUTH_VALUE,
+        attributes: tpma_cc(TPM_CC_PCR_SET_AUTH_VALUE, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Pcr,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: platform_state::pcr_auth_value::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_NV_CERTIFY,
         attributes: tpma_cc(TPM_CC_NV_CERTIFY, false, 3),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1739,6 +1925,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_EVENT_SEQUENCE_COMPLETE,
         attributes: tpma_cc_flushed(TPM_CC_EVENT_SEQUENCE_COMPLETE, true, 2),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1762,6 +1949,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_HASH_SEQUENCE_START,
         attributes: tpma_cc_with_response_handle(TPM_CC_HASH_SEQUENCE_START, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 2,
@@ -1774,6 +1962,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_PHYSICAL_PRESENCE,
         attributes: tpma_cc(TPM_CC_POLICY_PHYSICAL_PRESENCE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1786,6 +1975,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_DUPLICATION_SELECT,
         attributes: tpma_cc(TPM_CC_POLICY_DUPLICATION_SELECT, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1798,6 +1988,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_GET_DIGEST,
         attributes: tpma_cc(TPM_CC_POLICY_GET_DIGEST, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1810,6 +2001,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_TEST_PARMS,
         attributes: tpma_cc(TPM_CC_TEST_PARMS, false, 0),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[],
         decrypt_size: 0,
@@ -1822,6 +2014,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_PASSWORD,
         attributes: tpma_cc(TPM_CC_POLICY_PASSWORD, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1834,6 +2027,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_NV_WRITTEN,
         attributes: tpma_cc(TPM_CC_POLICY_NV_WRITTEN, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 0,
@@ -1846,6 +2040,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_TEMPLATE,
         attributes: tpma_cc(TPM_CC_POLICY_TEMPLATE, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1858,6 +2053,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_CREATE_LOADED,
         attributes: tpma_cc_with_response_handle(TPM_CC_CREATE_LOADED, false, 1),
         physical_presence: true,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Parent,
@@ -1874,6 +2070,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_AUTHORIZE_NV,
         attributes: tpma_cc(TPM_CC_POLICY_AUTHORIZE_NV, false, 3),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[
             HandleSpec {
@@ -1898,6 +2095,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_ENCRYPT_DECRYPT2,
         attributes: tpma_cc(TPM_CC_ENCRYPT_DECRYPT2, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[HandleSpec {
             kind: HandleKind::Object,
@@ -1914,6 +2112,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_CAPABILITY,
         attributes: tpma_cc(TPM_CC_POLICY_CAPABILITY, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -1926,6 +2125,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         code: TPM_CC_POLICY_PARAMETERS,
         attributes: tpma_cc(TPM_CC_POLICY_PARAMETERS, false, 1),
         physical_presence: false,
+        physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
         handles: &[POLICY_SESSION_HANDLE],
         decrypt_size: 2,
@@ -2078,11 +2278,14 @@ mod tests {
                 TPM_CC_CHANGE_PPS,
                 TPM_CC_CLEAR,
                 TPM_CC_CLEAR_CONTROL,
+                TPM_CC_CLOCK_SET,
                 TPM_CC_HIERARCHY_CHANGE_AUTH,
                 TPM_CC_NV_DEFINE_SPACE,
                 TPM_CC_PCR_ALLOCATE,
                 TPM_CC_PCR_SET_AUTH_POLICY,
+                TPM_CC_PP_COMMANDS,
                 TPM_CC_SET_PRIMARY_POLICY,
+                TPM_CC_CLOCK_RATE_ADJUST,
                 TPM_CC_CREATE_PRIMARY,
                 TPM_CC_NV_GLOBAL_WRITE_LOCK,
                 TPM_CC_GET_COMMAND_AUDIT_DIGEST,
@@ -2097,6 +2300,7 @@ mod tests {
                 TPM_CC_PCR_EVENT,
                 TPM_CC_PCR_RESET,
                 TPM_CC_SEQUENCE_COMPLETE,
+                TPM_CC_SET_ALGORITHM_SET,
                 TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
                 TPM_CC_INCREMENTAL_SELF_TEST,
                 TPM_CC_SELF_TEST,
@@ -2151,7 +2355,9 @@ mod tests {
                 TPM_CC_PCR_READ,
                 TPM_CC_POLICY_PCR,
                 TPM_CC_POLICY_RESTART,
+                TPM_CC_READ_CLOCK,
                 TPM_CC_PCR_EXTEND,
+                TPM_CC_PCR_SET_AUTH_VALUE,
                 TPM_CC_NV_CERTIFY,
                 TPM_CC_EVENT_SEQUENCE_COMPLETE,
                 TPM_CC_HASH_SEQUENCE_START,
@@ -2694,7 +2900,7 @@ mod tests {
 
     #[test]
     fn physical_presence_applicability_matches_the_vendored_attribute_table() {
-        const PP_COMMANDS: [u32; 17] = [
+        const PP_COMMANDS: [u32; 19] = [
             TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
             TPM_CC_EVICT_CONTROL,
             TPM_CC_HIERARCHY_CONTROL,
@@ -2703,11 +2909,13 @@ mod tests {
             TPM_CC_CHANGE_PPS,
             TPM_CC_CLEAR,
             TPM_CC_CLEAR_CONTROL,
+            TPM_CC_CLOCK_SET,
             TPM_CC_HIERARCHY_CHANGE_AUTH,
             TPM_CC_NV_DEFINE_SPACE,
             TPM_CC_PCR_ALLOCATE,
             TPM_CC_PCR_SET_AUTH_POLICY,
             TPM_CC_SET_PRIMARY_POLICY,
+            TPM_CC_CLOCK_RATE_ADJUST,
             TPM_CC_CREATE_PRIMARY,
             TPM_CC_NV_GLOBAL_WRITE_LOCK,
             TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,

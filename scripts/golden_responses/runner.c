@@ -38,6 +38,7 @@ static int g_last_response_valid;
 static unsigned char g_session_response[4096];
 static uint32_t g_session_response_len;
 static uint32_t g_locality;
+static TPM_BOOL g_physical_presence;
 
 static struct nvram_entry *nvram_find(uint32_t tpm_number, const char *name)
 {
@@ -137,6 +138,14 @@ static TPM_RESULT cb_io_getlocality(TPM_MODIFIER_INDICATOR *localityModifier,
 {
     (void)tpm_number;
     *localityModifier = g_locality;
+    return TPM_SUCCESS;
+}
+
+static TPM_RESULT cb_io_getphysicalpresence(TPM_BOOL *physicalPresence,
+                                            uint32_t tpm_number)
+{
+    (void)tpm_number;
+    *physicalPresence = g_physical_presence;
     return TPM_SUCCESS;
 }
 
@@ -311,6 +320,7 @@ int main(int argc, char **argv)
     cbs.tpm_nvram_deletename = cb_nvram_deletename;
     cbs.tpm_io_init = cb_io_init;
     cbs.tpm_io_getlocality = cb_io_getlocality;
+    cbs.tpm_io_getphysicalpresence = cb_io_getphysicalpresence;
 
     res = TPMLIB_RegisterCallbacks(&cbs);
     if (res != TPM_SUCCESS)
@@ -503,6 +513,9 @@ int main(int argc, char **argv)
             free(blob);
         } else if (strncmp(p, "locality ", 9) == 0) {
             g_locality = (uint32_t)parse_number(lineno, "locality", p + 9, 255);
+        } else if (strncmp(p, "physical-presence ", 18) == 0) {
+            g_physical_presence =
+                (TPM_BOOL)parse_number(lineno, "physical-presence", p + 18, 1);
         } else if (strcmp(p, "version") == 0) {
             printf("VERSION %08x\n", TPMLIB_GetVersion());
         } else if (strcmp(p, "reboot") == 0) {

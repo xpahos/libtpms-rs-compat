@@ -1,4 +1,6 @@
 use super::super::command::implemented_commands;
+use super::super::pp_list::physical_presence_is_required;
+use super::super::runtime::Tpm2Runtime;
 use super::{CapabilityPage, MAX_CAP_DATA, paginate};
 
 const SIZEOF_TPM_CC: usize = 4;
@@ -16,6 +18,22 @@ pub(in crate::library::tpm2) fn implemented(
         implemented_commands()
             .filter(|descriptor| descriptor.code >= starting_command)
             .map(|descriptor| descriptor.attributes),
+        requested_count,
+        MAX_CAP_CC,
+    )
+}
+
+pub(in crate::library::tpm2) fn physical_presence(
+    runtime: &Tpm2Runtime,
+    starting_command: u32,
+    requested_count: u32,
+) -> CapabilityPage<u32> {
+    paginate(
+        implemented_commands()
+            .map(|descriptor| descriptor.code)
+            .filter(|&code| {
+                code >= starting_command && physical_presence_is_required(runtime, code)
+            }),
         requested_count,
         MAX_CAP_CC,
     )
@@ -49,10 +67,13 @@ mod tests {
     const TPMA_CC_CHANGE_PPS: u32 = 0x02c0_0125;
     const TPMA_CC_CLEAR: u32 = 0x02c0_0126;
     const TPMA_CC_CLEAR_CONTROL: u32 = 0x0240_0127;
+    const TPMA_CC_CLOCK_SET: u32 = 0x0240_0128;
     const TPMA_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0240_0129;
     const TPMA_CC_NV_DEFINE_SPACE: u32 = 0x0240_012a;
     const TPMA_CC_PCR_SET_AUTH_POLICY: u32 = 0x0240_012c;
+    const TPMA_CC_PP_COMMANDS: u32 = 0x0240_012d;
     const TPMA_CC_SET_PRIMARY_POLICY: u32 = 0x0240_012e;
+    const TPMA_CC_CLOCK_RATE_ADJUST: u32 = 0x0200_0130;
     const TPMA_CC_NV_GLOBAL_WRITE_LOCK: u32 = 0x0240_0132;
     const TPMA_CC_GET_COMMAND_AUDIT_DIGEST: u32 = 0x0440_0133;
     const TPMA_CC_NV_INCREMENT: u32 = 0x0440_0134;
@@ -91,12 +112,15 @@ mod tests {
     const TPMA_CC_GET_TEST_RESULT: u32 = 0x0000_017c;
     const TPMA_CC_HASH: u32 = 0x0000_017d;
     const TPMA_CC_PCR_READ: u32 = 0x0000_017e;
+    const TPMA_CC_READ_CLOCK: u32 = 0x0000_0181;
     const TPMA_CC_PCR_EXTEND: u32 = 0x0200_0182;
+    const TPMA_CC_PCR_SET_AUTH_VALUE: u32 = 0x0200_0183;
     const TPMA_CC_NV_CERTIFY: u32 = 0x0600_0184;
     const TPMA_CC_PCR_ALLOCATE: u32 = 0x0240_012b;
     const TPMA_CC_CREATE_PRIMARY: u32 = 0x1200_0131;
     const TPMA_CC_CREATE_LOADED: u32 = 0x1200_0191;
     const TPMA_CC_SEQUENCE_COMPLETE: u32 = 0x0300_013e;
+    const TPMA_CC_SET_ALGORITHM_SET: u32 = 0x0240_013f;
     const TPMA_CC_SET_COMMAND_CODE_AUDIT_STATUS: u32 = 0x0240_0140;
     const TPMA_CC_CERTIFY: u32 = 0x0400_0148;
     const TPMA_CC_CERTIFY_CREATION: u32 = 0x0400_014a;
@@ -159,11 +183,14 @@ mod tests {
                 TPMA_CC_CHANGE_PPS,
                 TPMA_CC_CLEAR,
                 TPMA_CC_CLEAR_CONTROL,
+                TPMA_CC_CLOCK_SET,
                 TPMA_CC_HIERARCHY_CHANGE_AUTH,
                 TPMA_CC_NV_DEFINE_SPACE,
                 TPMA_CC_PCR_ALLOCATE,
                 TPMA_CC_PCR_SET_AUTH_POLICY,
+                TPMA_CC_PP_COMMANDS,
                 TPMA_CC_SET_PRIMARY_POLICY,
+                TPMA_CC_CLOCK_RATE_ADJUST,
                 TPMA_CC_CREATE_PRIMARY,
                 TPMA_CC_NV_GLOBAL_WRITE_LOCK,
                 TPMA_CC_GET_COMMAND_AUDIT_DIGEST,
@@ -178,6 +205,7 @@ mod tests {
                 TPMA_CC_PCR_EVENT,
                 TPMA_CC_PCR_RESET,
                 TPMA_CC_SEQUENCE_COMPLETE,
+                TPMA_CC_SET_ALGORITHM_SET,
                 TPMA_CC_SET_COMMAND_CODE_AUDIT_STATUS,
                 TPMA_CC_INCREMENTAL_SELF_TEST,
                 TPMA_CC_SELF_TEST,
@@ -232,7 +260,9 @@ mod tests {
                 TPMA_CC_PCR_READ,
                 TPMA_CC_POLICY_PCR,
                 TPMA_CC_POLICY_RESTART,
+                TPMA_CC_READ_CLOCK,
                 TPMA_CC_PCR_EXTEND,
+                TPMA_CC_PCR_SET_AUTH_VALUE,
                 TPMA_CC_NV_CERTIFY,
                 TPMA_CC_EVENT_SEQUENCE_COMPLETE,
                 TPMA_CC_HASH_SEQUENCE_START,
@@ -282,10 +312,14 @@ mod tests {
         );
         assert!(page.more_data);
 
-        let page = implemented(0x012c, 2);
+        let page = implemented(0x012c, 3);
         assert_eq!(
             page.entries,
-            [TPMA_CC_PCR_SET_AUTH_POLICY, TPMA_CC_SET_PRIMARY_POLICY]
+            [
+                TPMA_CC_PCR_SET_AUTH_POLICY,
+                TPMA_CC_PP_COMMANDS,
+                TPMA_CC_SET_PRIMARY_POLICY
+            ]
         );
         assert!(page.more_data);
 
@@ -317,8 +351,11 @@ mod tests {
 
     #[test]
     fn hierarchy_change_auth_follows_clear_control() {
-        let page = implemented(0x0128, 1);
-        assert_eq!(page.entries, [TPMA_CC_HIERARCHY_CHANGE_AUTH]);
+        let page = implemented(0x0128, 2);
+        assert_eq!(
+            page.entries,
+            [TPMA_CC_CLOCK_SET, TPMA_CC_HIERARCHY_CHANGE_AUTH]
+        );
         assert!(page.more_data);
 
         let page = implemented(0x0129, 1000);
@@ -457,8 +494,14 @@ mod tests {
         assert_eq!(page.entries, [TPMA_CC_INCREMENTAL_SELF_TEST]);
         assert!(page.more_data);
 
-        let page = implemented(0x013f, 1);
-        assert_eq!(page.entries, [TPMA_CC_SET_COMMAND_CODE_AUDIT_STATUS]);
+        let page = implemented(0x013f, 2);
+        assert_eq!(
+            page.entries,
+            [
+                TPMA_CC_SET_ALGORITHM_SET,
+                TPMA_CC_SET_COMMAND_CODE_AUDIT_STATUS
+            ]
+        );
         assert!(page.more_data);
 
         let page = implemented(0x0143, 1000);
@@ -607,11 +650,12 @@ mod tests {
 
     #[test]
     fn pcr_extend_is_advertised_from_its_own_command_code() {
-        let page = implemented(0x0182, 15);
+        let page = implemented(0x0182, 16);
         assert_eq!(
             page.entries,
             [
                 TPMA_CC_PCR_EXTEND,
+                TPMA_CC_PCR_SET_AUTH_VALUE,
                 TPMA_CC_NV_CERTIFY,
                 TPMA_CC_EVENT_SEQUENCE_COMPLETE,
                 TPMA_CC_HASH_SEQUENCE_START,

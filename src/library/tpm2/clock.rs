@@ -79,6 +79,53 @@ impl TpmTimer {
 const NV_CLOCK_UPDATE_INTERVAL: u32 = 12;
 const CLOCK_UPDATE_MASK: u64 = (1 << NV_CLOCK_UPDATE_INTERVAL) - 1;
 
+const CLOCK_ADJUST_COARSE: u32 = 300;
+const CLOCK_ADJUST_MEDIUM: u32 = 30;
+const CLOCK_ADJUST_FINE: u32 = 1;
+const CLOCK_ADJUST_LIMIT: u32 = 5_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ClockAdjust {
+    CoarseSlower,
+    MediumSlower,
+    FineSlower,
+    NoChange,
+    FineFaster,
+    MediumFaster,
+    CoarseFaster,
+}
+
+impl ClockAdjust {
+    pub(super) fn from_encoded(byte: u8) -> Option<Self> {
+        match byte as i8 {
+            -3 => Some(Self::CoarseSlower),
+            -2 => Some(Self::MediumSlower),
+            -1 => Some(Self::FineSlower),
+            0 => Some(Self::NoChange),
+            1 => Some(Self::FineFaster),
+            2 => Some(Self::MediumFaster),
+            3 => Some(Self::CoarseFaster),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn plat_clock_rate_adjust(timer: &mut TpmTimer, adjust: ClockAdjust) {
+    let rate = match adjust {
+        ClockAdjust::NoChange => return,
+        ClockAdjust::CoarseSlower => timer.adjust_rate.wrapping_add(CLOCK_ADJUST_COARSE),
+        ClockAdjust::MediumSlower => timer.adjust_rate.wrapping_add(CLOCK_ADJUST_MEDIUM),
+        ClockAdjust::FineSlower => timer.adjust_rate.wrapping_add(CLOCK_ADJUST_FINE),
+        ClockAdjust::FineFaster => timer.adjust_rate.wrapping_sub(CLOCK_ADJUST_FINE),
+        ClockAdjust::MediumFaster => timer.adjust_rate.wrapping_sub(CLOCK_ADJUST_MEDIUM),
+        ClockAdjust::CoarseFaster => timer.adjust_rate.wrapping_sub(CLOCK_ADJUST_COARSE),
+    };
+    timer.adjust_rate = rate.clamp(
+        CLOCK_NOMINAL - CLOCK_ADJUST_LIMIT,
+        CLOCK_NOMINAL + CLOCK_ADJUST_LIMIT,
+    );
+}
+
 fn plat_real_time(clock: &RuntimeClock, host: &dyn HostClock) -> u64 {
     host.monotonic_ms()
         .wrapping_add(clock.host_monotonic_adjust_ms as u64)
@@ -121,7 +168,7 @@ pub(super) fn time_power_on(runtime: &mut Tpm2Runtime, host: &dyn HostClock) {
     runtime.timer.time_ms = plat_timer_read(&mut runtime.clock, &mut runtime.timer, host);
 }
 
-fn time_clock_update(runtime: &mut Tpm2Runtime, new_time: u64) {
+pub(super) fn time_clock_update(runtime: &mut Tpm2Runtime, new_time: u64) {
     if (new_time | CLOCK_UPDATE_MASK) > (runtime.live.orderly.clock | CLOCK_UPDATE_MASK) {
         runtime.live.orderly.clock_safe = 1;
         runtime.live.orderly.clock = new_time;
@@ -506,6 +553,110 @@ mod tests {
         assert!(timer.consume_reset());
         assert!(!timer.consume_reset());
         assert!(!timer.timer_reset);
+    }
+
+    const UPPER_LIMIT: u32 = CLOCK_NOMINAL + CLOCK_ADJUST_LIMIT;
+    const LOWER_LIMIT: u32 = CLOCK_NOMINAL - CLOCK_ADJUST_LIMIT;
+
+    const SLOWER: [(ClockAdjust, u32); 3] = [
+        (ClockAdjust::CoarseSlower, CLOCK_ADJUST_COARSE),
+        (ClockAdjust::MediumSlower, CLOCK_ADJUST_MEDIUM),
+        (ClockAdjust::FineSlower, CLOCK_ADJUST_FINE),
+    ];
+    const FASTER: [(ClockAdjust, u32); 3] = [
+        (ClockAdjust::CoarseFaster, CLOCK_ADJUST_COARSE),
+        (ClockAdjust::MediumFaster, CLOCK_ADJUST_MEDIUM),
+        (ClockAdjust::FineFaster, CLOCK_ADJUST_FINE),
+    ];
+
+    fn adjusted(start: u32, adjust: ClockAdjust) -> u32 {
+        let mut timer = TpmTimer {
+            adjust_rate: start,
+            ..TpmTimer::POWER_ON_RESET
+        };
+        plat_clock_rate_adjust(&mut timer, adjust);
+        timer.adjust_rate
+    }
+
+    #[test]
+    fn no_change_never_touches_a_restored_adjustment_rate() {
+        for start in [0u32, 1, LOWER_LIMIT, CLOCK_NOMINAL, UPPER_LIMIT, u32::MAX] {
+            assert_eq!(
+                adjusted(start, ClockAdjust::NoChange),
+                start,
+                "start {start}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_faster_adjustment_from_zero_wraps_before_the_clamp() {
+        for (adjust, _) in FASTER {
+            assert_eq!(adjusted(0, adjust), UPPER_LIMIT, "{adjust:?}");
+        }
+    }
+
+    #[test]
+    fn a_slower_adjustment_from_the_maximum_wraps_before_the_clamp() {
+        for (adjust, _) in SLOWER {
+            assert_eq!(adjusted(u32::MAX, adjust), LOWER_LIMIT, "{adjust:?}");
+        }
+    }
+
+    #[test]
+    fn an_in_range_adjustment_moves_by_exactly_one_step() {
+        for (adjust, step) in SLOWER {
+            assert_eq!(
+                adjusted(CLOCK_NOMINAL, adjust),
+                CLOCK_NOMINAL + step,
+                "{adjust:?}"
+            );
+        }
+        for (adjust, step) in FASTER {
+            assert_eq!(
+                adjusted(CLOCK_NOMINAL, adjust),
+                CLOCK_NOMINAL - step,
+                "{adjust:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_adjustments_saturate_at_the_platform_limits() {
+        for (adjust, step) in SLOWER {
+            let mut timer = TpmTimer::POWER_ON_RESET;
+            for _ in 0..(CLOCK_ADJUST_LIMIT / step + 2) {
+                plat_clock_rate_adjust(&mut timer, adjust);
+                assert!(timer.adjust_rate <= UPPER_LIMIT, "{adjust:?}");
+            }
+            assert_eq!(timer.adjust_rate, UPPER_LIMIT, "{adjust:?}");
+        }
+        for (adjust, step) in FASTER {
+            let mut timer = TpmTimer::POWER_ON_RESET;
+            for _ in 0..(CLOCK_ADJUST_LIMIT / step + 2) {
+                plat_clock_rate_adjust(&mut timer, adjust);
+                assert!(timer.adjust_rate >= LOWER_LIMIT, "{adjust:?}");
+            }
+            assert_eq!(timer.adjust_rate, LOWER_LIMIT, "{adjust:?}");
+        }
+    }
+
+    #[test]
+    fn the_encoded_adjustment_values_match_the_vendored_constants() {
+        for (encoded, expected) in [
+            (0xfdu8, ClockAdjust::CoarseSlower),
+            (0xfe, ClockAdjust::MediumSlower),
+            (0xff, ClockAdjust::FineSlower),
+            (0x00, ClockAdjust::NoChange),
+            (0x01, ClockAdjust::FineFaster),
+            (0x02, ClockAdjust::MediumFaster),
+            (0x03, ClockAdjust::CoarseFaster),
+        ] {
+            assert_eq!(ClockAdjust::from_encoded(encoded), Some(expected));
+        }
+        for encoded in [0x04u8, 0x7f, 0x80, 0xfc] {
+            assert_eq!(ClockAdjust::from_encoded(encoded), None, "{encoded:#04x}");
+        }
     }
 
     fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), crate::ffi_types::TpmResult> {

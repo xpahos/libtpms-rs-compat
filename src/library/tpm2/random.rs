@@ -1196,7 +1196,10 @@ mod tests {
             (".failure_mode = ", &["failure_mode.rs", "runtime.rs"]),
         ];
 
-        const TEST_ONLY_MODULES: &[&str] = &["command/hierarchy_admin/harness.rs"];
+        const TEST_ONLY_MODULES: &[&str] = &[
+            "command/hierarchy_admin/harness.rs",
+            "command/platform_state/harness.rs",
+        ];
 
         fn production_slice(source: &str) -> &str {
             let mut cut = source.len();
