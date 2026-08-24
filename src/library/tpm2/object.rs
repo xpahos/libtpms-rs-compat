@@ -1,3 +1,4 @@
+use super::crypto::COMPILED_HASHES;
 use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use super::marshal::{BlobReader, BlockDisposition, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, PersistentField, StateSection, parse_nv_header};
@@ -50,6 +51,13 @@ pub(super) const ATTR_FIRST_BLOCK: u32 = 1 << 12;
 pub(super) const ATTR_OCCUPIED: u32 = 1 << 15;
 
 pub(super) const HASH_STATE_COUNT: usize = 4;
+
+const _: () = assert!(COMPILED_HASHES.len() == HASH_STATE_COUNT);
+
+pub(super) const HASH_STATE_EMPTY: u8 = 0;
+pub(super) const HASH_STATE_HASH: u8 = 1;
+pub(super) const HASH_STATE_HMAC: u8 = 2;
+pub(super) const HASH_STATE_SMAC: u8 = 3;
 
 const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
 const SEED_COMPAT_LEVEL_LAST: u8 = 1;
@@ -231,6 +239,47 @@ fn parse_sha512_state<'a>(
         num,
         md_len,
     })
+}
+
+fn live_state_is_usable(state: &HashState<'_>, mac: bool) -> bool {
+    let digested = matches!(
+        state.hash_alg,
+        TPM_ALG_SHA1 | TPM_ALG_SHA256 | TPM_ALG_SHA384 | TPM_ALG_SHA512
+    );
+    match state.state_type {
+        HASH_STATE_HASH => !mac && digested && state.payload.is_some(),
+        HASH_STATE_HMAC => mac && digested && state.payload.is_some(),
+        HASH_STATE_SMAC => mac && state.hash_alg == 0 && state.payload.is_none(),
+        _ => false,
+    }
+}
+
+fn check_live_state(state: &HashState<'_>, mac: bool) -> Result<(), PersistentAllError> {
+    if live_state_is_usable(state, mac) {
+        return Ok(());
+    }
+    Err(unusable_state(state))
+}
+
+fn unusable_state(state: &HashState<'_>) -> PersistentAllError {
+    PersistentAllError::InvalidHashAlgorithm {
+        section: SECTION_HASH_STATE,
+        actual: state.hash_alg,
+    }
+}
+
+fn check_event_states(
+    states: &[HashState<'_>; HASH_STATE_COUNT],
+) -> Result<(), PersistentAllError> {
+    for (state, &(hash_alg, _)) in states.iter().zip(COMPILED_HASHES.iter()) {
+        if state.state_type != HASH_STATE_HASH
+            || state.hash_alg != hash_alg
+            || state.payload.is_none()
+        {
+            return Err(unusable_state(state));
+        }
+    }
+    Ok(())
 }
 
 fn parse_hash_state<'a>(reader: &mut BlobReader<'a>) -> Result<HashState<'a>, PersistentAllError> {
@@ -510,14 +559,21 @@ fn parse_hash_object<'a>(
                 expected: HASH_STATE_COUNT,
             });
         }
-        states = Some([
+        let parsed = [
             parse_hash_state(reader)?,
             parse_hash_state(reader)?,
             parse_hash_state(reader)?,
             parse_hash_state(reader)?,
-        ]);
+        ];
+        if attributes & ATTR_HASH_SEQ != 0 {
+            check_live_state(&parsed[0], false)?;
+        } else {
+            check_event_states(&parsed)?;
+        }
+        states = Some(parsed);
     } else if attributes & ATTR_HMAC_SEQ != 0 {
         let state = parse_hash_state(reader)?;
+        check_live_state(&state, true)?;
         let key = read_tpm2b(reader, S, PersistentField::HmacKey, 128)?;
         hmac_state = Some((state, key));
     }
@@ -739,9 +795,9 @@ pub(super) mod fixtures {
         out
     }
 
-    pub(in crate::library::tpm2) fn hash_state(hash_alg: u16) -> Vec<u8> {
+    pub(in crate::library::tpm2) fn hash_state(state_type: u8, hash_alg: u16) -> Vec<u8> {
         let mut out = nv_header(HASH_STATE_VERSION, HASH_STATE_MAGIC, 1);
-        out.push(2);
+        out.push(state_type);
         out.extend_from_slice(&hash_alg.to_be_bytes());
         out.extend_from_slice(&nv_header(ANY_HASH_STATE_VERSION, ANY_HASH_STATE_MAGIC, 1));
         match hash_alg {
@@ -795,13 +851,23 @@ pub(super) mod fixtures {
         out.extend_from_slice(&0x0010u16.to_be_bytes());
         out.extend_from_slice(&0x0000_0002u32.to_be_bytes());
         public_fixtures::push_tpm2b(&mut out, &[]);
-        if attributes & ATTR_HASH_SEQ != 0 || attributes & ATTR_EVENT_SEQ != 0 {
+        if attributes & ATTR_EVENT_SEQ != 0 && attributes & ATTR_HASH_SEQ == 0 {
             out.extend_from_slice(&(HASH_STATE_COUNT as u16).to_be_bytes());
-            for alg in [TPM_ALG_SHA1, TPM_ALG_SHA256, 0x0000, 0x0000] {
-                out.extend_from_slice(&hash_state(alg));
+            for &(alg, _) in COMPILED_HASHES.iter() {
+                out.extend_from_slice(&hash_state(HASH_STATE_HASH, alg));
+            }
+        } else if attributes & ATTR_HASH_SEQ != 0 {
+            out.extend_from_slice(&(HASH_STATE_COUNT as u16).to_be_bytes());
+            for (state_type, alg) in [
+                (HASH_STATE_HASH, TPM_ALG_SHA1),
+                (HASH_STATE_HASH, TPM_ALG_SHA256),
+                (HASH_STATE_EMPTY, 0x0000),
+                (HASH_STATE_EMPTY, 0x0000),
+            ] {
+                out.extend_from_slice(&hash_state(state_type, alg));
             }
         } else if attributes & ATTR_HMAC_SEQ != 0 {
-            out.extend_from_slice(&hash_state(TPM_ALG_SHA256));
+            out.extend_from_slice(&hash_state(HASH_STATE_HMAC, TPM_ALG_SHA256));
             public_fixtures::push_tpm2b(&mut out, &[0x66; 32]);
         }
         out.extend_from_slice(&empty_future_block());
@@ -914,6 +980,265 @@ mod tests {
             panic!("expected sequence object");
         };
         assert!(body.states.is_some());
+    }
+
+    fn typed_hash_state(state_type: u8, hash_alg: u16) -> Vec<u8> {
+        hash_state(state_type, hash_alg)
+    }
+
+    fn sequence_with_states(attributes: u32, states: &[(u8, u16); HASH_STATE_COUNT]) -> Vec<u8> {
+        let mut body = nv_header(HASH_OBJECT_VERSION, HASH_OBJECT_MAGIC, 1);
+        body.extend_from_slice(&TPM_ALG_RSA.to_be_bytes());
+        body.extend_from_slice(&0x0010u16.to_be_bytes());
+        body.extend_from_slice(&0x0000_0002u32.to_be_bytes());
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body.extend_from_slice(&(HASH_STATE_COUNT as u16).to_be_bytes());
+        for &(state_type, hash_alg) in states {
+            body.extend_from_slice(&typed_hash_state(state_type, hash_alg));
+        }
+        body.extend_from_slice(&empty_future_block());
+        let mut out = nv_header(ANY_OBJECT_VERSION, ANY_OBJECT_MAGIC, 1);
+        out.extend_from_slice(&attributes.to_be_bytes());
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&empty_future_block());
+        out
+    }
+
+    fn mac_sequence(state_type: u8, hash_alg: u16) -> Vec<u8> {
+        let mut body = nv_header(HASH_OBJECT_VERSION, HASH_OBJECT_MAGIC, 1);
+        body.extend_from_slice(&TPM_ALG_RSA.to_be_bytes());
+        body.extend_from_slice(&0x0010u16.to_be_bytes());
+        body.extend_from_slice(&0x0000_0002u32.to_be_bytes());
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body.extend_from_slice(&typed_hash_state(state_type, hash_alg));
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body.extend_from_slice(&empty_future_block());
+        let mut out = nv_header(ANY_OBJECT_VERSION, ANY_OBJECT_MAGIC, 1);
+        out.extend_from_slice(&(ATTR_OCCUPIED | ATTR_HMAC_SEQ).to_be_bytes());
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&empty_future_block());
+        out
+    }
+
+    #[test]
+    fn every_live_sequence_state_combination_is_accepted() {
+        for hash_alg in [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512] {
+            let data = sequence_with_states(
+                ATTR_OCCUPIED | ATTR_HASH_SEQ,
+                &[
+                    (HASH_STATE_HASH, hash_alg),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                ],
+            );
+            parse(&data).unwrap_or_else(|error| panic!("hash {hash_alg:#06x}: {error:?}"));
+            let data = mac_sequence(HASH_STATE_HMAC, hash_alg);
+            parse(&data).unwrap_or_else(|error| panic!("hmac {hash_alg:#06x}: {error:?}"));
+        }
+        parse(&mac_sequence(HASH_STATE_SMAC, 0)).expect("a symmetric mac sequence");
+    }
+
+    #[test]
+    fn unused_hash_state_slots_may_hold_uninitialised_bytes() {
+        let data = sequence_with_states(
+            ATTR_OCCUPIED | ATTR_HASH_SEQ,
+            &[
+                (HASH_STATE_HASH, TPM_ALG_SHA1),
+                (246, 0x6cd2),
+                (166, 0xa859),
+                (HASH_STATE_EMPTY, 0),
+            ],
+        );
+        let object = parse(&data).expect("the reference leaves stale slots behind");
+        let AnyObjectBody::Sequence(body) = &object.body else {
+            panic!("expected sequence object");
+        };
+        let states = body.states.as_ref().expect("four states");
+        assert_eq!(states[1].state_type, 246);
+        assert!(states[1].payload.is_none());
+    }
+
+    #[test]
+    fn an_unusable_live_sequence_state_is_rejected() {
+        for (attributes, states) in [
+            (
+                ATTR_OCCUPIED | ATTR_HASH_SEQ,
+                [
+                    (HASH_STATE_HMAC, TPM_ALG_SHA256),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                ],
+            ),
+            (
+                ATTR_OCCUPIED | ATTR_HASH_SEQ,
+                [
+                    (HASH_STATE_HASH, 0x0010),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                ],
+            ),
+            (
+                ATTR_OCCUPIED | ATTR_HASH_SEQ,
+                [
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                    (HASH_STATE_EMPTY, 0),
+                ],
+            ),
+        ] {
+            let data = sequence_with_states(attributes, &states);
+            let mut reader = BlobReader::new(&data);
+            let error = parse_any_object(&mut reader, StateFormatLimit::CURRENT).unwrap_err();
+            assert_eq!(
+                error,
+                PersistentAllError::InvalidHashAlgorithm {
+                    section: SECTION_HASH_STATE,
+                    actual: states[0].1,
+                },
+                "states {states:?}"
+            );
+            assert_eq!(error.tpm_result(), crate::library::constants::TPM_RC_HASH);
+        }
+        for (state_type, hash_alg) in [
+            (HASH_STATE_HASH, TPM_ALG_SHA256),
+            (HASH_STATE_HMAC, 0x0000),
+            (HASH_STATE_HMAC, 0x0012),
+            (HASH_STATE_SMAC, TPM_ALG_SHA256),
+            (HASH_STATE_EMPTY, 0),
+            (4, 0),
+        ] {
+            let data = mac_sequence(state_type, hash_alg);
+            let mut reader = BlobReader::new(&data);
+            let error = parse_any_object(&mut reader, StateFormatLimit::CURRENT).unwrap_err();
+            assert_eq!(
+                error,
+                PersistentAllError::InvalidHashAlgorithm {
+                    section: SECTION_HASH_STATE,
+                    actual: hash_alg,
+                },
+                "type {state_type} alg {hash_alg:#06x}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_hash_state_payload_is_insufficient() {
+        let full = typed_hash_state(HASH_STATE_HASH, TPM_ALG_SHA256);
+        for length in 0..full.len() {
+            let mut reader = BlobReader::new(&full[..length]);
+            assert!(
+                matches!(
+                    parse_hash_state(&mut reader),
+                    Err(PersistentAllError::Truncated { .. }
+                        | PersistentAllError::MissingRequiredBlock { .. })
+                ),
+                "prefix {length}"
+            );
+        }
+    }
+
+    fn event_banks() -> [(u8, u16); HASH_STATE_COUNT] {
+        core::array::from_fn(|index| (HASH_STATE_HASH, COMPILED_HASHES[index].0))
+    }
+
+    fn event_sequence(states: &[(u8, u16); HASH_STATE_COUNT]) -> Vec<u8> {
+        sequence_with_states(ATTR_OCCUPIED | ATTR_EVENT_SEQ, states)
+    }
+
+    #[test]
+    fn an_event_sequence_needs_every_compiled_bank_in_order() {
+        let data = event_sequence(&event_banks());
+        let object = parse(&data).expect("all four banks in the compiled order");
+        let AnyObjectBody::Sequence(body) = &object.body else {
+            panic!("expected sequence object");
+        };
+        let states = body.states.as_ref().expect("four states");
+        for (index, &(hash_alg, _)) in COMPILED_HASHES.iter().enumerate() {
+            assert_eq!(states[index].hash_alg, hash_alg);
+            assert_eq!(states[index].state_type, HASH_STATE_HASH);
+            assert!(states[index].payload.is_some());
+        }
+    }
+
+    #[test]
+    fn a_malformed_event_bank_is_rejected_before_the_object_exists() {
+        let sha1 = COMPILED_HASHES[0].0;
+        let sha256 = COMPILED_HASHES[1].0;
+        let sha384 = COMPILED_HASHES[2].0;
+        let sha512 = COMPILED_HASHES[3].0;
+        let mut cases: Vec<(&str, [(u8, u16); HASH_STATE_COUNT], u16)> = Vec::new();
+
+        let mut banks = event_banks();
+        banks[0] = (HASH_STATE_HMAC, sha1);
+        cases.push(("an hmac state in the first bank", banks, sha1));
+
+        let mut banks = event_banks();
+        banks[2] = (HASH_STATE_SMAC, sha384);
+        cases.push(("a symmetric mac state in a middle bank", banks, sha384));
+
+        let mut banks = event_banks();
+        banks[3] = (HASH_STATE_HMAC, sha512);
+        cases.push(("an hmac state in the last bank", banks, sha512));
+
+        let mut banks = event_banks();
+        banks[1] = (HASH_STATE_HASH, 0x0012);
+        cases.push(("an unknown algorithm", banks, 0x0012));
+
+        let mut banks = event_banks();
+        banks.swap(1, 2);
+        cases.push(("two swapped banks", banks, sha384));
+
+        let mut banks = event_banks();
+        banks[2] = (HASH_STATE_HASH, sha256);
+        cases.push(("a duplicated algorithm", banks, sha256));
+
+        let mut banks = event_banks();
+        banks[1] = (HASH_STATE_EMPTY, 0);
+        cases.push(("an empty bank", banks, 0));
+
+        let mut banks = event_banks();
+        banks[3] = (HASH_STATE_HASH, 0);
+        cases.push(("a bank without a payload", banks, 0));
+
+        for (what, banks, actual) in cases {
+            let data = event_sequence(&banks);
+            let mut reader = BlobReader::new(&data);
+            let error = parse_any_object(&mut reader, StateFormatLimit::CURRENT).unwrap_err();
+            assert_eq!(
+                error,
+                PersistentAllError::InvalidHashAlgorithm {
+                    section: SECTION_HASH_STATE,
+                    actual,
+                },
+                "{what}"
+            );
+            assert_eq!(error.tpm_result(), crate::library::constants::TPM_RC_HASH);
+        }
+    }
+
+    #[test]
+    fn a_truncated_event_bank_payload_is_insufficient() {
+        let full = event_sequence(&event_banks());
+        let complete = {
+            let mut reader = BlobReader::new(&full);
+            parse_any_object(&mut reader, StateFormatLimit::CURRENT).expect("a valid sequence");
+            full.len() - reader.remaining().len()
+        };
+        for length in (complete - 200..complete).step_by(7) {
+            let mut reader = BlobReader::new(&full[..length]);
+            assert!(
+                matches!(
+                    parse_any_object(&mut reader, StateFormatLimit::CURRENT),
+                    Err(PersistentAllError::Truncated { .. }
+                        | PersistentAllError::MissingRequiredBlock { .. })
+                ),
+                "prefix {length} of {complete}"
+            );
+        }
     }
 
     #[test]

@@ -1,10 +1,11 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_OBJECT_MEMORY};
 
-use super::crypto::{COMPILED_HASHES, SequenceHmac, ShaState, ShaStatePayload};
+use super::crypto::{COMPILED_HASHES, CmacState, SequenceHmac, ShaState, ShaStatePayload};
 use super::object::{
     ATTR_EVENT_SEQ, ATTR_EVICT, ATTR_FIRST_BLOCK, ATTR_HASH_SEQ, ATTR_HMAC_SEQ, ATTR_OCCUPIED,
-    ATTR_TEMPORARY, ATTR_TICKET_SAFE, HASH_OBJECT_VERSION, HASH_STATE_COUNT,
+    ATTR_TEMPORARY, ATTR_TICKET_SAFE, HASH_OBJECT_VERSION, HASH_STATE_COUNT, HASH_STATE_EMPTY,
+    HASH_STATE_HASH, HASH_STATE_HMAC, HASH_STATE_SMAC,
 };
 use super::object_create::{find_empty_object_slot, occupied_object_slot};
 use super::persistent::{
@@ -15,9 +16,46 @@ use super::public::TPM_ALG_NULL;
 use super::runtime::Tpm2Runtime;
 use super::template::TPMA_OBJECT_NO_DA;
 
-const HASH_STATE_EMPTY: u8 = 0;
-const HASH_STATE_HASH: u8 = 1;
-const HASH_STATE_HMAC: u8 = 2;
+pub(super) enum MacKey {
+    Hmac {
+        hash_alg: u16,
+        key: OwnedSecret,
+    },
+    Cmac {
+        algorithm: u16,
+        key_bits: u16,
+        key: OwnedSecret,
+    },
+}
+
+impl MacKey {
+    pub(super) fn self_tested_algorithm(&self) -> Option<u16> {
+        match self {
+            Self::Hmac { hash_alg, .. } => Some(*hash_alg),
+            Self::Cmac { .. } => None,
+        }
+    }
+
+    pub(super) fn one_shot(&self, data: &[u8]) -> Result<Vec<u8>, TpmResult> {
+        match self {
+            Self::Hmac { hash_alg, key } => {
+                let mut hmac =
+                    SequenceHmac::start(*hash_alg, key.as_bytes()).ok_or(TPM_RC_FAILURE)?;
+                hmac.state.update(data);
+                hmac.finalize().ok_or(TPM_RC_FAILURE)
+            }
+            Self::Cmac {
+                algorithm,
+                key_bits,
+                key,
+            } => {
+                let mut state = CmacState::start(*algorithm, *key_bits, key.as_bytes())?;
+                state.update(data)?;
+                state.finalize()
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SequenceKind {
@@ -182,6 +220,7 @@ fn blank_body() -> OwnedHashObjectBody {
         auth: OwnedSecret::from_vec(Vec::new()),
         states: None,
         hmac_state: None,
+        cmac: None,
     }
 }
 
@@ -245,16 +284,37 @@ pub(super) fn init_event_sequence(runtime: &mut Tpm2Runtime, slot: usize) -> Res
     Ok(())
 }
 
-pub(super) fn init_hmac_sequence(
+pub(super) fn init_mac_sequence(
     runtime: &mut Tpm2Runtime,
     slot: usize,
-    hash_alg: u16,
-    key: &[u8],
+    key: &MacKey,
 ) -> Result<(), TpmResult> {
-    let hmac = SequenceHmac::start(hash_alg, key).ok_or(TPM_RC_FAILURE)?;
-    let stored = owned_state(HASH_STATE_HMAC, &hmac.state);
-    sequence_body_mut(runtime, slot)?.hmac_state =
-        Some((stored, OwnedSecret::from_vec(hmac.opad_key)));
+    match key {
+        MacKey::Hmac { hash_alg, key } => {
+            let hmac = SequenceHmac::start(*hash_alg, key.as_bytes()).ok_or(TPM_RC_FAILURE)?;
+            let stored = owned_state(HASH_STATE_HMAC, &hmac.state);
+            let body = sequence_body_mut(runtime, slot)?;
+            body.hmac_state = Some((stored, OwnedSecret::from_vec(hmac.opad_key)));
+            body.cmac = None;
+        }
+        MacKey::Cmac {
+            algorithm,
+            key_bits,
+            key,
+        } => {
+            let state = CmacState::start(*algorithm, *key_bits, key.as_bytes())?;
+            let body = sequence_body_mut(runtime, slot)?;
+            body.hmac_state = Some((
+                OwnedHashState {
+                    state_type: HASH_STATE_SMAC,
+                    hash_alg: 0,
+                    payload: None,
+                },
+                OwnedSecret::from_vec(Vec::new()),
+            ));
+            body.cmac = Some(state);
+        }
+    }
     Ok(())
 }
 
@@ -290,14 +350,13 @@ pub(super) fn create_event_sequence(
 }
 
 #[cfg(test)]
-pub(super) fn create_hmac_sequence(
+pub(super) fn create_mac_sequence(
     runtime: &mut Tpm2Runtime,
-    hash_alg: u16,
-    key: &[u8],
+    mac_key: &MacKey,
     auth: &[u8],
 ) -> Result<u32, TpmResult> {
     let allocated = allocate_sequence_slot(runtime, SequenceKind::Hmac, auth)?;
-    match init_hmac_sequence(runtime, allocated.slot, hash_alg, key) {
+    match init_mac_sequence(runtime, allocated.slot, mac_key) {
         Ok(()) => Ok(allocated.handle),
         Err(code) => {
             release_sequence(runtime, allocated.slot);
@@ -351,10 +410,17 @@ pub(super) fn update_sequence(
             body.states = Some(Box::new(updated));
         }
         SequenceKind::Hmac => {
-            let (stored, _) = body.hmac_state.as_mut().ok_or(TPM_RC_FAILURE)?;
-            let mut state = restore_state(stored).ok_or(TPM_RC_FAILURE)?;
-            state.update(buffer);
-            *stored = owned_state(HASH_STATE_HMAC, &state);
+            let (stored, _) = body.hmac_state.as_ref().ok_or(TPM_RC_FAILURE)?;
+            match stored.state_type {
+                HASH_STATE_SMAC => body.cmac.as_mut().ok_or(TPM_RC_FAILURE)?.update(buffer)?,
+                HASH_STATE_HMAC => {
+                    let (stored, _) = body.hmac_state.as_mut().ok_or(TPM_RC_FAILURE)?;
+                    let mut state = restore_state(stored).ok_or(TPM_RC_FAILURE)?;
+                    state.update(buffer);
+                    *stored = owned_state(HASH_STATE_HMAC, &state);
+                }
+                _ => return Err(TPM_RC_FAILURE),
+            }
         }
     }
     Ok(())
@@ -392,7 +458,7 @@ pub(super) fn finalize_hash(
     Ok(state.finalize())
 }
 
-pub(super) fn finalize_hmac(
+pub(super) fn finalize_mac(
     runtime: &Tpm2Runtime,
     slot: usize,
     buffer: &[u8],
@@ -402,6 +468,14 @@ pub(super) fn finalize_hmac(
         return Err(TPM_RC_FAILURE);
     };
     let (stored, key) = body.hmac_state.as_ref().ok_or(TPM_RC_FAILURE)?;
+    if stored.state_type == HASH_STATE_SMAC {
+        let mut state = body.cmac.as_ref().ok_or(TPM_RC_FAILURE)?.clone();
+        state.update(buffer)?;
+        return state.finalize();
+    }
+    if stored.state_type != HASH_STATE_HMAC {
+        return Err(TPM_RC_FAILURE);
+    }
     let mut state = restore_state(stored).ok_or(TPM_RC_FAILURE)?;
     state.update(buffer);
     let hmac = SequenceHmac {
@@ -794,6 +868,27 @@ pub(in crate::library::tpm2) mod replay {
         out
     }
 
+    pub(in crate::library::tpm2) fn symcipher_public(
+        attributes: u32,
+        algorithm: u16,
+        key_bits: u16,
+        mode: u16,
+    ) -> Vec<u8> {
+        let mut out = 0x0025u16.to_be_bytes().to_vec();
+        out.extend_from_slice(&0x000bu16.to_be_bytes());
+        out.extend_from_slice(&attributes.to_be_bytes());
+        out.extend_from_slice(&tpm2b(&[]));
+        out.extend_from_slice(&algorithm.to_be_bytes());
+        out.extend_from_slice(&key_bits.to_be_bytes());
+        out.extend_from_slice(&mode.to_be_bytes());
+        out.extend_from_slice(&tpm2b(&[]));
+        out
+    }
+
+    pub(in crate::library::tpm2) fn context_save(handle: u32) -> Vec<u8> {
+        command(0x8001, 0x0000_0162, &handle.to_be_bytes())
+    }
+
     pub(in crate::library::tpm2) const HMAC_KEY_ATTRIBUTES: u32 = 0x0004_0472;
     pub(in crate::library::tpm2) const DA_KEY_ATTRIBUTES: u32 = 0x0004_0072;
     pub(in crate::library::tpm2) const RESTRICTED_KEY_ATTRIBUTES: u32 = 0x0005_0472;
@@ -839,6 +934,21 @@ mod tests {
     use crate::library::tpm2::runtime::empty_state_runtime;
     use crate::library::tpm2::volatile::MAX_LOADED_OBJECTS;
 
+    fn hmac_key(hash_alg: u16, key: &[u8]) -> MacKey {
+        MacKey::Hmac {
+            hash_alg,
+            key: OwnedSecret::copy_of(key),
+        }
+    }
+
+    fn cmac_key(algorithm: u16, key: &[u8]) -> MacKey {
+        MacKey::Cmac {
+            algorithm,
+            key_bits: (key.len() * 8) as u16,
+            key: OwnedSecret::copy_of(key),
+        }
+    }
+
     fn digest(hash_alg: u16, data: &[u8]) -> Vec<u8> {
         let mut hasher = Hasher::new(hash_alg).expect("a compiled algorithm");
         hasher.update(data);
@@ -862,8 +972,8 @@ mod tests {
     fn every_sequence_kind_is_recognised_by_its_own_handle() {
         let mut runtime = empty_state_runtime();
         let hash = create_hash_sequence(&mut runtime, TPM_ALG_SHA1, &[]).expect("a free slot");
-        let hmac =
-            create_hmac_sequence(&mut runtime, TPM_ALG_SHA256, b"key", &[]).expect("a free slot");
+        let hmac = create_mac_sequence(&mut runtime, &hmac_key(TPM_ALG_SHA256, b"key"), &[])
+            .expect("a free slot");
         let event = create_event_sequence(&mut runtime, &[]).expect("a free slot");
         assert_eq!(
             resolve_sequence_slot(&runtime, hash).and_then(|slot| slot_kind(&runtime, slot)),
@@ -894,7 +1004,7 @@ mod tests {
             Err(TPM_RC_OBJECT_MEMORY)
         );
         assert_eq!(
-            create_hmac_sequence(&mut runtime, TPM_ALG_SHA256, b"k", &[]),
+            create_mac_sequence(&mut runtime, &hmac_key(TPM_ALG_SHA256, b"k"), &[]),
             Err(TPM_RC_OBJECT_MEMORY)
         );
     }
@@ -914,6 +1024,87 @@ mod tests {
                 "alg {hash_alg:#06x}"
             );
         }
+    }
+
+    #[test]
+    fn a_cmac_sequence_matches_the_one_shot_mac() {
+        const TPM_ALG_AES: u16 = 0x0006;
+        const TPM_ALG_TDES: u16 = 0x0003;
+        const TPM_ALG_CAMELLIA: u16 = 0x0026;
+        let material: Vec<u8> = (0..32u8).collect();
+        let message: Vec<u8> = (0..70u32).map(|index| index as u8).collect();
+        for (algorithm, key_bytes) in [
+            (TPM_ALG_AES, 16usize),
+            (TPM_ALG_AES, 32),
+            (TPM_ALG_CAMELLIA, 16),
+            (TPM_ALG_TDES, 24),
+        ] {
+            let key = cmac_key(algorithm, &material[..key_bytes]);
+            let expected = key.one_shot(&message).expect("the one-shot mac");
+            for split in [0usize, 1, 15, 16, 17, 64, 70] {
+                let mut runtime = empty_state_runtime();
+                let handle = create_mac_sequence(&mut runtime, &key, &[]).expect("a free slot");
+                let slot = resolve_sequence_slot(&runtime, handle).expect("the sequence resolves");
+                assert_eq!(slot_kind(&runtime, slot), Some(SequenceKind::Hmac));
+                update_sequence(&mut runtime, slot, &message[..split]).expect("updates");
+                update_sequence(&mut runtime, slot, &[]).expect("updates");
+                assert_eq!(
+                    finalize_mac(&runtime, slot, &message[split..]).expect("finalizes"),
+                    expected,
+                    "alg {algorithm:#06x} key {key_bytes} split {split}"
+                );
+            }
+            let mut runtime = empty_state_runtime();
+            let handle = create_mac_sequence(&mut runtime, &key, &[]).expect("a free slot");
+            let slot = resolve_sequence_slot(&runtime, handle).expect("the sequence resolves");
+            assert_eq!(
+                finalize_mac(&runtime, slot, &[]).expect("finalizes"),
+                key.one_shot(&[]).expect("the empty mac"),
+                "alg {algorithm:#06x} key {key_bytes} empty message"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cmac_sequence_serializes_like_an_smac_state() {
+        const TPM_ALG_AES: u16 = 0x0006;
+        let mut runtime = empty_state_runtime();
+        let key = cmac_key(TPM_ALG_AES, &(0..16u8).collect::<Vec<u8>>());
+        let handle = create_mac_sequence(&mut runtime, &key, b"auth").expect("a free slot");
+        let slot = resolve_sequence_slot(&runtime, handle).expect("the sequence resolves");
+        let OwnedAnyObjectBody::Sequence(body) = &runtime.live.objects[slot].body else {
+            panic!("a sequence object");
+        };
+        let (state, hmac_key) = body.hmac_state.as_ref().expect("an mac state");
+        assert_eq!(state.state_type, HASH_STATE_SMAC);
+        assert_eq!(state.hash_alg, 0);
+        assert!(state.payload.is_none());
+        assert!(hmac_key.as_bytes().is_empty());
+        assert!(body.cmac.is_some(), "the working state stays out of band");
+        assert_eq!(sequence_hash_alg(&runtime, slot), Ok(0));
+    }
+
+    #[test]
+    fn an_unsupported_cmac_key_creates_no_sequence() {
+        const TPM_ALG_AES: u16 = 0x0006;
+        let mut runtime = empty_state_runtime();
+        let key = MacKey::Cmac {
+            algorithm: TPM_ALG_AES,
+            key_bits: 64,
+            key: OwnedSecret::copy_of(&[0x11; 8]),
+        };
+        assert_eq!(
+            create_mac_sequence(&mut runtime, &key, &[]),
+            Err(crate::library::constants::TPM_RC_SYMMETRIC)
+        );
+        assert!(
+            runtime
+                .live
+                .objects
+                .iter()
+                .all(|object| object.attributes & ATTR_OCCUPIED == 0),
+            "a rejected key leaves every slot free"
+        );
     }
 
     #[test]
@@ -989,8 +1180,8 @@ mod tests {
     fn a_sequence_hash_algorithm_is_reported_for_every_kind() {
         let mut runtime = empty_state_runtime();
         let hash = create_hash_sequence(&mut runtime, TPM_ALG_SHA384, &[]).expect("a free slot");
-        let hmac =
-            create_hmac_sequence(&mut runtime, TPM_ALG_SHA512, b"key", &[]).expect("a free slot");
+        let hmac = create_mac_sequence(&mut runtime, &hmac_key(TPM_ALG_SHA512, b"key"), &[])
+            .expect("a free slot");
         let event = create_event_sequence(&mut runtime, &[]).expect("a free slot");
         for (handle, expected) in [
             (hash, TPM_ALG_SHA384),
@@ -1010,7 +1201,7 @@ mod tests {
             Err(TPM_RC_FAILURE)
         );
         assert_eq!(
-            create_hmac_sequence(&mut runtime, TPM_ALG_NULL, b"k", &[]),
+            create_mac_sequence(&mut runtime, &hmac_key(TPM_ALG_NULL, b"k"), &[]),
             Err(TPM_RC_FAILURE)
         );
         assert!(

@@ -1844,8 +1844,8 @@ mod tests {
         );
         assert_eq!(
             command_page(&mut runtime, &clock, 0x0154, 2),
-            (true, vec![0x0200_0156, 0x1200_0157]),
-            "TPM2_Import is the first command at or after TPM2_ECDH_ZGen"
+            (true, vec![0x0200_0155, 0x0200_0156]),
+            "TPM2_HMAC is the first command at or after TPM2_ECDH_ZGen"
         );
         let (_more, all) = command_page(&mut runtime, &clock, 0, 1000);
         for attributes in [0x0400_014bu32, 0x0400_0152, 0x0200_0156] {

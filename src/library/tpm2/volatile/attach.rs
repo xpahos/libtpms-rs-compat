@@ -6,6 +6,7 @@ use super::{
     MAX_SESSION_NUM, RAM_INDEX_SPACE, SeedTie, SessionProcess, TailV4,
 };
 use crate::library::tpm2::clock::RuntimeClock;
+use crate::library::tpm2::object::{ATTR_HMAC_SEQ, ATTR_OCCUPIED, AnyObjectBody, HASH_STATE_SMAC};
 use crate::library::tpm2::pcr::PCR_SLOT_BANKS;
 use crate::library::tpm2::persistent::{
     OwnedAnyObject, OwnedOrderlyData, OwnedSecret, OwnedStateClearData, OwnedStateResetData,
@@ -13,6 +14,19 @@ use crate::library::tpm2::persistent::{
 };
 use crate::library::tpm2::public::SymDefObject;
 use crate::library::tpm2::session::{Session, SessionSlot};
+
+fn resumable_sequence(attributes: u32, body: &AnyObjectBody<'_>) -> bool {
+    if attributes & (ATTR_OCCUPIED | ATTR_HMAC_SEQ) != ATTR_OCCUPIED | ATTR_HMAC_SEQ {
+        return true;
+    }
+    let AnyObjectBody::Sequence(sequence) = body else {
+        return true;
+    };
+    sequence
+        .hmac_state
+        .as_ref()
+        .is_none_or(|(state, _)| state.state_type != HASH_STATE_SMAC)
+}
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -190,6 +204,12 @@ pub(in crate::library::tpm2) fn materialize_volatile_state(
             if bank.is_some_and(|digest| digest.len() != expected) {
                 return Err(TPM_FAIL);
             }
+        }
+    }
+
+    for object in &decoded.objects {
+        if !resumable_sequence(object.attributes, &object.body) {
+            return Err(TPM_FAIL);
         }
     }
 

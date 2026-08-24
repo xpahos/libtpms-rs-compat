@@ -370,6 +370,71 @@ makes the authorization value unavailable. `PIN_FAIL_*` shows the mirror image:
 a failed authorization increments the counter and a successful one clears it.
 Reads authorized by the owner never touch the counter.
 
+## Notes about the stateless cryptographic families
+
+The `encrypt-decrypt`, `hmac`, and `test-parms` families cover
+`TPM2_EncryptDecrypt`, `TPM2_EncryptDecrypt2`, `TPM2_HMAC`, and
+`TPM2_TestParms`. Their keys are created with `sensitiveDataOrigin` CLEAR and an
+explicit `inSensitive.data`, so the scenario knows the key material and can
+carry the matching ciphertext for the decrypting half of each round trip
+without a second capture pass.
+
+Command code `0x0155` reaches `TPM2_MAC` and `0x015b` reaches `TPM2_MAC_Start`,
+because the reference enables `ALG_CMAC`. Both MAC paths are implemented: a
+keyed-hash key answers an HMAC and a symmetric key whose mode is `TPM_ALG_CMAC`
+answers a CMAC. The `hmac` records show the MAC scheme selection order, its
+`TPM_RC_SYMMETRIC` unmarshaling error, and successful one-shot CMACs for AES,
+TDES, and Camellia. The `sequence-commands` `Y_*` records show the same key
+driven incrementally through `TPM2_MAC_Start`, `TPM2_SequenceUpdate`,
+`TPM2_SequenceComplete`, `TPM2_ContextSave`, and `TPM2_FlushContext`.
+
+The reference stores a CMAC sequence as an `hmacSeq` object whose `HASH_STATE`
+carries `HASH_STATE_SMAC` with a zero `hashAlg`, so `ANY_HASH_STATE_Marshal()`
+writes no state bytes and the `hmacKey` stays empty. `VOLATILE_Y_AFTER_START`
+and `VOLATILE_Y_AFTER_UPDATE` pin that image; the working CMAC value lives
+outside the serialized object in both implementations.
+
+A CMAC sequence therefore cannot be resumed. `TPM2_ContextSave` still returns a
+context blob for one, and the reference still loads that blob: `Z_CMAC_CONTEXT_SAVE`
+succeeds, `Z_CMAC_CONTEXT_LOAD` succeeds, and `Z_TRANSIENT_AFTER_LOAD` shows the
+new handle. The loaded object has no CMAC value, and using it makes the reference
+call a null `smacMethods` pointer, so the scenario stops at the load. The Rust
+implementation returns the same bytes for all three commands and then answers
+`TPM_RC_FAILURE` for a `TPM2_SequenceUpdate` or `TPM2_SequenceComplete` on the
+restored handle instead of crashing.
+
+`Z_HASH_*` and `Z_HMAC_*` cover the working case: a hash sequence and an HMAC
+sequence both survive `ContextSave` -> `FlushContext` -> `ContextLoad` and
+complete with the digest of the whole message.
+
+Restoring volatile state that holds a live CMAC sequence is worse: the reference
+takes SIGBUS inside `TPMLIB_SetState(VOLATILE)`, so no fixture can record it. The
+Rust implementation refuses that blob while attaching it, which keeps the failure
+at the same load boundary without producing an object that looks usable.
+
+Only the hash states a sequence actually uses are validated when a saved object
+is parsed. The reference leaves the unused entries of `state.hashState[]`
+uninitialised, so real state files carry stale type and algorithm bytes there;
+`swtpm/tests/data/tpm2state3b/tpm2-00.volatilestate` is one such file.
+
+`CryptCmacEnd()` uses the `0x87` subkey constant for every block size, including
+the 64-bit TDES block where SP800-38B specifies `0x1b`. The `G_MAC_TDES192_CMAC`
+and `Y_CMAC_TDES_COMPLETE` records pin that deviation.
+
+The reference container configures libtpms with
+`--disable-use-openssl-functions`, so the symmetric modes come from the TPM's
+own implementation. A partial final CFB block leaves the trailing `ivOut` bytes
+zeroed; CTR, OFB, and CBC keep their full chaining state, and ECB answers an
+empty `ivOut`.
+
+The `encrypt-decrypt` `G_*` section and the `hmac` `F_*` and `I_*` sections use
+an unbound, unsalted HMAC session for parameter encryption. Its session key is
+empty, so the reference accepts an empty session HMAC and the parameter key is
+`KDFa(SHA256, "", "CFB", nonceCaller, nonceTPM)`. Those sections consume the
+`nonceTPM` returned by `G_SESSION`, `F_SESSION`, and `I_SESSION` and therefore
+need the two-pass workflow described above. Each of them restores `G_READY`,
+`F_READY`, or `I_READY` so every command sees the same `nonceTPM`.
+
 ## Notes about destructive scenarios
 
 Commands such as `TPM2_Clear`, `TPM2_ChangeEPS`, and `TPM2_ChangePPS` destroy or

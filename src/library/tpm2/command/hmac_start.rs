@@ -8,12 +8,12 @@ use super::super::algorithm::{TPM_ALG_CMAC, algorithm_enabled, hash_profile_name
 use super::super::crypto::COMPILED_HASHES;
 use super::super::marshal::BlobReader;
 use super::super::object_create::{is_persistent_object_handle, resolve_any_object};
-use super::super::persistent::OwnedAnyObjectBody;
-use super::super::public::{PublicParms, TPM_ALG_KEYEDHASH, TPM_ALG_NULL};
+use super::super::persistent::{OwnedAnyObjectBody, OwnedSecret};
+use super::super::public::{PublicParms, TPM_ALG_KEYEDHASH, TPM_ALG_NULL, TPM_ALG_SYMCIPHER};
 use super::super::runtime::Tpm2Runtime;
 use super::super::self_test::self_test_algorithm;
 use super::super::sequence::{
-    SequenceKind, allocate_sequence_slot, init_hmac_sequence, reserve_evict_slot,
+    MacKey, SequenceKind, allocate_sequence_slot, init_mac_sequence, reserve_evict_slot,
 };
 use super::super::template::{TPMA_OBJECT_RESTRICTED, TPMA_OBJECT_SIGN};
 use super::dispatcher::CommandFrame;
@@ -45,7 +45,7 @@ pub(super) fn execute(
         parse_parameters(&state.profile.algorithms, frame.parameters)?
     };
 
-    let (hash_alg, key) = select_mac(runtime, key_handle, input.in_scheme)?;
+    let mac_key = select_mac(runtime, key_handle, input.in_scheme)?;
 
     if is_persistent_object_handle(key_handle) {
         let attributes = resolve_any_object(runtime, key_handle)
@@ -54,33 +54,36 @@ pub(super) fn execute(
         reserve_evict_slot(runtime, attributes)?;
     }
     let allocated = allocate_sequence_slot(runtime, SequenceKind::Hmac, input.auth)?;
-    self_test_algorithm(runtime, hash_alg)?;
-    init_hmac_sequence(runtime, allocated.slot, hash_alg, &key)?;
+    if let Some(algorithm) = mac_key.self_tested_algorithm() {
+        self_test_algorithm(runtime, algorithm)?;
+    }
+    init_mac_sequence(runtime, allocated.slot, &mac_key)?;
 
     Ok(CommandOutput::with_handle(allocated.handle, Vec::new()))
 }
 
-fn select_mac(
+pub(super) fn select_mac(
     runtime: &Tpm2Runtime,
     key_handle: u32,
     in_scheme: u16,
-) -> Result<(u16, Vec<u8>), TpmResult> {
+) -> Result<MacKey, TpmResult> {
     let object = resolve_any_object(runtime, key_handle).ok_or(TPM_RC_FAILURE)?;
     let OwnedAnyObjectBody::Object(body) = &object.body else {
         return Err(TPM_RC_TYPE + RC_HANDLE);
     };
-    // TODO: Accept TPM_ALG_SYMCIPHER keys once CMAC sequences are implemented.
-    if body.public.object_type != TPM_ALG_KEYEDHASH {
-        return Err(TPM_RC_TYPE + RC_HANDLE);
-    }
-    let PublicParms::KeyedHash(scheme) = &body.public.parameters else {
-        return Err(TPM_RC_TYPE + RC_HANDLE);
+    let symmetric = match &body.public.parameters {
+        PublicParms::KeyedHash(_) if body.public.object_type == TPM_ALG_KEYEDHASH => None,
+        PublicParms::SymCipher(symmetric) if body.public.object_type == TPM_ALG_SYMCIPHER => {
+            Some(*symmetric)
+        }
+        _ => return Err(TPM_RC_TYPE + RC_HANDLE),
     };
-
-    let key_alg = if scheme.scheme == TPM_ALG_NULL {
-        TPM_ALG_NULL
-    } else {
-        scheme.hash_alg.unwrap_or(TPM_ALG_NULL)
+    let key_alg = match (&body.public.parameters, symmetric) {
+        (_, Some(symmetric)) => symmetric.mode.unwrap_or(TPM_ALG_NULL),
+        (PublicParms::KeyedHash(scheme), None) if scheme.scheme != TPM_ALG_NULL => {
+            scheme.hash_alg.unwrap_or(TPM_ALG_NULL)
+        }
+        _ => TPM_ALG_NULL,
     };
     let mac_alg = if in_scheme != TPM_ALG_NULL {
         if key_alg != TPM_ALG_NULL && in_scheme != key_alg {
@@ -93,7 +96,11 @@ fn select_mac(
         }
         key_alg
     };
-    if !COMPILED_HASHES.iter().any(|&(alg, _)| alg == mac_alg) {
+    let compatible = match symmetric {
+        Some(_) => mac_alg == TPM_ALG_CMAC,
+        None => COMPILED_HASHES.iter().any(|&(alg, _)| alg == mac_alg),
+    };
+    if !compatible {
         return Err(TPM_RC_SCHEME + RC_IN_SCHEME);
     }
 
@@ -108,12 +115,22 @@ fn select_mac(
         .sensitive
         .sensitive
         .as_ref()
-        .map(|secret| secret.as_bytes().to_vec())
-        .unwrap_or_default();
-    Ok((mac_alg, key))
+        .map(|secret| OwnedSecret::copy_of(secret.as_bytes()))
+        .unwrap_or_else(|| OwnedSecret::from_vec(Vec::new()));
+    Ok(match symmetric {
+        Some(symmetric) => MacKey::Cmac {
+            algorithm: symmetric.algorithm,
+            key_bits: symmetric.key_bits.unwrap_or(0),
+            key,
+        },
+        None => MacKey::Hmac {
+            hash_alg: mac_alg,
+            key,
+        },
+    })
 }
 
-fn parse_mac_scheme(
+pub(super) fn parse_mac_scheme(
     profile_algorithms: &[u8],
     reader: &mut BlobReader<'_>,
 ) -> Result<u16, TpmResult> {
@@ -765,6 +782,596 @@ mod tests {
             "X_HMAC_COMPLETE",
             sequence_complete(0x8000_0001, MESSAGE, RH_NULL, &[]),
         );
+    }
+
+    const TPM_ALG_CMAC_SCHEME: u16 = 0x003f;
+    const TPM_ALG_AES: u16 = 0x0006;
+    const TPM_ALG_TDES: u16 = 0x0003;
+    const TPM_ALG_CFB: u16 = 0x0043;
+    const CMAC_SIGN_ATTRIBUTES: u32 = 0x0004_0452;
+    const CMAC_MESSAGE: &[u8] = b"libtpms-rs stateless crypto";
+
+    fn key16() -> Vec<u8> {
+        (0..16u8).collect()
+    }
+
+    fn key24() -> Vec<u8> {
+        (0..24u8).collect()
+    }
+
+    fn plain32() -> Vec<u8> {
+        vec![
+            0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93,
+            0x17, 0x2a, 0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c, 0x9e, 0xb7, 0x6f, 0xac,
+            0x45, 0xaf, 0x8e, 0x51,
+        ]
+    }
+
+    fn mac_digest(response: &[u8]) -> &[u8] {
+        assert_eq!(response[6..10], [0, 0, 0, 0], "the command succeeded");
+        let body = &response[14..];
+        let size = usize::from(u16::from_be_bytes([body[0], body[1]]));
+        &body[2..2 + size]
+    }
+
+    fn cmac_runtime(clock: &crate::library::tpm2::clock::SteppingClock) -> Box<Tpm2Runtime> {
+        let mut runtime = base_runtime(clock);
+        exec(
+            &mut runtime,
+            clock,
+            "Y_CREATE_CMAC_KEY",
+            create_primary(
+                RH_OWNER,
+                &symcipher_public(CMAC_SIGN_ATTRIBUTES, TPM_ALG_AES, 128, TPM_ALG_CMAC_SCHEME),
+                &[],
+                &key16(),
+            ),
+        );
+        runtime
+    }
+
+    #[test]
+    fn a_cmac_sequence_answers_the_one_shot_digest() {
+        let clock = fresh_clock();
+        let mut runtime = cmac_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_DEFAULT",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+        assert_eq!(occupied(&runtime), [true, true, false]);
+        let (_, volatile) = state_blobs(&runtime, &clock);
+        assert_eq!(
+            object_region(&volatile),
+            object_region(vector("VOLATILE_Y_AFTER_START")),
+            "the serialized CMAC sequence matches the reference"
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_UPDATE",
+            sequence_update(0x8000_0001, &CMAC_MESSAGE[..10], &[]),
+        );
+        let (_, volatile) = state_blobs(&runtime, &clock);
+        assert_eq!(
+            object_region(&volatile),
+            object_region(vector("VOLATILE_Y_AFTER_UPDATE")),
+            "an updated CMAC sequence keeps the reference image"
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_UPDATE_SECOND",
+            sequence_update(0x8000_0001, &CMAC_MESSAGE[10..], &[]),
+        );
+        let completed = exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_COMPLETE",
+            sequence_complete(0x8000_0001, &[], RH_NULL, &[]),
+        );
+        assert_eq!(
+            mac_digest(&completed).len(),
+            16,
+            "the digest is one AES block"
+        );
+        assert_eq!(
+            occupied(&runtime),
+            [true, false, false],
+            "a completed sequence is flushed"
+        );
+
+        let clock = fresh_clock();
+        let mut runtime = cmac_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_TAIL",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+        let one_shot = exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_COMPLETE_ONE_SHOT",
+            sequence_complete(0x8000_0001, CMAC_MESSAGE, RH_NULL, &[]),
+        );
+        assert_eq!(
+            mac_digest(&one_shot),
+            mac_digest(&completed),
+            "the split updates answer the single-buffer digest"
+        );
+    }
+
+    #[test]
+    fn a_cmac_sequence_handles_every_message_shape() {
+        let clock = fresh_clock();
+        let mut runtime = cmac_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_EXPLICIT",
+            mac_start(0x8000_0000, b"cmac-auth", TPM_ALG_CMAC_SCHEME),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_UPDATE_WRONG_AUTH",
+            sequence_update(0x8000_0001, CMAC_MESSAGE, b"bad"),
+        );
+        let empty = exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_COMPLETE_EMPTY",
+            sequence_complete(0x8000_0001, &[], RH_NULL, b"cmac-auth"),
+        );
+        assert_eq!(mac_digest(&empty).len(), 16);
+
+        let clock = fresh_clock();
+        let mut runtime = cmac_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_BLOCKS",
+            mac_start(0x8000_0000, &[], TPM_ALG_CMAC_SCHEME),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_UPDATE_BLOCK",
+            sequence_update(0x8000_0001, &plain32()[..16], &[]),
+        );
+        let blocks = exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_COMPLETE_BLOCK",
+            sequence_complete(0x8000_0001, &plain32()[16..], RH_NULL, &[]),
+        );
+        assert_ne!(mac_digest(&blocks), mac_digest(&empty));
+    }
+
+    #[test]
+    fn a_cmac_sequence_saves_and_flushes_like_the_reference() {
+        let clock = fresh_clock();
+        let mut runtime = cmac_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_FLUSHED",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_CONTEXT_SAVE",
+            context_save(0x8000_0001),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_FLUSH",
+            flush_context(0x8000_0001),
+        );
+        assert_eq!(occupied(&runtime), [true, false, false]);
+        let (_, volatile) = state_blobs(&runtime, &clock);
+        assert_eq!(
+            object_region(&volatile),
+            object_region(vector("VOLATILE_Y_AFTER_FLUSH")),
+            "the flushed slot matches the reference"
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_UPDATE_FLUSHED",
+            sequence_update(0x8000_0001, CMAC_MESSAGE, &[]),
+        );
+    }
+
+    #[test]
+    fn a_triple_des_cmac_sequence_answers_a_short_digest() {
+        let clock = fresh_clock();
+        let mut runtime = base_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CREATE_TDES_CMAC",
+            create_primary(
+                RH_OWNER,
+                &symcipher_public(CMAC_SIGN_ATTRIBUTES, TPM_ALG_TDES, 192, TPM_ALG_CMAC_SCHEME),
+                &[],
+                &key24(),
+            ),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_TDES",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_TDES_UPDATE",
+            sequence_update(0x8000_0001, CMAC_MESSAGE, &[]),
+        );
+        let completed = exec(
+            &mut runtime,
+            &clock,
+            "Y_CMAC_TDES_COMPLETE",
+            sequence_complete(0x8000_0001, &[], RH_NULL, &[]),
+        );
+        assert_eq!(mac_digest(&completed).len(), 8);
+    }
+
+    #[test]
+    fn a_symmetric_key_without_a_cmac_scheme_starts_no_sequence() {
+        let clock = fresh_clock();
+        let mut runtime = base_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CREATE_CFB_SIGN_KEY",
+            create_primary(
+                RH_OWNER,
+                &symcipher_public(CMAC_SIGN_ATTRIBUTES, TPM_ALG_AES, 128, TPM_ALG_CFB),
+                &[],
+                &key16(),
+            ),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_CFB_KEY",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_CFB_EXPLICIT_CMAC",
+            mac_start(0x8000_0000, &[], TPM_ALG_CMAC_SCHEME),
+        );
+        assert_eq!(
+            occupied(&runtime),
+            [true, false, false],
+            "a refused scheme allocates no sequence slot"
+        );
+
+        let clock = fresh_clock();
+        let mut runtime = base_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_CREATE_NO_SIGN_CMAC",
+            create_primary(
+                RH_OWNER,
+                &symcipher_public(0x0000_0452, TPM_ALG_AES, 128, TPM_ALG_CMAC_SCHEME),
+                &[],
+                &key16(),
+            ),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Y_MAC_START_NO_SIGN",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+    }
+
+    fn saved_context(response: &[u8]) -> Vec<u8> {
+        assert_eq!(response[6..10], [0, 0, 0, 0], "the context was saved");
+        response[10..].to_vec()
+    }
+
+    fn context_load(context: &[u8]) -> Vec<u8> {
+        command(0x8001, 0x0000_0161, context)
+    }
+
+    fn transient_handles() -> Vec<u8> {
+        let mut payload = 1u32.to_be_bytes().to_vec();
+        payload.extend_from_slice(&0x8000_0000u32.to_be_bytes());
+        payload.extend_from_slice(&8u32.to_be_bytes());
+        command(0x8001, 0x0000_017a, &payload)
+    }
+
+    #[test]
+    fn a_saved_cmac_context_loads_without_resuming_the_sequence() {
+        let clock = fresh_clock();
+        let mut runtime = cmac_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_MAC_START",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_CMAC_UPDATE",
+            sequence_update(0x8000_0001, &CMAC_MESSAGE[..10], &[]),
+        );
+        let saved = exec(
+            &mut runtime,
+            &clock,
+            "Z_CMAC_CONTEXT_SAVE",
+            context_save(0x8000_0001),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_CMAC_FLUSH",
+            flush_context(0x8000_0001),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_TRANSIENT_BEFORE_LOAD",
+            transient_handles(),
+        );
+        assert_eq!(occupied(&runtime), [true, false, false]);
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_CMAC_CONTEXT_LOAD",
+            context_load(&saved_context(&saved)),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_TRANSIENT_AFTER_LOAD",
+            transient_handles(),
+        );
+        assert_eq!(
+            occupied(&runtime),
+            [true, true, false],
+            "the reference allocates the slot the context asked for"
+        );
+        let response = exec_raw(
+            &mut runtime,
+            &clock,
+            sequence_complete(0x8000_0001, &[], RH_NULL, &[]),
+        );
+        assert_eq!(
+            response[6..10],
+            [0x00, 0x00, 0x01, 0x01],
+            "the restored sequence carries no CMAC value"
+        );
+    }
+
+    #[test]
+    fn a_saved_hash_or_hmac_sequence_still_resumes() {
+        let clock = fresh_clock();
+        let mut runtime = base_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HASH_START",
+            hash_sequence_start(&[], 0x000b),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HASH_UPDATE",
+            sequence_update(0x8000_0000, &CMAC_MESSAGE[..10], &[]),
+        );
+        let saved = exec(
+            &mut runtime,
+            &clock,
+            "Z_HASH_CONTEXT_SAVE",
+            context_save(0x8000_0000),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HASH_FLUSH",
+            flush_context(0x8000_0000),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HASH_CONTEXT_LOAD",
+            context_load(&saved_context(&saved)),
+        );
+        let completed = exec(
+            &mut runtime,
+            &clock,
+            "Z_HASH_COMPLETE_LOADED",
+            sequence_complete(0x8000_0000, &CMAC_MESSAGE[10..], RH_NULL, &[]),
+        );
+        assert_eq!(mac_digest(&completed).len(), 32);
+
+        let clock = fresh_clock();
+        let mut runtime = base_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_CREATE_HMAC_KEY",
+            create_primary(
+                RH_OWNER,
+                &keyedhash_public(CMAC_SIGN_ATTRIBUTES, 0x0005, 0x000b),
+                &[],
+                &(0..32u8).collect::<Vec<u8>>(),
+            ),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HMAC_START",
+            mac_start(0x8000_0000, &[], replay::TPM_ALG_NULL),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HMAC_UPDATE",
+            sequence_update(0x8000_0001, &CMAC_MESSAGE[..10], &[]),
+        );
+        let saved = exec(
+            &mut runtime,
+            &clock,
+            "Z_HMAC_CONTEXT_SAVE",
+            context_save(0x8000_0001),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HMAC_FLUSH",
+            flush_context(0x8000_0001),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "Z_HMAC_CONTEXT_LOAD",
+            context_load(&saved_context(&saved)),
+        );
+        let completed = exec(
+            &mut runtime,
+            &clock,
+            "Z_HMAC_COMPLETE_LOADED",
+            sequence_complete(0x8000_0001, &CMAC_MESSAGE[10..], RH_NULL, &[]),
+        );
+        assert_eq!(
+            mac_digest(&completed).len(),
+            32,
+            "an HMAC sequence resumes from its context"
+        );
+    }
+
+    #[test]
+    fn volatile_state_with_a_live_cmac_sequence_is_refused() {
+        let clock = fresh_clock();
+        let restored =
+            crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_Y_AFTER_START"));
+        let mut runtime = restored.expect("the oracle permanent state restores");
+        assert!(
+            crate::library::tpm2::attach_volatile_blob_for_replay(
+                &mut runtime,
+                vector("VOLATILE_Y_AFTER_START"),
+                &clock,
+            )
+            .is_err(),
+            "an unusable CMAC sequence never becomes a live object"
+        );
+        let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(vector(
+            "PERMALL_Y_AFTER_COMPLETE",
+        ))
+        .expect("the oracle permanent state restores");
+        crate::library::tpm2::attach_volatile_blob_for_replay(
+            &mut runtime,
+            vector("VOLATILE_Y_AFTER_COMPLETE"),
+            &clock,
+        )
+        .expect("a completed sequence leaves nothing to resume");
+    }
+
+    fn hash_state_offsets(blob: &[u8]) -> Vec<usize> {
+        const MAGIC: [u8; 4] = [0x56, 0x28, 0x78, 0xa2];
+        blob.windows(MAGIC.len())
+            .enumerate()
+            .filter(|(_, window)| *window == MAGIC)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    #[test]
+    fn a_live_event_sequence_survives_a_volatile_round_trip() {
+        let clock = fresh_clock();
+        let mut runtime = base_runtime(&clock);
+        exec(
+            &mut runtime,
+            &clock,
+            "N_START_EVENT",
+            hash_sequence_start(&[], 0x0010),
+        );
+        exec(
+            &mut runtime,
+            &clock,
+            "N_EVENT_UPDATE",
+            sequence_update(0x8000_0000, b"abc", &[]),
+        );
+        assert_eq!(occupied(&runtime), [true, false, false]);
+        let (permanent, volatile) = state_blobs(&runtime, &clock);
+        drop(runtime);
+
+        let clock = fresh_clock();
+        let mut runtime = reload(&permanent, &volatile, &clock);
+        assert_eq!(occupied(&runtime), [true, false, false]);
+        exec(
+            &mut runtime,
+            &clock,
+            "N_EVENT_COMPLETE_PCR10",
+            event_sequence_complete(0x0000_000a, 0x8000_0000, b"def"),
+        );
+    }
+
+    #[test]
+    fn a_corrupted_event_bank_is_refused_without_touching_the_runtime() {
+        let clock = fresh_clock();
+        let mut source = base_runtime(&clock);
+        let _ = exec_raw(&mut source, &clock, hash_sequence_start(&[], 0x0010));
+        let (permanent, volatile) = state_blobs(&source, &clock);
+        drop(source);
+
+        let offsets = hash_state_offsets(&volatile);
+        assert_eq!(offsets.len(), 4, "one bank per compiled hash");
+        for (index, offset) in offsets.iter().enumerate() {
+            for (state_type, hash_alg) in [(1u8, 0x0012u16), (2, 0x000b), (0, 0x0000)] {
+                let mut broken = volatile.clone();
+                broken[offset + 6] = state_type;
+                broken[offset + 7..offset + 9].copy_from_slice(&hash_alg.to_be_bytes());
+                let clock = fresh_clock();
+                let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(&permanent)
+                    .expect("the saved permanent state restores");
+                let before = occupied(&runtime);
+                assert!(
+                    crate::library::tpm2::attach_volatile_blob_for_replay(
+                        &mut runtime,
+                        &broken,
+                        &clock,
+                    )
+                    .is_err(),
+                    "bank {index} with type {state_type} alg {hash_alg:#06x}"
+                );
+                assert_eq!(
+                    occupied(&runtime),
+                    before,
+                    "a refused attach leaves the object slots alone"
+                );
+                assert!(
+                    runtime
+                        .live
+                        .objects
+                        .iter()
+                        .all(|object| object.attributes & ATTR_OCCUPIED == 0),
+                    "no partial object survives the refusal"
+                );
+            }
+        }
+
+        let clock = fresh_clock();
+        let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(&permanent)
+            .expect("the saved permanent state restores");
+        crate::library::tpm2::attach_volatile_blob_for_replay(&mut runtime, &volatile, &clock)
+            .expect("the untouched blob still attaches");
+        assert_eq!(occupied(&runtime), [true, false, false]);
     }
 
     #[test]

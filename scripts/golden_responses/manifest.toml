@@ -44,6 +44,16 @@ fixture = "src/library/tpm2/testdata/golden_responses/dictionary_attack.bin"
 reader = "src/library/tpm2/golden_responses/dictionary_attack.rs"
 commands = ["TPM2_DictionaryAttackParameters"]
 
+[families."encrypt-decrypt"]
+magic = "EDORACLE"
+scenario = "scripts/golden_responses/scenarios/encrypt_decrypt.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/encrypt_decrypt.bin"
+reader = "src/library/tpm2/golden_responses/encrypt_decrypt.rs"
+commands = [
+    "TPM2_EncryptDecrypt",
+    "TPM2_EncryptDecrypt2",
+]
+
 [families."evict-control"]
 magic = "ECORACLE"
 scenario = "scripts/golden_responses/scenarios/evict_control.scenario"
@@ -64,6 +74,13 @@ scenario = "scripts/golden_responses/scenarios/get_test_result.scenario"
 fixture = "src/library/tpm2/testdata/golden_responses/get_test_result.bin"
 reader = "src/library/tpm2/golden_responses/get_test_result.rs"
 commands = ["TPM2_GetTestResult"]
+
+[families."hmac"]
+magic = "HAORACLE"
+scenario = "scripts/golden_responses/scenarios/hmac.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/hmac.bin"
+reader = "src/library/tpm2/golden_responses/hmac.rs"
+commands = ["TPM2_HMAC"]
 
 [families."hierarchy-management"]
 magic = "HMORACLE"
@@ -211,6 +228,13 @@ scenario = "scripts/golden_responses/scenarios/sign.scenario"
 fixture = "src/library/tpm2/testdata/golden_responses/sign.bin"
 reader = "src/library/tpm2/golden_responses/sign.rs"
 commands = ["TPM2_Sign"]
+
+[families."test-parms"]
+magic = "TPORACLE"
+scenario = "scripts/golden_responses/scenarios/test_parms.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/test_parms.bin"
+reader = "src/library/tpm2/golden_responses/test_parms.rs"
+commands = ["TPM2_TestParms"]
 
 [commands.NV_UndefineSpaceSpecial]
 code = 0x0000011f
@@ -471,7 +495,8 @@ status = "todo"
 
 [commands.HMAC]
 code = 0x00000155
-status = "todo"
+status = "implemented"
+family = "hmac"
 alias = "MAC"
 
 [commands.Import]
@@ -536,7 +561,8 @@ status = "todo"
 
 [commands.EncryptDecrypt]
 code = 0x00000164
-status = "todo"
+status = "implemented"
+family = "encrypt-decrypt"
 
 [commands.FlushContext]
 code = 0x00000165
@@ -710,7 +736,8 @@ family = "policy-sessions"
 
 [commands.TestParms]
 code = 0x0000018a
-status = "todo"
+status = "implemented"
+family = "test-parms"
 
 [commands.Commit]
 code = 0x0000018b
@@ -751,7 +778,8 @@ family = "policy-sessions"
 
 [commands.EncryptDecrypt2]
 code = 0x00000193
-status = "todo"
+status = "implemented"
+family = "encrypt-decrypt"
 
 [commands.AC_GetCapability]
 code = 0x00000194

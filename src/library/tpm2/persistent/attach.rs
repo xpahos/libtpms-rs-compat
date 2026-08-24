@@ -4,6 +4,7 @@ use crate::library::constants::TPM_FAIL;
 use super::data::PersistentDataPrefix;
 use super::orderly::{DrbgState, OrderlyData};
 use crate::library::tpm2::DecodedPersistentAll;
+use crate::library::tpm2::crypto::CmacState;
 use crate::library::tpm2::nv::{
     IndexOrderlyRam, NV_RAM_HEADER_SIZE, NvIndex, OrderlyRamEntry, RAM_INDEX_SPACE,
     USER_NVRAM_CAPACITY, UserNvram, UserNvramEntry,
@@ -473,6 +474,7 @@ pub(in crate::library::tpm2) struct OwnedHashObjectBody {
     pub(in crate::library::tpm2) auth: OwnedSecret,
     pub(in crate::library::tpm2) states: Option<Box<[OwnedHashState; HASH_STATE_COUNT]>>,
     pub(in crate::library::tpm2) hmac_state: Option<(OwnedHashState, OwnedSecret)>,
+    pub(in crate::library::tpm2) cmac: Option<CmacState>,
 }
 
 #[derive(Clone)]
@@ -624,6 +626,7 @@ fn own_hash_object_body(sequence: &HashObjectBody<'_>) -> OwnedHashObjectBody {
             .hmac_state
             .as_ref()
             .map(|(state, key)| (own_hash_state(state), OwnedSecret::copy_of(key))),
+        cmac: None,
     }
 }
 

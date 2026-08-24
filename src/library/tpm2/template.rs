@@ -451,7 +451,7 @@ pub(super) fn parse_template_to_public(
     Ok((public, label_context))
 }
 
-fn parse_public_parms(
+pub(super) fn parse_public_parms(
     reader: &mut TemplateReader<'_>,
     policy: &AlgorithmPolicy<'_>,
     object_type: u16,
@@ -746,7 +746,14 @@ pub(super) fn scheme_checks(
             if has(attributes, TPMA_OBJECT_DECRYPT)
                 && !matches!(
                     sym.mode,
-                    Some(TPM_ALG_CTR | TPM_ALG_OFB | TPM_ALG_CBC | TPM_ALG_CFB | TPM_ALG_ECB)
+                    Some(
+                        TPM_ALG_CTR
+                            | TPM_ALG_OFB
+                            | TPM_ALG_CBC
+                            | TPM_ALG_CFB
+                            | TPM_ALG_ECB
+                            | TPM_ALG_NULL
+                    )
                 )
             {
                 return Err(TPM_RC_SCHEME);

@@ -35,6 +35,7 @@ fn drtm_sequence_object() -> OwnedAnyObject {
             auth: OwnedSecret::from_vec(Vec::new()),
             states: None,
             hmac_state: None,
+            cmac: None,
         })),
     }
 }

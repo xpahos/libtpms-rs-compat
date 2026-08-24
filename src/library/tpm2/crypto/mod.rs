@@ -1,5 +1,5 @@
 mod bignum;
-mod cfb;
+mod cmac;
 mod des;
 mod df;
 mod drbg;
@@ -14,11 +14,12 @@ mod prime;
 mod rand_state;
 mod rsa;
 mod sha_state;
+mod sym;
 #[cfg(test)]
 pub(in crate::library::tpm2) mod work;
 
 pub(super) use bignum::BigUint;
-pub(super) use cfb::{sym_block_size, sym_cfb_decrypt, sym_cfb_encrypt};
+pub(super) use cmac::CmacState;
 pub(super) use des::{generate_tdes_key, validate_tdes_key};
 pub(super) use df::df_buffer;
 pub(super) use drbg::{DRBG_MAGIC, Drbg, ReseedError, StirError};
@@ -38,6 +39,10 @@ pub(super) use rsa::{
     rsa_public_key_op, rsaes_decode, rsaes_encode, rsaes_padding_length,
 };
 pub(super) use sha_state::{SequenceHmac, ShaState, ShaStatePayload};
+pub(super) use sym::{
+    SymDirection, sym_block_size, sym_cfb_decrypt, sym_cfb_encrypt, sym_crypt, sym_key_block_size,
+    sym_mode_is_block_cipher,
+};
 
 #[cfg(test)]
 pub(super) use drbg::{CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_SEED_SIZE};

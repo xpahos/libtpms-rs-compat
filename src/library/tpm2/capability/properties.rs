@@ -458,7 +458,7 @@ mod tests {
         collect(runtime, state, start, count)
     }
 
-    const ORACLE_FIXED: [(u32, u32); 45] = [
+    const ORACLE_FIXED: [(u32, u32); 43] = [
         (0x100, 0x322e_3000),
         (0x101, 0),
         (0x102, 183),
@@ -502,8 +502,6 @@ mod tests {
         (0x12c, 0x400),
         (0x12d, 0),
         (0x12e, 0x400),
-        (0x129, 93),
-        (0x12a, 93),
     ];
 
     #[test]
@@ -514,6 +512,13 @@ mod tests {
                 value(&runtime, property),
                 expected,
                 "property {property:#x}"
+            );
+        }
+        for property in [0x129u32, 0x12a] {
+            assert_eq!(
+                value(&runtime, property),
+                commands::total_count(),
+                "property {property:#x} counts the registry"
             );
         }
         assert_eq!(value(&runtime, TPM_PT_VENDOR_COMMANDS), 0);

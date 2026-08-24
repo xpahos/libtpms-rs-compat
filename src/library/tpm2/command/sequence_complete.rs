@@ -8,7 +8,7 @@ use super::super::marshal::{BlobReader, BlobWriter};
 use super::super::runtime::Tpm2Runtime;
 use super::super::self_test::self_test_algorithm;
 use super::super::sequence::{
-    SequenceKind, finalize_hash, finalize_hmac, first_block_seen, mark_evicted,
+    SequenceKind, finalize_hash, finalize_mac, first_block_seen, mark_evicted,
     resolve_sequence_slot, sequence_hash_alg, slot_kind, ticket_safe,
 };
 use super::super::ticket::{
@@ -55,7 +55,7 @@ pub(super) fn execute(
             (digest, validation)
         }
         _ => {
-            let mac = finalize_hmac(runtime, slot, input.buffer)?;
+            let mac = finalize_mac(runtime, slot, input.buffer)?;
             self_test_algorithm(runtime, hash_alg)?;
             (mac, Ticket::empty(TPM_ST_HASHCHECK))
         }

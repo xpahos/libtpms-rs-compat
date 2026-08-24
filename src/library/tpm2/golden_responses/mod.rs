@@ -3,10 +3,12 @@ pub(in crate::library::tpm2) mod create;
 pub(in crate::library::tpm2) mod create_loaded;
 pub(in crate::library::tpm2) mod create_primary;
 pub(in crate::library::tpm2) mod dictionary_attack;
+pub(in crate::library::tpm2) mod encrypt_decrypt;
 pub(in crate::library::tpm2) mod evict_control;
 pub(in crate::library::tpm2) mod flush_context;
 pub(in crate::library::tpm2) mod get_test_result;
 pub(in crate::library::tpm2) mod hierarchy_management;
+pub(in crate::library::tpm2) mod hmac;
 pub(in crate::library::tpm2) mod nv;
 pub(in crate::library::tpm2) mod object_lifecycle;
 pub(in crate::library::tpm2) mod object_transfer;
@@ -16,6 +18,7 @@ pub(in crate::library::tpm2) mod read_public_verify_signature;
 pub(in crate::library::tpm2) mod rsa_encryption;
 pub(in crate::library::tpm2) mod sequence_commands;
 pub(in crate::library::tpm2) mod sign;
+pub(in crate::library::tpm2) mod test_parms;
 
 pub(in crate::library::tpm2) const VERSION: u16 = 1;
 
