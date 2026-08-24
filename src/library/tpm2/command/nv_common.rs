@@ -17,6 +17,7 @@ pub(super) const TPM_RC_1: TpmResult = 0x100;
 pub(super) const TPM_RC_2: TpmResult = 0x200;
 pub(super) const TPM_RC_3: TpmResult = 0x300;
 pub(super) const TPM_RC_4: TpmResult = 0x400;
+pub(super) const TPM_RC_5: TpmResult = 0x500;
 
 pub(super) const MAX_NV_BUFFER_SIZE: usize = 1024;
 
@@ -323,6 +324,7 @@ mod tests {
         assert_eq!(TPM_RC_2, 0x200);
         assert_eq!(TPM_RC_3, 0x300);
         assert_eq!(TPM_RC_4, 0x400);
+        assert_eq!(TPM_RC_5, 0x500);
     }
 
     #[test]

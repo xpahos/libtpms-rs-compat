@@ -544,7 +544,7 @@ mod tests {
                     let input = crate::library::CommandInput::new(mutated.len() as u32, mutated);
                     let _ = crate::library::tpm2::process::process(
                         &mut runtime,
-                        0,
+                        crate::library::tpm2::PlatformInputs::at_locality(0),
                         &input,
                         &clock,
                         |_| Ok(()),

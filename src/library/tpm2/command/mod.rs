@@ -42,10 +42,14 @@ mod pcr_extend;
 mod pcr_read;
 mod pcr_reset;
 mod pcr_update;
+mod policy_authorization;
+mod policy_authorize;
 mod policy_commands;
 mod policy_common;
+mod policy_operand;
 mod policy_or;
 mod policy_pcr;
+mod policy_restrictions;
 mod quote;
 mod read_public;
 mod registry;
@@ -66,6 +70,9 @@ mod unseal;
 mod upstream_codes;
 mod verify_signature;
 
+pub(in crate::library::tpm2) use command_audit::{
+    command_index as command_bitmap_index, is_required as command_audit_is_required,
+};
 pub(super) use dispatcher::dispatch;
 #[cfg(test)]
 pub(super) use header::parse_command;
@@ -73,5 +80,7 @@ pub(super) use header::{
     HEADER_SIZE, Response, TPM_ST_NO_SESSIONS, parse_command_within, serialize_response_within,
 };
 pub(in crate::library::tpm2) use registry::{
-    TPM_CC_GET_CAPABILITY, TPM_CC_GET_TEST_RESULT, implemented as implemented_commands,
+    TPM_CC_GET_CAPABILITY, TPM_CC_GET_TEST_RESULT, find as find_command,
+    implemented as implemented_commands,
 };
+pub(in crate::library::tpm2) use upstream_codes::upstream_implements;

@@ -680,11 +680,18 @@ mod tests {
         bytes: Vec<u8>,
     ) {
         let input = CommandInput::new(bytes.len() as u32, bytes);
-        let response = process(runtime, 0, &input, clock, |runtime| {
-            *permall.borrow_mut() = persistent_all_store(runtime.state.as_ref().ok_or(TPM_FAIL)?)
-                .map_err(|_| TPM_FAIL)?;
-            Ok(())
-        })
+        let response = process(
+            runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input,
+            clock,
+            |runtime| {
+                *permall.borrow_mut() =
+                    persistent_all_store(runtime.state.as_ref().ok_or(TPM_FAIL)?)
+                        .map_err(|_| TPM_FAIL)?;
+                Ok(())
+            },
+        )
         .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
         assert_eq!(response, vector(label), "{label}");
     }

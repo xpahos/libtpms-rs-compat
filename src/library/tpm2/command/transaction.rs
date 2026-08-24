@@ -15,6 +15,7 @@ pub(super) struct CommandTransaction {
     tpm_established: bool,
     clock: RuntimeClock,
     timer: TpmTimer,
+    removed_session_associations: Vec<u32>,
 }
 
 pub(super) fn begin(runtime: &Tpm2Runtime) -> CommandTransaction {
@@ -30,6 +31,7 @@ pub(super) fn begin(runtime: &Tpm2Runtime) -> CommandTransaction {
         tpm_established: runtime.tpm_established,
         clock: runtime.clock,
         timer: runtime.timer,
+        removed_session_associations: runtime.removed_session_associations.clone(),
     }
 }
 
@@ -47,4 +49,5 @@ pub(super) fn roll_back(runtime: &mut Tpm2Runtime, transaction: CommandTransacti
     runtime.tpm_established = transaction.tpm_established;
     runtime.clock = transaction.clock;
     runtime.timer = transaction.timer;
+    runtime.removed_session_associations = transaction.removed_session_associations;
 }

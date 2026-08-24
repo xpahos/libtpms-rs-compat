@@ -1,10 +1,44 @@
+use super::command::{command_bitmap_index, upstream_implements};
 use super::command_bitmap::{COMMAND_COUNT, parse_command_bitmap};
 use super::marshal::BlobReader;
+use super::nv::command_bitmap_image;
 use super::persistent::{PersistentAllError, StateSection};
+use super::runtime::Tpm2Runtime;
 
 pub(super) const PP_LIST_SIZE: usize = COMMAND_COUNT.div_ceil(8);
 
 const SECTION: StateSection = StateSection::PpList;
+
+pub(super) fn physical_presence_is_required(runtime: &Tpm2Runtime, code: u32) -> bool {
+    if !upstream_implements(code) {
+        return false;
+    }
+    let Some(index) = command_bitmap_index(code) else {
+        return false;
+    };
+    let Some(state) = runtime.state.as_ref() else {
+        return false;
+    };
+    command_bitmap_image(&state.persistent.pp_list, PP_LIST_SIZE).is_ok_and(|bitmap| {
+        bitmap
+            .get(index / 8)
+            .is_some_and(|byte| byte & (1 << (index % 8)) != 0)
+    })
+}
+
+#[cfg(test)]
+pub(in crate::library) fn require_physical_presence(runtime: &mut Tpm2Runtime, code: u32) {
+    use super::persistent::OwnedCommandBitmap;
+    let index = command_bitmap_index(code).expect("a command inside the bitmap range");
+    let state = runtime.state.as_mut().expect("a decoded persistent state");
+    let mut bytes =
+        command_bitmap_image(&state.persistent.pp_list, PP_LIST_SIZE).expect("a pp-list image");
+    bytes[index / 8] |= 1 << (index % 8);
+    state.persistent.pp_list = OwnedCommandBitmap {
+        compressed: false,
+        bytes,
+    };
+}
 
 #[cfg(test)]
 fn truncated() -> PersistentAllError {
@@ -277,6 +311,60 @@ mod tests {
                     let _ = parse(&data, version);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_capability_and_the_authorization_gate_share_one_membership_decision() {
+        use super::super::capability::TPM_CAP_PP_COMMANDS;
+        use super::super::capability::single::lookup;
+        use super::super::golden_responses::policy_sessions::vector;
+        use super::super::restore_permanent_blob_for_test;
+
+        const CLEAR_CONTROL: u32 = 0x0000_0127;
+        const CHANGE_EPS: u32 = 0x0000_0124;
+        const UNIMPLEMENTED: u32 = 0x0000_0179;
+        const PP_COMMANDS: u32 = 0x0000_012d;
+
+        let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_READY"))
+            .expect("the oracle permanent state restores");
+        assert!(
+            physical_presence_is_required(&runtime, PP_COMMANDS),
+            "the reference ships TPM2_PP_Commands in the pp-list"
+        );
+        for code in [CLEAR_CONTROL, CHANGE_EPS, UNIMPLEMENTED] {
+            assert!(!physical_presence_is_required(&runtime, code));
+            assert_eq!(
+                lookup(&runtime, TPM_CAP_PP_COMMANDS, code),
+                Ok(Vec::new()),
+                "code {code:#x} is absent from an empty pp-list"
+            );
+        }
+
+        require_physical_presence(&mut runtime, CLEAR_CONTROL);
+        assert!(physical_presence_is_required(&runtime, CLEAR_CONTROL));
+        assert_eq!(
+            lookup(&runtime, TPM_CAP_PP_COMMANDS, CLEAR_CONTROL),
+            Ok(CLEAR_CONTROL.to_be_bytes().to_vec())
+        );
+        assert!(!physical_presence_is_required(&runtime, CHANGE_EPS));
+        assert_eq!(
+            lookup(&runtime, TPM_CAP_PP_COMMANDS, CHANGE_EPS),
+            Ok(Vec::new())
+        );
+
+        require_physical_presence(&mut runtime, CHANGE_EPS);
+        for code in 0x0000_011eu32..=0x0000_019d {
+            let listed = physical_presence_is_required(&runtime, code);
+            let reported = lookup(&runtime, TPM_CAP_PP_COMMANDS, code)
+                .expect("the capability lookup answers")
+                != Vec::<u8>::new();
+            assert_eq!(listed, reported, "code {code:#x}");
+            assert_eq!(
+                listed,
+                matches!(code, CLEAR_CONTROL | CHANGE_EPS | PP_COMMANDS),
+                "code {code:#x}"
+            );
         }
     }
 }

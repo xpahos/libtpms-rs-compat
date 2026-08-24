@@ -517,8 +517,8 @@ mod tests {
         assert!(all.entries.contains(&0x0600_0184));
         assert_eq!(
             all.entries.last(),
-            Some(&0x1200_0191),
-            "TPM2_CreateLoaded has the highest command code in the registry"
+            Some(&0x0200_019c),
+            "TPM2_PolicyParameters has the highest command code in the registry"
         );
     }
 

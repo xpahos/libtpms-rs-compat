@@ -530,8 +530,14 @@ mod tests {
 
     fn run_command(runtime: &mut Tpm2Runtime, host: &SteppingClock, bytes: &[u8]) -> Vec<u8> {
         let input = crate::library::CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        crate::library::tpm2::process::process(runtime, 0, &input, host, |_| Ok(()))
-            .expect("processes")
+        crate::library::tpm2::process::process(
+            runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input,
+            host,
+            |_| Ok(()),
+        )
+        .expect("processes")
     }
 
     const STARTUP_CLEAR: [u8; 12] = [

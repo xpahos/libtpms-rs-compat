@@ -61,10 +61,10 @@ pub(in crate::library) const TPM_RC_INSUFFICIENT: TpmResult = 0x09a;
 pub(in crate::library) const TPM_RC_INTEGRITY: TpmResult = 0x09f;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_KEY: TpmResult = 0x09c;
-// TODO: Returned by the upstream physical-presence gate once TPM2_PP_Commands
-// populates the pp-list bitmap; every command's list bit is clear today, so the
-// gate never fires.
-#[allow(dead_code)]
+// TODO: Also return this from the upstream per-command physical-presence gate
+// once TPM2_PP_Commands can populate the pp-list bitmap; every command's list
+// bit is clear today, so that gate never fires.
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_PP: TpmResult = 0x090;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_TICKET: TpmResult = 0x0a0;
@@ -120,6 +120,10 @@ pub(in crate::library) const TPM_RC_AUTH_TYPE: TpmResult = 0x124;
 pub(in crate::library) const TPM_RC_AUTH_MISSING: TpmResult = 0x125;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_AUTH_UNAVAILABLE: TpmResult = 0x12f;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_POLICY: TpmResult = 0x126;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
+pub(in crate::library) const TPM_RC_CPHASH: TpmResult = 0x151;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_PCR: TpmResult = 0x127;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -204,6 +208,10 @@ mod tests {
         assert_eq!(TPM_RC_TOO_MANY_CONTEXTS, RC_VER1 + 0x02e);
         assert_eq!(TPM_RC_DISABLED, RC_VER1 + 0x020);
         assert_eq!(TPM_RC_EXCLUSIVE, RC_VER1 + 0x021);
+        assert_eq!(TPM_RC_POLICY, RC_VER1 + 0x026);
+        assert_eq!(TPM_RC_CPHASH, RC_VER1 + 0x051);
+        assert_eq!(TPM_RC_POLICY & RC_FMT1, 0);
+        assert_eq!(TPM_RC_CPHASH & RC_FMT1, 0);
     }
 
     #[test]

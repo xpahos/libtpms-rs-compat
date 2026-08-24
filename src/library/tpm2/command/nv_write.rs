@@ -169,7 +169,7 @@ pub(super) fn execute_extend(
     Ok(CommandOutput::empty())
 }
 
-fn apply_write(
+pub(super) fn apply_write(
     runtime: &mut Tpm2Runtime,
     resolved: &ResolvedIndex,
     write: IndexWrite,

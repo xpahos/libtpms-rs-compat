@@ -115,7 +115,7 @@ pub(super) static UPSTREAM_IMPLEMENTED: [u32; 114] = [
     0x0000_019c,
 ];
 
-pub(super) fn upstream_implements(code: u32) -> bool {
+pub(in crate::library::tpm2) fn upstream_implements(code: u32) -> bool {
     UPSTREAM_IMPLEMENTED.binary_search(&code).is_ok()
 }
 

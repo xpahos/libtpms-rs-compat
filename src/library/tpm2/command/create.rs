@@ -330,7 +330,14 @@ mod tests {
     #[track_caller]
     fn exec_raw(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: Vec<u8>) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes);
-        process(runtime, 0, &input, clock, |_| Ok(())).expect("the command processes")
+        process(
+            runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input,
+            clock,
+            |_| Ok(()),
+        )
+        .expect("the command processes")
     }
 
     #[track_caller]
@@ -416,7 +423,7 @@ mod tests {
             .chunks(4)
             .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
             .collect();
-        assert_eq!(entries, [0x0440_014f, 0x0400_0150, 0x0200_0153]);
+        assert_eq!(entries, [0x0440_014f, 0x0400_0150, 0x0400_0151]);
     }
 
     #[test]

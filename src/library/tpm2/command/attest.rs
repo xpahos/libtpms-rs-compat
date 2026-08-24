@@ -29,6 +29,8 @@ pub(super) const TPM_ST_ATTEST_TIME: u16 = 0x8019;
 pub(super) const TPM_ST_ATTEST_CREATION: u16 = 0x801a;
 pub(super) const TPM_ST_ATTEST_NV_DIGEST: u16 = 0x801c;
 
+pub(super) const TIME_INFO_SIZE: usize = 8 + 8 + 4 + 4 + 1;
+
 pub(super) const QUALIFYING_DATA_MAX: usize = 2 + 64;
 pub(super) const DIGEST_MAX: usize = 64;
 
@@ -151,6 +153,14 @@ pub(super) fn time_clock_info(runtime: &Tpm2Runtime) -> Result<ClockInfo, TpmRes
             0
         },
     })
+}
+
+pub(super) fn marshaled_time_info(runtime: &Tpm2Runtime) -> Result<Vec<u8>, TpmResult> {
+    let clock_info = time_clock_info(runtime)?;
+    let mut writer = BlobWriter::with_capacity(TIME_INFO_SIZE);
+    writer.write_u64(runtime.timer.time_ms);
+    marshal_clock_info(&mut writer, &clock_info);
+    Ok(writer.into_bytes())
 }
 
 pub(super) fn firmware_version(runtime: &Tpm2Runtime) -> Result<u64, TpmResult> {

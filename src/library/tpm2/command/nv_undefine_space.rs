@@ -7,6 +7,7 @@ use super::super::runtime::Tpm2Runtime;
 use super::dispatcher::CommandFrame;
 use super::nv_common::{TPM_RC_1, TPM_RC_2, TPM_RC_H, handle_at, resolve};
 use super::output::CommandOutput;
+use super::session::remove_session_association;
 
 const RC_UNDEFINE_NV_INDEX: TpmResult = TPM_RC_H + TPM_RC_2;
 const RC_SPECIAL_NV_INDEX: TpmResult = TPM_RC_H + TPM_RC_1;
@@ -49,6 +50,7 @@ pub(super) fn execute_special(
     }
 
     transact(runtime, |runtime| delete_index(runtime, &resolved))?;
+    remove_session_association(runtime, nv_handle);
     Ok(CommandOutput::empty())
 }
 

@@ -135,14 +135,30 @@ scenario = "scripts/golden_responses/scenarios/policy_sessions.scenario"
 fixture = "src/library/tpm2/testdata/golden_responses/policy_sessions.bin"
 reader = "src/library/tpm2/golden_responses/policy_sessions.rs"
 commands = [
+    "TPM2_PolicyNV",
+    "TPM2_PolicySecret",
+    "TPM2_PolicySigned",
+    "TPM2_PolicyAuthorize",
     "TPM2_PolicyAuthValue",
     "TPM2_PolicyCommandCode",
+    "TPM2_PolicyCounterTimer",
+    "TPM2_PolicyCpHash",
+    "TPM2_PolicyLocality",
+    "TPM2_PolicyNameHash",
     "TPM2_PolicyOR",
+    "TPM2_PolicyTicket",
     "TPM2_StartAuthSession",
     "TPM2_PolicyPCR",
     "TPM2_PolicyRestart",
+    "TPM2_PolicyPhysicalPresence",
+    "TPM2_PolicyDuplicationSelect",
     "TPM2_PolicyGetDigest",
     "TPM2_PolicyPassword",
+    "TPM2_PolicyNvWritten",
+    "TPM2_PolicyTemplate",
+    "TPM2_PolicyAuthorizeNV",
+    "TPM2_PolicyCapability",
+    "TPM2_PolicyParameters",
 ]
 
 [families."read-public-verify-signature"]
@@ -385,7 +401,8 @@ family = "attestation"
 
 [commands.PolicyNV]
 code = 0x00000149
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.CertifyCreation]
 code = 0x0000014a
@@ -423,7 +440,8 @@ family = "object-lifecycle"
 
 [commands.PolicySecret]
 code = 0x00000151
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.Rewrap]
 code = 0x00000152
@@ -485,7 +503,8 @@ family = "object-lifecycle"
 
 [commands.PolicySigned]
 code = 0x00000160
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.ContextLoad]
 code = 0x00000161
@@ -526,7 +545,8 @@ family = "nv-commands"
 
 [commands.PolicyAuthorize]
 code = 0x0000016a
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyAuthValue]
 code = 0x0000016b
@@ -540,19 +560,23 @@ family = "policy-sessions"
 
 [commands.PolicyCounterTimer]
 code = 0x0000016d
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyCpHash]
 code = 0x0000016e
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyLocality]
 code = 0x0000016f
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyNameHash]
 code = 0x00000170
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyOR]
 code = 0x00000171
@@ -561,7 +585,8 @@ family = "policy-sessions"
 
 [commands.PolicyTicket]
 code = 0x00000172
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.ReadPublic]
 code = 0x00000173
@@ -656,11 +681,13 @@ family = "sequence-commands"
 
 [commands.PolicyPhysicalPresence]
 code = 0x00000187
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyDuplicationSelect]
 code = 0x00000188
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyGetDigest]
 code = 0x00000189
@@ -690,11 +717,13 @@ status = "todo"
 
 [commands.PolicyNvWritten]
 code = 0x0000018f
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyTemplate]
 code = 0x00000190
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.CreateLoaded]
 code = 0x00000191
@@ -703,7 +732,8 @@ family = "create-loaded"
 
 [commands.PolicyAuthorizeNV]
 code = 0x00000192
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.EncryptDecrypt2]
 code = 0x00000193
@@ -739,11 +769,13 @@ status = "todo"
 
 [commands.PolicyCapability]
 code = 0x0000019b
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.PolicyParameters]
 code = 0x0000019c
-status = "todo"
+status = "implemented"
+family = "policy-sessions"
 
 [commands.NV_DefineSpace2]
 code = 0x0000019d

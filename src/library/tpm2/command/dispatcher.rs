@@ -23,7 +23,7 @@ use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
 use super::session::{
     CommandContext, SessionArea, authorize_sessions, build_response_sessions,
-    decrypt_first_parameter, parse_session_area, record_session_state,
+    clear_session_associations, decrypt_first_parameter, parse_session_area, record_session_state,
 };
 use super::transaction;
 
@@ -47,6 +47,7 @@ pub(in crate::library::tpm2) fn dispatch(
     if !descriptor.lifecycle.allows(runtime) {
         return Response::error(TPM_RC_INITIALIZE);
     }
+    clear_session_associations(runtime);
     let response = match run(runtime, descriptor, command) {
         Ok(response) => response,
         Err(code) => Response::error(code),
@@ -223,7 +224,9 @@ fn check_load_status(
                     }
                 })?;
             }
-            HandleKind::EntityAllowNull => check_entity_present(runtime, handle, index)?,
+            HandleKind::Entity | HandleKind::EntityAllowNull => {
+                check_entity_present(runtime, handle, index)?;
+            }
             HandleKind::Context => {
                 if is_transient_object_handle(handle) {
                     check_object_present(runtime, handle, index)?;

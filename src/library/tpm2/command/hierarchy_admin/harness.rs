@@ -560,7 +560,14 @@ pub(in crate::library::tpm2::command) fn exec(
     bytes: &[u8],
 ) -> Vec<u8> {
     let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-    process(runtime, 0, &input, clock, |_| Ok(())).expect("the command processes")
+    process(
+        runtime,
+        crate::library::tpm2::PlatformInputs::at_locality(0),
+        &input,
+        clock,
+        |_| Ok(()),
+    )
+    .expect("the command processes")
 }
 
 #[track_caller]
@@ -571,10 +578,16 @@ pub(in crate::library::tpm2::command) fn exec_counting(
     commits: &core::cell::Cell<u32>,
 ) -> Vec<u8> {
     let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-    process(runtime, 0, &input, clock, |_| {
-        commits.set(commits.get() + 1);
-        Ok(())
-    })
+    process(
+        runtime,
+        crate::library::tpm2::PlatformInputs::at_locality(0),
+        &input,
+        clock,
+        |_| {
+            commits.set(commits.get() + 1);
+            Ok(())
+        },
+    )
     .expect("the command processes")
 }
 

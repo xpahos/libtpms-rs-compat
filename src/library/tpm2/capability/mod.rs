@@ -3,12 +3,20 @@ pub(super) mod commands;
 pub(super) mod handles;
 pub(super) mod pcrs;
 pub(super) mod properties;
+pub(super) mod single;
 
 pub(super) const TPM_CAP_ALGS: u32 = 0x0000_0000;
 pub(super) const TPM_CAP_HANDLES: u32 = 0x0000_0001;
 pub(super) const TPM_CAP_COMMANDS: u32 = 0x0000_0002;
+pub(super) const TPM_CAP_PP_COMMANDS: u32 = 0x0000_0003;
+pub(super) const TPM_CAP_AUDIT_COMMANDS: u32 = 0x0000_0004;
 pub(super) const TPM_CAP_PCRS: u32 = 0x0000_0005;
 pub(super) const TPM_CAP_TPM_PROPERTIES: u32 = 0x0000_0006;
+pub(super) const TPM_CAP_PCR_PROPERTIES: u32 = 0x0000_0007;
+pub(super) const TPM_CAP_ECC_CURVES: u32 = 0x0000_0008;
+pub(super) const TPM_CAP_AUTH_POLICIES: u32 = 0x0000_0009;
+pub(super) const TPM_CAP_ACT: u32 = 0x0000_000a;
+pub(super) const TPM_CAP_VENDOR_PROPERTY: u32 = 0x0000_0100;
 
 pub(super) const MAX_CAP_BUFFER: usize = 1024;
 pub(super) const MAX_CAP_DATA: usize = MAX_CAP_BUFFER - 4 - 4;

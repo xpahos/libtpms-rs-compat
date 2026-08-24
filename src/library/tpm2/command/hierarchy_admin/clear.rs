@@ -616,11 +616,14 @@ mod tests {
         let mut runtime = oracle_runtime(&clock);
         let bytes = clear(TPM_RH_PLATFORM, &[]);
         let input = crate::library::CommandInput::new(bytes.len() as u32, bytes);
-        let response =
-            crate::library::tpm2::process::process(&mut runtime, 0, &input, &clock, |_| {
-                Err(crate::library::constants::TPM_RC_FAILURE)
-            })
-            .expect("the command processes");
+        let response = crate::library::tpm2::process::process(
+            &mut runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input,
+            &clock,
+            |_| Err(crate::library::constants::TPM_RC_FAILURE),
+        )
+        .expect("the command processes");
         assert_eq!(response, error_response(0x101));
         assert!(runtime.failure_mode);
     }
@@ -670,7 +673,7 @@ mod tests {
                     let input = crate::library::CommandInput::new(mutated.len() as u32, mutated);
                     let _ = crate::library::tpm2::process::process(
                         &mut runtime,
-                        0,
+                        crate::library::tpm2::PlatformInputs::at_locality(0),
                         &input,
                         &clock,
                         |_| Ok(()),

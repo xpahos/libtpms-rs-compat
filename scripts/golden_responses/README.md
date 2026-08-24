@@ -307,6 +307,69 @@ the active profile enables it, although the Rust dispatcher does not implement
 it yet. The fixture therefore preserves the upstream audit bit and includes it
 in the command-list digest.
 
+## Notes about the policy-sessions family
+
+The `policy-sessions` family covers `TPM2_StartAuthSession` and every policy
+command. Its scenario is a sequence of independent sections; each one starts
+from `restore READY`, `restore POLICY_FRESH`, or `restore TRIAL_FRESH` so one
+section cannot influence the next.
+
+Four sections consume bytes produced earlier in the same scenario and therefore
+need the two-pass workflow described above:
+
+- `PTKT_*` replay the `timeout` and `TPMT_TK_AUTH` returned by
+  `PSEC_TICKET_FOR_REUSE`;
+- `PSIGN_ACCEPTED` replays the RSASSA signature returned by `SIGN_AHASH`;
+- `VERIFY_APPROVED` replays the signature returned by `SIGN_APPROVED`;
+- `PAUTH_ACCEPTED` replays the key name from `SIGNING_KEY_PUBLIC` and the
+  `TPMT_TK_VERIFIED` from `VERIFY_APPROVED`.
+
+Regenerate the family, read the producing record with `golden.py dump`, paste the
+bytes into the consuming command, and regenerate again. The Rust tests slice the
+same bytes out of the producing fixture record instead of repeating them.
+
+The `FLOW_*` sections show a policy actually authorizing a command. Each one
+defines an NV index whose `authPolicy` is a policy digest computed off-line,
+builds that policy in a real session, and then reads the index through it. They
+pin the enforcement of `TPMA_NV_WRITTEN`, command locality, and physical
+presence at authorization time, and each section records the built policy digest
+so a failure cannot be mistaken for a digest mismatch.
+
+`FLOW_NV_READ_LOCALITY_TWO` uses the scenario `locality` operation. The locality
+is restored to 0 immediately afterwards so later sections are unaffected.
+
+The `NVUSS_*` and `HCA_*` sections pin how the reference builds a response
+authorization when the command changes the entity that authorized it. Their
+command HMACs are computed off line, so they also use the two-pass workflow: the
+session nonce comes from `NVUSS_SESSION` and `HCA_SESSION`.
+
+`NVUSS_*` deletes the very NV index that authorized `TPM2_NV_UndefineSpaceSpecial`
+through `TPM2_PolicyAuthValue`; the reference answers with a response HMAC keyed
+by the session key alone, because the association to the deleted index is
+dropped. The `NVUSS_AFTER_DELETE` snapshot is taken immediately after that
+command so the Rust tests can compare the recorded session-process association
+with the vendored one. `HCA_CHANGED` shows the opposite case: `TPM2_HierarchyChangeAuth` keys
+its response HMAC with the authorization value it just installed, not the one
+the command was authorized with.
+
+`TPM2_PolicyCapability` mixes only `operandB`, `offset`, `operation`,
+`capability`, and `property` into the policy digest, never the capability data
+itself. Its records therefore differ from the reference only in whether the
+comparison succeeds.
+
+## Notes about NV PIN indexes
+
+The `nv-commands` family ends with two sections that pin how the session layer
+maintains the counter of a PIN index. Both start from `restore-permanent
+NV_PIN_BASE` followed by `TPM2_Startup`, which is the state the Rust tests
+rebuild from the `PERMALL_BASE` record.
+
+`PIN_PASS_*` shows that every authorized use of the index authorization value
+increments `pinCount` before the command runs, and that reaching `pinLimit`
+makes the authorization value unavailable. `PIN_FAIL_*` shows the mirror image:
+a failed authorization increments the counter and a successful one clears it.
+Reads authorized by the owner never touch the counter.
+
 ## Notes about destructive scenarios
 
 Commands such as `TPM2_Clear`, `TPM2_ChangeEPS`, and `TPM2_ChangePPS` destroy or

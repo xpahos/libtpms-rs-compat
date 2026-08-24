@@ -66,6 +66,8 @@ pub struct Tpm2Runtime {
     pub power_on: bool,
     pub nv_available: bool,
     pub locality: u8,
+    pub physical_presence: bool,
+    pub(super) removed_session_associations: Vec<u32>,
     pub buffer_size: u32,
     pub nv_memory: Box<[u8]>,
 }
@@ -222,6 +224,8 @@ fn commit_state(
         power_on: true,
         nv_available: true,
         locality: 0,
+        physical_presence: false,
+        removed_session_associations: Vec::new(),
         buffer_size: DEFAULT_BUFFER_SIZE,
         nv_memory,
     }))
@@ -257,6 +261,8 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         power_on: true,
         nv_available: true,
         locality: 0,
+        physical_presence: false,
+        removed_session_associations: Vec::new(),
         buffer_size: DEFAULT_BUFFER_SIZE,
         nv_memory: vec![0u8; NV_MEMORY_SIZE].into_boxed_slice(),
     })

@@ -15,8 +15,8 @@ pub(in crate::library::tpm2) use attributes::{
     TPMA_NV_PLATFORMCREATE, TPMA_NV_POLICY_DELETE, TPMA_NV_POLICYREAD, TPMA_NV_POLICYWRITE,
     TPMA_NV_PPREAD, TPMA_NV_PPWRITE, TPMA_NV_READ_STCLEAR, TPMA_NV_READLOCKED,
     TPMA_NV_WRITE_STCLEAR, TPMA_NV_WRITEALL, TPMA_NV_WRITEDEFINE, TPMA_NV_WRITELOCKED,
-    TPMA_NV_WRITTEN, is_bits_index, is_counter_index, is_extend_index, is_pin_index, nv_index_type,
-    startup_attributes,
+    TPMA_NV_WRITTEN, is_bits_index, is_counter_index, is_extend_index, is_pin_fail_index,
+    is_pin_index, is_pin_pass_index, nv_index_type, startup_attributes,
 };
 pub(in crate::library::tpm2) use index::MAX_NV_INDEX_SIZE;
 pub(in crate::library::tpm2) use public_area::{

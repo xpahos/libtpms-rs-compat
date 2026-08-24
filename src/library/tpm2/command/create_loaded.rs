@@ -494,8 +494,14 @@ mod tests {
     #[track_caller]
     fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, label: &str, bytes: Vec<u8>) {
         let input = CommandInput::new(bytes.len() as u32, bytes);
-        let response = process(runtime, 0, &input, clock, |_| Ok(()))
-            .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
+        let response = process(
+            runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input,
+            clock,
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
         assert_eq!(response, vector(label), "{label}");
     }
 
@@ -531,18 +537,22 @@ mod tests {
         let mut runtime = restored_runtime(&clock);
         let bytes = cap_cc_command();
         let input = CommandInput::new(bytes.len() as u32, bytes);
-        let response =
-            process(&mut runtime, 0, &input, &clock, |_| Ok(())).expect("the query succeeds");
+        let response = process(
+            &mut runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input,
+            &clock,
+            |_| Ok(()),
+        )
+        .expect("the query succeeds");
         assert_eq!(
             &response[response.len() - 4..],
             0x1200_0191u32.to_be_bytes(),
             "this registry reports the same attributes"
         );
-        assert_eq!(&response[..10], &oracle[..10], "header and response code");
-        assert_eq!(&response[11..], &oracle[11..], "capability payload");
         assert_eq!(
-            response[10], 0,
-            "the vendored TPM implements commands beyond 0x191, so only its moreData flag differs"
+            response, oracle,
+            "both TPMs implement commands beyond 0x191, so moreData is set on both"
         );
         assert_eq!(oracle[10], 1);
     }
@@ -1081,13 +1091,27 @@ mod tests {
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
         ];
         let input = CommandInput::new(startup.len() as u32, startup);
-        let response = process(&mut runtime, 0, &input, &clock, |_| Ok(())).expect("startup runs");
+        let response = process(
+            &mut runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input,
+            &clock,
+            |_| Ok(()),
+        )
+        .expect("startup runs");
         assert_eq!(response[6..], [0, 0, 0, 0], "startup succeeds");
         commands
             .iter()
             .map(|bytes| {
                 let input = CommandInput::new(bytes.len() as u32, bytes.clone());
-                process(&mut runtime, 0, &input, &clock, |_| Ok(())).expect("the command runs")
+                process(
+                    &mut runtime,
+                    crate::library::tpm2::PlatformInputs::at_locality(0),
+                    &input,
+                    &clock,
+                    |_| Ok(()),
+                )
+                .expect("the command runs")
             })
             .collect()
     }
@@ -1361,8 +1385,14 @@ mod tests {
                 ),
             ] {
                 let input = CommandInput::new(bytes.len() as u32, bytes);
-                let response =
-                    process(&mut runtime, 0, &input, &clock, |_| Ok(())).expect("processes");
+                let response = process(
+                    &mut runtime,
+                    crate::library::tpm2::PlatformInputs::at_locality(0),
+                    &input,
+                    &clock,
+                    |_| Ok(()),
+                )
+                .expect("processes");
                 assert_eq!(response, vector(label), "{label}");
                 assert_eq!(
                     find_empty_object_slot(&runtime),
@@ -1483,7 +1513,14 @@ mod tests {
             let mut runtime = restored_runtime(&clock);
             let parent = cp_command(TPM_RH_OWNER_H, &[], &DERIVATION_PARENT_TEMPLATE);
             let input = CommandInput::new(parent.len() as u32, parent);
-            let response = process(&mut runtime, 0, &input, &clock, |_| Ok(())).expect("processes");
+            let response = process(
+                &mut runtime,
+                crate::library::tpm2::PlatformInputs::at_locality(0),
+                &input,
+                &clock,
+                |_| Ok(()),
+            )
+            .expect("processes");
             assert_eq!(response[6..10], [0, 0, 0, 0], "the owner parent is created");
             let child = cl_command(
                 0x8000_0000,
@@ -1493,7 +1530,14 @@ mod tests {
                 &ecc_derive_template(&[], &[], 0x0002_0452),
             );
             let input = CommandInput::new(child.len() as u32, child);
-            let response = process(&mut runtime, 0, &input, &clock, |_| Ok(())).expect("processes");
+            let response = process(
+                &mut runtime,
+                crate::library::tpm2::PlatformInputs::at_locality(0),
+                &input,
+                &clock,
+                |_| Ok(()),
+            )
+            .expect("processes");
             assert_eq!(
                 response[6..10],
                 [0, 0, 0, 0],
@@ -1570,7 +1614,14 @@ mod tests {
         #[track_caller]
         fn run(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: Vec<u8>) -> Vec<u8> {
             let input = CommandInput::new(bytes.len() as u32, bytes);
-            process(runtime, 0, &input, clock, |_| Ok(())).expect("the command processes")
+            process(
+                runtime,
+                crate::library::tpm2::PlatformInputs::at_locality(0),
+                &input,
+                clock,
+                |_| Ok(()),
+            )
+            .expect("the command processes")
         }
 
         #[test]

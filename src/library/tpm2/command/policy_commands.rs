@@ -12,19 +12,11 @@ use super::super::session::{
 use super::dispatcher::CommandFrame;
 use super::nv_common::{TPM_RC_1, TPM_RC_P};
 use super::output::CommandOutput;
-use super::policy_common::{extend_policy_digest, policy_digest, policy_session};
+use super::policy_common::{extend_policy_digest, no_parameters, policy_digest, policy_session};
 use super::registry::{TPM_CC_POLICY_AUTH_VALUE, TPM_CC_POLICY_COMMAND_CODE};
 use super::upstream_codes::upstream_implements;
 
 const RC_POLICY_COMMAND_CODE_CODE: TpmResult = TPM_RC_P + TPM_RC_1;
-
-fn no_parameters(frame: &CommandFrame<'_>) -> Result<(), TpmResult> {
-    if frame.parameters.is_empty() {
-        Ok(())
-    } else {
-        Err(TPM_RC_SIZE)
-    }
-}
 
 fn set_authorization_flags(
     runtime: &mut Tpm2Runtime,

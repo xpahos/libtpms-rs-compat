@@ -18,7 +18,7 @@ use super::session::{CommandContext, compute_cp_hash, compute_rp_hash};
 
 pub(super) const COMMAND_FIRST: u32 = 0x0000_011f;
 
-pub(super) fn command_index(code: u32) -> Option<usize> {
+pub(in crate::library::tpm2) fn command_index(code: u32) -> Option<usize> {
     let index = code.checked_sub(COMMAND_FIRST)? as usize;
     (index < COMMAND_COUNT).then_some(index)
 }
@@ -38,7 +38,7 @@ fn bit_is_set(bitmap: &[u8], index: usize) -> bool {
         .is_some_and(|byte| byte & (1 << (index % 8)) != 0)
 }
 
-pub(super) fn is_required(runtime: &Tpm2Runtime, code: u32) -> bool {
+pub(in crate::library::tpm2) fn is_required(runtime: &Tpm2Runtime, code: u32) -> bool {
     let Some(index) = command_index(code) else {
         return false;
     };

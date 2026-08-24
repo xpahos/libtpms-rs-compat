@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn both_fixtures_parse_into_named_records() {
-        assert_eq!(nv_vectors().len(), 81);
+        assert_eq!(nv_vectors().len(), 94);
         assert_eq!(certify_vectors().len(), 24);
         for vectors in [nv_vectors(), certify_vectors()] {
             for vector in &vectors {

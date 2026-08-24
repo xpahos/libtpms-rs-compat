@@ -194,7 +194,7 @@ pub(in crate::library::tpm2) fn collect(
     )
 }
 
-fn property_value(
+pub(in crate::library::tpm2) fn property_value(
     runtime: &Tpm2Runtime,
     state: &OwnedPersistentState,
     property: u32,
@@ -502,8 +502,8 @@ mod tests {
         (0x12c, 0x400),
         (0x12d, 0),
         (0x12e, 0x400),
-        (0x129, 74),
-        (0x12a, 74),
+        (0x129, 90),
+        (0x12a, 90),
     ];
 
     #[test]

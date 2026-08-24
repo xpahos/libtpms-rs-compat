@@ -4,9 +4,9 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_AUTH_FAIL, TPM_RC_AUTH_MISSING, TPM_RC_AUTH_TYPE,
     TPM_RC_AUTH_UNAVAILABLE, TPM_RC_BAD_AUTH, TPM_RC_EXCLUSIVE, TPM_RC_EXPIRED, TPM_RC_FAILURE,
-    TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY, TPM_RC_NONCE, TPM_RC_PCR_CHANGED,
-    TPM_RC_POLICY_CC, TPM_RC_POLICY_FAIL, TPM_RC_REFERENCE_S0, TPM_RC_RESERVED_BITS, TPM_RC_SIZE,
-    TPM_RC_SYMMETRIC, TPM_RC_VALUE,
+    TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY, TPM_RC_MODE, TPM_RC_NONCE,
+    TPM_RC_PCR_CHANGED, TPM_RC_POLICY_CC, TPM_RC_POLICY_FAIL, TPM_RC_PP, TPM_RC_REFERENCE_S0,
+    TPM_RC_RESERVED_BITS, TPM_RC_SIZE, TPM_RC_SYMMETRIC, TPM_RC_VALUE,
 };
 
 use super::super::algorithm::{TPM_ALG_NULL, TPM_ALG_XOR};
@@ -21,28 +21,31 @@ use super::super::entity::{
     entity_auth_policy, entity_auth_value, entity_name, normalize_hierarchy_handle,
 };
 pub(super) use super::super::hierarchy::TPM_RS_PW;
-use super::super::hierarchy::{TPM_RH_NULL, TPM_RH_UNASSIGNED};
+use super::super::hierarchy::{TPM_RH_NULL, TPM_RH_PLATFORM, TPM_RH_UNASSIGNED};
 use super::super::live::RestoredVolatile;
 use super::super::marshal::{BlobReader, BlobWriter, Tpm2bError};
 use super::super::nv::{
-    TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_WRITTEN, is_nv_index_handle, is_pin_index,
-    read_uint64_data, resolve_index,
+    IndexWrite, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_WRITTEN, is_nv_index_handle,
+    is_pin_fail_index, is_pin_index, is_pin_pass_index, read_uint64_data, resolve_index,
 };
 use super::super::object::ATTR_PUBLIC_ONLY;
 use super::super::object_create::{
     is_object_handle, object_auth_value, object_public_attributes, resolve_any_object,
 };
 use super::super::persistent::OwnedSecret;
+use super::super::pp_list::physical_presence_is_required;
 use super::super::random::generate_random;
 use super::super::runtime::Tpm2Runtime;
 use super::super::self_test::self_test_algorithm;
 use super::super::sequence::sequence_kind;
 use super::super::session::{
-    SESSION_ATTR_IS_AUDIT, SESSION_ATTR_IS_AUTH_VALUE_NEEDED, SESSION_ATTR_IS_BOUND,
-    SESSION_ATTR_IS_CP_HASH_DEFINED, SESSION_ATTR_IS_DA_BOUND, SESSION_ATTR_IS_LOCKOUT_BOUND,
-    SESSION_ATTR_IS_PASSWORD_NEEDED, SESSION_ATTR_IS_POLICY, SESSION_ATTR_IS_PP_REQUIRED,
-    SESSION_ATTR_IS_TRIAL_POLICY, digest_size, digests_equal, flush_session,
-    is_policy_session_handle, is_session_handle, loaded_session, loaded_session_mut,
+    SESSION_ATTR_CHECK_NV_WRITTEN, SESSION_ATTR_IS_AUDIT, SESSION_ATTR_IS_AUTH_VALUE_NEEDED,
+    SESSION_ATTR_IS_BOUND, SESSION_ATTR_IS_CP_HASH_DEFINED, SESSION_ATTR_IS_DA_BOUND,
+    SESSION_ATTR_IS_LOCKOUT_BOUND, SESSION_ATTR_IS_NAME_HASH_DEFINED,
+    SESSION_ATTR_IS_PARAMETERS_HASH_DEFINED, SESSION_ATTR_IS_PASSWORD_NEEDED,
+    SESSION_ATTR_IS_POLICY, SESSION_ATTR_IS_PP_REQUIRED, SESSION_ATTR_IS_TEMPLATE_HASH_DEFINED,
+    SESSION_ATTR_IS_TRIAL_POLICY, SESSION_ATTR_NV_WRITTEN_STATE, digest_size, digests_equal,
+    flush_session, is_policy_session_handle, is_session_handle, loaded_session, loaded_session_mut,
     reset_policy_data, set_start_time,
 };
 use super::super::state::MAX_ACTIVE_SESSIONS;
@@ -58,6 +61,8 @@ pub(super) const HMAC_SESSION_FIRST: u32 = 0x0200_0000;
 pub(super) const POLICY_SESSION_FIRST: u32 = 0x0300_0000;
 
 const MAX_SESSION_NUM: usize = 3;
+
+const NAME_HASH_ATTRIBUTE_LEVEL: u32 = 4;
 const SESSION_TPM2B_MAX: usize = 64;
 const UNDEFINED_INDEX: usize = usize::MAX;
 const UNDEFINED_SESSION_INDEX: u32 = 0xffff;
@@ -255,6 +260,34 @@ fn effective_auth_value(runtime: &Tpm2Runtime, handle: u32) -> Result<&[u8], Tpm
     entity_auth_value(runtime, handle)
 }
 
+pub(super) fn state_format_level(runtime: &Tpm2Runtime) -> Result<u32, TpmResult> {
+    Ok(runtime
+        .state
+        .as_ref()
+        .ok_or(TPM_RC_FAILURE)?
+        .profile
+        .state_format_level)
+}
+
+pub(super) fn remove_session_association(runtime: &mut Tpm2Runtime, handle: u32) {
+    let handle = normalize_hierarchy_handle(handle);
+    if !runtime.removed_session_associations.contains(&handle) {
+        runtime.removed_session_associations.push(handle);
+    }
+}
+
+pub(super) fn clear_session_associations(runtime: &mut Tpm2Runtime) {
+    runtime.removed_session_associations.clear();
+}
+
+fn surviving_association(runtime: &Tpm2Runtime, associated: u32) -> u32 {
+    if runtime.removed_session_associations.contains(&associated) {
+        TPM_RH_NULL
+    } else {
+        associated
+    }
+}
+
 fn nv_auth_value_is_available(
     runtime: &Tpm2Runtime,
     handle: u32,
@@ -352,6 +385,11 @@ fn failed_password_code(runtime: &mut Tpm2Runtime, handle: u32) -> Result<TpmRes
 }
 
 pub(super) fn record_session_state(runtime: &mut Tpm2Runtime, area: &SessionArea<'_>) {
+    let surviving: Vec<u32> = area
+        .sessions
+        .iter()
+        .map(|session| surviving_association(runtime, session.associated))
+        .collect();
     let process = &mut runtime
         .restored_volatile
         .get_or_insert_with(RestoredVolatile::power_on)
@@ -368,7 +406,7 @@ pub(super) fn record_session_state(runtime: &mut Tpm2Runtime, area: &SessionArea
         } else {
             OwnedSecret::copy_of(session.auth)
         };
-        process.associated_handles[index] = session.associated;
+        process.associated_handles[index] = surviving[index];
     }
 }
 
@@ -439,9 +477,9 @@ fn hmac_key(runtime: &Tpm2Runtime, session: &CommandSession<'_>) -> Result<Vec<u
     let loaded = loaded_session(&runtime.live, session.handle).ok_or(TPM_RC_FAILURE)?;
     let mut key = loaded.session_key.as_bytes().to_vec();
     if session.include_auth {
+        let associated = surviving_association(runtime, session.associated);
         key.extend_from_slice(strip_trailing_zeros(effective_auth_value(
-            runtime,
-            session.associated,
+            runtime, associated,
         )?));
     }
     Ok(key)
@@ -546,6 +584,14 @@ fn check_policy_session(
     index: usize,
 ) -> Result<(), TpmResult> {
     let session = &area.sessions[index];
+    if context.code == super::registry::TPM_CC_POLICY_SECRET {
+        let loaded = loaded_session(&runtime.live, session.handle).ok_or(TPM_RC_FAILURE)?;
+        if loaded.attributes & (SESSION_ATTR_IS_PASSWORD_NEEDED | SESSION_ATTR_IS_AUTH_VALUE_NEEDED)
+            == 0
+        {
+            return Err(TPM_RC_MODE);
+        }
+    }
     let loaded = loaded_session(&runtime.live, session.handle).ok_or(TPM_RC_FAILURE)?;
     let pcr_counter = runtime
         .live
@@ -601,15 +647,120 @@ fn check_policy_session(
             return Err(TPM_RC_LOCALITY);
         }
     }
-    if loaded.attributes & SESSION_ATTR_IS_PP_REQUIRED != 0 {
-        return Err(crate::library::constants::TPM_RC_PP);
+    if loaded.attributes & SESSION_ATTR_IS_PP_REQUIRED != 0 && !runtime.physical_presence {
+        return Err(TPM_RC_PP);
     }
-    if loaded.attributes & SESSION_ATTR_IS_CP_HASH_DEFINED != 0 {
-        let expected = loaded.bound_entity.clone();
+    check_policy_restriction(runtime, context, area, index)?;
+    check_policy_nv_written(runtime, area, index)
+}
+
+fn check_policy_restriction(
+    runtime: &mut Tpm2Runtime,
+    context: &CommandContext<'_>,
+    area: &mut SessionArea<'_>,
+    index: usize,
+) -> Result<(), TpmResult> {
+    let handle = area.sessions[index].handle;
+    let loaded = loaded_session(&runtime.live, handle).ok_or(TPM_RC_FAILURE)?;
+    let expected = loaded.bound_entity.clone();
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let attributes = loaded.attributes;
+    let hash_alg = loaded.auth_hash_alg;
+    let tagged_name_hash = state_format_level(runtime)? >= NAME_HASH_ATTRIBUTE_LEVEL;
+    let matched = if attributes & SESSION_ATTR_IS_CP_HASH_DEFINED != 0 {
         let actual = ensure_cp_hash(runtime, context, area, index)?;
-        if !digests_equal(&expected, &actual) {
-            return Err(TPM_RC_POLICY_FAIL);
-        }
+        digests_equal(&expected, &actual)
+    } else if tagged_name_hash && attributes & SESSION_ATTR_IS_NAME_HASH_DEFINED != 0 {
+        compare_name_hash(runtime, context, hash_alg, &expected)?
+    } else if attributes & SESSION_ATTR_IS_PARAMETERS_HASH_DEFINED != 0 {
+        compare_parameters_hash(runtime, context, hash_alg, &expected)?
+    } else if attributes & SESSION_ATTR_IS_TEMPLATE_HASH_DEFINED != 0 {
+        compare_template_hash(runtime, context, hash_alg, &expected)?
+    } else if !tagged_name_hash {
+        compare_name_hash(runtime, context, hash_alg, &expected)?
+    } else {
+        false
+    };
+    if matched {
+        Ok(())
+    } else {
+        Err(TPM_RC_POLICY_FAIL)
+    }
+}
+
+fn compare_name_hash(
+    runtime: &mut Tpm2Runtime,
+    context: &CommandContext<'_>,
+    hash_alg: u16,
+    expected: &[u8],
+) -> Result<bool, TpmResult> {
+    self_test_algorithm(runtime, hash_alg)?;
+    let mut hasher = Hasher::new(hash_alg).ok_or(TPM_RC_FAILURE)?;
+    for &handle in context.handles {
+        hasher.update(&entity_name(runtime, handle)?);
+    }
+    Ok(digests_equal(expected, &hasher.finalize()))
+}
+
+fn compare_parameters_hash(
+    runtime: &mut Tpm2Runtime,
+    context: &CommandContext<'_>,
+    hash_alg: u16,
+    expected: &[u8],
+) -> Result<bool, TpmResult> {
+    self_test_algorithm(runtime, hash_alg)?;
+    let mut hasher = Hasher::new(hash_alg).ok_or(TPM_RC_FAILURE)?;
+    hasher.update(&context.code.to_be_bytes());
+    hasher.update(context.parameters);
+    Ok(digests_equal(expected, &hasher.finalize()))
+}
+
+fn compare_template_hash(
+    runtime: &mut Tpm2Runtime,
+    context: &CommandContext<'_>,
+    hash_alg: u16,
+    expected: &[u8],
+) -> Result<bool, TpmResult> {
+    use super::registry::{TPM_CC_CREATE, TPM_CC_CREATE_LOADED, TPM_CC_CREATE_PRIMARY};
+    if !matches!(
+        context.code,
+        TPM_CC_CREATE | TPM_CC_CREATE_PRIMARY | TPM_CC_CREATE_LOADED
+    ) {
+        return Ok(false);
+    }
+    let mut reader = BlobReader::new(context.parameters);
+    if reader.read_tpm2b(usize::from(u16::MAX)).is_err() {
+        return Ok(false);
+    }
+    let Ok(template) = reader.read_tpm2b(usize::from(u16::MAX)) else {
+        return Ok(false);
+    };
+    self_test_algorithm(runtime, hash_alg)?;
+    let mut hasher = Hasher::new(hash_alg).ok_or(TPM_RC_FAILURE)?;
+    hasher.update(template);
+    Ok(digests_equal(expected, &hasher.finalize()))
+}
+
+fn check_policy_nv_written(
+    runtime: &Tpm2Runtime,
+    area: &SessionArea<'_>,
+    index: usize,
+) -> Result<(), TpmResult> {
+    let handle = area.sessions[index].handle;
+    let associated = area.sessions[index].associated;
+    let loaded = loaded_session(&runtime.live, handle).ok_or(TPM_RC_FAILURE)?;
+    if loaded.attributes & SESSION_ATTR_CHECK_NV_WRITTEN == 0 {
+        return Ok(());
+    }
+    if !is_nv_index_handle(associated) {
+        return Err(TPM_RC_POLICY_FAIL);
+    }
+    let required = loaded.attributes & SESSION_ATTR_NV_WRITTEN_STATE != 0;
+    let index = resolve_index(runtime, associated).ok_or(TPM_RC_FAILURE)?;
+    if (index.attributes() & TPMA_NV_WRITTEN != 0) != required {
+        return Err(TPM_RC_POLICY_FAIL);
     }
     Ok(())
 }
@@ -627,6 +778,13 @@ fn check_auth_session(
         .handles
         .get(index)
         .is_some_and(|spec| spec.admin_role);
+
+    if associated == TPM_RH_PLATFORM
+        && physical_presence_is_required(runtime, context.code)
+        && !runtime.physical_presence
+    {
+        return Err(TPM_RC_PP);
+    }
 
     let auth_used = if handle == TPM_RS_PW {
         area.sessions[index].include_auth = true;
@@ -679,10 +837,39 @@ fn check_auth_session(
     } else {
         check_session_hmac(runtime, context, area, index)?
     };
+    if auth_used && is_nv_index_handle(associated) {
+        update_pin_index(runtime, associated, code == 0)?;
+    }
     if code != 0 {
         return Err(code);
     }
     Ok(())
+}
+
+fn update_pin_index(
+    runtime: &mut Tpm2Runtime,
+    handle: u32,
+    authorized: bool,
+) -> Result<(), TpmResult> {
+    let resolved = resolve_index(runtime, handle).ok_or(TPM_RC_FAILURE)?;
+    let attributes = resolved.attributes();
+    let fail_index = is_pin_fail_index(attributes);
+    let pass_index = is_pin_pass_index(attributes) && authorized;
+    if attributes & TPMA_NV_WRITTEN == 0 || !(fail_index || pass_index) {
+        return Ok(());
+    }
+    let value = read_uint64_data(runtime, &resolved)?;
+    let limit = value as u32;
+    let count = (value >> 32) as u32;
+    let updated = if fail_index {
+        if authorized { 0 } else { count.wrapping_add(1) }
+    } else {
+        count.wrapping_add(1)
+    };
+    let data = ((u64::from(updated) << 32) | u64::from(limit))
+        .to_be_bytes()
+        .to_vec();
+    super::nv_write::apply_write(runtime, &resolved, IndexWrite { offset: 0, data }, false)
 }
 
 fn session_is_bind_entity(
@@ -1001,7 +1188,8 @@ fn encrypt_first_parameter(
     let extra = if session.associated == TPM_RH_UNASSIGNED {
         Vec::new()
     } else {
-        strip_trailing_zeros(effective_auth_value(runtime, session.associated)?).to_vec()
+        let associated = surviving_association(runtime, session.associated);
+        strip_trailing_zeros(effective_auth_value(runtime, associated)?).to_vec()
     };
     let Some(size_bytes) = parameters.get(..2) else {
         return Ok(());
@@ -1209,6 +1397,412 @@ mod tests {
     const UNLOADED_SESSION_HANDLE: &str = "8002000000510000018200000000000000190200000500105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a01000000000001000b0000000000000000000000000000000000000000000000000000000000000000";
     const DUPLICATE_SESSION_HANDLE: &str = "80020000006a0000018200000000000000320200000000105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a0100000200000000105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a01000000000001000b0000000000000000000000000000000000000000000000000000000000000000";
     const TRIAL_SESSION_IN_AUTH_AREA: &str = "8002000000510000018200000000000000190300000200105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a01000000000001000b0000000000000000000000000000000000000000000000000000000000000000";
+
+    const POLICY_NV_WRITTEN_SET: &str = "80010000000f0000018f0300000001";
+    const POLICY_NV_WRITTEN_CLEAR: &str = "80010000000f0000018f0300000000";
+    const POLICY_LOCALITY_ZERO: &str = "80010000000f0000016f0300000001";
+    const POLICY_PHYSICAL_PRESENCE: &str = "80010000000e0000018703000000";
+
+    fn digest_of(runtime: &mut Tpm2Runtime) -> Vec<u8> {
+        let response = send(runtime, &hex("80010000000e0000018903000000"));
+        response[12..].to_vec()
+    }
+
+    #[track_caller]
+    fn assert_flow(snapshot: &str, assertions: &[&str], digest_record: &str, read_record: &str) {
+        let mut runtime = restored(snapshot);
+        for assertion in assertions {
+            assert_eq!(
+                response_code_of(&send(&mut runtime, &hex(assertion))),
+                0,
+                "{snapshot}: the policy assertion succeeds"
+            );
+        }
+        assert_eq!(
+            send(&mut runtime, &hex("80010000000e0000018903000000")),
+            vector(digest_record),
+            "{snapshot}: the built policy digest"
+        );
+        assert_eq!(
+            send(&mut runtime, &hex(POLICY_NV_READ)),
+            vector(read_record),
+            "{snapshot}: the authorized read"
+        );
+    }
+
+    fn response_code_of(response: &[u8]) -> u32 {
+        u32::from_be_bytes(response[6..10].try_into().expect("a response code"))
+    }
+
+    const NVUSS_POLICY_COMMAND_CODE: &str = "8001000000120000016c030000000000011f";
+    const NVUSS_POLICY_AUTH_VALUE: &str = "80010000000e0000016b03000000";
+    const NVUSS_CONTINUED: &str = "8002000000580000011f010000004000000c000000420300000000105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a01002060f3070258022ff34c724a32b8649be820090dc8624e98b07b91528b9665c0e0400000090000000000";
+    const NVUSS_CLOSED: &str = "8002000000580000011f010000004000000c000000420300000000105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a000020466c6e569f42135a5ab579cbb012bddee4af02a44feb262a4baac686d8b4e56f400000090000000000";
+    const NVUSS_LOADED_SESSIONS: &str = "8001000000160000017a000000010300000000000008";
+    const NVUSS_INDEX: u32 = 0x0100_0000;
+    const HCA_CHANGED: &str = "8002000000500000012940000001000000390200000000105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a010020ce5941d36d750dee870ff8f5b13e7adf5238f129c2d344486f986a2c05a52af60003717171";
+
+    #[track_caller]
+    fn open_undefine_policy(assertions: &[&str]) -> Box<Tpm2Runtime> {
+        let mut runtime = restored("NVUSS_READY");
+        for assertion in assertions {
+            assert_eq!(
+                response_code_of(&send(&mut runtime, &hex(assertion))),
+                0,
+                "the policy assertion succeeds"
+            );
+        }
+        runtime
+    }
+
+    fn expected_response_hmac(code: u32, key: &[u8], nonce_tpm: &[u8], attributes: u8) -> Vec<u8> {
+        let mut hasher = Hasher::new(0x000b).expect("sha256");
+        hasher.update(&0u32.to_be_bytes());
+        hasher.update(&code.to_be_bytes());
+        let rp_hash = hasher.finalize();
+        let mut hmac = HmacState::new(0x000b, key).expect("sha256");
+        hmac.update(&rp_hash);
+        hmac.update(nonce_tpm);
+        hmac.update(&[0x5a; 16]);
+        hmac.update(&[attributes]);
+        hmac.finalize()
+    }
+
+    fn response_session_parts(response: &[u8]) -> (Vec<u8>, u8, Vec<u8>) {
+        let parameter_size =
+            u32::from_be_bytes(response[10..14].try_into().expect("a parameter size")) as usize;
+        let area = &response[14 + parameter_size..];
+        let nonce_size = usize::from(u16::from_be_bytes(area[..2].try_into().expect("a size")));
+        let attributes = area[2 + nonce_size];
+        let auth_at = 2 + nonce_size + 1;
+        let auth_size = usize::from(u16::from_be_bytes(
+            area[auth_at..auth_at + 2].try_into().expect("a size"),
+        ));
+        (
+            area[2..2 + nonce_size].to_vec(),
+            attributes,
+            area[auth_at + 2..auth_at + 2 + auth_size].to_vec(),
+        )
+    }
+
+    #[test]
+    fn undefine_space_special_succeeds_after_policy_auth_value() {
+        let mut runtime =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        assert!(resolve_index(&runtime, NVUSS_INDEX).is_some());
+
+        let response = send(&mut runtime, &hex(NVUSS_CONTINUED));
+        assert_eq!(response, vector("NVUSS_CONTINUED"));
+        assert_eq!(response_code_of(&response), 0);
+        assert!(!runtime.failure_mode, "no internal failure is reported");
+        assert!(
+            resolve_index(&runtime, NVUSS_INDEX).is_none(),
+            "the deletion is committed"
+        );
+    }
+
+    #[test]
+    fn the_response_hmac_drops_the_authorization_of_the_deleted_entity() {
+        let mut runtime =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        let response = send(&mut runtime, &hex(NVUSS_CONTINUED));
+        let (nonce_tpm, attributes, auth) = response_session_parts(&response);
+        assert_eq!(
+            auth,
+            expected_response_hmac(0x0000_011f, &[], &nonce_tpm, attributes),
+            "the key is the session key alone once the index is gone"
+        );
+        assert_ne!(
+            auth,
+            expected_response_hmac(0x0000_011f, b"ppp", &nonce_tpm, attributes),
+            "the authValue of the deleted index is not used"
+        );
+    }
+
+    #[test]
+    fn a_continued_and_a_closed_session_both_survive_the_deletion() {
+        let mut continued =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        assert_eq!(
+            send(&mut continued, &hex(NVUSS_CONTINUED)),
+            vector("NVUSS_CONTINUED")
+        );
+        assert_eq!(
+            send(&mut continued, &hex(NVUSS_LOADED_SESSIONS)),
+            vector("NVUSS_LOADED_AFTER_CONTINUE")
+        );
+        assert!(loaded_session(&continued.live, POLICY_SESSION_FIRST).is_some());
+
+        let mut closed =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        assert_eq!(
+            send(&mut closed, &hex(NVUSS_CLOSED)),
+            vector("NVUSS_CLOSED")
+        );
+        assert_eq!(
+            send(&mut closed, &hex(NVUSS_LOADED_SESSIONS)),
+            vector("NVUSS_LOADED_AFTER_CLOSE")
+        );
+        assert!(
+            loaded_session(&closed.live, POLICY_SESSION_FIRST).is_none(),
+            "clearing continueSession still flushes the session"
+        );
+    }
+
+    #[test]
+    fn a_rejected_undefine_space_special_keeps_the_index_and_the_policy_state() {
+        let mut runtime = open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE]);
+        let before = loaded_session(&runtime.live, POLICY_SESSION_FIRST)
+            .expect("a policy session")
+            .clone();
+        assert_eq!(
+            send(&mut runtime, &hex(NVUSS_CONTINUED)),
+            vector("NVUSS_WITHOUT_AUTH_VALUE")
+        );
+        assert!(!runtime.failure_mode, "a policy failure is recoverable");
+        assert!(
+            resolve_index(&runtime, NVUSS_INDEX).is_some(),
+            "the rejected command deletes nothing"
+        );
+        let after = loaded_session(&runtime.live, POLICY_SESSION_FIRST).expect("a policy session");
+        assert_eq!(after.audit_digest, before.audit_digest);
+        assert_eq!(after.attributes, before.attributes);
+        assert_eq!(after.nonce_tpm.as_bytes(), before.nonce_tpm.as_bytes());
+        assert!(runtime.removed_session_associations.is_empty());
+        assert_eq!(
+            send(&mut runtime, &hex("80010000000e0000018903000000")),
+            vector("NVUSS_DIGEST_AFTER_FAILURE")
+        );
+    }
+
+    #[test]
+    fn changing_an_authorization_value_answers_with_the_value_the_command_installed() {
+        let mut runtime = restored("HCA_READY");
+        let response = send(&mut runtime, &hex(HCA_CHANGED));
+        assert_eq!(response, vector("HCA_CHANGED"));
+        assert_eq!(response_code_of(&response), 0);
+        let (nonce_tpm, attributes, auth) = response_session_parts(&response);
+        assert_eq!(
+            auth,
+            expected_response_hmac(0x0000_0129, b"qqq", &nonce_tpm, attributes),
+            "the reference answers with the authorization the command installed"
+        );
+        assert_ne!(
+            auth,
+            expected_response_hmac(0x0000_0129, &[], &nonce_tpm, attributes),
+            "the empty authorization the command was given is not reused"
+        );
+    }
+
+    fn recorded_association(runtime: &Tpm2Runtime, index: usize) -> u32 {
+        runtime
+            .restored_volatile
+            .as_ref()
+            .expect("recorded session state")
+            .session_process
+            .associated_handles[index]
+    }
+
+    #[test]
+    fn a_deleted_association_is_recorded_as_the_null_handle() {
+        let mut runtime =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        assert_eq!(
+            send(&mut runtime, &hex(NVUSS_CONTINUED)),
+            vector("NVUSS_CONTINUED")
+        );
+        assert_eq!(
+            recorded_association(&runtime, 0),
+            TPM_RH_NULL,
+            "the deleted index is replaced before the state is recorded"
+        );
+        assert_eq!(recorded_association(&runtime, 1), TPM_RH_PLATFORM);
+    }
+
+    #[test]
+    fn the_stored_volatile_state_carries_the_null_handle() {
+        use crate::library::tpm2::clock::RecordingClock;
+        use crate::library::tpm2::volatile::volatile_all_store;
+        use crate::library::tpm2::{
+            attach_volatile_blob_for_test, restore_permanent_blob_for_test,
+        };
+
+        let mut runtime =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        send(&mut runtime, &hex(NVUSS_CONTINUED));
+
+        let clock = RecordingClock::new(1_700_000_100_000, 4_000_000);
+        let volatile = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
+        let permanent = crate::library::tpm2::persistent::persistent_all_store(runtime.state())
+            .expect("the permanent state saves");
+        let mut reloaded = restore_permanent_blob_for_test(&permanent).expect("restores");
+        attach_volatile_blob_for_test(&mut reloaded, &volatile).expect("attaches");
+        assert_eq!(recorded_association(&reloaded, 0), TPM_RH_NULL);
+        assert_eq!(recorded_association(&reloaded, 1), TPM_RH_PLATFORM);
+    }
+
+    #[test]
+    fn the_recorded_association_matches_the_vendored_volatile_state() {
+        let reference = restored("NVUSS_AFTER_DELETE");
+        assert_eq!(
+            recorded_association(&reference, 0),
+            TPM_RH_NULL,
+            "the vendored implementation stores the null handle"
+        );
+
+        let mut runtime =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        send(&mut runtime, &hex(NVUSS_CONTINUED));
+        for index in 0..3 {
+            assert_eq!(
+                recorded_association(&runtime, index),
+                recorded_association(&reference, index),
+                "session slot {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rejected_deletion_keeps_the_original_association() {
+        let mut runtime = open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE]);
+        assert_eq!(
+            send(&mut runtime, &hex(NVUSS_CONTINUED)),
+            vector("NVUSS_WITHOUT_AUTH_VALUE")
+        );
+        assert_eq!(recorded_association(&runtime, 0), NVUSS_INDEX);
+    }
+
+    #[test]
+    fn a_later_command_does_not_inherit_a_removed_association() {
+        let mut runtime =
+            open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
+        send(&mut runtime, &hex(NVUSS_CONTINUED));
+        assert!(!runtime.removed_session_associations.is_empty());
+
+        assert_eq!(
+            send(&mut runtime, &hex(NVUSS_LOADED_SESSIONS)),
+            vector("NVUSS_LOADED_AFTER_CONTINUE")
+        );
+        assert!(
+            runtime.removed_session_associations.is_empty(),
+            "the next command boundary clears the scratch state"
+        );
+    }
+
+    #[test]
+    fn a_policy_that_requires_a_written_index_authorizes_the_read() {
+        assert_flow(
+            "FLOW_NV_WRITTEN",
+            &[POLICY_NV_WRITTEN_SET, POLICY_COMMAND_CODE_NV_READ],
+            "FLOW_NV_WRITTEN_DIGEST",
+            "FLOW_NV_READ_WRITTEN",
+        );
+    }
+
+    #[test]
+    fn a_policy_that_requires_an_unwritten_index_refuses_a_written_one() {
+        assert_flow(
+            "FLOW_NV_UNWRITTEN",
+            &[POLICY_NV_WRITTEN_CLEAR, POLICY_COMMAND_CODE_NV_READ],
+            "FLOW_NV_UNWRITTEN_DIGEST",
+            "FLOW_NV_READ_UNWRITTEN",
+        );
+    }
+
+    #[test]
+    fn a_locality_restriction_is_enforced_when_the_policy_is_used() {
+        assert_flow(
+            "FLOW_LOCALITY",
+            &[POLICY_LOCALITY_ZERO, POLICY_COMMAND_CODE_NV_READ],
+            "FLOW_LOCALITY_DIGEST",
+            "FLOW_NV_READ_LOCALITY_ZERO",
+        );
+
+        let mut runtime = restored("FLOW_LOCALITY");
+        for assertion in [POLICY_LOCALITY_ZERO, POLICY_COMMAND_CODE_NV_READ] {
+            send(&mut runtime, &hex(assertion));
+        }
+        runtime.locality = 2;
+        assert_eq!(
+            send(&mut runtime, &hex(POLICY_NV_READ)),
+            vector("FLOW_NV_READ_LOCALITY_TWO")
+        );
+    }
+
+    #[test]
+    fn a_physical_presence_restriction_is_enforced_when_the_policy_is_used() {
+        assert_flow(
+            "FLOW_PHYSICAL_PRESENCE",
+            &[POLICY_PHYSICAL_PRESENCE, POLICY_COMMAND_CODE_NV_READ],
+            "FLOW_PHYSICAL_PRESENCE_DIGEST",
+            "FLOW_NV_READ_PHYSICAL_PRESENCE",
+        );
+    }
+
+    #[test]
+    fn an_asserted_physical_presence_satisfies_the_policy() {
+        let mut runtime = restored("FLOW_PHYSICAL_PRESENCE");
+        for assertion in [POLICY_PHYSICAL_PRESENCE, POLICY_COMMAND_CODE_NV_READ] {
+            send(&mut runtime, &hex(assertion));
+        }
+        assert!(
+            !runtime.physical_presence,
+            "the reference platform never asserts physical presence"
+        );
+        runtime.physical_presence = true;
+        let response = send(&mut runtime, &hex(POLICY_NV_READ));
+        assert_eq!(
+            response_code_of(&response),
+            0,
+            "the same policy authorizes once the platform asserts physical presence"
+        );
+        assert_eq!(
+            &response[response.len() - 4..],
+            &vector("FLOW_NV_READ_WRITTEN")[vector("FLOW_NV_READ_WRITTEN").len() - 4..],
+            "the authorized read answers like every other flow"
+        );
+    }
+
+    #[test]
+    fn the_built_flow_digests_are_the_upstream_extension_chain() {
+        let mut runtime = restored("FLOW_NV_WRITTEN");
+        for assertion in [POLICY_NV_WRITTEN_SET, POLICY_COMMAND_CODE_NV_READ] {
+            send(&mut runtime, &hex(assertion));
+        }
+        let mut hasher = Hasher::new(0x000b).expect("sha256");
+        hasher.update(&[0x00; 32]);
+        hasher.update(&0x0000_018fu32.to_be_bytes());
+        hasher.update(&[0x01]);
+        let first = hasher.finalize();
+        let mut hasher = Hasher::new(0x000b).expect("sha256");
+        hasher.update(&first);
+        hasher.update(&0x0000_016cu32.to_be_bytes());
+        hasher.update(&0x0000_014eu32.to_be_bytes());
+        assert_eq!(digest_of(&mut runtime), hasher.finalize());
+    }
+
+    #[test]
+    fn a_policy_session_is_reset_after_it_authorizes_a_command() {
+        let mut runtime = restored("FLOW_NV_WRITTEN");
+        for assertion in [POLICY_NV_WRITTEN_SET, POLICY_COMMAND_CODE_NV_READ] {
+            send(&mut runtime, &hex(assertion));
+        }
+        assert_ne!(
+            loaded_session(&runtime.live, 0x0300_0000)
+                .expect("a policy session")
+                .attributes
+                & SESSION_ATTR_CHECK_NV_WRITTEN,
+            0
+        );
+        assert_eq!(
+            send(&mut runtime, &hex(POLICY_NV_READ)),
+            vector("FLOW_NV_READ_WRITTEN")
+        );
+        let session = loaded_session(&runtime.live, 0x0300_0000).expect("a policy session");
+        assert_eq!(session.attributes & SESSION_ATTR_CHECK_NV_WRITTEN, 0);
+        assert_eq!(session.command_code, 0);
+        assert_eq!(session.audit_digest, vec![0u8; 32]);
+    }
 
     #[test]
     fn a_salted_session_authorizes_a_command_and_rolls_its_nonce() {
@@ -1483,6 +2077,405 @@ mod tests {
         );
     }
 
+    mod pre_v4_name_hash {
+        use super::super::super::nv_common::harness::*;
+        use super::*;
+        use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
+        use crate::library::tpm2::profile::STATE_FORMAT_LEVEL_CURRENT;
+
+        const TPM_CC_POLICY_NAME_HASH: u32 = 0x0000_0170;
+        const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
+        const TPM_CC_SET_PRIMARY_POLICY: u32 = 0x0000_012e;
+        const TPM_CC_NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
+        const TPM_CC_START_AUTH_SESSION: u32 = 0x0000_0176;
+        const NV_INDEX: u32 = 0x0100_0001;
+
+        fn digest_of(parts: &[&[u8]]) -> Vec<u8> {
+            let mut hasher = Hasher::new(0x000b).expect("sha256");
+            for part in parts {
+                hasher.update(part);
+            }
+            hasher.finalize()
+        }
+
+        fn owner_name_hash() -> Vec<u8> {
+            digest_of(&[&TPM_RH_OWNER.to_be_bytes()])
+        }
+
+        fn owner_policy_for(name_hash: &[u8]) -> Vec<u8> {
+            digest_of(&[
+                &[0u8; 32],
+                &TPM_CC_POLICY_NAME_HASH.to_be_bytes(),
+                name_hash,
+            ])
+        }
+
+        fn sized(payload: &[u8]) -> Vec<u8> {
+            let mut out = (payload.len() as u16).to_be_bytes().to_vec();
+            out.extend_from_slice(payload);
+            out
+        }
+
+        #[track_caller]
+        fn armed_runtime(name_hash: &[u8]) -> Box<Tpm2Runtime> {
+            let mut runtime = started_runtime();
+            let mut parameters = sized(&owner_policy_for(name_hash));
+            parameters.extend_from_slice(&0x000bu16.to_be_bytes());
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut runtime,
+                    &command(
+                        TPM_CC_SET_PRIMARY_POLICY,
+                        &[TPM_RH_OWNER],
+                        &[&[]],
+                        &parameters
+                    ),
+                )),
+                RC_SUCCESS,
+                "the owner policy is installed"
+            );
+
+            let mut start = sized(&[0x5a; 16]);
+            start.extend_from_slice(&sized(&[]));
+            start.push(0x01);
+            start.extend_from_slice(&[0x00, 0x10]);
+            start.extend_from_slice(&0x000bu16.to_be_bytes());
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut runtime,
+                    &command(
+                        TPM_CC_START_AUTH_SESSION,
+                        &[TPM_RH_NULL, TPM_RH_NULL],
+                        &[],
+                        &start
+                    ),
+                )),
+                RC_SUCCESS,
+                "the policy session starts"
+            );
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut runtime,
+                    &command(
+                        TPM_CC_POLICY_NAME_HASH,
+                        &[POLICY_SESSION_FIRST],
+                        &[],
+                        &sized(name_hash)
+                    ),
+                )),
+                RC_SUCCESS,
+                "the name hash is asserted"
+            );
+            runtime
+        }
+
+        fn policy_authorized(code: u32, handles: &[u32], parameters: &[u8]) -> Vec<u8> {
+            let mut payload = Vec::new();
+            for handle in handles {
+                payload.extend_from_slice(&handle.to_be_bytes());
+            }
+            let mut area = POLICY_SESSION_FIRST.to_be_bytes().to_vec();
+            area.extend_from_slice(&sized(&[0x5a; 16]));
+            area.push(0x01);
+            area.extend_from_slice(&sized(&[]));
+            payload.extend_from_slice(&(area.len() as u32).to_be_bytes());
+            payload.extend_from_slice(&area);
+            payload.extend_from_slice(parameters);
+            framed(code, &payload, true)
+        }
+
+        fn change_owner_auth() -> Vec<u8> {
+            policy_authorized(
+                TPM_CC_HIERARCHY_CHANGE_AUTH,
+                &[TPM_RH_OWNER],
+                &sized(&[0x71; 3]),
+            )
+        }
+
+        #[test]
+        fn a_pre_v4_profile_records_the_name_hash_without_the_attribute() {
+            let runtime = armed_runtime(&owner_name_hash());
+            assert_eq!(
+                runtime.state().profile.state_format_level,
+                1,
+                "the null profile is a pre-v4 profile"
+            );
+            let session = loaded_session(&runtime.live, POLICY_SESSION_FIRST).expect("a session");
+            assert_eq!(session.bound_entity, owner_name_hash());
+            assert_eq!(
+                session.attributes & SESSION_ATTR_IS_NAME_HASH_DEFINED,
+                0,
+                "the attribute does not exist below state format level 4"
+            );
+        }
+
+        #[test]
+        fn a_pre_v4_name_hash_authorizes_a_matching_command() {
+            let mut runtime = armed_runtime(&owner_name_hash());
+            assert_eq!(
+                response_code(&dispatch_bytes(&mut runtime, &change_owner_auth())),
+                RC_SUCCESS,
+                "the untagged name hash still gates the command"
+            );
+        }
+
+        #[test]
+        fn a_pre_v4_name_hash_refuses_a_different_handle_set() {
+            let mut runtime = armed_runtime(&owner_name_hash());
+            let mut public = nv_public(NV_INDEX, 0x0202_0006, 8);
+            public.auth_policy = Vec::new();
+            let mut define = 0u16.to_be_bytes().to_vec();
+            define.extend_from_slice(&crate::library::tpm2::nv::marshal_sized_nv_public(&public));
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut runtime,
+                    &command(0x0000_012a, &[TPM_RH_OWNER], &[&[]], &define),
+                )),
+                RC_SUCCESS,
+                "the index is defined"
+            );
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut runtime,
+                    &policy_authorized(TPM_CC_NV_UNDEFINE_SPACE, &[TPM_RH_OWNER, NV_INDEX], &[]),
+                )),
+                0x99d,
+                "a command whose handle names differ fails the name hash"
+            );
+        }
+
+        #[test]
+        fn a_pre_v4_name_hash_survives_a_volatile_round_trip() {
+            use crate::library::tpm2::clock::RecordingClock;
+            use crate::library::tpm2::volatile::volatile_all_store;
+            use crate::library::tpm2::{
+                attach_volatile_blob_for_test, restore_permanent_blob_for_test,
+            };
+
+            let runtime = armed_runtime(&owner_name_hash());
+            let clock = RecordingClock::new(1_700_000_100_000, 4_000_000);
+            let volatile = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
+            let permanent = crate::library::tpm2::persistent::persistent_all_store(runtime.state())
+                .expect("the permanent state saves");
+            let mut reloaded = restore_permanent_blob_for_test(&permanent).expect("restores");
+            attach_volatile_blob_for_test(&mut reloaded, &volatile).expect("attaches");
+
+            let session = loaded_session(&reloaded.live, POLICY_SESSION_FIRST).expect("a session");
+            assert_eq!(session.bound_entity, owner_name_hash());
+            assert_eq!(session.attributes & SESSION_ATTR_IS_NAME_HASH_DEFINED, 0);
+            assert_eq!(
+                response_code(&dispatch_bytes(&mut reloaded, &change_owner_auth())),
+                RC_SUCCESS,
+                "a restored pre-v4 name hash still authorizes"
+            );
+        }
+
+        #[test]
+        fn a_current_profile_tags_the_name_hash_and_requires_the_tag() {
+            let mut runtime = restored("POLICY_FRESH");
+            assert_eq!(
+                runtime.state().profile.state_format_level,
+                STATE_FORMAT_LEVEL_CURRENT
+            );
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut runtime,
+                    &command(
+                        TPM_CC_POLICY_NAME_HASH,
+                        &[POLICY_SESSION_FIRST],
+                        &[],
+                        &sized(&[0x22; 32])
+                    ),
+                )),
+                RC_SUCCESS
+            );
+            let session = loaded_session(&runtime.live, POLICY_SESSION_FIRST).expect("a session");
+            assert_ne!(
+                session.attributes & SESSION_ATTR_IS_NAME_HASH_DEFINED,
+                0,
+                "state format level 4 and newer tag the name hash"
+            );
+        }
+
+        #[test]
+        fn a_current_profile_has_no_untagged_name_hash_fallback() {
+            let mut runtime = armed_runtime(&owner_name_hash());
+            let state = runtime.state.as_mut().expect("decoded state");
+            state.profile.state_format_level = STATE_FORMAT_LEVEL_CURRENT;
+            assert_eq!(
+                response_code(&dispatch_bytes(&mut runtime, &change_owner_auth())),
+                0x99d,
+                "an untagged shared value is not a name hash at level 4 and newer"
+            );
+        }
+
+        #[test]
+        fn duplication_select_follows_the_same_state_format_contract() {
+            let mut parameters = sized(&[0xa1; 34]);
+            parameters.extend_from_slice(&sized(&[0xb2; 34]));
+            parameters.push(0x01);
+
+            let mut pre_v4 = armed_runtime(&owner_name_hash());
+            let restart = command(0x0000_0180, &[POLICY_SESSION_FIRST], &[], &[]);
+            assert_eq!(
+                response_code(&dispatch_bytes(&mut pre_v4, &restart)),
+                RC_SUCCESS
+            );
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut pre_v4,
+                    &command(0x0000_0188, &[POLICY_SESSION_FIRST], &[], &parameters),
+                )),
+                RC_SUCCESS
+            );
+            let session = loaded_session(&pre_v4.live, POLICY_SESSION_FIRST).expect("a session");
+            assert_eq!(session.bound_entity.len(), 32);
+            assert_eq!(session.attributes & SESSION_ATTR_IS_NAME_HASH_DEFINED, 0);
+
+            let mut current = restored("POLICY_FRESH");
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    &mut current,
+                    &command(0x0000_0188, &[POLICY_SESSION_FIRST], &[], &parameters),
+                )),
+                RC_SUCCESS
+            );
+            assert_ne!(
+                loaded_session(&current.live, POLICY_SESSION_FIRST)
+                    .expect("a session")
+                    .attributes
+                    & SESSION_ATTR_IS_NAME_HASH_DEFINED,
+                0
+            );
+        }
+    }
+
+    mod pin_index_counters {
+        use super::*;
+        use crate::library::tpm2::golden_responses::nv::nv_vector;
+
+        const PIN_PASS_DEFINE: &str = "8002000000300000012a4000000100000009400000090000000000000370696e000e01000040000b0206009200000008";
+        const PIN_PASS_SET_LIMIT: &str = "80020000002b00000137400000010100004000000009400000090000000000000800000000000000020000";
+        const PIN_PASS_OWNER_READ_BEFORE: &str =
+            "8002000000230000014e40000001010000400000000940000009000000000000080000";
+        const PIN_PASS_FIRST_USE: &str =
+            "8002000000260000014e01000040010000400000000c40000009000000000370696e00080000";
+        const PIN_PASS_SECOND_USE: &str =
+            "8002000000260000014e01000040010000400000000c40000009000000000370696e00080000";
+        const PIN_PASS_EXHAUSTED: &str =
+            "8002000000260000014e01000040010000400000000c40000009000000000370696e00080000";
+        const PIN_PASS_OWNER_READ_AFTER: &str =
+            "8002000000230000014e40000001010000400000000940000009000000000000080000";
+        const PIN_FAIL_DEFINE: &str = "8002000000300000012a4000000100000009400000090000000000000370696e000e01000041000b0206008200000008";
+        const PIN_FAIL_SET_LIMIT: &str = "80020000002b00000137400000010100004100000009400000090000000000000800000000000000020000";
+        const PIN_FAIL_BAD_AUTH: &str =
+            "8002000000260000014e01000041010000410000000c40000009000000000362616400080000";
+        const PIN_FAIL_OWNER_READ_AFTER_BAD: &str =
+            "8002000000230000014e40000001010000410000000940000009000000000000080000";
+        const PIN_FAIL_GOOD_AUTH: &str =
+            "8002000000260000014e01000041010000410000000c40000009000000000370696e00080000";
+        const PIN_FAIL_OWNER_READ_AFTER_GOOD: &str =
+            "8002000000230000014e40000001010000410000000940000009000000000000080000";
+
+        #[track_caller]
+        fn pin_runtime() -> Box<Tpm2Runtime> {
+            use crate::library::tpm2::restore_permanent_blob_for_test;
+            let mut runtime = restore_permanent_blob_for_test(nv_vector("PERMALL_BASE"))
+                .expect("the oracle permanent state restores");
+            assert_eq!(
+                response_code_of(&send(&mut runtime, &hex("80010000000c000001440000"))),
+                0,
+                "the oracle state starts up"
+            );
+            runtime.nv_update_pending = false;
+            runtime
+        }
+
+        #[track_caller]
+        fn replay(runtime: &mut Tpm2Runtime, steps: &[(&str, &str)]) {
+            for (command, record) in steps {
+                assert_eq!(send(runtime, &hex(command)), nv_vector(record), "{record}");
+            }
+        }
+
+        #[test]
+        fn a_pin_pass_index_counts_every_authorized_use() {
+            let mut runtime = pin_runtime();
+            replay(
+                &mut runtime,
+                &[
+                    (PIN_PASS_DEFINE, "PIN_PASS_DEFINE"),
+                    (PIN_PASS_SET_LIMIT, "PIN_PASS_SET_LIMIT"),
+                    (PIN_PASS_OWNER_READ_BEFORE, "PIN_PASS_OWNER_READ_BEFORE"),
+                    (PIN_PASS_FIRST_USE, "PIN_PASS_FIRST_USE"),
+                    (PIN_PASS_SECOND_USE, "PIN_PASS_SECOND_USE"),
+                ],
+            );
+        }
+
+        #[test]
+        fn an_exhausted_pin_pass_index_stops_authorizing() {
+            let mut runtime = pin_runtime();
+            replay(
+                &mut runtime,
+                &[
+                    (PIN_PASS_DEFINE, "PIN_PASS_DEFINE"),
+                    (PIN_PASS_SET_LIMIT, "PIN_PASS_SET_LIMIT"),
+                    (PIN_PASS_FIRST_USE, "PIN_PASS_FIRST_USE"),
+                    (PIN_PASS_SECOND_USE, "PIN_PASS_SECOND_USE"),
+                    (PIN_PASS_EXHAUSTED, "PIN_PASS_EXHAUSTED"),
+                    (PIN_PASS_OWNER_READ_AFTER, "PIN_PASS_OWNER_READ_AFTER"),
+                ],
+            );
+            assert_eq!(
+                response_code_of(&send(&mut runtime, &hex(PIN_PASS_EXHAUSTED))),
+                0x12f,
+                "the exhausted index reports an unavailable authorization value"
+            );
+        }
+
+        #[test]
+        fn a_pin_fail_index_counts_failures_and_heals_on_success() {
+            let mut runtime = pin_runtime();
+            replay(
+                &mut runtime,
+                &[
+                    (PIN_FAIL_DEFINE, "PIN_FAIL_DEFINE"),
+                    (PIN_FAIL_SET_LIMIT, "PIN_FAIL_SET_LIMIT"),
+                    (PIN_FAIL_BAD_AUTH, "PIN_FAIL_BAD_AUTH"),
+                    (
+                        PIN_FAIL_OWNER_READ_AFTER_BAD,
+                        "PIN_FAIL_OWNER_READ_AFTER_BAD",
+                    ),
+                    (PIN_FAIL_GOOD_AUTH, "PIN_FAIL_GOOD_AUTH"),
+                    (
+                        PIN_FAIL_OWNER_READ_AFTER_GOOD,
+                        "PIN_FAIL_OWNER_READ_AFTER_GOOD",
+                    ),
+                ],
+            );
+        }
+
+        #[test]
+        fn an_owner_authorized_read_never_touches_the_counter() {
+            let mut runtime = pin_runtime();
+            replay(
+                &mut runtime,
+                &[
+                    (PIN_PASS_DEFINE, "PIN_PASS_DEFINE"),
+                    (PIN_PASS_SET_LIMIT, "PIN_PASS_SET_LIMIT"),
+                ],
+            );
+            for _ in 0..4 {
+                assert_eq!(
+                    send(&mut runtime, &hex(PIN_PASS_OWNER_READ_BEFORE)),
+                    nv_vector("PIN_PASS_OWNER_READ_BEFORE"),
+                    "the owner authorization does not use the index authValue"
+                );
+            }
+        }
+    }
+
     mod transactional {
         use super::*;
         use crate::library::tpm2::failure_mode::FailureLocation;
@@ -1707,6 +2700,47 @@ mod tests {
             );
             assert_same(&observable(&runtime), &before);
             assert!(!runtime.failure_mode, "a returned error is not fatal");
+        }
+
+        #[test]
+        fn a_response_hmac_failure_rolls_back_a_policy_authorized_deletion() {
+            let mut runtime = restored("NVUSS_READY");
+            for assertion in [NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE] {
+                send(&mut runtime, &hex(assertion));
+            }
+            let before = observable(&runtime);
+            let _guard = FaultGuard::arm(ResponseFault::ResponseHmac);
+
+            assert_eq!(
+                response_code(&send(&mut runtime, &hex(NVUSS_CONTINUED))),
+                FAILURE
+            );
+            assert_same(&observable(&runtime), &before);
+            assert!(runtime.removed_session_associations.is_empty());
+            assert!(!runtime.failure_mode, "a returned error is not fatal");
+        }
+
+        #[test]
+        fn a_rolled_back_deletion_restores_the_original_association() {
+            let mut runtime = restored("NVUSS_READY");
+            for assertion in [NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE] {
+                send(&mut runtime, &hex(assertion));
+            }
+            let _guard = FaultGuard::arm(ResponseFault::ResponseHmac);
+            assert_eq!(
+                response_code(&send(&mut runtime, &hex(NVUSS_CONTINUED))),
+                FAILURE
+            );
+            assert_eq!(
+                runtime
+                    .restored_volatile
+                    .as_ref()
+                    .expect("recorded session state")
+                    .session_process
+                    .associated_handles[0],
+                NVUSS_INDEX,
+                "the rolled back command keeps the original association"
+            );
         }
 
         #[test]

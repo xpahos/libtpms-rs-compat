@@ -572,7 +572,14 @@ pub(in crate::library::tpm2) mod replay {
         bytes: Vec<u8>,
     ) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes);
-        process(runtime, locality, &input, clock, |_| Ok(())).expect("the command processes")
+        process(
+            runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(locality),
+            &input,
+            clock,
+            |_| Ok(()),
+        )
+        .expect("the command processes")
     }
 
     #[track_caller]

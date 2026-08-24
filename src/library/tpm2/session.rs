@@ -44,15 +44,10 @@ pub(super) const SESSION_ATTR_IS_DA_BOUND: u32 = 1 << 8;
 pub(super) const SESSION_ATTR_IS_LOCKOUT_BOUND: u32 = 1 << 9;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) const SESSION_ATTR_INCLUDE_AUTH: u32 = 1 << 10;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const SESSION_ATTR_CHECK_NV_WRITTEN: u32 = 1 << 11;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const SESSION_ATTR_NV_WRITTEN_STATE: u32 = 1 << 12;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const SESSION_ATTR_IS_TEMPLATE_HASH_DEFINED: u32 = 1 << 13;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const SESSION_ATTR_IS_NAME_HASH_DEFINED: u32 = 1 << 14;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const SESSION_ATTR_IS_PARAMETERS_HASH_DEFINED: u32 = 1 << 15;
 
 pub(super) const TPM_SE_HMAC: u8 = 0x00;

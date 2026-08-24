@@ -6,8 +6,12 @@ use super::hierarchy::{
     TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
     TPM_RH_PLATFORM_NV, is_hierarchy_auth_handle,
 };
-use super::nv::{index_auth_value, is_nv_index_handle, nv_index_name, resolve_index};
-use super::object_create::{is_object_handle, object_auth_value, resolve_any_object};
+use super::nv::{
+    TPMA_NV_PLATFORMCREATE, index_auth_value, is_nv_index_handle, nv_index_name, resolve_index,
+};
+use super::object_create::{
+    is_object_handle, object_auth_value, object_hierarchy, resolve_any_object,
+};
 use super::pcr::pcr_auth_value_group;
 use super::persistent::OwnedAnyObjectBody;
 use super::runtime::Tpm2Runtime;
@@ -93,6 +97,28 @@ pub(super) fn entity_name(runtime: &Tpm2Runtime, handle: u32) -> Result<Vec<u8>,
         return nv_index_name(&resolved.public);
     }
     Ok(handle.to_be_bytes().to_vec())
+}
+
+pub(super) fn entity_hierarchy(runtime: &Tpm2Runtime, handle: u32) -> Result<u32, TpmResult> {
+    if is_object_handle(handle) {
+        let object = resolve_any_object(runtime, handle).ok_or(TPM_RC_FAILURE)?;
+        return Ok(match &object.body {
+            OwnedAnyObjectBody::Object(body) => object_hierarchy(object.attributes, body),
+            _ => TPM_RH_NULL,
+        });
+    }
+    if is_nv_index_handle(handle) {
+        let resolved = resolve_index(runtime, handle).ok_or(TPM_RC_FAILURE)?;
+        return Ok(if resolved.attributes() & TPMA_NV_PLATFORMCREATE != 0 {
+            TPM_RH_PLATFORM
+        } else {
+            TPM_RH_OWNER
+        });
+    }
+    Ok(match handle {
+        TPM_RH_PLATFORM | TPM_RH_ENDORSEMENT | TPM_RH_NULL => handle,
+        _ => TPM_RH_OWNER,
+    })
 }
 
 pub(super) fn entity_auth_policy(

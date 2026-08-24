@@ -248,7 +248,7 @@ impl Library {
                 drop(state);
                 ProcessPreparation::Tpm2(Tpm2ProcessContext {
                     library: self,
-                    locality: host_locality(&callbacks),
+                    platform: host_platform_inputs(&callbacks),
                 })
             }
             _ => ProcessPreparation::Disabled,
@@ -270,8 +270,31 @@ impl Library {
     }
 
     #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn tpm2_require_physical_presence(&self, code: u32) {
+        let mut state = self.lock_state();
+        let runtime = state
+            .tpm2_runtime
+            .as_deref_mut()
+            .expect("a running TPM 2 runtime");
+        tpm2::require_physical_presence(runtime, code);
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn tpm2_runtime_physical_presence(&self) -> Option<bool> {
+        self.lock_state()
+            .tpm2_runtime
+            .as_ref()
+            .map(|runtime| runtime.physical_presence)
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
     pub(in crate::library) fn stage_empty_state(&self, kind: StateBlobKind) {
         self.lock_state().preloaded_state.set_empty(kind);
+    }
+
+    #[cfg(all(test, feature = "tpm2"))]
+    pub(in crate::library) fn stage_state_data(&self, kind: StateBlobKind, bytes: Vec<u8>) {
+        self.lock_state().preloaded_state.set_data(kind, bytes);
     }
 
     #[cfg(test)]
@@ -684,7 +707,7 @@ pub(crate) enum ProcessPreparation {
 #[cfg(feature = "tpm2")]
 pub(crate) struct Tpm2ProcessContext<'a> {
     library: &'a Library,
-    locality: u8,
+    platform: tpm2::PlatformInputs,
 }
 
 #[cfg(feature = "tpm2")]
@@ -694,7 +717,7 @@ impl Tpm2ProcessContext<'_> {
         let host_nvram = tpm2::HostNvram::new(state.callbacks);
         match state.tpm2_runtime.as_deref_mut() {
             Some(runtime) => {
-                tpm2::process(runtime, self.locality, command, &tpm2::OsClock, |runtime| {
+                tpm2::process(runtime, self.platform, command, &tpm2::OsClock, |runtime| {
                     tpm2::host_nv_commit(&host_nvram, runtime)
                 })
             }
@@ -718,6 +741,26 @@ fn host_locality_raw(callbacks: &LibtpmsCallbacks) -> u32 {
 #[cfg(feature = "tpm2")]
 fn host_locality(callbacks: &LibtpmsCallbacks) -> u8 {
     host_locality_raw(callbacks) as u8
+}
+
+#[cfg(feature = "tpm2")]
+fn host_physical_presence(callbacks: &LibtpmsCallbacks) -> bool {
+    let Some(callback) = callbacks.tpm_io_getphysicalpresence else {
+        return false;
+    };
+    let mut asserted: crate::ffi_types::TpmBool = 0;
+    // SAFETY: the copied callback has the exact C ABI signature, and the
+    // out-pointer references a live local for the duration of the call.
+    let result = unsafe { callback(&mut asserted, 0) };
+    result == crate::library::constants::TPM_SUCCESS && asserted != 0
+}
+
+#[cfg(feature = "tpm2")]
+fn host_platform_inputs(callbacks: &LibtpmsCallbacks) -> tpm2::PlatformInputs {
+    tpm2::PlatformInputs {
+        locality: host_locality(callbacks),
+        physical_presence: host_physical_presence(callbacks),
+    }
 }
 
 impl Default for Library {

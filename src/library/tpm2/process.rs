@@ -7,9 +7,25 @@ use super::command::{self, Response};
 use super::failure_mode::{self, FailureLocation, enter_failure_mode};
 use super::runtime::Tpm2Runtime;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::library) struct PlatformInputs {
+    pub(in crate::library) locality: u8,
+    pub(in crate::library) physical_presence: bool,
+}
+
+impl PlatformInputs {
+    #[cfg(test)]
+    pub(in crate::library) fn at_locality(locality: u8) -> Self {
+        Self {
+            locality,
+            physical_presence: false,
+        }
+    }
+}
+
 pub(in crate::library) fn process(
     runtime: &mut Tpm2Runtime,
-    locality: u8,
+    platform: PlatformInputs,
     command: &CommandInput,
     clock: &dyn HostClock,
     commit_nv: impl FnOnce(&Tpm2Runtime) -> Result<(), TpmResult>,
@@ -20,11 +36,12 @@ pub(in crate::library) fn process(
 
     runtime.cancel.clear();
 
-    runtime.locality = if (5..32).contains(&locality) {
+    runtime.locality = if (5..32).contains(&platform.locality) {
         0
     } else {
-        locality
+        platform.locality
     };
+    runtime.physical_presence = platform.physical_presence;
 
     if runtime.failure_mode {
         return failure_mode::process(runtime, command);
@@ -95,7 +112,13 @@ mod tests {
         command: &CommandInput,
         commit_nv: impl FnOnce(&Tpm2Runtime) -> Result<(), TpmResult>,
     ) -> Result<Vec<u8>, TpmResult> {
-        super::process(runtime, locality, command, &fixed_clock(), commit_nv)
+        super::process(
+            runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(locality),
+            command,
+            &fixed_clock(),
+            commit_nv,
+        )
     }
 
     fn run_process(
@@ -593,6 +616,447 @@ mod tests {
         assert_eq!(response, UNSUPPORTED_RESPONSE);
         assert_eq!(library.tpm2_runtime_locality(), Some(4));
         library.terminate();
+    }
+
+    mod physical_presence {
+        use super::*;
+        use crate::ffi_types::{LibtpmsCallbacks, TpmBool};
+        use crate::library::state_blob::StateBlobKind;
+        use std::sync::Mutex;
+
+        static CALLS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+        unsafe extern "C" fn asserted(pp: *mut TpmBool, tpm_number: u32) -> TpmResult {
+            assert_eq!(tpm_number, 0, "C passes TPM number 0");
+            // SAFETY: the library supplies a live out-pointer.
+            unsafe { *pp = 1 };
+            TPM_SUCCESS
+        }
+
+        unsafe extern "C" fn counted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
+            CALLS.lock().unwrap().push("asserted");
+            // SAFETY: the library supplies a live out-pointer.
+            unsafe { *pp = 1 };
+            TPM_SUCCESS
+        }
+
+        unsafe extern "C" fn not_asserted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
+            // SAFETY: the library supplies a live out-pointer.
+            unsafe { *pp = 0 };
+            TPM_SUCCESS
+        }
+
+        unsafe extern "C" fn failing(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
+            // SAFETY: the library supplies a live out-pointer.
+            unsafe { *pp = 1 };
+            0x0bad_c0de
+        }
+
+        fn started_library(
+            callback: Option<unsafe extern "C" fn(*mut TpmBool, u32) -> TpmResult>,
+        ) -> Library {
+            let library = Library::new();
+            library.register_callbacks(LibtpmsCallbacks {
+                tpm_io_getphysicalpresence: callback,
+                ..LibtpmsCallbacks::empty()
+            });
+            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            library.stage_empty_state(StateBlobKind::Permanent);
+            assert_eq!(library.main_init(), TPM_SUCCESS);
+            library
+        }
+
+        #[track_caller]
+        fn observed(
+            callback: Option<unsafe extern "C" fn(*mut TpmBool, u32) -> TpmResult>,
+        ) -> Option<bool> {
+            let library = started_library(callback);
+            prepared_tpm2(&library).execute(&unknown_command()).unwrap();
+            let observed = library.tpm2_runtime_physical_presence();
+            library.terminate();
+            observed
+        }
+
+        #[test]
+        fn an_asserting_callback_reaches_the_runtime() {
+            assert_eq!(observed(Some(asserted)), Some(true));
+        }
+
+        #[test]
+        fn a_callback_that_reports_no_presence_reaches_the_runtime() {
+            assert_eq!(observed(Some(not_asserted)), Some(false));
+        }
+
+        #[test]
+        fn an_absent_callback_falls_through_to_the_platform_default() {
+            assert_eq!(observed(None), Some(false));
+        }
+
+        #[test]
+        fn a_failing_callback_falls_through_to_the_platform_default() {
+            assert_eq!(
+                observed(Some(failing)),
+                Some(false),
+                "the vendored wrapper only trusts a TPM_SUCCESS result"
+            );
+        }
+
+        #[test]
+        fn the_callback_is_queried_before_the_command_executes() {
+            let mut calls = CALLS.lock().unwrap();
+            calls.clear();
+            drop(calls);
+            let library = started_library(Some(counted));
+            let context = prepared_tpm2(&library);
+            assert_eq!(
+                *CALLS.lock().unwrap(),
+                ["asserted"],
+                "preparation queries the platform outside the library lock"
+            );
+            context.execute(&unknown_command()).unwrap();
+            assert_eq!(*CALLS.lock().unwrap(), ["asserted"]);
+            assert_eq!(library.tpm2_runtime_physical_presence(), Some(true));
+            library.terminate();
+        }
+
+        #[test]
+        fn the_locality_and_the_presence_inputs_stay_separate() {
+            let library = Library::new();
+            library.register_callbacks(LibtpmsCallbacks {
+                tpm_io_getphysicalpresence: Some(asserted),
+                ..LibtpmsCallbacks::empty()
+            });
+            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            library.stage_empty_state(StateBlobKind::Permanent);
+            assert_eq!(library.main_init(), TPM_SUCCESS);
+            prepared_tpm2(&library).execute(&unknown_command()).unwrap();
+            assert_eq!(library.tpm2_runtime_locality(), Some(0));
+            assert_eq!(library.tpm2_runtime_physical_presence(), Some(true));
+            library.terminate();
+        }
+    }
+
+    mod platform_physical_presence {
+        use super::*;
+        use crate::ffi_types::{LibtpmsCallbacks, TpmBool};
+        use crate::library::state_blob::StateBlobKind;
+        use crate::library::tpm2::golden_responses::policy_sessions::vector;
+
+        const TPM_CC_CLEAR_CONTROL: u32 = 0x0000_0127;
+        const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
+        const TPM_RC_PP: u32 = 0x0000_0990;
+        const TPM_RC_BAD_AUTH: u32 = 0x0000_09a2;
+        const PLATFORM: u32 = 0x4000_000c;
+        const LOCKOUT: u32 = 0x4000_000a;
+        const OWNER: u32 = 0x4000_0001;
+
+        unsafe extern "C" fn asserted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
+            // SAFETY: the library supplies a live out-pointer.
+            unsafe { *pp = 1 };
+            TPM_SUCCESS
+        }
+
+        unsafe extern "C" fn not_asserted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
+            // SAFETY: the library supplies a live out-pointer.
+            unsafe { *pp = 0 };
+            TPM_SUCCESS
+        }
+
+        unsafe extern "C" fn failing(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
+            // SAFETY: the library supplies a live out-pointer.
+            unsafe { *pp = 1 };
+            0x0bad_c0de
+        }
+
+        fn restored_library(
+            snapshot: &str,
+            callback: Option<unsafe extern "C" fn(*mut TpmBool, u32) -> TpmResult>,
+        ) -> Library {
+            let library = Library::new();
+            library.register_callbacks(LibtpmsCallbacks {
+                tpm_io_getphysicalpresence: callback,
+                ..LibtpmsCallbacks::empty()
+            });
+            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            library.stage_state_data(
+                StateBlobKind::Permanent,
+                vector(&format!("PERMALL_{snapshot}")).to_vec(),
+            );
+            library.stage_state_data(
+                StateBlobKind::Volatile,
+                vector(&format!("VOLATILE_{snapshot}")).to_vec(),
+            );
+            assert_eq!(library.main_init(), TPM_SUCCESS);
+            library
+        }
+
+        #[track_caller]
+        fn code_of(response: &[u8]) -> u32 {
+            u32::from_be_bytes(response[6..10].try_into().expect("a response code"))
+        }
+
+        fn password_area() -> Vec<u8> {
+            vec![0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]
+        }
+
+        fn clear_control(handle: u32, area: &[u8], disable: u8) -> Vec<u8> {
+            let mut payload = handle.to_be_bytes().to_vec();
+            payload.extend_from_slice(&(area.len() as u32).to_be_bytes());
+            payload.extend_from_slice(area);
+            payload.push(disable);
+            framed(TPM_CC_CLEAR_CONTROL, &payload)
+        }
+
+        fn hierarchy_change_auth(handle: u32) -> Vec<u8> {
+            let area = password_area();
+            let mut payload = handle.to_be_bytes().to_vec();
+            payload.extend_from_slice(&(area.len() as u32).to_be_bytes());
+            payload.extend_from_slice(&area);
+            payload.extend_from_slice(&0u16.to_be_bytes());
+            framed(TPM_CC_HIERARCHY_CHANGE_AUTH, &payload)
+        }
+
+        fn framed(code: u32, payload: &[u8]) -> Vec<u8> {
+            let mut out = 0x8002u16.to_be_bytes().to_vec();
+            out.extend_from_slice(&(10 + payload.len() as u32).to_be_bytes());
+            out.extend_from_slice(&code.to_be_bytes());
+            out.extend_from_slice(payload);
+            out
+        }
+
+        #[track_caller]
+        fn send(library: &Library, bytes: &[u8]) -> Vec<u8> {
+            prepared_tpm2(library)
+                .execute(&input(bytes))
+                .expect("the command executes")
+        }
+
+        #[test]
+        fn a_listed_platform_command_needs_asserted_physical_presence() {
+            let library = restored_library("READY", Some(not_asserted));
+            library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
+            assert_eq!(
+                code_of(&send(
+                    &library,
+                    &clear_control(PLATFORM, &password_area(), 0x00)
+                )),
+                TPM_RC_PP
+            );
+            library.terminate();
+        }
+
+        #[test]
+        fn a_listed_platform_command_passes_once_presence_is_asserted() {
+            let library = restored_library("READY", Some(asserted));
+            library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
+            assert_eq!(
+                code_of(&send(
+                    &library,
+                    &clear_control(PLATFORM, &password_area(), 0x00)
+                )),
+                0
+            );
+            library.terminate();
+        }
+
+        #[test]
+        fn an_absent_or_failing_callback_is_not_asserted() {
+            for callback in [None, Some(failing as unsafe extern "C" fn(_, _) -> _)] {
+                let library = restored_library("READY", callback);
+                library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
+                assert_eq!(
+                    code_of(&send(
+                        &library,
+                        &clear_control(PLATFORM, &password_area(), 0x00)
+                    )),
+                    TPM_RC_PP
+                );
+                library.terminate();
+            }
+        }
+
+        #[test]
+        fn a_command_outside_the_pp_list_is_never_gated() {
+            let library = restored_library("READY", Some(not_asserted));
+            assert_eq!(
+                code_of(&send(
+                    &library,
+                    &clear_control(PLATFORM, &password_area(), 0x00)
+                )),
+                0
+            );
+            library.terminate();
+        }
+
+        #[test]
+        fn only_platform_authorization_is_gated() {
+            let library = restored_library("READY", Some(not_asserted));
+            library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
+            library.tpm2_require_physical_presence(TPM_CC_HIERARCHY_CHANGE_AUTH);
+            assert_eq!(
+                code_of(&send(
+                    &library,
+                    &clear_control(LOCKOUT, &password_area(), 0x01)
+                )),
+                0,
+                "lockout authorization is not platform authorization"
+            );
+            for handle in [OWNER, 0x4000_000b, LOCKOUT] {
+                assert_eq!(
+                    code_of(&send(&library, &hierarchy_change_auth(handle))),
+                    0,
+                    "handle {handle:#x} is not platform authorization"
+                );
+            }
+            library.terminate();
+        }
+
+        #[test]
+        fn an_nv_index_authorization_is_not_platform_authorization() {
+            let library = restored_library("FLOW_NV_WRITTEN", Some(not_asserted));
+            library.tpm2_require_physical_presence(0x0000_014e);
+            let mut payload = 0x0100_0000u32.to_be_bytes().to_vec();
+            payload.extend_from_slice(&0x0100_0000u32.to_be_bytes());
+            let area = password_area();
+            payload.extend_from_slice(&(area.len() as u32).to_be_bytes());
+            payload.extend_from_slice(&area);
+            payload.extend_from_slice(&8u16.to_be_bytes());
+            payload.extend_from_slice(&0u16.to_be_bytes());
+            let response = send(&library, &framed(0x0000_014e, &payload));
+            assert_ne!(
+                code_of(&response),
+                TPM_RC_PP,
+                "an NV index authorization never consults the pp-list"
+            );
+            library.terminate();
+        }
+
+        #[test]
+        fn the_gate_precedes_password_and_hmac_verification() {
+            let library = restored_library("READY", Some(not_asserted));
+            library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
+            let mut wrong_password = password_area();
+            wrong_password[8] = 0x03;
+            wrong_password.extend_from_slice(b"bad");
+            assert_eq!(
+                code_of(&send(
+                    &library,
+                    &clear_control(PLATFORM, &wrong_password, 0x00)
+                )),
+                TPM_RC_PP,
+                "physical presence is checked before the password"
+            );
+
+            let session = {
+                let mut start = 0x8001u16.to_be_bytes().to_vec();
+                let payload = {
+                    let mut out = 0x4000_0007u32.to_be_bytes().to_vec();
+                    out.extend_from_slice(&0x4000_0007u32.to_be_bytes());
+                    out.extend_from_slice(&16u16.to_be_bytes());
+                    out.extend_from_slice(&[0x5a; 16]);
+                    out.extend_from_slice(&0u16.to_be_bytes());
+                    out.push(0x00);
+                    out.extend_from_slice(&[0x00, 0x10]);
+                    out.extend_from_slice(&0x000bu16.to_be_bytes());
+                    out
+                };
+                start.extend_from_slice(&(10 + payload.len() as u32).to_be_bytes());
+                start.extend_from_slice(&0x0000_0176u32.to_be_bytes());
+                start.extend_from_slice(&payload);
+                start
+            };
+            assert_eq!(code_of(&send(&library, &session)), 0, "the session starts");
+
+            let mut hmac_area = 0x0200_0000u32.to_be_bytes().to_vec();
+            hmac_area.extend_from_slice(&16u16.to_be_bytes());
+            hmac_area.extend_from_slice(&[0x5a; 16]);
+            hmac_area.push(0x01);
+            hmac_area.extend_from_slice(&32u16.to_be_bytes());
+            hmac_area.extend_from_slice(&[0x00; 32]);
+            assert_eq!(
+                code_of(&send(&library, &clear_control(PLATFORM, &hmac_area, 0x00))),
+                TPM_RC_PP,
+                "physical presence is checked before the session HMAC"
+            );
+            library.terminate();
+        }
+
+        #[test]
+        fn an_asserted_presence_lets_the_authorization_failure_surface() {
+            let library = restored_library("READY", Some(asserted));
+            library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
+            let mut wrong_password = password_area();
+            wrong_password[8] = 0x03;
+            wrong_password.extend_from_slice(b"bad");
+            assert_eq!(
+                code_of(&send(
+                    &library,
+                    &clear_control(PLATFORM, &wrong_password, 0x00)
+                )),
+                TPM_RC_BAD_AUTH,
+                "the gate no longer masks the password check"
+            );
+            library.terminate();
+        }
+
+        #[test]
+        fn a_physical_presence_policy_is_built_without_presence_and_used_with_it() {
+            const POLICY_PHYSICAL_PRESENCE: u32 = 0x0000_0187;
+            const POLICY_COMMAND_CODE: u32 = 0x0000_016c;
+
+            fn assertions() -> Vec<Vec<u8>> {
+                let mut presence = 0x8001u16.to_be_bytes().to_vec();
+                presence.extend_from_slice(&14u32.to_be_bytes());
+                presence.extend_from_slice(&POLICY_PHYSICAL_PRESENCE.to_be_bytes());
+                presence.extend_from_slice(&0x0300_0000u32.to_be_bytes());
+                let mut code = 0x8001u16.to_be_bytes().to_vec();
+                code.extend_from_slice(&18u32.to_be_bytes());
+                code.extend_from_slice(&POLICY_COMMAND_CODE.to_be_bytes());
+                code.extend_from_slice(&0x0300_0000u32.to_be_bytes());
+                code.extend_from_slice(&0x0000_014eu32.to_be_bytes());
+                vec![presence, code]
+            }
+
+            fn policy_read() -> Vec<u8> {
+                let mut area = 0x0300_0000u32.to_be_bytes().to_vec();
+                area.extend_from_slice(&16u16.to_be_bytes());
+                area.extend_from_slice(&[0x5a; 16]);
+                area.push(0x01);
+                area.extend_from_slice(&0u16.to_be_bytes());
+                let mut payload = 0x0100_0000u32.to_be_bytes().to_vec();
+                payload.extend_from_slice(&0x0100_0000u32.to_be_bytes());
+                payload.extend_from_slice(&(area.len() as u32).to_be_bytes());
+                payload.extend_from_slice(&area);
+                payload.extend_from_slice(&8u16.to_be_bytes());
+                payload.extend_from_slice(&0u16.to_be_bytes());
+                framed(0x0000_014e, &payload)
+            }
+
+            let refused = restored_library("FLOW_PHYSICAL_PRESENCE", Some(not_asserted));
+            for assertion in assertions() {
+                assert_eq!(
+                    code_of(&send(&refused, &assertion)),
+                    0,
+                    "the policy is built without asserted physical presence"
+                );
+            }
+            assert_eq!(
+                send(&refused, &policy_read()),
+                vector("FLOW_NV_READ_PHYSICAL_PRESENCE")
+            );
+            refused.terminate();
+
+            let allowed = restored_library("FLOW_PHYSICAL_PRESENCE", Some(asserted));
+            for assertion in assertions() {
+                assert_eq!(code_of(&send(&allowed, &assertion)), 0);
+            }
+            assert_eq!(
+                code_of(&send(&allowed, &policy_read())),
+                0,
+                "the public callback satisfies the policy"
+            );
+            allowed.terminate();
+        }
     }
 
     mod locality {

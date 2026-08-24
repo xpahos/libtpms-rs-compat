@@ -187,6 +187,20 @@ pub(in crate::library::tpm2) fn enabled_algorithms(
         .map(|entry| entry.algorithm)
 }
 
+pub(in crate::library::tpm2) fn one(
+    profile_algorithms: &[u8],
+    algorithm: u16,
+) -> Option<AlgorithmProperty> {
+    S_ALGORITHMS
+        .iter()
+        .find(|entry| entry.algorithm == algorithm)
+        .filter(|entry| algorithm_enabled(profile_algorithms, entry.profile_name))
+        .map(|entry| AlgorithmProperty {
+            algorithm: entry.algorithm,
+            attributes: entry.attributes,
+        })
+}
+
 pub(in crate::library::tpm2) fn implemented(
     profile_algorithms: &[u8],
     starting_algorithm: u16,

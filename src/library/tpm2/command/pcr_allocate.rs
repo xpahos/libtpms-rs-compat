@@ -217,7 +217,7 @@ mod tests {
     ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
-            locality,
+            crate::library::tpm2::PlatformInputs::at_locality(locality),
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,

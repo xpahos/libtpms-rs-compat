@@ -4,7 +4,9 @@ use super::hierarchy::TPM_RH_NULL;
 use super::marshal::{BlobWriteError, BlobWriter};
 
 pub(super) const TPM_ST_VERIFIED: u16 = 0x8022;
+pub(super) const TPM_ST_AUTH_SECRET: u16 = 0x8023;
 pub(super) const TPM_ST_HASHCHECK: u16 = 0x8024;
+pub(super) const TPM_ST_AUTH_SIGNED: u16 = 0x8025;
 pub(super) const TPM_GENERATED_VALUE: u32 = 0xff54_4347;
 pub(super) const GENERATED_VALUE_SIZE: usize = size_of::<u32>();
 
@@ -58,6 +60,38 @@ pub(super) fn compute_hash_check(
     Some(Ticket {
         tag: TPM_ST_HASHCHECK,
         hierarchy,
+        digest: hmac.finalize(),
+    })
+}
+
+pub(super) struct AuthTicketInput<'a> {
+    pub(super) tag: u16,
+    pub(super) hierarchy: u32,
+    pub(super) timeout: u64,
+    pub(super) expires_on_reset: bool,
+    pub(super) cp_hash: &'a [u8],
+    pub(super) policy_ref: &'a [u8],
+    pub(super) entity_name: &'a [u8],
+    pub(super) time_epoch: u32,
+    pub(super) total_reset_count: u64,
+}
+
+pub(super) fn compute_auth(proof: &[u8], input: &AuthTicketInput<'_>) -> Option<Ticket> {
+    let mut hmac = HmacState::new(CONTEXT_INTEGRITY_HASH_ALG, proof)?;
+    hmac.update(&input.tag.to_be_bytes());
+    hmac.update(input.cp_hash);
+    hmac.update(input.policy_ref);
+    hmac.update(input.entity_name);
+    hmac.update(&input.timeout.to_be_bytes());
+    if input.timeout != 0 {
+        hmac.update(&input.time_epoch.to_be_bytes());
+        if input.expires_on_reset {
+            hmac.update(&input.total_reset_count.to_be_bytes());
+        }
+    }
+    Some(Ticket {
+        tag: input.tag,
+        hierarchy: input.hierarchy,
         digest: hmac.finalize(),
     })
 }

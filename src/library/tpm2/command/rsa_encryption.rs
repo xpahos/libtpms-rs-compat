@@ -1245,7 +1245,7 @@ mod tests {
         ) -> Result<Vec<u8>, TpmResult> {
             crate::library::tpm2::process(
                 runtime,
-                0,
+                crate::library::tpm2::PlatformInputs::at_locality(0),
                 command,
                 &RecordingClock::new(1_600_000_000_000, 5_000_000),
                 |_| panic!("failure mode must not schedule an NV commit"),

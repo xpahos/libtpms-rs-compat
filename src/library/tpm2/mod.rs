@@ -69,7 +69,9 @@ pub(super) use buffer_size::{
 };
 pub(super) use clock::{HostClock, OsClock};
 pub(super) use crypto::{EntropySource, os_entropy};
-pub(super) use process::process;
+#[cfg(test)]
+pub(in crate::library) use pp_list::require_physical_presence;
+pub(super) use process::{PlatformInputs, process};
 pub use runtime::Tpm2Runtime;
 pub(super) use tis::{
     established_reset as tis_established_reset, hash_data as tis_hash_data,
