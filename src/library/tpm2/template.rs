@@ -159,7 +159,7 @@ impl AlgorithmPolicy<'_> {
         Err(TPM_RC_HASH)
     }
 
-    fn sym_object(
+    pub(super) fn sym_object(
         &self,
         reader: &mut TemplateReader<'_>,
         allow_null: bool,

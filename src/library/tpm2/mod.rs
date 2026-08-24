@@ -25,6 +25,7 @@ mod nv;
 mod object;
 mod object_create;
 mod object_load;
+mod object_wrap;
 mod orderly;
 mod pcr;
 mod persistent;

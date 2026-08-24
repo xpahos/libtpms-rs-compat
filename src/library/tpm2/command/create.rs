@@ -6,8 +6,9 @@ use crate::library::constants::{
 use super::super::marshal::BlobWriter;
 use super::super::object::{ATTR_IS_PARENT, ATTR_OCCUPIED};
 use super::super::object_create::{
-    ObjectSecrets, create_object, empty_object_slots, find_empty_object_slot, sensitive_to_private,
+    ObjectSecrets, create_object, empty_object_slots, find_empty_object_slot,
 };
+use super::super::object_wrap::{Protector, sensitive_to_private};
 use super::super::pcr::compute_current_digest;
 use super::super::public::StateFormatLimit;
 use super::super::random::{finish_live_rand, take_live_rand};
@@ -89,8 +90,10 @@ pub(super) fn execute(
         let out_private = sensitive_to_private(
             &created.sensitive,
             &created.name,
-            &body.public,
-            body.sensitive.seed_value.as_bytes(),
+            &Protector {
+                public: &body.public,
+                seed_value: body.sensitive.seed_value.as_bytes(),
+            },
             created.public.name_alg,
             &mut rand,
         )?;
@@ -367,7 +370,7 @@ mod tests {
         assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
     }
 

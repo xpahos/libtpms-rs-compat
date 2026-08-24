@@ -35,6 +35,7 @@ mod nv_read;
 mod nv_undefine_space;
 mod nv_write;
 mod object_change_auth;
+mod object_transfer;
 mod output;
 mod pcr_allocate;
 mod pcr_event;

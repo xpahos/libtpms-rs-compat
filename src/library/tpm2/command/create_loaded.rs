@@ -12,8 +12,9 @@ use super::super::object::{
 use super::super::object_create::{
     ObjectSecrets, PRIMARY_OBJECT_CREATION, ParentSnapshot, create_object, empty_object_slots,
     is_object_handle, is_persistent_object_handle, primary_seed, resolve_any_object,
-    sensitive_to_private, store_created_object, store_loaded_child_object,
+    store_created_object, store_loaded_child_object,
 };
+use super::super::object_wrap::{Protector, sensitive_to_private};
 use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody};
 use super::super::profile::{ATTRIBUTE_DRBG_CONTINUOUS_TEST, ATTRIBUTE_NO_ECC_KEY_DERIVATION};
 use super::super::public::{PublicParms, StateFormatLimit, TPM_ALG_ECC, TPM_ALG_NULL, TPM_ALG_RSA};
@@ -217,8 +218,10 @@ pub(super) fn execute(
                 sensitive_to_private(
                     &created.sensitive,
                     &created.name,
-                    &body.public,
-                    body.sensitive.seed_value.as_bytes(),
+                    &Protector {
+                        public: &body.public,
+                        seed_value: body.sensitive.seed_value.as_bytes(),
+                    },
                     created.public.name_alg,
                     &mut rand,
                 )?
@@ -522,7 +525,7 @@ mod tests {
         assert!(descriptor.sessions_allowed);
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
     }
 
     #[test]

@@ -160,7 +160,7 @@ mod tests {
             assert_eq!(descriptor.attributes, expected, "{record}");
             assert_eq!(descriptor.handles.len(), 1, "{record}");
             assert!(!descriptor.handles[0].user_auth, "{record}");
-            assert!(!descriptor.handles[0].admin_role, "{record}");
+            assert!(!descriptor.handles[0].admin_role(), "{record}");
             assert!(
                 matches!(descriptor.handles[0].kind, HandleKind::PolicySession),
                 "{record}"

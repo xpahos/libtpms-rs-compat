@@ -143,7 +143,7 @@ mod tests {
         let descriptor = find(TPM_CC_NV_UNDEFINE_SPACE).unwrap();
         assert_eq!(descriptor.handles.len(), 2);
         assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
         assert!(!descriptor.handles[1].user_auth);
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Provision));
         assert!(matches!(descriptor.handles[1].kind, HandleKind::NvIndex));
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(special.handles.len(), 2);
         assert!(special.handles[0].user_auth);
         assert!(
-            special.handles[0].admin_role,
+            special.handles[0].admin_role(),
             "the index is authorized with the ADMIN role"
         );
         assert!(special.handles[1].user_auth);

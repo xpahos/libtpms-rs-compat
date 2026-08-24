@@ -605,7 +605,7 @@ mod tests {
         let secret = find(CC_POLICY_SECRET).expect("a registered command");
         assert!(matches!(secret.handles[0].kind, HandleKind::Entity));
         assert!(secret.handles[0].user_auth);
-        assert!(!secret.handles[0].admin_role);
+        assert!(!secret.handles[0].admin_role());
         let signed = find(CC_POLICY_SIGNED).expect("a registered command");
         assert!(matches!(signed.handles[0].kind, HandleKind::Object));
         assert!(!signed.handles[0].user_auth);

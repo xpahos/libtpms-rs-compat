@@ -109,7 +109,7 @@ mod tests {
             !descriptor.handles[0].user_auth,
             "upstream declares no HANDLE_1_USER for TPM2_ReadPublic"
         );
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
     }
 

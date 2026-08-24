@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
         assert!(
-            descriptor.handles[0].admin_role,
+            descriptor.handles[0].admin_role(),
             "the index is authorized with the ADMIN role"
         );
         assert!(matches!(descriptor.handles[0].kind, HandleKind::NvIndex));

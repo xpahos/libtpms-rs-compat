@@ -320,7 +320,7 @@ mod tests {
         let policy_nv = find(CC_POLICY_NV).expect("a registered command");
         assert!(matches!(policy_nv.handles[0].kind, HandleKind::NvAuth));
         assert!(policy_nv.handles[0].user_auth);
-        assert!(!policy_nv.handles[0].admin_role);
+        assert!(!policy_nv.handles[0].admin_role());
         assert!(matches!(policy_nv.handles[1].kind, HandleKind::NvIndex));
         assert!(!policy_nv.handles[1].user_auth);
     }

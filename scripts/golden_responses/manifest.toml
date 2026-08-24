@@ -122,6 +122,17 @@ commands = [
     "TPM2_LoadExternal",
 ]
 
+[families."object-transfer"]
+magic = "OTORACLE"
+scenario = "scripts/golden_responses/scenarios/object_transfer.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/object_transfer.bin"
+reader = "src/library/tpm2/golden_responses/object_transfer.rs"
+commands = [
+    "TPM2_Duplicate",
+    "TPM2_Rewrap",
+    "TPM2_Import",
+]
+
 [families."pcr-event"]
 magic = "PEORACLE"
 scenario = "scripts/golden_responses/scenarios/pcr_event.scenario"
@@ -411,7 +422,8 @@ family = "attestation"
 
 [commands.Duplicate]
 code = 0x0000014b
-status = "todo"
+status = "implemented"
+family = "object-transfer"
 
 [commands.GetTime]
 code = 0x0000014c
@@ -445,7 +457,8 @@ family = "policy-sessions"
 
 [commands.Rewrap]
 code = 0x00000152
-status = "todo"
+status = "implemented"
+family = "object-transfer"
 
 [commands.Create]
 code = 0x00000153
@@ -463,7 +476,8 @@ alias = "MAC"
 
 [commands.Import]
 code = 0x00000156
-status = "todo"
+status = "implemented"
+family = "object-transfer"
 
 [commands.Load]
 code = 0x00000157

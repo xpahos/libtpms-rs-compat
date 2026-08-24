@@ -418,7 +418,7 @@ mod tests {
         let descriptor = find(TPM_CC_SIGN).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
 
         let kind = descriptor.handles[0].kind;

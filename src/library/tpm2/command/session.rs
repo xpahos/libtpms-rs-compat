@@ -343,6 +343,12 @@ fn auth_value_is_available(
 }
 
 fn auth_policy_is_available(runtime: &Tpm2Runtime, handle: u32) -> Result<bool, TpmResult> {
+    if is_object_handle(handle) {
+        let object = resolve_any_object(runtime, handle).ok_or(TPM_RC_FAILURE)?;
+        return Ok(
+            object.attributes & ATTR_PUBLIC_ONLY == 0 && sequence_kind(object.attributes).is_none()
+        );
+    }
     let (_, policy) = entity_auth_policy(runtime, handle)?;
     Ok(!policy.is_empty())
 }
@@ -353,11 +359,13 @@ fn policy_session_is_required(
     index: usize,
     handle: u32,
 ) -> bool {
-    if !descriptor
-        .handles
-        .get(index)
-        .is_some_and(|spec| spec.admin_role)
-    {
+    let Some(spec) = descriptor.handles.get(index) else {
+        return false;
+    };
+    if spec.dup_role() {
+        return true;
+    }
+    if !spec.admin_role() {
         return false;
     }
     if is_object_handle(handle) {
@@ -630,7 +638,7 @@ fn check_policy_session(
     } else if descriptor
         .handles
         .get(index)
-        .is_some_and(|spec| spec.admin_role)
+        .is_some_and(|spec| spec.policy_only_role())
     {
         return Err(TPM_RC_POLICY_FAIL);
     }
@@ -777,7 +785,7 @@ fn check_auth_session(
     let admin_role = descriptor
         .handles
         .get(index)
-        .is_some_and(|spec| spec.admin_role);
+        .is_some_and(|spec| spec.admin_role());
 
     if associated == TPM_RH_PLATFORM
         && physical_presence_is_required(runtime, context.code)

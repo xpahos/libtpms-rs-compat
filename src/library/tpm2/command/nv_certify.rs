@@ -488,7 +488,7 @@ mod tests {
         assert!(descriptor.handles[0].user_auth);
         assert!(descriptor.handles[1].user_auth);
         assert!(!descriptor.handles[2].user_auth);
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role));
+        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
         assert!(matches!(
             descriptor.handles[0].kind,
             HandleKind::ObjectAllowNull

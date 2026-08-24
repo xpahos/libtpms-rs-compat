@@ -149,7 +149,7 @@ mod tests {
         assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
     }
 

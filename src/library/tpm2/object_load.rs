@@ -1,13 +1,12 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{
-    TPM_RC_BINDING, TPM_RC_CURVE, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INTEGRITY,
-    TPM_RC_KEY, TPM_RC_KEY_SIZE, TPM_RC_SCHEME, TPM_RC_SENSITIVE, TPM_RC_SIZE, TPM_RC_TYPE,
-    TPM_RC_VALUE,
+    TPM_RC_BINDING, TPM_RC_CURVE, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY,
+    TPM_RC_KEY_SIZE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TYPE, TPM_RC_VALUE,
 };
 
 use super::crypto::{
-    BigUint, Hasher, HmacState, curve_key_size_bits, curve_parameters, kdfa,
-    recover_rsa_private_exponent, sym_block_size, sym_cfb_decrypt, validate_tdes_key,
+    BigUint, Hasher, HmacState, curve_key_size_bits, curve_parameters,
+    recover_rsa_private_exponent, validate_tdes_key,
 };
 use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use super::object::{
@@ -15,9 +14,9 @@ use super::object::{
     ATTR_PRIVATE_EXP, ATTR_PUBLIC_ONLY, ATTR_SPS_HIERARCHY, ATTR_ST_CLEAR, ATTR_TEMPORARY,
 };
 use super::object_create::{
-    INTEGRITY_KEY_LABEL, STORAGE_KEY_LABEL, compute_qualified_name_from, hash_block_size,
-    owned_prime, parent_kind_attributes, parent_storage_symmetric,
+    compute_qualified_name_from, hash_block_size, owned_prime, parent_kind_attributes,
 };
+use super::object_wrap::Protector;
 use super::persistent::{
     OwnedAnyObjectBody, OwnedObjectBody, OwnedPrivateExponent, OwnedPublicId, OwnedSecret,
     OwnedTpmtPublic, OwnedTpmtSensitive,
@@ -36,7 +35,6 @@ use super::template::{
 };
 use super::volatile::CURRENT_OBJECT_VERSION;
 
-const MAX_SYM_BLOCK_SIZE: usize = 16;
 const RC_FMT1: TpmResult = 0x080;
 const RC_MODIFIER_MASK: TpmResult = 0xf40;
 
@@ -48,11 +46,6 @@ pub(super) fn add_modifier(code: TpmResult, modifier: TpmResult) -> TpmResult {
     } else {
         code
     }
-}
-
-pub(super) struct Protector<'a> {
-    pub(super) public: &'a OwnedTpmtPublic,
-    pub(super) seed_value: &'a [u8],
 }
 
 pub(super) fn read_sensitive_area(
@@ -94,70 +87,6 @@ pub(super) fn read_sized_sensitive_area(
         return Err(TPM_RC_SIZE);
     }
     Ok(Some(sensitive))
-}
-
-pub(super) fn private_to_sensitive(
-    in_private: &[u8],
-    name: &[u8],
-    parent: &Protector<'_>,
-) -> Result<OwnedTpmtSensitive, TpmResult> {
-    let hash_alg = parent.public.name_alg;
-    let digest = digest_size(hash_alg).ok_or(TPM_RC_FAILURE)?;
-    let (sym_alg, key_bits) = parent_storage_symmetric(parent.public)?;
-    let block_size = sym_block_size(sym_alg).ok_or(TPM_RC_FAILURE)?;
-
-    let mut blob = in_private.to_vec();
-    let mut reader = TemplateReader::new(in_private);
-    let integrity = reader.tpm2b(DIGEST_SIZE)?.to_vec();
-    let protected_start = reader.consumed();
-
-    let hmac_key = kdfa(
-        hash_alg,
-        parent.seed_value,
-        INTEGRITY_KEY_LABEL,
-        &[],
-        &[],
-        (digest * 8) as u32,
-    )
-    .ok_or(TPM_RC_FAILURE)?;
-    let mut hmac = HmacState::new(hash_alg, &hmac_key).ok_or(TPM_RC_FAILURE)?;
-    hmac.update(&blob[protected_start..]);
-    hmac.update(name);
-    if !digests_equal(&integrity, &hmac.finalize()) {
-        return Err(TPM_RC_INTEGRITY);
-    }
-
-    let mut iv_reader = TemplateReader::new(&in_private[protected_start..]);
-    let iv = iv_reader.tpm2b(MAX_SYM_BLOCK_SIZE)?.to_vec();
-    if iv.len() != block_size {
-        return Err(TPM_RC_VALUE);
-    }
-    let cipher_start = protected_start + iv_reader.consumed();
-
-    let sym_key = kdfa(
-        hash_alg,
-        parent.seed_value,
-        STORAGE_KEY_LABEL,
-        name,
-        &[],
-        u32::from(key_bits),
-    )
-    .ok_or(TPM_RC_FAILURE)?;
-    sym_cfb_decrypt(sym_alg, &sym_key, &iv, &mut blob[cipher_start..])?;
-
-    let body = blob
-        .get(2 + digest + 2 + block_size..)
-        .ok_or(TPM_RC_SENSITIVE)?;
-    let mut body_reader = TemplateReader::new(body);
-    let declared = usize::from(body_reader.u16().map_err(|_| TPM_RC_SENSITIVE)?);
-    if declared + 2 != body.len() {
-        return Err(TPM_RC_SENSITIVE);
-    }
-    let sensitive = read_sensitive_area(&mut body_reader).map_err(|_| TPM_RC_SENSITIVE)?;
-    if !body_reader.remaining().is_empty() {
-        return Err(TPM_RC_SENSITIVE);
-    }
-    Ok(sensitive)
 }
 
 fn symmetric_unique(
@@ -613,11 +542,23 @@ pub(in crate::library::tpm2) mod replay {
         snapshot: &str,
         clock: &SteppingClock,
     ) -> Box<Tpm2Runtime> {
-        let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
+        runtime_from(
+            vector(&format!("PERMALL_{snapshot}")),
+            vector(&format!("VOLATILE_{snapshot}")),
+            clock,
+        )
+    }
+
+    pub(in crate::library::tpm2) fn runtime_from(
+        permanent: &[u8],
+        volatile: &[u8],
+        clock: &SteppingClock,
+    ) -> Box<Tpm2Runtime> {
+        let mut runtime = restore_permanent_blob_for_test(permanent)
             .expect("the oracle permanent state restores");
         attach_volatile_blob(
             &mut runtime,
-            vector(&format!("VOLATILE_{snapshot}")),
+            volatile,
             clock,
             VolatileDecodeBoundary::Restore,
         )

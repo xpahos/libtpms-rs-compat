@@ -12,7 +12,7 @@ use super::crypto::{
     BigUint, SeededRand, oaep_decode, oaep_encode, rsa_private_key_op, rsa_public_key_op,
     rsaes_decode, rsaes_encode, rsaes_padding_length,
 };
-use super::persistent::OwnedObjectBody;
+use super::persistent::{OwnedObjectBody, OwnedPublicId, OwnedTpmtPublic};
 use super::profile::ValidatedProfile;
 use super::public::PublicParms;
 use super::signature::{rsa_key_parts, rsa_modulus};
@@ -96,12 +96,19 @@ pub(super) fn select_rsa_scheme(
     None
 }
 
+fn public_area_modulus(public: &OwnedTpmtPublic) -> Result<Vec<u8>, TpmResult> {
+    match &public.unique {
+        OwnedPublicId::Rsa(modulus) => Ok(modulus.clone()),
+        _ => Err(TPM_RC_FAILURE),
+    }
+}
+
 fn public_modulus(body: &OwnedObjectBody) -> Result<Vec<u8>, TpmResult> {
     rsa_modulus(body).map(<[u8]>::to_vec).ok_or(TPM_RC_FAILURE)
 }
 
-fn public_exponent(body: &OwnedObjectBody) -> Result<u32, TpmResult> {
-    match &body.public.parameters {
+fn public_area_exponent(public: &OwnedTpmtPublic) -> Result<u32, TpmResult> {
+    match &public.parameters {
         PublicParms::Rsa { exponent, .. } => Ok(*exponent),
         _ => Err(TPM_RC_FAILURE),
     }
@@ -132,14 +139,14 @@ fn draw(rand: &mut SeededRand, length: usize) -> Result<Vec<u8>, TpmResult> {
 }
 
 pub(super) fn crypt_rsa_encrypt(
-    body: &OwnedObjectBody,
+    public: &OwnedTpmtPublic,
     scheme: &RsaDecryptScheme,
     message: &[u8],
     label: &[u8],
     forbids_unpadded: bool,
     rand: &mut SeededRand,
 ) -> Result<Vec<u8>, TpmResult> {
-    let modulus = public_modulus(body)?;
+    let modulus = public_area_modulus(public)?;
     let modulus_len = modulus.len();
     let encoded = match scheme.scheme {
         TPM_ALG_NULL => {
@@ -169,7 +176,7 @@ pub(super) fn crypt_rsa_encrypt(
     };
     let value = BigUint::from_be_bytes(&encoded);
     let modulus = BigUint::from_be_bytes(&modulus);
-    rsa_public_key_op(&modulus, public_exponent(body)?, &value)
+    rsa_public_key_op(&modulus, public_area_exponent(public)?, &value)
         .and_then(|result| result.to_be_bytes(modulus_len))
         .ok_or(TPM_RC_SIZE)
 }
@@ -516,7 +523,7 @@ mod tests {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS[..128]);
         assert_eq!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &requested(TPM_ALG_OAEP, TPM_ALG_SHA512),
                 b"x",
                 b"",
@@ -535,7 +542,7 @@ mod tests {
         assert!(before.is_empty());
         assert_eq!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &requested(TPM_ALG_OAEP, TPM_ALG_SHA256),
                 &[0u8; 191],
                 b"",
@@ -551,7 +558,7 @@ mod tests {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &requested(TPM_ALG_RSAES, TPM_ALG_ERROR),
                 &[0u8; 246],
                 b"",
@@ -562,7 +569,7 @@ mod tests {
         );
         assert!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &requested(TPM_ALG_RSAES, TPM_ALG_ERROR),
                 &[0u8; 245],
                 b"",
@@ -578,7 +585,14 @@ mod tests {
     fn the_unpadded_scheme_follows_the_profile_attribute() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
-            crypt_rsa_encrypt(&key, &RsaDecryptScheme::NULL, b"x", b"", true, &mut rand()),
+            crypt_rsa_encrypt(
+                &key.public,
+                &RsaDecryptScheme::NULL,
+                b"x",
+                b"",
+                true,
+                &mut rand()
+            ),
             Err(TPM_RC_SCHEME)
         );
         let mut ciphertext = TEST_MODULUS;
@@ -589,7 +603,15 @@ mod tests {
         );
         assert!(crypt_rsa_decrypt(&key, &RsaDecryptScheme::NULL, &ciphertext, b"", false).is_ok());
         assert!(
-            crypt_rsa_encrypt(&key, &RsaDecryptScheme::NULL, b"x", b"", false, &mut rand()).is_ok()
+            crypt_rsa_encrypt(
+                &key.public,
+                &RsaDecryptScheme::NULL,
+                b"x",
+                b"",
+                false,
+                &mut rand()
+            )
+            .is_ok()
         );
     }
 
@@ -598,7 +620,7 @@ mod tests {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &RsaDecryptScheme::NULL,
                 &TEST_MODULUS,
                 b"",
@@ -611,7 +633,7 @@ mod tests {
         below[0] -= 1;
         assert!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &RsaDecryptScheme::NULL,
                 &below,
                 b"",
@@ -629,7 +651,7 @@ mod tests {
         padded.extend_from_slice(&TEST_MODULUS[..255]);
         assert!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &RsaDecryptScheme::NULL,
                 &padded,
                 b"",
@@ -643,7 +665,7 @@ mod tests {
         significant.extend_from_slice(&TEST_MODULUS);
         assert_eq!(
             crypt_rsa_encrypt(
-                &key,
+                &key.public,
                 &RsaDecryptScheme::NULL,
                 &significant,
                 b"",
@@ -658,7 +680,8 @@ mod tests {
     fn round_trip(scheme: RsaDecryptScheme, message: &[u8], label: &[u8]) -> Vec<u8> {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         let ciphertext =
-            crypt_rsa_encrypt(&key, &scheme, message, label, false, &mut rand()).expect("encrypts");
+            crypt_rsa_encrypt(&key.public, &scheme, message, label, false, &mut rand())
+                .expect("encrypts");
         assert_eq!(ciphertext.len(), TEST_MODULUS.len());
         ciphertext
     }
@@ -770,7 +793,7 @@ mod tests {
         ] {
             let mut generator = rand();
             let mut reference = rand();
-            crypt_rsa_encrypt(&key, &scheme, b"payload", b"", false, &mut generator)
+            crypt_rsa_encrypt(&key.public, &scheme, b"payload", b"", false, &mut generator)
                 .expect("encrypts");
             if expected > 0 {
                 reference.random_bytes(expected).expect("draws");

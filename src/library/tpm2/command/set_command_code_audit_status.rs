@@ -206,7 +206,7 @@ mod tests {
             CommandLifecycle::RequiresStarted
         ));
         assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth && !descriptor.handles[0].admin_role);
+        assert!(descriptor.handles[0].user_auth && !descriptor.handles[0].admin_role());
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Provision));
     }
 

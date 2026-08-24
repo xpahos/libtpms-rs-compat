@@ -9,10 +9,10 @@ use super::super::marshal::BlobWriter;
 use super::super::object::ATTR_IS_PARENT;
 use super::super::object_create::{empty_object_slots, hierarchy_is_enabled};
 use super::super::object_load::{
-    ParentContext, add_modifier, object_load, private_to_sensitive,
-    public_marshal_and_compute_name, read_sized_sensitive_area, store_child_object,
-    store_external_object,
+    ParentContext, add_modifier, object_load, public_marshal_and_compute_name,
+    read_sized_sensitive_area, store_child_object, store_external_object,
 };
+use super::super::object_wrap::{MAX_PRIVATE, private_to_sensitive};
 use super::super::persistent::OwnedTpmtPublic;
 use super::super::public::StateFormatLimit;
 use super::super::runtime::Tpm2Runtime;
@@ -33,9 +33,7 @@ const RC_IN_PRIVATE: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_IN_PUBLIC: TpmResult = TPM_RC_P + TPM_RC_1 * 2;
 const RC_HIERARCHY: TpmResult = TPM_RC_P + TPM_RC_1 * 3;
 
-const SIZEOF_PRIVATE: usize = 1230;
-
-fn algorithm_policy(runtime: &Tpm2Runtime) -> Result<AlgorithmPolicy<'_>, TpmResult> {
+pub(super) fn algorithm_policy(runtime: &Tpm2Runtime) -> Result<AlgorithmPolicy<'_>, TpmResult> {
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
     Ok(AlgorithmPolicy {
         profile_algorithms: &state.profile.algorithms,
@@ -43,7 +41,7 @@ fn algorithm_policy(runtime: &Tpm2Runtime) -> Result<AlgorithmPolicy<'_>, TpmRes
     })
 }
 
-fn parse_sized_public(
+pub(super) fn parse_sized_public(
     reader: &mut TemplateReader<'_>,
     policy: &AlgorithmPolicy<'_>,
     allow_null_name_alg: bool,
@@ -87,7 +85,7 @@ pub(super) fn execute(
     let policy = algorithm_policy(runtime)?;
     let mut reader = TemplateReader::new(frame.parameters);
     let in_private = reader
-        .tpm2b(SIZEOF_PRIVATE)
+        .tpm2b(MAX_PRIVATE)
         .map_err(|code| add_modifier(code, RC_IN_PRIVATE))?
         .to_vec();
     let public = parse_sized_public(&mut reader, &policy, false)
@@ -234,7 +232,7 @@ mod tests {
         assert!(matches!(load.lifecycle, CommandLifecycle::RequiresStarted));
         assert_eq!(load.handles.len(), 1);
         assert!(load.handles[0].user_auth);
-        assert!(!load.handles[0].admin_role);
+        assert!(!load.handles[0].admin_role());
         assert!(matches!(load.handles[0].kind, HandleKind::Object));
 
         let external =

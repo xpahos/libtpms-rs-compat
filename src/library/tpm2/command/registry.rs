@@ -36,6 +36,7 @@ use super::nv_read;
 use super::nv_undefine_space;
 use super::nv_write;
 use super::object_change_auth;
+use super::object_transfer;
 use super::output::CommandOutput;
 use super::pcr_allocate;
 use super::pcr_event;
@@ -100,13 +101,16 @@ pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
 pub(in crate::library::tpm2) const TPM_CC_CERTIFY: u32 = 0x0000_0148;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_NV: u32 = 0x0000_0149;
 pub(in crate::library::tpm2) const TPM_CC_CERTIFY_CREATION: u32 = 0x0000_014a;
+pub(in crate::library::tpm2) const TPM_CC_DUPLICATE: u32 = 0x0000_014b;
 pub(in crate::library::tpm2) const TPM_CC_GET_TIME: u32 = 0x0000_014c;
 pub(in crate::library::tpm2) const TPM_CC_GET_SESSION_AUDIT_DIGEST: u32 = 0x0000_014d;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ: u32 = 0x0000_014e;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_LOCK: u32 = 0x0000_014f;
 pub(in crate::library::tpm2) const TPM_CC_OBJECT_CHANGE_AUTH: u32 = 0x0000_0150;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_SECRET: u32 = 0x0000_0151;
+pub(in crate::library::tpm2) const TPM_CC_REWRAP: u32 = 0x0000_0152;
 pub(in crate::library::tpm2) const TPM_CC_CREATE: u32 = 0x0000_0153;
+pub(in crate::library::tpm2) const TPM_CC_IMPORT: u32 = 0x0000_0156;
 pub(in crate::library::tpm2) const TPM_CC_LOAD: u32 = 0x0000_0157;
 pub(in crate::library::tpm2) const TPM_CC_QUOTE: u32 = 0x0000_0158;
 pub(in crate::library::tpm2) const TPM_CC_RSA_DECRYPT: u32 = 0x0000_0159;
@@ -154,7 +158,6 @@ pub(in crate::library::tpm2) const TPM_CC_CREATE_LOADED: u32 = 0x0000_0191;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_AUTHORIZE_NV: u32 = 0x0000_0192;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_CAPABILITY: u32 = 0x0000_019b;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_PARAMETERS: u32 = 0x0000_019c;
-pub(in crate::library::tpm2) const TPM_CC_DUPLICATE: u32 = 0x0000_014b;
 
 pub(super) use super::super::hierarchy::TPM_RH_NULL;
 use super::super::hierarchy::{
@@ -272,16 +275,37 @@ impl HandleKind {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum AuthRole {
+    User,
+    Admin,
+    Dup,
+}
+
 pub(super) struct HandleSpec {
     pub(super) kind: HandleKind,
     pub(super) user_auth: bool,
-    pub(super) admin_role: bool,
+    pub(super) role: AuthRole,
+}
+
+impl HandleSpec {
+    pub(super) fn admin_role(&self) -> bool {
+        self.role == AuthRole::Admin
+    }
+
+    pub(super) fn policy_only_role(&self) -> bool {
+        matches!(self.role, AuthRole::Admin | AuthRole::Dup)
+    }
+
+    pub(super) fn dup_role(&self) -> bool {
+        self.role == AuthRole::Dup
+    }
 }
 
 const POLICY_SESSION_HANDLE: HandleSpec = HandleSpec {
     kind: HandleKind::PolicySession,
     user_auth: false,
-    admin_role: false,
+    role: AuthRole::User,
 };
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -317,12 +341,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: true,
-                admin_role: true,
+                role: AuthRole::Admin,
             },
             HandleSpec {
                 kind: HandleKind::Platform,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -340,12 +364,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Provision,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -362,7 +386,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::BaseHierarchy,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -379,12 +403,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Provision,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -401,7 +425,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -417,7 +441,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -433,7 +457,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Clear,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -449,7 +473,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Clear,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -465,7 +489,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::HierarchyAuth,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -481,7 +505,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Provision,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -497,7 +521,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -513,7 +537,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Platform,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -529,7 +553,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::HierarchyAuth,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -545,7 +569,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Hierarchy,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
@@ -561,7 +585,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Provision,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -578,12 +602,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Endorsement,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::ObjectAllowNull,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -601,12 +625,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -624,12 +648,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -647,12 +671,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -670,12 +694,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -693,12 +717,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -715,7 +739,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Lockout,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -731,7 +755,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Lockout,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -747,7 +771,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::NvIndex,
             user_auth: true,
-            admin_role: true,
+            role: AuthRole::Admin,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -763,7 +787,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::PcrAllowNull,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -779,7 +803,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Pcr,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -795,7 +819,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
@@ -811,7 +835,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Provision,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -888,12 +912,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: true,
-                admin_role: true,
+                role: AuthRole::Admin,
             },
             HandleSpec {
                 kind: HandleKind::ObjectAllowNull,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -911,12 +935,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
             POLICY_SESSION_HANDLE,
         ],
@@ -935,12 +959,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::ObjectAllowNull,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -948,6 +972,29 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: certify_creation::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_DUPLICATE,
+        attributes: tpma_cc(TPM_CC_DUPLICATE, false, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: true,
+                role: AuthRole::Dup,
+            },
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: false,
+                role: AuthRole::User,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: object_transfer::execute_duplicate,
     },
     CommandDescriptor {
         code: TPM_CC_GET_TIME,
@@ -958,12 +1005,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Endorsement,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::ObjectAllowNull,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -981,17 +1028,17 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Endorsement,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::ObjectAllowNull,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::HmacSession,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -1009,12 +1056,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -1032,12 +1079,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 0,
@@ -1055,12 +1102,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: true,
-                admin_role: true,
+                role: AuthRole::Admin,
             },
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -1078,7 +1125,7 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Entity,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             POLICY_SESSION_HANDLE,
         ],
@@ -1089,6 +1136,29 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: policy_authorization::execute_secret,
     },
     CommandDescriptor {
+        code: TPM_CC_REWRAP,
+        attributes: tpma_cc(TPM_CC_REWRAP, false, 2),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: true,
+                role: AuthRole::User,
+            },
+            HandleSpec {
+                kind: HandleKind::ObjectAllowNull,
+                user_auth: false,
+                role: AuthRole::User,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: object_transfer::execute_rewrap,
+    },
+    CommandDescriptor {
         code: TPM_CC_CREATE,
         attributes: tpma_cc(TPM_CC_CREATE, false, 1),
         physical_presence: false,
@@ -1096,13 +1166,29 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: create::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_IMPORT,
+        attributes: tpma_cc(TPM_CC_IMPORT, false, 1),
+        physical_presence: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: object_transfer::execute_import,
     },
     CommandDescriptor {
         code: TPM_CC_LOAD,
@@ -1112,7 +1198,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
@@ -1128,7 +1214,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::ObjectAllowNull,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
@@ -1144,7 +1230,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
@@ -1160,7 +1246,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -1176,7 +1262,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -1192,7 +1278,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -1208,7 +1294,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 2,
@@ -1225,7 +1311,7 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
             POLICY_SESSION_HANDLE,
         ],
@@ -1255,7 +1341,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Context,
             user_auth: false,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -1295,7 +1381,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::NvIndex,
             user_auth: false,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 2,
@@ -1419,7 +1505,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: false,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 2,
@@ -1435,7 +1521,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: false,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
@@ -1452,12 +1538,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::ObjectAllowNull,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::EntityAllowNull,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -1474,7 +1560,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Object,
             user_auth: false,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 0,
@@ -1574,7 +1660,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::PcrAllowNull,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 0,
         encrypt_size: 0,
@@ -1591,17 +1677,17 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::ObjectAllowNull,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -1619,12 +1705,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::PcrAllowNull,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::Object,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
         ],
         decrypt_size: 2,
@@ -1725,7 +1811,7 @@ static COMMANDS: &[CommandDescriptor] = &[
         handles: &[HandleSpec {
             kind: HandleKind::Parent,
             user_auth: true,
-            admin_role: false,
+            role: AuthRole::User,
         }],
         decrypt_size: 2,
         encrypt_size: 2,
@@ -1742,12 +1828,12 @@ static COMMANDS: &[CommandDescriptor] = &[
             HandleSpec {
                 kind: HandleKind::NvAuth,
                 user_auth: true,
-                admin_role: false,
+                role: AuthRole::User,
             },
             HandleSpec {
                 kind: HandleKind::NvIndex,
                 user_auth: false,
-                admin_role: false,
+                role: AuthRole::User,
             },
             POLICY_SESSION_HANDLE,
         ],
@@ -1953,13 +2039,16 @@ mod tests {
                 TPM_CC_CERTIFY,
                 TPM_CC_POLICY_NV,
                 TPM_CC_CERTIFY_CREATION,
+                TPM_CC_DUPLICATE,
                 TPM_CC_GET_TIME,
                 TPM_CC_GET_SESSION_AUDIT_DIGEST,
                 TPM_CC_NV_READ,
                 TPM_CC_NV_READ_LOCK,
                 TPM_CC_OBJECT_CHANGE_AUTH,
                 TPM_CC_POLICY_SECRET,
+                TPM_CC_REWRAP,
                 TPM_CC_CREATE,
+                TPM_CC_IMPORT,
                 TPM_CC_LOAD,
                 TPM_CC_QUOTE,
                 TPM_CC_RSA_DECRYPT,
@@ -2079,7 +2168,7 @@ mod tests {
         let descriptor = find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS).unwrap();
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Lockout));
         assert!(descriptor.sessions_allowed);
         assert!(!descriptor.physical_presence);
@@ -2436,7 +2525,7 @@ mod tests {
         assert_eq!(descriptor.code, TPM_CC_PCR_EVENT);
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role);
+        assert!(!descriptor.handles[0].admin_role());
         assert!(matches!(
             descriptor.handles[0].kind,
             HandleKind::PcrAllowNull

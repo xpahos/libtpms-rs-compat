@@ -18,7 +18,9 @@ use super::super::persistent::OwnedSecret;
 use super::super::public::{StateFormatLimit, SymDefObject};
 use super::super::random::generate_random;
 use super::super::runtime::Tpm2Runtime;
-use super::super::secret::{is_asymmetric, rsa_secret_reaches_self_test, secret_decrypt};
+use super::super::secret::{
+    MAX_ENCRYPTED_SECRET, SECRET_LABEL, is_asymmetric, rsa_secret_reaches_self_test, secret_decrypt,
+};
 use super::super::self_test::self_test_rsa_oaep;
 use super::super::session::{
     SESSION_ATTR_IS_BOUND, SESSION_ATTR_IS_DA_BOUND, SESSION_ATTR_IS_LOCKOUT_BOUND,
@@ -43,7 +45,6 @@ const RC_SYMMETRIC: TpmResult = TPM_RC_P + TPM_RC_4;
 const RC_AUTH_HASH: TpmResult = TPM_RC_P + TPM_RC_5;
 
 const MAX_NONCE_SIZE: usize = 64;
-const MAX_ENCRYPTED_SECRET: usize = 384;
 const MIN_NONCE_SIZE: usize = 16;
 
 const HMAC_SESSION_FIRST: u32 = 0x0200_0000;
@@ -149,7 +150,8 @@ fn decrypt_salt(
     {
         self_test_rsa_oaep(runtime)?;
     }
-    secret_decrypt(&body, encrypted_salt).map_err(|_| TPM_RC_VALUE + RC_ENCRYPTED_SALT)
+    secret_decrypt(&body, SECRET_LABEL, encrypted_salt)
+        .map_err(|_| TPM_RC_VALUE + RC_ENCRYPTED_SALT)
 }
 
 fn check_bind(runtime: &Tpm2Runtime, bind: u32) -> Result<(), TpmResult> {
@@ -439,7 +441,7 @@ mod tests {
         ));
         assert_eq!(descriptor.handles.len(), 2);
         assert!(descriptor.handles.iter().all(|spec| !spec.user_auth));
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role));
+        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
         assert!(matches!(
             descriptor.handles[0].kind,
             HandleKind::ObjectAllowNull

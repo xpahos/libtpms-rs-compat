@@ -2,9 +2,8 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_SIZE, TPM_RC_TYPE};
 
 use super::super::marshal::BlobWriter;
-use super::super::object_create::{
-    compute_qualified_name_from, resolve_any_object, sensitive_to_private,
-};
+use super::super::object_create::{compute_qualified_name_from, resolve_any_object};
+use super::super::object_wrap::{Protector, sensitive_to_private};
 use super::super::persistent::{OwnedAnyObjectBody, OwnedSecret};
 use super::super::random::{finish_live_rand, take_live_rand};
 use super::super::runtime::Tpm2Runtime;
@@ -71,8 +70,10 @@ pub(super) fn execute(
     let out_private = sensitive_to_private(
         &sensitive,
         &name,
-        &parent_public,
-        &parent_seed,
+        &Protector {
+            public: &parent_public,
+            seed_value: &parent_seed,
+        },
         name_alg,
         &mut rand,
     );
@@ -107,10 +108,10 @@ mod tests {
         ));
         assert_eq!(descriptor.handles.len(), 2);
         assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.handles[0].admin_role);
+        assert!(descriptor.handles[0].admin_role());
         assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
         assert!(!descriptor.handles[1].user_auth);
-        assert!(!descriptor.handles[1].admin_role);
+        assert!(!descriptor.handles[1].admin_role());
         assert!(matches!(descriptor.handles[1].kind, HandleKind::Object));
     }
 

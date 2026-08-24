@@ -149,7 +149,7 @@ mod tests {
         ));
         assert_eq!(descriptor.handles.len(), 2);
         assert!(descriptor.handles.iter().all(|spec| spec.user_auth));
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role));
+        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
         assert!(matches!(
             descriptor.handles[0].kind,
             HandleKind::Endorsement

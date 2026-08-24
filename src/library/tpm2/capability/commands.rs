@@ -100,6 +100,7 @@ mod tests {
     const TPMA_CC_SET_COMMAND_CODE_AUDIT_STATUS: u32 = 0x0240_0140;
     const TPMA_CC_CERTIFY: u32 = 0x0400_0148;
     const TPMA_CC_CERTIFY_CREATION: u32 = 0x0400_014a;
+    const TPMA_CC_DUPLICATE: u32 = 0x0400_014b;
     const TPMA_CC_GET_TIME: u32 = 0x0400_014c;
     const TPMA_CC_GET_SESSION_AUDIT_DIGEST: u32 = 0x0600_014d;
     const TPMA_CC_QUOTE: u32 = 0x0200_0158;
@@ -117,6 +118,8 @@ mod tests {
     const TPMA_CC_POLICY_PASSWORD: u32 = 0x0200_018c;
     const TPMA_CC_POLICY_NV: u32 = 0x0600_0149;
     const TPMA_CC_POLICY_SECRET: u32 = 0x0400_0151;
+    const TPMA_CC_REWRAP: u32 = 0x0400_0152;
+    const TPMA_CC_IMPORT: u32 = 0x0200_0156;
     const TPMA_CC_POLICY_SIGNED: u32 = 0x0400_0160;
     const TPMA_CC_POLICY_AUTHORIZE: u32 = 0x0200_016a;
     const TPMA_CC_POLICY_COUNTER_TIMER: u32 = 0x0200_016d;
@@ -174,13 +177,16 @@ mod tests {
                 TPMA_CC_CERTIFY,
                 TPMA_CC_POLICY_NV,
                 TPMA_CC_CERTIFY_CREATION,
+                TPMA_CC_DUPLICATE,
                 TPMA_CC_GET_TIME,
                 TPMA_CC_GET_SESSION_AUDIT_DIGEST,
                 TPMA_CC_NV_READ,
                 TPMA_CC_NV_READ_LOCK,
                 TPMA_CC_OBJECT_CHANGE_AUTH,
                 TPMA_CC_POLICY_SECRET,
+                TPMA_CC_REWRAP,
                 TPMA_CC_CREATE,
+                TPMA_CC_IMPORT,
                 TPMA_CC_LOAD,
                 TPMA_CC_QUOTE,
                 TPMA_CC_RSA_DECRYPT,
@@ -240,11 +246,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0120, 1000);
-        assert_eq!(page.entries.len(), 89);
+        assert_eq!(page.entries.len(), 92);
         assert_eq!(page.entries[0], TPMA_CC_EVICT_CONTROL);
 
         let page = implemented(0x0121, 1000);
-        assert_eq!(page.entries.len(), 88);
+        assert_eq!(page.entries.len(), 91);
         assert_eq!(page.entries[0], TPMA_CC_HIERARCHY_CONTROL);
         assert!(!page.entries.contains(&TPMA_CC_EVICT_CONTROL));
     }
@@ -287,11 +293,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0124, 1000);
-        assert_eq!(page.entries.len(), 86);
+        assert_eq!(page.entries.len(), 89);
         assert_eq!(page.entries[0], TPMA_CC_CHANGE_EPS);
 
         let page = implemented(0x0125, 1000);
-        assert_eq!(page.entries.len(), 85);
+        assert_eq!(page.entries.len(), 88);
         assert!(!page.entries.contains(&TPMA_CC_CHANGE_EPS));
     }
 
@@ -302,11 +308,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0129, 1000);
-        assert_eq!(page.entries.len(), 82);
+        assert_eq!(page.entries.len(), 85);
         assert_eq!(page.entries[0], TPMA_CC_HIERARCHY_CHANGE_AUTH);
 
         let page = implemented(0x012a, 1000);
-        assert_eq!(page.entries.len(), 81);
+        assert_eq!(page.entries.len(), 84);
         assert!(!page.entries.contains(&TPMA_CC_HIERARCHY_CHANGE_AUTH));
     }
 
@@ -317,11 +323,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x012b, 1000);
-        assert_eq!(page.entries.len(), 80);
+        assert_eq!(page.entries.len(), 83);
         assert_eq!(page.entries[0], TPMA_CC_PCR_ALLOCATE);
 
         let page = implemented(0x012c, 1000);
-        assert_eq!(page.entries.len(), 79);
+        assert_eq!(page.entries.len(), 82);
         assert!(!page.entries.contains(&TPMA_CC_PCR_ALLOCATE));
     }
 
@@ -332,11 +338,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x0131, 1000);
-        assert_eq!(page.entries.len(), 77);
+        assert_eq!(page.entries.len(), 80);
         assert_eq!(page.entries[0], TPMA_CC_CREATE_PRIMARY);
 
         let page = implemented(0x0132, 1000);
-        assert_eq!(page.entries.len(), 76);
+        assert_eq!(page.entries.len(), 79);
         assert!(!page.entries.contains(&TPMA_CC_CREATE_PRIMARY));
     }
 
@@ -347,11 +353,11 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0x013d, 1000);
-        assert_eq!(page.entries.len(), 65);
+        assert_eq!(page.entries.len(), 68);
         assert_eq!(page.entries[0], TPMA_CC_PCR_RESET);
 
         let page = implemented(0x013e, 1000);
-        assert_eq!(page.entries.len(), 64);
+        assert_eq!(page.entries.len(), 67);
         assert_eq!(page.entries[0], TPMA_CC_SEQUENCE_COMPLETE);
         assert!(!page.entries.contains(&TPMA_CC_PCR_RESET));
     }
@@ -403,8 +409,8 @@ mod tests {
                 TPMA_CC_NV_READ_LOCK,
                 TPMA_CC_OBJECT_CHANGE_AUTH,
                 TPMA_CC_POLICY_SECRET,
-                TPMA_CC_CREATE,
-                TPMA_CC_LOAD
+                TPMA_CC_REWRAP,
+                TPMA_CC_CREATE
             ]
         );
         assert!(page.more_data);
@@ -474,14 +480,14 @@ mod tests {
                 TPMA_CC_CERTIFY,
                 TPMA_CC_POLICY_NV,
                 TPMA_CC_CERTIFY_CREATION,
+                TPMA_CC_DUPLICATE,
                 TPMA_CC_GET_TIME,
                 TPMA_CC_GET_SESSION_AUDIT_DIGEST,
                 TPMA_CC_NV_READ,
                 TPMA_CC_NV_READ_LOCK,
                 TPMA_CC_OBJECT_CHANGE_AUTH,
                 TPMA_CC_POLICY_SECRET,
-                TPMA_CC_CREATE,
-                TPMA_CC_LOAD
+                TPMA_CC_REWRAP
             ]
         );
         assert!(page.more_data);
@@ -649,8 +655,8 @@ mod tests {
 
     #[test]
     fn exact_and_oversized_counts_report_more_data_correctly() {
-        let page = implemented(0, 90);
-        assert_eq!(page.entries.len(), 90);
+        let page = implemented(0, 93);
+        assert_eq!(page.entries.len(), 93);
         assert!(!page.more_data);
 
         let page = implemented(0, 3);
@@ -665,14 +671,14 @@ mod tests {
         assert!(page.more_data);
 
         let page = implemented(0, u32::MAX);
-        assert_eq!(page.entries.len(), 90);
+        assert_eq!(page.entries.len(), 93);
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_counts_have_no_vendor_commands() {
-        assert_eq!(total_count(), 90);
-        assert_eq!(library_count(), 90);
+        assert_eq!(total_count(), 93);
+        assert_eq!(library_count(), 93);
         assert_eq!(vendor_count(), 0);
     }
 

@@ -102,7 +102,7 @@ pub(super) fn execute_encrypt(
     let forbids_unpadded = forbids_unpadded_encryption(runtime)?;
     let mut rand = take_live_rand(runtime)?;
     let outcome = crypt_rsa_encrypt(
-        &key,
+        &key.public,
         &scheme,
         &parameters.data,
         &parameters.label,
@@ -281,7 +281,7 @@ mod tests {
             !encrypt.handles[0].user_auth,
             "encryption uses only the public area"
         );
-        assert!(!encrypt.handles[0].admin_role);
+        assert!(!encrypt.handles[0].admin_role());
         assert!(matches!(encrypt.handles[0].kind, HandleKind::Object));
 
         let decrypt = find(TPM_CC_RSA_DECRYPT).expect("TPM2_RSA_Decrypt is registered");
@@ -297,7 +297,7 @@ mod tests {
         ));
         assert_eq!(decrypt.handles.len(), 1);
         assert!(decrypt.handles[0].user_auth);
-        assert!(!decrypt.handles[0].admin_role);
+        assert!(!decrypt.handles[0].admin_role());
         assert!(matches!(decrypt.handles[0].kind, HandleKind::Object));
     }
 
