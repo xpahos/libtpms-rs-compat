@@ -1703,6 +1703,35 @@ def collect_violations(manifest, facts=None, packer=None):
             if commands.get(name, {}).get("family") != family:
                 violate("coverage", f"lists {command} but [commands.{name}] does not point back", family)
 
+    disabled = parse_reference_disabled()
+    for name, entry in sorted(commands.items()):
+        status = entry.get("status")
+        symbol = f"CC_{name}"
+        code = entry.get("code")
+        if status == "waived":
+            if name not in disabled:
+                violate(
+                    "profile",
+                    f"{name}: waived, but the pinned profile does not set {symbol} to CC_NO",
+                )
+            else:
+                reason = entry.get("reason", "")
+                if not re.search(rf"\b{re.escape(symbol)}\b", reason):
+                    violate("profile", f"{name}: the waiver reason does not name {symbol}")
+                elif not re.search(r"\bCC_NO\b", reason):
+                    violate("profile", f"{name}: the waiver reason does not name CC_NO")
+            if isinstance(code, int) and code in registry:
+                violate(
+                    "profile",
+                    f"{name}: waived, but {code:#06x} is registered as TPM_CC_{registry[code]}",
+                )
+        elif name in disabled:
+            violate(
+                "profile",
+                f"{name}: the pinned profile sets {symbol} to CC_NO, so the manifest must waive "
+                f"it rather than record '{status}'",
+            )
+
     record_counts = {}
     for family, entry in sorted(families.items()):
         reader = ROOT / entry["reader"]
@@ -1765,14 +1794,15 @@ def run_audit(manifest=None, facts=None, quiet=False):
         return 1 if violations else 0
     statuses = [entry.get("status") for entry in commands.values()]
     covered = sum(1 for entry in commands.values() if entry.get("status") == "implemented" and "family" in entry)
-    waived = sum(1 for entry in commands.values() if entry.get("status") == "implemented" and "family" not in entry)
+    module_pinned = sum(1 for entry in commands.values() if entry.get("status") == "implemented" and "family" not in entry)
 
     print(f"upstream commands: {summary['upstream']}")
     print(f"manifest commands: {len(commands)}")
-    print(f"implemented:       {statuses.count('implemented')} ({covered} fixture-covered, {waived} waived)")
+    print(f"implemented:       {statuses.count('implemented')} ({covered} fixture-covered, {module_pinned} module-pinned)")
     print(f"families:          {len(families)} ({summary['records']} records)")
     print(f"reference:         libtpms {expected} @ {summary['libtpms_commit']} (platform {reference.get('docker_platform')})")
-    print(f"INFO: todo (roadmap): {statuses.count('todo')} commands")
+    print(f"waived:            {statuses.count('waived')} (profile-disabled upstream commands)")
+    print(f"roadmap todo: {statuses.count('todo')}")
     if violations:
         print(f"\n{len(violations)} violation(s):", file=sys.stderr)
         render_violations(violations)

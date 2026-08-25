@@ -5,6 +5,7 @@ use super::super::runtime::Tpm2Runtime;
 use super::super::volatile::IMPLEMENTATION_PCR;
 use super::certify;
 use super::certify_creation;
+use super::certify_x509;
 use super::change_eps;
 use super::context;
 use super::create;
@@ -183,6 +184,7 @@ pub(in crate::library::tpm2) const TPM_CC_POLICY_TEMPLATE: u32 = 0x0000_0190;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_LOADED: u32 = 0x0000_0191;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_AUTHORIZE_NV: u32 = 0x0000_0192;
 pub(in crate::library::tpm2) const TPM_CC_ENCRYPT_DECRYPT2: u32 = 0x0000_0193;
+pub(in crate::library::tpm2) const TPM_CC_CERTIFY_X509: u32 = 0x0000_0197;
 pub(in crate::library::tpm2) const TPM_CC_ECC_ENCRYPT: u32 = 0x0000_0199;
 pub(in crate::library::tpm2) const TPM_CC_ECC_DECRYPT: u32 = 0x0000_019a;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_CAPABILITY: u32 = 0x0000_019b;
@@ -2259,6 +2261,30 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: encrypt_decrypt::execute_two,
     },
     CommandDescriptor {
+        code: TPM_CC_CERTIFY_X509,
+        attributes: tpma_cc(TPM_CC_CERTIFY_X509, false, 2),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: true,
+                role: AuthRole::Admin,
+            },
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: true,
+                role: AuthRole::User,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: certify_x509::execute,
+    },
+    CommandDescriptor {
         code: TPM_CC_ECC_ENCRYPT,
         attributes: tpma_cc(TPM_CC_ECC_ENCRYPT, false, 1),
         physical_presence: false,
@@ -2563,6 +2589,7 @@ mod tests {
                 TPM_CC_CREATE_LOADED,
                 TPM_CC_POLICY_AUTHORIZE_NV,
                 TPM_CC_ENCRYPT_DECRYPT2,
+                TPM_CC_CERTIFY_X509,
                 TPM_CC_ECC_ENCRYPT,
                 TPM_CC_ECC_DECRYPT,
                 TPM_CC_POLICY_CAPABILITY,

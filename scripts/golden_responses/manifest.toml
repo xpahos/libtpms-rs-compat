@@ -16,6 +16,13 @@ commands = [
     "TPM2_Quote",
 ]
 
+[families."certify-x509"]
+magic = "CXORACLE"
+scenario = "scripts/golden_responses/scenarios/certify_x509.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/certify_x509.bin"
+reader = "src/library/tpm2/golden_responses/certify_x509.rs"
+commands = ["TPM2_CertifyX509"]
+
 [families."create"]
 magic = "CRORACLE"
 scenario = "scripts/golden_responses/scenarios/create.scenario"
@@ -53,6 +60,24 @@ scenario = "scripts/golden_responses/scenarios/dictionary_attack.scenario"
 fixture = "src/library/tpm2/testdata/golden_responses/dictionary_attack.bin"
 reader = "src/library/tpm2/golden_responses/dictionary_attack.rs"
 commands = ["TPM2_DictionaryAttackParameters"]
+
+[families."disabled-commands"]
+magic = "DCORACLE"
+scenario = "scripts/golden_responses/scenarios/disabled_commands.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/disabled_commands.bin"
+reader = "src/library/tpm2/golden_responses/disabled_commands.rs"
+commands = [
+    "TPM2_FieldUpgradeStart",
+    "TPM2_FieldUpgradeData",
+    "TPM2_FirmwareRead",
+    "TPM2_AC_GetCapability",
+    "TPM2_AC_Send",
+    "TPM2_Policy_AC_SendSelect",
+    "TPM2_NV_DefineSpace2",
+    "TPM2_NV_ReadPublic2",
+    "TPM2_SetCapability",
+    "TPM2_Vendor_TCG_Test",
+]
 
 [families."ecc-commands"]
 magic = "EAORACLE"
@@ -354,7 +379,9 @@ family = "hierarchy-management"
 
 [commands.FieldUpgradeStart]
 code = 0x0000012f
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_FieldUpgradeStart to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.ClockRateAdjust]
 code = 0x00000130
@@ -443,7 +470,9 @@ family = "attestation"
 
 [commands.FieldUpgradeData]
 code = 0x00000141
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_FieldUpgradeData to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.IncrementalSelfTest]
 code = 0x00000142
@@ -704,7 +733,9 @@ family = "ecc-commands"
 
 [commands.FirmwareRead]
 code = 0x00000179
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_FirmwareRead to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.GetCapability]
 code = 0x0000017a
@@ -838,19 +869,26 @@ family = "encrypt-decrypt"
 
 [commands.AC_GetCapability]
 code = 0x00000194
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_AC_GetCapability to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.AC_Send]
 code = 0x00000195
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_AC_Send to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.Policy_AC_SendSelect]
 code = 0x00000196
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_Policy_AC_SendSelect to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.CertifyX509]
 code = 0x00000197
-status = "todo"
+status = "implemented"
+family = "certify-x509"
 
 [commands.ACT_SetTimeout]
 code = 0x00000198
@@ -880,16 +918,24 @@ family = "policy-sessions"
 
 [commands.NV_DefineSpace2]
 code = 0x0000019d
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_NV_DefineSpace2 to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.NV_ReadPublic2]
 code = 0x0000019e
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_NV_ReadPublic2 to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.SetCapability]
 code = 0x0000019f
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_SetCapability to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."
 
 [commands.Vendor_TCG_Test]
 code = 0x20000000
-status = "todo"
+status = "waived"
+family = "disabled-commands"
+reason = "The pinned libtpms v0.10.2 profile sets CC_Vendor_TCG_Test to CC_NO, so the command is absent and requests return TPM_RC_COMMAND_CODE."

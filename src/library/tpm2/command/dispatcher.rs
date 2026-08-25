@@ -359,8 +359,25 @@ mod tests {
     }
 
     #[test]
-    fn known_but_unimplemented_command_answers_command_code() {
-        assert_eq!(dispatch_code(0x0000_0197).code(), TPM_RC_COMMAND_CODE);
+    fn a_command_the_reference_profile_disables_answers_command_code() {
+        for code in [
+            0x0000_012f,
+            0x0000_0141,
+            0x0000_0179,
+            0x0000_0194,
+            0x0000_0195,
+            0x0000_0196,
+            0x0000_019d,
+            0x0000_019e,
+            0x0000_019f,
+            0x2000_0000,
+        ] {
+            assert_eq!(
+                dispatch_code(code).code(),
+                TPM_RC_COMMAND_CODE,
+                "code {code:#010x}"
+            );
+        }
     }
 
     #[test]
@@ -398,6 +415,49 @@ mod tests {
     }
 
     #[test]
+    fn every_profile_disabled_command_matches_the_oracle() {
+        use super::super::attest::harness::{ready_runtime, run};
+        use crate::library::tpm2::golden_responses::disabled_commands::vector;
+
+        let mut runtime = ready_runtime();
+        for (label, code) in [
+            ("FIELD_UPGRADE_START", 0x0000_012fu32),
+            ("FIELD_UPGRADE_DATA", 0x0000_0141),
+            ("FIRMWARE_READ", 0x0000_0179),
+            ("AC_GET_CAPABILITY", 0x0000_0194),
+            ("AC_SEND", 0x0000_0195),
+            ("POLICY_AC_SEND_SELECT", 0x0000_0196),
+            ("NV_DEFINE_SPACE2", 0x0000_019d),
+            ("NV_READ_PUBLIC2", 0x0000_019e),
+            ("SET_CAPABILITY", 0x0000_019f),
+            ("VENDOR_TCG_TEST", 0x2000_0000),
+        ] {
+            assert!(
+                registry::find(code).is_none(),
+                "{label} stays out of the registry"
+            );
+            assert_eq!(
+                run(&mut runtime, &framed(0x8001, code, &[])),
+                vector(&format!("DC_{label}")),
+                "{label}"
+            );
+            let mut sessions = 0x4000_0001u32.to_be_bytes().to_vec();
+            sessions.extend_from_slice(&9u32.to_be_bytes());
+            sessions.extend_from_slice(&[0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]);
+            assert_eq!(
+                run(&mut runtime, &framed(0x8002, code, &sessions)),
+                vector(&format!("DC_{label}_SESSIONS")),
+                "{label} with sessions is refused at dispatch"
+            );
+            assert_eq!(
+                run(&mut runtime, &framed(0x8001, code, &[0xff; 8])),
+                vector(&format!("DC_{label}_MALFORMED")),
+                "{label} with a malformed body is refused at dispatch"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_response_serializes_like_c() {
         let response = dispatch_code(0x2000_0000);
         assert_eq!(
@@ -410,7 +470,7 @@ mod tests {
     fn unsupported_commands_do_not_mutate_the_runtime() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
-        for code in [0x2000_0000, 0x0000_0197, 0xffff_ffff, 0x0000_0000] {
+        for code in [0x2000_0000, 0x0000_019f, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
             let response = dispatch(&mut runtime, &parsed);
@@ -426,7 +486,7 @@ mod tests {
 
     #[test]
     fn session_tagged_commands_take_the_same_path() {
-        let bytes = framed(0x8002, 0x0000_0197, &[0x00; 4]);
+        let bytes = framed(0x8002, 0x0000_019f, &[0x00; 4]);
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         let mut runtime = empty_state_runtime();

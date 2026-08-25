@@ -1,6 +1,7 @@
 mod attest;
 mod certify;
 mod certify_creation;
+mod certify_x509;
 mod change_eps;
 mod command_audit;
 mod context;

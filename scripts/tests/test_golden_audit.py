@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import hashlib
 import os
 import importlib.util
@@ -2926,6 +2927,166 @@ class GoldenStaleMigrationTest(unittest.TestCase):
     def test_stale_families_are_detected_exactly(self):
         self.assertEqual(golden.stale_fixture_families(self.stale_manifest()), {"nv-certify"})
         self.assertEqual(golden.stale_fixture_families(golden.load_manifest()), set())
+
+
+class CommittedManifestCoverageTest(unittest.TestCase):
+    def setUp(self):
+        self.manifest = golden.load_manifest()
+        self.commands = self.manifest["commands"]
+
+    def test_every_upstream_command_is_resolved(self):
+        upstream = dict(golden.parse_upstream())
+        self.assertEqual(len(self.commands), len(upstream))
+        self.assertEqual(
+            sorted(entry["code"] for entry in self.commands.values()),
+            sorted(upstream.values()),
+        )
+
+    def test_no_command_is_still_on_the_roadmap(self):
+        pending = [
+            name
+            for name, entry in self.commands.items()
+            if entry.get("status") == "todo"
+        ]
+        self.assertEqual(pending, [])
+
+    def test_every_profile_disabled_command_is_waived_with_its_own_reason(self):
+        disabled = {
+            "FieldUpgradeStart": "CC_FieldUpgradeStart",
+            "FieldUpgradeData": "CC_FieldUpgradeData",
+            "FirmwareRead": "CC_FirmwareRead",
+            "AC_GetCapability": "CC_AC_GetCapability",
+            "AC_Send": "CC_AC_Send",
+            "Policy_AC_SendSelect": "CC_Policy_AC_SendSelect",
+            "NV_DefineSpace2": "CC_NV_DefineSpace2",
+            "NV_ReadPublic2": "CC_NV_ReadPublic2",
+            "SetCapability": "CC_SetCapability",
+            "Vendor_TCG_Test": "CC_Vendor_TCG_Test",
+        }
+        reasons = set()
+        for name, symbol in disabled.items():
+            entry = self.commands[name]
+            self.assertEqual(entry.get("status"), "waived", name)
+            self.assertEqual(entry.get("family"), "disabled-commands", name)
+            reason = entry.get("reason", "")
+            self.assertIn(symbol + " to CC_NO", reason, name)
+            reasons.add(reason)
+        self.assertEqual(len(reasons), len(disabled), "each reason names its own symbol")
+
+    def test_the_waived_set_equals_the_profile_disabled_set(self):
+        waived = {
+            name
+            for name, entry in self.commands.items()
+            if entry.get("status") == "waived"
+        }
+        self.assertEqual(waived, golden.parse_reference_disabled())
+        self.assertIn("ACT_SetTimeout", waived)
+        self.assertEqual(len(waived), 11)
+
+    def test_certify_x509_is_implemented_and_covered(self):
+        entry = self.commands["CertifyX509"]
+        self.assertEqual(entry["code"], 0x0000_0197)
+        self.assertEqual(entry.get("status"), "implemented")
+        self.assertEqual(entry.get("family"), "certify-x509")
+        family = self.manifest["families"]["certify-x509"]
+        self.assertEqual(family["commands"], ["TPM2_CertifyX509"])
+
+
+class ProfileWaiverAuditTest(unittest.TestCase):
+    """The read-only audit itself, not just a manifest reader, enforces the
+    profile-waiver invariant."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.committed = golden.load_manifest()
+        cls.facts = golden.collect_facts(cls.committed)
+        cls.packer = golden.load_packer()
+
+    def manifest(self):
+        return copy.deepcopy(self.committed)
+
+    def violations(self, manifest, registry=None):
+        original = golden.parse_registry
+        if registry is not None:
+            golden.parse_registry = lambda: registry
+        try:
+            found, _summary = golden.collect_violations(manifest, self.facts, self.packer)
+        finally:
+            golden.parse_registry = original
+        return [violation.render() for violation in found]
+
+    def assert_rejects(self, manifest, substring, registry=None):
+        self.assertEqual(self.violations(self.manifest()), [])
+        rendered = self.violations(manifest, registry)
+        self.assertTrue(
+            any(substring in violation for violation in rendered),
+            f"{substring!r} not found in {rendered!r}",
+        )
+
+    def test_the_committed_manifest_passes_the_audit(self):
+        self.assertEqual(self.violations(self.manifest()), [])
+
+    def test_an_enabled_command_may_not_be_waived(self):
+        manifest = self.manifest()
+        manifest["commands"]["CertifyX509"] = {
+            "code": 0x0000_0197,
+            "status": "waived",
+            "family": "certify-x509",
+            "reason": "CC_CertifyX509 is CC_NO",
+        }
+        self.assert_rejects(
+            manifest,
+            "CertifyX509: waived, but the pinned profile does not set CC_CertifyX509 to CC_NO",
+        )
+
+    def test_a_profile_disabled_command_may_not_be_implemented(self):
+        manifest = self.manifest()
+        manifest["commands"]["SetCapability"]["status"] = "implemented"
+        self.assert_rejects(
+            manifest,
+            "SetCapability: the pinned profile sets CC_SetCapability to CC_NO",
+        )
+
+    def test_a_profile_disabled_command_may_not_be_todo(self):
+        manifest = self.manifest()
+        entry = manifest["commands"]["FirmwareRead"]
+        entry["status"] = "todo"
+        entry.pop("reason", None)
+        entry.pop("family", None)
+        self.assert_rejects(
+            manifest,
+            "FirmwareRead: the pinned profile sets CC_FirmwareRead to CC_NO",
+        )
+
+    def test_a_waiver_reason_must_name_its_own_symbol(self):
+        manifest = self.manifest()
+        manifest["commands"]["AC_Send"]["reason"] = (
+            "The pinned libtpms v0.10.2 profile sets CC_AC_GetCapability to CC_NO."
+        )
+        self.assert_rejects(manifest, "AC_Send: the waiver reason does not name CC_AC_Send")
+
+    def test_a_waiver_reason_must_name_cc_no(self):
+        manifest = self.manifest()
+        manifest["commands"]["NV_ReadPublic2"]["reason"] = (
+            "The pinned libtpms v0.10.2 profile leaves CC_NV_ReadPublic2 out."
+        )
+        self.assert_rejects(
+            manifest, "NV_ReadPublic2: the waiver reason does not name CC_NO"
+        )
+
+    def test_a_waived_command_may_not_be_registered(self):
+        registry = dict(golden.parse_registry())
+        registry[0x0000_019F] = "SET_CAPABILITY"
+        self.assert_rejects(
+            self.manifest(),
+            "SetCapability: waived, but 0x019f is registered as TPM_CC_SET_CAPABILITY",
+            registry=registry,
+        )
+
+    def test_a_waived_command_still_needs_a_reason(self):
+        manifest = self.manifest()
+        manifest["commands"]["AC_GetCapability"].pop("reason")
+        self.assert_rejects(manifest, "AC_GetCapability: waived without a reason")
 
 
 if __name__ == "__main__":

@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn an_upstream_only_command_appears_in_the_command_list_digest() {
+    fn the_x509_certification_command_appears_in_the_command_list_digest() {
         let mut runtime = audit_runtime();
         run_ok(
             &mut runtime,

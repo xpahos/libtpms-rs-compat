@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_the_registry_does_not_implement_is_still_audited_upstream() {
+    fn the_x509_certification_command_joins_the_audit_bitmap() {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(
@@ -405,8 +405,8 @@ mod tests {
             "TPM2_CertifyX509 is enabled by the profile",
         );
         assert!(
-            find(0x0000_0197).is_none(),
-            "the registry does not implement TPM2_CertifyX509"
+            find(0x0000_0197).is_some(),
+            "the registry implements TPM2_CertifyX509"
         );
         let bitmap = audit_bitmap(&runtime).expect("the bitmap reads");
         let index = command_index(0x0000_0197).expect("an upstream command index");
