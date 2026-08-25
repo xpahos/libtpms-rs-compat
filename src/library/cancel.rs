@@ -23,10 +23,9 @@ impl CancelSignal {
     }
 
     // TODO: Poll this from the ECC self-test checkpoints
-    // (AlgorithmTests.c CHECK_CANCELED in TestEccSignAndVerify), from
-    // CryptEccCommitCompute and from RSA key generation once those paths
-    // exist. No command implemented so far reaches an upstream checkpoint.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // (AlgorithmTests.c CHECK_CANCELED in TestEccSignAndVerify) and from RSA
+    // key generation once those paths exist. TPM2_Commit already polls both
+    // CryptEccCommitCompute checkpoints.
     pub(in crate::library) fn is_signaled(&self) -> bool {
         let word = self.state.load(Ordering::Relaxed);
         word & GENERATION_MASK == self.generation && word & REQUESTED != 0

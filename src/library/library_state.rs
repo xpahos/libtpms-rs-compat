@@ -4524,6 +4524,8 @@ mod tests {
     #[cfg(feature = "tpm2")]
     const TPM_ALG_AES: u16 = 0x0006;
     #[cfg(feature = "tpm2")]
+    const TPM_ALG_ECDH: u16 = 0x0019;
+    #[cfg(feature = "tpm2")]
     const TPM_ALG_SHA384: u16 = 0x000c;
     #[cfg(feature = "tpm2")]
     const TPM_ALG_SHA512: u16 = 0x000d;
@@ -4600,11 +4602,17 @@ mod tests {
         assert_eq!(
             response_code(&response),
             0,
-            "no Rust primitive reaches an upstream cancellation checkpoint"
+            "TPM2_IncrementalSelfTest reaches no upstream cancellation checkpoint"
         );
         assert_eq!(
             library.pending_self_test_algorithms(),
-            [TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP],
+            [
+                TPM_ALG_AES,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
+            ],
             "both selected primitives ran to completion"
         );
         assert!(

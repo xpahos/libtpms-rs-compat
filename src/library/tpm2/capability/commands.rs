@@ -159,6 +159,14 @@ mod tests {
     const TPMA_CC_POLICY_CAPABILITY: u32 = 0x0200_019b;
     const TPMA_CC_POLICY_PARAMETERS: u32 = 0x0200_019c;
     const TPMA_CC_HMAC: u32 = 0x0200_0155;
+    const TPMA_CC_ECDH_ZGEN: u32 = 0x0200_0154;
+    const TPMA_CC_ECDH_KEY_GEN: u32 = 0x0200_0163;
+    const TPMA_CC_ECC_PARAMETERS: u32 = 0x0000_0178;
+    const TPMA_CC_COMMIT: u32 = 0x0200_018b;
+    const TPMA_CC_ZGEN_2_PHASE: u32 = 0x0200_018d;
+    const TPMA_CC_EC_EPHEMERAL: u32 = 0x0000_018e;
+    const TPMA_CC_ECC_ENCRYPT: u32 = 0x0200_0199;
+    const TPMA_CC_ECC_DECRYPT: u32 = 0x0200_019a;
     const TPMA_CC_ENCRYPT_DECRYPT: u32 = 0x0200_0164;
     const TPMA_CC_TEST_PARMS: u32 = 0x0000_018a;
     const TPMA_CC_ENCRYPT_DECRYPT2: u32 = 0x0200_0193;
@@ -224,6 +232,7 @@ mod tests {
                 TPMA_CC_POLICY_SECRET,
                 TPMA_CC_REWRAP,
                 TPMA_CC_CREATE,
+                TPMA_CC_ECDH_ZGEN,
                 TPMA_CC_HMAC,
                 TPMA_CC_IMPORT,
                 TPMA_CC_LOAD,
@@ -236,6 +245,7 @@ mod tests {
                 TPMA_CC_POLICY_SIGNED,
                 TPMA_CC_CONTEXT_LOAD,
                 TPMA_CC_CONTEXT_SAVE,
+                TPMA_CC_ECDH_KEY_GEN,
                 TPMA_CC_ENCRYPT_DECRYPT,
                 TPMA_CC_FLUSH_CONTEXT,
                 TPMA_CC_LOAD_EXTERNAL,
@@ -253,6 +263,7 @@ mod tests {
                 TPMA_CC_RSA_ENCRYPT,
                 TPMA_CC_START_AUTH_SESSION,
                 TPMA_CC_VERIFY_SIGNATURE,
+                TPMA_CC_ECC_PARAMETERS,
                 TPMA_CC_GET_CAPABILITY,
                 TPMA_CC_GET_RANDOM,
                 TPMA_CC_GET_TEST_RESULT,
@@ -270,12 +281,17 @@ mod tests {
                 TPMA_CC_POLICY_DUPLICATION_SELECT,
                 TPMA_CC_POLICY_GET_DIGEST,
                 TPMA_CC_TEST_PARMS,
+                TPMA_CC_COMMIT,
                 TPMA_CC_POLICY_PASSWORD,
+                TPMA_CC_ZGEN_2_PHASE,
+                TPMA_CC_EC_EPHEMERAL,
                 TPMA_CC_POLICY_NV_WRITTEN,
                 TPMA_CC_POLICY_TEMPLATE,
                 TPMA_CC_CREATE_LOADED,
                 TPMA_CC_POLICY_AUTHORIZE_NV,
                 TPMA_CC_ENCRYPT_DECRYPT2,
+                TPMA_CC_ECC_ENCRYPT,
+                TPMA_CC_ECC_DECRYPT,
                 TPMA_CC_POLICY_CAPABILITY,
                 TPMA_CC_POLICY_PARAMETERS
             ]
@@ -663,13 +679,13 @@ mod tests {
                 TPMA_CC_POLICY_DUPLICATION_SELECT,
                 TPMA_CC_POLICY_GET_DIGEST,
                 TPMA_CC_TEST_PARMS,
+                TPMA_CC_COMMIT,
                 TPMA_CC_POLICY_PASSWORD,
+                TPMA_CC_ZGEN_2_PHASE,
+                TPMA_CC_EC_EPHEMERAL,
                 TPMA_CC_POLICY_NV_WRITTEN,
                 TPMA_CC_POLICY_TEMPLATE,
-                TPMA_CC_CREATE_LOADED,
-                TPMA_CC_POLICY_AUTHORIZE_NV,
-                TPMA_CC_ENCRYPT_DECRYPT2,
-                TPMA_CC_POLICY_CAPABILITY
+                TPMA_CC_CREATE_LOADED
             ]
         );
         assert!(page.more_data);
@@ -688,13 +704,13 @@ mod tests {
                 TPMA_CC_POLICY_DUPLICATION_SELECT,
                 TPMA_CC_POLICY_GET_DIGEST,
                 TPMA_CC_TEST_PARMS,
+                TPMA_CC_COMMIT,
                 TPMA_CC_POLICY_PASSWORD,
+                TPMA_CC_ZGEN_2_PHASE,
+                TPMA_CC_EC_EPHEMERAL,
                 TPMA_CC_POLICY_NV_WRITTEN,
                 TPMA_CC_POLICY_TEMPLATE,
-                TPMA_CC_CREATE_LOADED,
-                TPMA_CC_POLICY_AUTHORIZE_NV,
-                TPMA_CC_ENCRYPT_DECRYPT2,
-                TPMA_CC_POLICY_CAPABILITY
+                TPMA_CC_CREATE_LOADED
             ]
         );
         assert!(page.more_data);

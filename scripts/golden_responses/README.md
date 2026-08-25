@@ -477,13 +477,146 @@ use that to show the adjustment rate changing how fast the reported clock runs,
 including saturation at the platform limit. The `CLK_*` section reboots without
 an orderly shutdown to show `TPM2_ClockSet` making the clock safe again.
 
-Two records in this family are not compared byte for byte by the Rust tests.
-`CCATTR_0198` asks `TPM_CAP_COMMANDS` about the unimplemented ACT command; the
-reference answers with `TPM2_ECC_Encrypt`, which the Rust dispatcher does not
-implement yet, so the test only checks that both skip `0x0198`. The
-`PERMALL_*_RESTART` snapshots are compared field by field instead of byte for
+`CCATTR_0198` asks `TPM_CAP_COMMANDS` about the unimplemented ACT command and is
+answered with `TPM2_ECC_Encrypt`, the next implemented command code. Both
+implementations now register `0x0199`, so the record is compared byte for byte.
+
+The `PERMALL_*_RESTART` snapshots are compared field by field instead of byte for
 byte, because a reboot re-seeds the DRBG from host entropy and the Rust test
 entropy is not the container's.
+
+## Notes about the ecc-commands family
+
+The `ecc-commands` family covers `TPM2_ECDH_ZGen`, `TPM2_ECDH_KeyGen`,
+`TPM2_ECC_Parameters`, `TPM2_Commit`, `TPM2_ZGen_2Phase`, `TPM2_EC_Ephemeral`,
+`TPM2_ECC_Encrypt`, and `TPM2_ECC_Decrypt`. Its scenario is a sequence of
+independent sections. Each one starts from `restore READY`, the snapshot taken
+right after `TPM2_Startup(TPM_SU_CLEAR)`, so no section can consume another
+section's generator output or commitment counters.
+
+Every ECC key the family uses is loaded with `TPM2_LoadExternal` from a fixed
+private scalar, so the scenario and the Rust tests both know the key material.
+That keeps the decryption, agreement, and commitment records deterministic
+without a second capture pass, and it lets the tests build peer points as known
+multiples of the curve generator.
+
+Several findings drive how the family is built.
+
+An ECC key can never carry a key-derivation scheme. `SchemeChecks()` rejects any
+ECC public area whose `kdf.scheme` is not `TPM_ALG_NULL`, and it runs for
+public-only external keys as well. The `LOAD_KDF*_REJECTED` records pin that
+`TPM_RC_KDF`. As a result `CryptEccSelectScheme()` always sees a null key scheme,
+so `TPM2_ECC_Encrypt` and `TPM2_ECC_Decrypt` are driven entirely by `inScheme`:
+a null request answers `TPM_RC_SCHEME` with the parameter marker, and a
+non-`TPM_ALG_KDF2` request reaches `CryptEccEncrypt()`, which answers a bare
+`TPM_RC_SCHEME`.
+
+`TPM2_ECC_Encrypt` has no attribute check at all. `ENC_SIGN_ONLY_KEY` and
+`ENC_PUBLIC_ONLY` succeed with a signing key and with a key that has no private
+part, because encryption only needs the public point. Its handle also carries no
+`HANDLE_1_USER` attribute, so a password session is refused with
+`TPM_RC_HANDLE` for the session, like `ENC_WITH_SESSION` shows.
+
+`CryptEccDecrypt()` ignores the return value of its point multiply. When `C1` is
+off the curve, is the empty point, or produces the point at infinity, the
+function keeps the supplied `C1` coordinates and continues, so the integrity
+check fails and the answer is a bare `TPM_RC_VALUE` rather than
+`TPM_RC_ECC_POINT`. `DEC_OFF_CURVE_C1` and `DEC_EMPTY_COORDS_C1` pin that, and
+`DEC_BAD_C1`, `DEC_BAD_C2`, and `DEC_BAD_C3` show that no modified ciphertext
+ever returns plain text. That last comparison is made in constant time, so a
+wrong digest never reveals how many leading bytes matched.
+
+Coordinates outside the finite field are reduced, not rejected. The vendored
+on-curve predicate is `BnIsPointOnCurve()`, which evaluates the curve equation
+modulo `p` on the raw operands, and OpenSSL's affine-point initializer runs
+`BN_nnmod()` on both coordinates before it checks the curve. A point written as
+`x + p` or `y + p` is therefore accepted and answers exactly what the canonical
+point answers. `ZGEN_X_PLUS_PRIME` and `ZGEN_Y_PLUS_PRIME` return the same
+shared point as `ZGEN_G2`, `ZGEN2_QSB_PLUS_PRIME` and `ZGEN2_QEB_PLUS_PRIME`
+reach the counter check rather than the point check, `COMMIT_P1_PLUS_PRIME` and
+`COMMIT_Y2_PLUS_PRIME` complete, and `DEC_C1_PLUS_PRIME` still recovers the
+plain text. A coordinate equal to `p` reduces to zero, which leaves the curve,
+so `ZGEN_X_IS_PRIME` answers `TPM_RC_ECC_POINT` for its parameter.
+
+`TPM2_ZGen_2Phase` with `TPM_ALG_ECMQV` stops the TPM. `C_2_2_MQV()` reduces its
+implicit signature modulo an order it never initialises, so `ExtMath_Mod()`
+reaches `BnDiv()`'s divide-by-zero `FAIL()` site. `ZGEN2_ECMQV` answers
+`TPM_RC_FAILURE` and `ZGEN2_AFTER_ECMQV` shows the TPM staying in failure mode,
+so that section is the last one in the scenario.
+
+`SM2KeyExchange()` depends on `BnMaskBits()`, whose top-word mask is
+`~0 >> (maskBit % RADIX_BITS)` instead of the complementary shift. On a 64-bit
+build the associated-value function therefore keeps sixty-six low bits of the
+abscissa rather than the hundred and twenty-six its argument suggests.
+`ZGEN2_SM2` pins the result, and it also shows the second output point staying
+empty because SM2 produces only one shared point.
+
+A public-only key cannot be authorized with a password, so `ZGEN_PUBLIC_ONLY`
+and `COMMIT_PUBLIC_ONLY` answer `TPM_RC_AUTH_UNAVAILABLE` before the command
+action runs. `TPM2_Commit`'s own public-only check is therefore unreachable
+through a password session.
+
+The commitment sections show the whole life cycle of a counter.
+`ECEPH_*` allocates counters, `ZGEN2_ECDH` consumes one, `ZGEN2_REUSE` shows the
+consumed counter being refused, and `ZGEN2_UNKNOWN_COUNTER` shows a counter that
+was never allocated. `COMMIT_*` covers every operand shape: no operands, `P1`
+only, `s2` and `y2` only, and all three. The `s2` value is searched off line for
+a digest that reduces to an abscissa with a square root modulo `p`, because the
+reference builds `P2` as `H_nameAlg(s2) mod p` and requires the caller-supplied
+`y2` to complete a point on the curve.
+
+The `RESUME_*`, `RESTART_*`, and `RESET_*` records pin how a startup treats the
+commitment state. `TPM2_Shutdown(TPM_SU_STATE)` followed by
+`TPM2_Startup(TPM_SU_STATE)` resumes and by `TPM2_Startup(TPM_SU_CLEAR)`
+restarts; both keep `STATE_RESET`, so a commitment made before the shutdown is
+still usable. `TPM2_Shutdown(TPM_SU_CLEAR)` and an unorderly restart both reset
+it, so the same request answers `TPM_RC_VALUE` for the counter parameter.
+`UNORDERLY_STARTUP_STATE` shows `TPM2_Startup(TPM_SU_STATE)` being refused when
+no state was saved.
+
+`ZGEN_SESSION`, `ZGEN_HMAC_AUTH`, and `ZGEN_HMAC_WRONG` authorize the agreement
+through an unbound, unsalted HMAC session. Its session key is empty, so the
+authorization HMAC is keyed by the object authorization value alone. Those
+records consume the `nonceTPM` returned by `ZGEN_SESSION` and therefore need the
+two-pass workflow described above.
+
+## Lazy self-tests and cancellation in the ECC commands
+
+Every ECC command runs the same lazy known-answer tests the reference runs, at
+the same point in the command.
+
+`TpmEcc_PointMult()` and `CryptEccNewKeyPair()` open with
+`TPM_DO_SELF_TEST(TPM_ALG_ECDH)`, so `TPM2_ECDH_ZGen`, `TPM2_ECDH_KeyGen`,
+`TPM2_EC_Ephemeral`, `TPM2_Commit`, `TPM2_ECC_Encrypt`, and `TPM2_ECC_Decrypt`
+all run the ECDH point-multiply test before their first multiplication.
+`TPM2_ZGen_2Phase` runs it for `TPM_ALG_ECDH` and `TPM_ALG_ECMQV` but not for
+`TPM_ALG_SM2`, because `SM2KeyExchange()` calls the external point multiply
+directly and never passes through `TpmEcc_PointMult()`. A request rejected
+before the arithmetic — a wrong key type, a disabled curve — runs no test at
+all.
+
+`CryptHashStart()` opens with `TPM_DO_SELF_TEST(hashAlg)`, so the selected hash
+is tested before `C3` is hashed and before the KDF2 mask is generated, and the
+object name algorithm is tested before `TPM2_Commit` hashes `s2`. `CryptKDFa()`
+starts an HMAC with the context-integrity hash, so `TPM2_Commit`,
+`TPM2_EC_Ephemeral`, and `TPM2_ZGen_2Phase` test SHA-512 before they derive
+their commit random value. In `TPM2_ECC_Encrypt` the ephemeral key is generated
+before the ECDH test runs, exactly as in `CryptEccEncrypt()`, so a failing test
+still leaves the generator advanced.
+
+The ECDH known-answer test is the vendored `TestECDH()` vector: the static
+scalar from `EccTestData.h` multiplied into the stored ephemeral point on
+NIST P-256, compared against the stored result. It joins the pending bitmap, so
+`TPM2_IncrementalSelfTest` and `TPM2_SelfTest` report and clear `0x0019` like
+the reference does, and a failure names `TestECDH`'s comparison site.
+
+`CryptEccCommitCompute()` polls the platform cancel flag twice: once after
+`K = [d]B` and before `L = [r]B`, and once after `L` and before `E = [r]M` when
+both operands are present. `TPM2_Commit` polls at exactly those two boundaries.
+A request that only computes `E = [r]G` or `E = [r]P1` has no checkpoint at all.
+A cancellation answers `TPM_RC_CANCELED`, allocates no counter, and leaves the
+commitment counter and bitmap untouched, so the same request succeeds once the
+flag is cleared.
 
 ## Notes about destructive scenarios
 

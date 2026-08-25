@@ -332,7 +332,7 @@ impl AlgorithmPolicy<'_> {
         }
     }
 
-    fn kdf_scheme(&self, reader: &mut TemplateReader<'_>) -> Result<Scheme, TpmResult> {
+    pub(super) fn kdf_scheme(&self, reader: &mut TemplateReader<'_>) -> Result<Scheme, TpmResult> {
         let kdf = self.kdf_algorithm(reader)?;
         if kdf == TPM_ALG_NULL {
             return Ok(Scheme {

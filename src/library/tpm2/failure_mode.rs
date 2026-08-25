@@ -15,6 +15,7 @@ use super::self_test::{PrimitiveTest, SelfTestState};
 
 const GET_CAPABILITY_COMMAND_SIZE: u32 = HEADER_SIZE as u32 + 12;
 
+const FATAL_ERROR_DIVIDE_ZERO: u32 = 2;
 const FATAL_ERROR_INTERNAL: u32 = 3;
 const FATAL_ERROR_ENTROPY: u32 = 5;
 const FATAL_ERROR_SELF_TEST: u32 = 6;
@@ -25,6 +26,7 @@ pub(in crate::library::tpm2) enum FailureLocation {
     NvCommit,
     HashSelfTest,
     SymmetricSelfTest,
+    EcdhSelfTest,
     RsaRawEncrypt,
     RsaRawEncryptCompare,
     RsaRawDecrypt,
@@ -36,6 +38,7 @@ pub(in crate::library::tpm2) enum FailureLocation {
     RsaOaepKnownAnswerCompare,
     DrbgInvalidState,
     DrbgEntropy,
+    MathDivideZero,
 }
 
 const fn function_word(name: &[u8; 4]) -> u32 {
@@ -44,10 +47,11 @@ const fn function_word(name: &[u8; 4]) -> u32 {
 
 impl FailureLocation {
     #[cfg(test)]
-    pub(in crate::library::tpm2) const ALL: [Self; 14] = [
+    pub(in crate::library::tpm2) const ALL: [Self; 16] = [
         Self::NvCommit,
         Self::HashSelfTest,
         Self::SymmetricSelfTest,
+        Self::EcdhSelfTest,
         Self::RsaRawEncrypt,
         Self::RsaRawEncryptCompare,
         Self::RsaRawDecrypt,
@@ -59,6 +63,7 @@ impl FailureLocation {
         Self::RsaOaepKnownAnswerCompare,
         Self::DrbgInvalidState,
         Self::DrbgEntropy,
+        Self::MathDivideZero,
     ];
 
     #[cfg(test)]
@@ -67,17 +72,19 @@ impl FailureLocation {
             Self::NvCommit => 0,
             Self::HashSelfTest => 1,
             Self::SymmetricSelfTest => 2,
-            Self::RsaRawEncrypt => 3,
-            Self::RsaRawEncryptCompare => 4,
-            Self::RsaRawDecrypt => 5,
-            Self::RsaRawDecryptCompare => 6,
-            Self::RsaOaepEncrypt => 7,
-            Self::RsaOaepRoundTripDecrypt => 8,
-            Self::RsaOaepRoundTripCompare => 9,
-            Self::RsaOaepKnownAnswerDecrypt => 10,
-            Self::RsaOaepKnownAnswerCompare => 11,
-            Self::DrbgInvalidState => 12,
-            Self::DrbgEntropy => 13,
+            Self::EcdhSelfTest => 3,
+            Self::RsaRawEncrypt => 4,
+            Self::RsaRawEncryptCompare => 5,
+            Self::RsaRawDecrypt => 6,
+            Self::RsaRawDecryptCompare => 7,
+            Self::RsaOaepEncrypt => 8,
+            Self::RsaOaepRoundTripDecrypt => 9,
+            Self::RsaOaepRoundTripCompare => 10,
+            Self::RsaOaepKnownAnswerDecrypt => 11,
+            Self::RsaOaepKnownAnswerCompare => 12,
+            Self::DrbgInvalidState => 13,
+            Self::DrbgEntropy => 14,
+            Self::MathDivideZero => 15,
         }
     }
 
@@ -86,6 +93,7 @@ impl FailureLocation {
             Self::NvCommit => (b"Exec", 318, FATAL_ERROR_INTERNAL),
             Self::HashSelfTest => (b"Test", 155, FATAL_ERROR_SELF_TEST),
             Self::SymmetricSelfTest => (b"Test", 259, FATAL_ERROR_SELF_TEST),
+            Self::EcdhSelfTest => (b"Test", 675, FATAL_ERROR_SELF_TEST),
             Self::RsaRawEncrypt => (b"Test", 445, FATAL_ERROR_SELF_TEST),
             Self::RsaRawEncryptCompare => (b"Test", 447, FATAL_ERROR_SELF_TEST),
             Self::RsaRawDecrypt => (b"Test", 452, FATAL_ERROR_SELF_TEST),
@@ -97,6 +105,7 @@ impl FailureLocation {
             Self::RsaOaepKnownAnswerCompare => (b"Test", 512, FATAL_ERROR_SELF_TEST),
             Self::DrbgInvalidState => (b"DRBG", 940, FATAL_ERROR_INTERNAL),
             Self::DrbgEntropy => (b"Encr", 387, FATAL_ERROR_ENTROPY),
+            Self::MathDivideZero => (b"BnDi", 326, FATAL_ERROR_DIVIDE_ZERO),
         };
         FailureDiagnostics {
             function: function_word(name),
@@ -108,6 +117,7 @@ impl FailureLocation {
     pub(in crate::library::tpm2) fn for_self_test(state: &SelfTestState) -> Self {
         match state.failure {
             Some(failure) if failure.primitive == PrimitiveTest::Aes256 => Self::SymmetricSelfTest,
+            Some(failure) if failure.primitive == PrimitiveTest::Ecdh => Self::EcdhSelfTest,
             _ => Self::HashSelfTest,
         }
     }
@@ -277,6 +287,25 @@ mod tests {
         let mut runtime = empty_state_runtime();
         enter_failure_mode(&mut runtime, location);
         runtime
+    }
+
+    #[test]
+    fn a_failed_ecdh_self_test_names_the_vendored_comparison_site() {
+        use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure};
+        let mut state = SelfTestState::for_algorithms(
+            crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE,
+        );
+        state.failure = Some(SelfTestFailure {
+            primitive: PrimitiveTest::Ecdh,
+        });
+        assert_eq!(
+            FailureLocation::for_self_test(&state),
+            FailureLocation::EcdhSelfTest
+        );
+        assert_eq!(
+            FailureLocation::EcdhSelfTest.diagnostics().code,
+            FATAL_ERROR_SELF_TEST
+        );
     }
 
     #[test]
@@ -756,6 +785,7 @@ mod tests {
                 Some("FATAL_ERROR_INTERNAL") => FATAL_ERROR_INTERNAL,
                 Some("FATAL_ERROR_ENTROPY") => FATAL_ERROR_ENTROPY,
                 Some("FATAL_ERROR_SELF_TEST") => FATAL_ERROR_SELF_TEST,
+                Some("FATAL_ERROR_DIVIDE_ZERO") => FATAL_ERROR_DIVIDE_ZERO,
                 other => panic!("unexpected fatal error code {other:?}"),
             }
         }
@@ -774,6 +804,7 @@ mod tests {
                 FailureLocation::NvCommit => ("ExecuteCommand", 318),
                 FailureLocation::HashSelfTest => ("TestHash", 155),
                 FailureLocation::SymmetricSelfTest => ("TestSymmetricAlgorithm", 259),
+                FailureLocation::EcdhSelfTest => ("TestECDH", 675),
                 FailureLocation::RsaRawEncrypt => ("TestRsaEncryptDecrypt", 445),
                 FailureLocation::RsaRawEncryptCompare => ("TestRsaEncryptDecrypt", 447),
                 FailureLocation::RsaRawDecrypt => ("TestRsaEncryptDecrypt", 452),
@@ -785,6 +816,7 @@ mod tests {
                 FailureLocation::RsaOaepKnownAnswerCompare => ("TestRsaEncryptDecrypt", 512),
                 FailureLocation::DrbgInvalidState => ("DRBG_Generate", 940),
                 FailureLocation::DrbgEntropy => ("EncryptDRBG", 387),
+                FailureLocation::MathDivideZero => ("BnDiv", 326),
             }
         }
 

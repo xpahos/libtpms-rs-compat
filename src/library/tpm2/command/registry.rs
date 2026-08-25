@@ -12,6 +12,10 @@ use super::create_loaded;
 use super::create_primary;
 use super::dictionary_attack_parameters;
 use super::dispatcher::CommandFrame;
+use super::ecc_commitment;
+use super::ecc_encryption;
+use super::ecc_key_exchange;
+use super::ecc_parameters;
 use super::encrypt_decrypt;
 use super::event_sequence_complete;
 use super::evict_control;
@@ -118,6 +122,7 @@ pub(in crate::library::tpm2) const TPM_CC_OBJECT_CHANGE_AUTH: u32 = 0x0000_0150;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_SECRET: u32 = 0x0000_0151;
 pub(in crate::library::tpm2) const TPM_CC_REWRAP: u32 = 0x0000_0152;
 pub(in crate::library::tpm2) const TPM_CC_CREATE: u32 = 0x0000_0153;
+pub(in crate::library::tpm2) const TPM_CC_ECDH_ZGEN: u32 = 0x0000_0154;
 pub(in crate::library::tpm2) const TPM_CC_HMAC: u32 = 0x0000_0155;
 pub(in crate::library::tpm2) const TPM_CC_IMPORT: u32 = 0x0000_0156;
 pub(in crate::library::tpm2) const TPM_CC_LOAD: u32 = 0x0000_0157;
@@ -130,6 +135,7 @@ pub(in crate::library::tpm2) const TPM_CC_UNSEAL: u32 = 0x0000_015e;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_SIGNED: u32 = 0x0000_0160;
 pub(in crate::library::tpm2) const TPM_CC_CONTEXT_LOAD: u32 = 0x0000_0161;
 pub(in crate::library::tpm2) const TPM_CC_CONTEXT_SAVE: u32 = 0x0000_0162;
+pub(in crate::library::tpm2) const TPM_CC_ECDH_KEY_GEN: u32 = 0x0000_0163;
 pub(in crate::library::tpm2) const TPM_CC_ENCRYPT_DECRYPT: u32 = 0x0000_0164;
 pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_LOAD_EXTERNAL: u32 = 0x0000_0167;
@@ -147,6 +153,7 @@ pub(in crate::library::tpm2) const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
 pub(in crate::library::tpm2) const TPM_CC_RSA_ENCRYPT: u32 = 0x0000_0174;
 pub(in crate::library::tpm2) const TPM_CC_START_AUTH_SESSION: u32 = 0x0000_0176;
 pub(in crate::library::tpm2) const TPM_CC_VERIFY_SIGNATURE: u32 = 0x0000_0177;
+pub(in crate::library::tpm2) const TPM_CC_ECC_PARAMETERS: u32 = 0x0000_0178;
 pub(in crate::library::tpm2) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(in crate::library::tpm2) const TPM_CC_GET_RANDOM: u32 = 0x0000_017b;
 pub(in crate::library::tpm2) const TPM_CC_GET_TEST_RESULT: u32 = 0x0000_017c;
@@ -164,12 +171,17 @@ pub(in crate::library::tpm2) const TPM_CC_POLICY_PHYSICAL_PRESENCE: u32 = 0x0000
 pub(in crate::library::tpm2) const TPM_CC_POLICY_DUPLICATION_SELECT: u32 = 0x0000_0188;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_GET_DIGEST: u32 = 0x0000_0189;
 pub(in crate::library::tpm2) const TPM_CC_TEST_PARMS: u32 = 0x0000_018a;
+pub(in crate::library::tpm2) const TPM_CC_COMMIT: u32 = 0x0000_018b;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_PASSWORD: u32 = 0x0000_018c;
+pub(in crate::library::tpm2) const TPM_CC_ZGEN_2_PHASE: u32 = 0x0000_018d;
+pub(in crate::library::tpm2) const TPM_CC_EC_EPHEMERAL: u32 = 0x0000_018e;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_NV_WRITTEN: u32 = 0x0000_018f;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_TEMPLATE: u32 = 0x0000_0190;
 pub(in crate::library::tpm2) const TPM_CC_CREATE_LOADED: u32 = 0x0000_0191;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_AUTHORIZE_NV: u32 = 0x0000_0192;
 pub(in crate::library::tpm2) const TPM_CC_ENCRYPT_DECRYPT2: u32 = 0x0000_0193;
+pub(in crate::library::tpm2) const TPM_CC_ECC_ENCRYPT: u32 = 0x0000_0199;
+pub(in crate::library::tpm2) const TPM_CC_ECC_DECRYPT: u32 = 0x0000_019a;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_CAPABILITY: u32 = 0x0000_019b;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_PARAMETERS: u32 = 0x0000_019c;
 
@@ -1300,6 +1312,23 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: create::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_ECDH_ZGEN,
+        attributes: tpma_cc(TPM_CC_ECDH_ZGEN, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_key_exchange::execute_zgen,
+    },
+    CommandDescriptor {
         code: TPM_CC_HMAC,
         attributes: tpma_cc(TPM_CC_HMAC, false, 1),
         physical_presence: false,
@@ -1501,6 +1530,23 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: false,
         nv_access: NvAccess::Neither,
         handler: context::execute_save,
+    },
+    CommandDescriptor {
+        code: TPM_CC_ECDH_KEY_GEN,
+        attributes: tpma_cc(TPM_CC_ECDH_KEY_GEN, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: false,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 0,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_key_exchange::execute_key_gen,
     },
     CommandDescriptor {
         code: TPM_CC_ENCRYPT_DECRYPT,
@@ -1753,6 +1799,19 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: verify_signature::execute,
+    },
+    CommandDescriptor {
+        code: TPM_CC_ECC_PARAMETERS,
+        attributes: tpma_cc(TPM_CC_ECC_PARAMETERS, false, 0),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 0,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_parameters::execute,
     },
     CommandDescriptor {
         code: TPM_CC_GET_CAPABILITY,
@@ -2011,6 +2070,23 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: test_parms::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_COMMIT,
+        attributes: tpma_cc(TPM_CC_COMMIT, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_commitment::execute_commit,
+    },
+    CommandDescriptor {
         code: TPM_CC_POLICY_PASSWORD,
         attributes: tpma_cc(TPM_CC_POLICY_PASSWORD, false, 1),
         physical_presence: false,
@@ -2022,6 +2098,36 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: policy_commands::execute_password,
+    },
+    CommandDescriptor {
+        code: TPM_CC_ZGEN_2_PHASE,
+        attributes: tpma_cc(TPM_CC_ZGEN_2_PHASE, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_key_exchange::execute_two_phase,
+    },
+    CommandDescriptor {
+        code: TPM_CC_EC_EPHEMERAL,
+        attributes: tpma_cc(TPM_CC_EC_EPHEMERAL, false, 0),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[],
+        decrypt_size: 0,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_commitment::execute_ephemeral,
     },
     CommandDescriptor {
         code: TPM_CC_POLICY_NV_WRITTEN,
@@ -2107,6 +2213,40 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: encrypt_decrypt::execute_two,
+    },
+    CommandDescriptor {
+        code: TPM_CC_ECC_ENCRYPT,
+        attributes: tpma_cc(TPM_CC_ECC_ENCRYPT, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: false,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_encryption::execute_encrypt,
+    },
+    CommandDescriptor {
+        code: TPM_CC_ECC_DECRYPT,
+        attributes: tpma_cc(TPM_CC_ECC_DECRYPT, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: true,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: ecc_encryption::execute_decrypt,
     },
     CommandDescriptor {
         code: TPM_CC_POLICY_CAPABILITY,
@@ -2319,6 +2459,7 @@ mod tests {
                 TPM_CC_POLICY_SECRET,
                 TPM_CC_REWRAP,
                 TPM_CC_CREATE,
+                TPM_CC_ECDH_ZGEN,
                 TPM_CC_HMAC,
                 TPM_CC_IMPORT,
                 TPM_CC_LOAD,
@@ -2331,6 +2472,7 @@ mod tests {
                 TPM_CC_POLICY_SIGNED,
                 TPM_CC_CONTEXT_LOAD,
                 TPM_CC_CONTEXT_SAVE,
+                TPM_CC_ECDH_KEY_GEN,
                 TPM_CC_ENCRYPT_DECRYPT,
                 TPM_CC_FLUSH_CONTEXT,
                 TPM_CC_LOAD_EXTERNAL,
@@ -2348,6 +2490,7 @@ mod tests {
                 TPM_CC_RSA_ENCRYPT,
                 TPM_CC_START_AUTH_SESSION,
                 TPM_CC_VERIFY_SIGNATURE,
+                TPM_CC_ECC_PARAMETERS,
                 TPM_CC_GET_CAPABILITY,
                 TPM_CC_GET_RANDOM,
                 TPM_CC_GET_TEST_RESULT,
@@ -2365,12 +2508,17 @@ mod tests {
                 TPM_CC_POLICY_DUPLICATION_SELECT,
                 TPM_CC_POLICY_GET_DIGEST,
                 TPM_CC_TEST_PARMS,
+                TPM_CC_COMMIT,
                 TPM_CC_POLICY_PASSWORD,
+                TPM_CC_ZGEN_2_PHASE,
+                TPM_CC_EC_EPHEMERAL,
                 TPM_CC_POLICY_NV_WRITTEN,
                 TPM_CC_POLICY_TEMPLATE,
                 TPM_CC_CREATE_LOADED,
                 TPM_CC_POLICY_AUTHORIZE_NV,
                 TPM_CC_ENCRYPT_DECRYPT2,
+                TPM_CC_ECC_ENCRYPT,
+                TPM_CC_ECC_DECRYPT,
                 TPM_CC_POLICY_CAPABILITY,
                 TPM_CC_POLICY_PARAMETERS
             ]

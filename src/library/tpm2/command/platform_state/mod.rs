@@ -10,7 +10,7 @@ pub(in crate::library::tpm2::command) mod harness;
 mod tests {
     use super::harness::*;
     use crate::library::tpm2::capability::single::{LookupError, lookup};
-    use crate::library::tpm2::command::registry::find;
+    use crate::library::tpm2::command::registry::{TPM_CC_ECC_ENCRYPT, find};
     use crate::library::tpm2::command::upstream_implements;
 
     const TPM_RH_ACT_F: u32 = 0x4000_011f;
@@ -31,8 +31,8 @@ mod tests {
                     .try_into()
                     .expect("four bytes")
             ) & 0xffff,
-            0x0199,
-            "TPM_CAP_COMMANDS skips 0x0198 and reports the next implemented command"
+            TPM_CC_ECC_ENCRYPT & 0xffff,
+            "TPM_CAP_COMMANDS skips 0x0198 and reports TPM2_ECC_Encrypt instead"
         );
     }
 
@@ -185,6 +185,7 @@ mod tests {
             ("CCATTR_013F", TPM_CC_SET_ALGORITHM_SET),
             ("CCATTR_0181", TPM_CC_READ_CLOCK),
             ("CCATTR_0183", TPM_CC_PCR_SET_AUTH_VALUE),
+            ("CCATTR_0198", TPM_CC_ACT_SET_TIMEOUT),
         ] {
             expect(
                 &mut runtime,
@@ -193,15 +194,5 @@ mod tests {
                 &get_capability(TPM_CAP_COMMANDS, code, 1),
             );
         }
-        let skipped = exec(
-            &mut runtime,
-            &clock,
-            &get_capability(TPM_CAP_COMMANDS, TPM_CC_ACT_SET_TIMEOUT, 1),
-        );
-        assert_ne!(
-            u32::from_be_bytes(skipped[19..23].try_into().expect("four bytes")) & 0xffff,
-            TPM_CC_ACT_SET_TIMEOUT & 0xffff,
-            "the command list skips the unimplemented ACT command, like the reference"
-        );
     }
 }

@@ -9,6 +9,11 @@ mod create_loaded;
 mod create_primary;
 mod dictionary_attack_parameters;
 mod dispatcher;
+mod ecc_commitment;
+mod ecc_common;
+mod ecc_encryption;
+mod ecc_key_exchange;
+mod ecc_parameters;
 mod encrypt_decrypt;
 mod event_sequence_complete;
 mod evict_control;
@@ -84,6 +89,8 @@ pub(super) use header::parse_command;
 pub(super) use header::{
     HEADER_SIZE, Response, TPM_ST_NO_SESSIONS, parse_command_within, serialize_response_within,
 };
+#[cfg(test)]
+pub(in crate::library::tpm2) use registry::TPM_CC_COMMIT;
 pub(in crate::library::tpm2) use registry::{
     TPM_CC_GET_CAPABILITY, TPM_CC_GET_TEST_RESULT, find as find_command,
     implemented as implemented_commands,

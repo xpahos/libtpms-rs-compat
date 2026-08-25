@@ -2070,7 +2070,7 @@ mod tests {
         let mut signing = load_signing_state(&mut runtime).expect("the signing state loads");
         let mut scratch = [0u8; 64];
         signing.rand.generate(&mut scratch).expect("randomness");
-        signing.commit_array[3] = 0xa5;
+        signing.commit.array[3] = 0xa5;
 
         let outcome = publish_signing_outcome(&mut runtime, signing, Err(INJECTED_SIGNING_ERROR));
         assert_eq!(

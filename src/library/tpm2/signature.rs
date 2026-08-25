@@ -11,20 +11,17 @@ use super::algorithm::{
     TPM_ALG_NULL, TPM_ALG_RSA, TPM_ALG_RSAPSS, TPM_ALG_RSASSA, TPM_ALG_SHA1, TPM_ALG_SHA256,
     TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_SM2, algorithm_enabled, algorithm_profile_name,
 };
+use super::commit::CommitState;
 use super::crypto::{
-    BigUint, CurveParameters, HmacState, SeededRand, curve_parameters, kdfa, kdfa_from, mgf1,
+    BigUint, CurveParameters, HmacState, SeededRand, curve_parameters, kdfa, mgf1,
     rsa_private_key_op, rsa_public_key_op,
 };
 use super::marshal::BlobWriter;
 use super::persistent::{OwnedObjectBody, OwnedPublicId, OwnedSecret};
 use super::profile::ValidatedProfile;
 use super::public::{MAX_ECC_KEY_BYTES, MAX_RSA_KEY_BYTES, PublicParms, Scheme, StateFormatLimit};
-use super::state::COMMIT_ARRAY_SIZE;
 use super::template::{AlgorithmPolicy, TemplateReader, digest_size};
-use super::ticket::CONTEXT_INTEGRITY_HASH_ALG;
 
-const COMMIT_STRING: &[u8] = b"ECDAA Commit\0";
-const COMMIT_INDEX_MASK: u16 = (COMMIT_ARRAY_SIZE as u16 * 8) - 1;
 const SIGN_ATTEMPTS: u32 = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -422,9 +419,7 @@ fn rsa_sign(
 
 pub(super) struct SigningState {
     pub(super) rand: SeededRand,
-    pub(super) commit_counter: u64,
-    pub(super) commit_nonce: OwnedSecret,
-    pub(super) commit_array: [u8; COMMIT_ARRAY_SIZE],
+    pub(super) commit: CommitState,
 }
 
 fn ecc_sign(
@@ -576,7 +571,10 @@ fn ecdaa_sign(
     state: &mut SigningState,
 ) -> Result<Signature, TpmResult> {
     let order_bytes = curve.order.byte_len();
-    let commit = generate_r(state, curve, &body.name, scheme.count).ok_or(TPM_RC_VALUE)?;
+    let commit = state
+        .commit
+        .generate_r(curve, &body.name, Some(scheme.count))
+        .ok_or(TPM_RC_VALUE)?;
     for _ in 0..SIGN_ATTEMPTS {
         let nonce = random_in_order(&mut state.rand, &curve.order)?;
         let nonce_bytes = nonce.to_be_bytes(nonce.byte_len()).ok_or(TPM_RC_FAILURE)?;
@@ -585,7 +583,7 @@ fn ecdaa_sign(
         hasher.update(digest);
         let t = BigUint::from_be_bytes(&hasher.finalize());
         if let Some(s) = schnorr_s(&t, &commit, d, &curve.order) {
-            end_commit(state, scheme.count);
+            state.commit.end_commit(scheme.count);
             return Ok(Signature::Ecc {
                 scheme: TPM_ALG_ECDAA,
                 hash_alg: scheme.hash_alg,
@@ -604,61 +602,6 @@ fn schnorr_s(value: &BigUint, k: &BigUint, d: &BigUint, order: &BigUint) -> Opti
     }
     let s = reduced.mul(d).add(k).rem(order)?;
     if s.is_zero() { None } else { Some(s) }
-}
-
-fn commit_slot(count: u16) -> (usize, u8) {
-    let bit = count & COMMIT_INDEX_MASK;
-    (usize::from(bit >> 3), 1u8 << (bit & 7))
-}
-
-fn commit_counter_for(state: &SigningState, count: u16) -> Option<u64> {
-    let (byte, mask) = commit_slot(count);
-    if state.commit_array[byte] & mask == 0 {
-        return None;
-    }
-    let mut current = state.commit_counter;
-    if (count & COMMIT_INDEX_MASK) >= (current as u16 & COMMIT_INDEX_MASK) {
-        current = current.wrapping_sub(u64::from(COMMIT_INDEX_MASK) + 1);
-    }
-    if (current as u16) & !COMMIT_INDEX_MASK != count & !COMMIT_INDEX_MASK {
-        return None;
-    }
-    Some((current & 0xffff_ffff_ffff_0000) | u64::from(count))
-}
-
-fn end_commit(state: &mut SigningState, count: u16) {
-    let (byte, mask) = commit_slot(count);
-    state.commit_array[byte] &= !mask;
-}
-
-fn generate_r(
-    state: &SigningState,
-    curve: &CurveParameters,
-    name: &[u8],
-    count: u16,
-) -> Option<BigUint> {
-    let order_bytes = curve.order.byte_len();
-    let context_v = commit_counter_for(state, count)?.to_be_bytes();
-    let bits = u32::try_from(order_bytes.checked_mul(8)?).ok()?;
-    let mut counter: u32 = 1;
-    for _ in 0..SIGN_ATTEMPTS {
-        let stream = kdfa_from(
-            CONTEXT_INTEGRITY_HASH_ALG,
-            state.commit_nonce.as_bytes(),
-            COMMIT_STRING,
-            name,
-            &context_v,
-            bits,
-            &mut counter,
-        )?;
-        if BigUint::from_be_bytes(&stream) >= curve.order {
-            continue;
-        }
-        if stream[..=order_bytes / 2].iter().any(|&byte| byte != 0) {
-            return Some(BigUint::from_be_bytes(&stream));
-        }
-    }
-    None
 }
 
 fn ecdsa_digest(digest: &[u8], order_bits: usize) -> BigUint {
@@ -1410,20 +1353,6 @@ mod tests {
             schnorr_s(&BigUint::from_u64(1), &BigUint::from_u64(18), &d, &order),
             None,
             "a zero s has no signature"
-        );
-    }
-
-    #[test]
-    fn a_commit_slot_is_a_little_endian_bit_in_the_array() {
-        assert_eq!(COMMIT_INDEX_MASK, 127);
-        assert_eq!(commit_slot(0), (0, 0x01));
-        assert_eq!(commit_slot(7), (0, 0x80));
-        assert_eq!(commit_slot(8), (1, 0x01));
-        assert_eq!(commit_slot(127), (15, 0x80));
-        assert_eq!(
-            commit_slot(128),
-            commit_slot(0),
-            "the count wraps within the array"
         );
     }
 

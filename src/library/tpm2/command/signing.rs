@@ -1,13 +1,13 @@
 use crate::ffi_types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_KEY};
 
+use super::super::commit::CommitState;
 use super::super::hierarchy::{TPM_RH_NULL, hierarchy_proof};
 use super::super::object_create::resolve_any_object;
 use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody};
 use super::super::random::{finish_live_rand, take_live_rand};
 use super::super::runtime::Tpm2Runtime;
 use super::super::signature::{Signature, SigningState};
-use super::super::state::COMMIT_ARRAY_SIZE;
 use super::nv_common::{TPM_RC_1, TPM_RC_H};
 
 pub(super) const RC_SIGN_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
@@ -45,26 +45,8 @@ pub(super) fn hierarchy_proof_for(
 
 pub(super) fn load_signing_state(runtime: &mut Tpm2Runtime) -> Result<SigningState, TpmResult> {
     let rand = take_live_rand(runtime)?;
-    let reset = runtime.live.state_reset.as_ref().ok_or(TPM_RC_FAILURE)?;
-    Ok(SigningState {
-        rand,
-        commit_counter: reset.commit_counter,
-        commit_nonce: reset.commit_nonce.clone(),
-        commit_array: reset.commit_array,
-    })
-}
-
-fn publish_commit_array(
-    runtime: &mut Tpm2Runtime,
-    commit_array: [u8; COMMIT_ARRAY_SIZE],
-) -> Result<(), TpmResult> {
-    runtime
-        .live
-        .state_reset
-        .as_mut()
-        .ok_or(TPM_RC_FAILURE)?
-        .commit_array = commit_array;
-    Ok(())
+    let commit = CommitState::load(runtime)?;
+    Ok(SigningState { rand, commit })
 }
 
 pub(super) fn publish_signing_outcome(
@@ -72,10 +54,8 @@ pub(super) fn publish_signing_outcome(
     signing: SigningState,
     signature: Result<Signature, TpmResult>,
 ) -> Result<Signature, TpmResult> {
-    let SigningState {
-        rand, commit_array, ..
-    } = signing;
+    let SigningState { rand, commit } = signing;
     finish_live_rand(runtime, rand)?;
-    publish_commit_array(runtime, commit_array)?;
+    commit.publish(runtime)?;
     signature
 }

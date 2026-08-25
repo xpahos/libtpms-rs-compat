@@ -44,6 +44,22 @@ fixture = "src/library/tpm2/testdata/golden_responses/dictionary_attack.bin"
 reader = "src/library/tpm2/golden_responses/dictionary_attack.rs"
 commands = ["TPM2_DictionaryAttackParameters"]
 
+[families."ecc-commands"]
+magic = "EAORACLE"
+scenario = "scripts/golden_responses/scenarios/ecc_commands.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/ecc_commands.bin"
+reader = "src/library/tpm2/golden_responses/ecc_commands.rs"
+commands = [
+    "TPM2_ECDH_ZGen",
+    "TPM2_ECDH_KeyGen",
+    "TPM2_ECC_Parameters",
+    "TPM2_Commit",
+    "TPM2_ZGen_2Phase",
+    "TPM2_EC_Ephemeral",
+    "TPM2_ECC_Encrypt",
+    "TPM2_ECC_Decrypt",
+]
+
 [families."encrypt-decrypt"]
 magic = "EDORACLE"
 scenario = "scripts/golden_responses/scenarios/encrypt_decrypt.scenario"
@@ -510,7 +526,8 @@ family = "create"
 
 [commands.ECDH_ZGen]
 code = 0x00000154
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.HMAC]
 code = 0x00000155
@@ -576,7 +593,8 @@ family = "object-lifecycle"
 
 [commands.ECDH_KeyGen]
 code = 0x00000163
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.EncryptDecrypt]
 code = 0x00000164
@@ -669,7 +687,8 @@ family = "read-public-verify-signature"
 
 [commands.ECC_Parameters]
 code = 0x00000178
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.FirmwareRead]
 code = 0x00000179
@@ -762,7 +781,8 @@ family = "test-parms"
 
 [commands.Commit]
 code = 0x0000018b
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.PolicyPassword]
 code = 0x0000018c
@@ -771,11 +791,13 @@ family = "policy-sessions"
 
 [commands.ZGen_2Phase]
 code = 0x0000018d
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.EC_Ephemeral]
 code = 0x0000018e
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.PolicyNvWritten]
 code = 0x0000018f
@@ -826,11 +848,13 @@ reason = "the reference profile compiles it out with CC_ACT_SetTimeout CC_NO, so
 
 [commands.ECC_Encrypt]
 code = 0x00000199
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.ECC_Decrypt]
 code = 0x0000019a
-status = "todo"
+status = "implemented"
+family = "ecc-commands"
 
 [commands.PolicyCapability]
 code = 0x0000019b

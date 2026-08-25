@@ -149,6 +149,7 @@ mod tests {
     const TPM_ALG_SHA1: u16 = 0x0004;
     const TPM_ALG_AES: u16 = 0x0006;
     const TPM_ALG_OAEP: u16 = 0x0017;
+    const TPM_ALG_ECDH: u16 = 0x0019;
     const TPM_ALG_SHA256: u16 = 0x000b;
     const TPM_ALG_SHA384: u16 = 0x000c;
     const TPM_ALG_SHA512: u16 = 0x000d;
@@ -1260,8 +1261,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
         assert_eq!(
             runtime.self_test.pending_algorithms(),
-            [TPM_ALG_AES, TPM_ALG_OAEP],
-            "only the primitive TPM2_Hash never uses stays pending"
+            [TPM_ALG_AES, TPM_ALG_OAEP, TPM_ALG_ECDH],
+            "only the primitives TPM2_Hash never uses stay pending"
         );
         assert!(!runtime.failure_mode);
     }

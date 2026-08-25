@@ -68,11 +68,11 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::cancel::CancelSignal;
     use crate::library::constants::TPM_RC_INITIALIZE;
-    use crate::library::tpm2::algorithm::TPM_ALG_OAEP;
     use crate::library::tpm2::algorithm::{
         TPM_ALG_AES, TPM_ALG_ECC, TPM_ALG_ERROR, TPM_ALG_RSA, TPM_ALG_SHA1, TPM_ALG_SHA256,
         TPM_ALG_SHA384, TPM_ALG_SHA512,
     };
+    use crate::library::tpm2::algorithm::{TPM_ALG_ECDH, TPM_ALG_OAEP};
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::{DEFAULT_ALGORITHMS_PROFILE, validate_user_profile};
     use crate::library::tpm2::runtime::{
@@ -88,9 +88,9 @@ mod tests {
         0x80, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00, 0x00, 0x01, 0x00,
         0x0b,
     ];
-    const SWTPM_BIOS_RESPONSE: [u8; 24] = [
-        0x80, 0x01, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00,
-        0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d, 0x00, 0x17,
+    const SWTPM_BIOS_RESPONSE: [u8; 26] = [
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00,
+        0x04, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x0d, 0x00, 0x17, 0x00, 0x19,
     ];
 
     const INSUFFICIENT_PARAMETER_1: u32 = 0x1da;
@@ -272,7 +272,7 @@ mod tests {
         runtime.cancel = CancelSignal::signaled();
         assert_eq!(
             to_do_list(&mut runtime, &[TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_AES]),
-            [TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP]
+            [TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP, TPM_ALG_ECDH]
         );
         assert_eq!(RUN_COUNT.with(Cell::get), 3, "every selected test ran");
         assert!(!runtime.failure_mode);
@@ -345,7 +345,8 @@ mod tests {
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
         assert!(executed().is_empty());
@@ -364,7 +365,7 @@ mod tests {
             let remaining = to_do_list(&mut runtime, &[algorithm]);
             assert_eq!(executed(), [expected], "algorithm {algorithm:#06x}");
             assert!(!remaining.contains(&algorithm));
-            assert_eq!(remaining.len(), 5);
+            assert_eq!(remaining.len(), 6);
         }
     }
 
@@ -373,7 +374,13 @@ mod tests {
         let mut runtime = recording_runtime();
         assert_eq!(
             to_do_list(&mut runtime, &[TPM_ALG_SHA512, TPM_ALG_AES]),
-            [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_OAEP]
+            [
+                TPM_ALG_SHA1,
+                TPM_ALG_SHA256,
+                TPM_ALG_SHA384,
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
+            ]
         );
         assert_eq!(executed(), [PrimitiveTest::Aes256, PrimitiveTest::Sha512]);
     }
@@ -396,7 +403,8 @@ mod tests {
                 TPM_ALG_AES,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
         assert_eq!(executed(), [PrimitiveTest::Sha256]);
@@ -408,7 +416,13 @@ mod tests {
                 &mut runtime,
                 &[TPM_ALG_SHA256, TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_AES]
             ),
-            [TPM_ALG_SHA1, TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP]
+            [
+                TPM_ALG_SHA1,
+                TPM_ALG_SHA384,
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
+            ]
         );
         assert_eq!(RUN_COUNT.with(Cell::get), 2);
     }
@@ -416,13 +430,13 @@ mod tests {
     #[test]
     fn an_explicitly_requested_completed_primitive_is_tested_again() {
         let mut runtime = started_runtime();
-        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 5);
+        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 6);
         assert!(!runtime.self_test.pending.contains(PrimitiveTest::Sha256));
 
         EXECUTED.with(|executed| executed.set(0));
         RUN_COUNT.with(|count| count.set(0));
         runtime.self_test.set_runner(recording_runner);
-        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 5);
+        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 6);
         assert_eq!(executed(), [PrimitiveTest::Sha256]);
         assert_eq!(RUN_COUNT.with(Cell::get), 1);
     }
@@ -443,7 +457,8 @@ mod tests {
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
     }
@@ -460,7 +475,8 @@ mod tests {
                     TPM_ALG_SHA384,
                     TPM_ALG_SHA512,
                     TPM_ALG_AES,
-                    TPM_ALG_OAEP
+                    TPM_ALG_OAEP,
+                    TPM_ALG_ECDH
                 ]
             ),
             Vec::new()
@@ -508,7 +524,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
         assert_eq!(
             to_do_list(&mut runtime, &[TPM_ALG_SHA256]),
-            [TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_OAEP],
+            [TPM_ALG_AES, TPM_ALG_SHA384, TPM_ALG_OAEP, TPM_ALG_ECDH],
             "only the profile-enabled primitives with a Rust test remain"
         );
     }
@@ -526,7 +542,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
         assert!(!reported.contains(&TPM_ALG_ECC));
@@ -907,7 +924,13 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha512));
             assert_eq!(
                 to_do_list(&mut runtime, &[TPM_ALG_OAEP]),
-                [TPM_ALG_SHA1, TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384],
+                [
+                    TPM_ALG_SHA1,
+                    TPM_ALG_AES,
+                    TPM_ALG_SHA256,
+                    TPM_ALG_SHA384,
+                    TPM_ALG_ECDH
+                ],
                 "TestRsaEncryptDecrypt tests the default hash before OAEP"
             );
         }
@@ -915,9 +938,9 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         #[test]
         fn an_explicitly_requested_completed_oaep_test_is_run_again() {
             let mut runtime = counting_runtime();
-            assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_OAEP]).len(), 4);
+            assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_OAEP]).len(), 5);
             assert_eq!(calls(), 1);
-            assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_OAEP]).len(), 4);
+            assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_OAEP]).len(), 5);
             assert_eq!(calls(), 2, "an explicit request is never skipped");
         }
 
@@ -929,7 +952,13 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             RUN_COUNT.with(|count| count.set(0));
             assert_eq!(
                 to_do_list(&mut runtime, &[TPM_ALG_OAEP, TPM_ALG_SHA512]),
-                [TPM_ALG_SHA1, TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA384]
+                [
+                    TPM_ALG_SHA1,
+                    TPM_ALG_AES,
+                    TPM_ALG_SHA256,
+                    TPM_ALG_SHA384,
+                    TPM_ALG_ECDH
+                ]
             );
             assert_eq!(executed(), [PrimitiveTest::Sha512]);
             assert_eq!(calls(), 1);
@@ -1092,7 +1121,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     fn the_upstream_maximum_count_is_accepted_and_validated() {
         let mut runtime = started_runtime();
         let algorithms = [TPM_ALG_SHA256; 64];
-        assert_eq!(to_do_list(&mut runtime, &algorithms).len(), 5);
+        assert_eq!(to_do_list(&mut runtime, &algorithms).len(), 6);
         assert_eq!(
             run_code(&mut runtime, &framed(0x8001, &to_test(&[0xffff; 64]))),
             VALUE_PARAMETER_1
@@ -1181,7 +1210,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(run(&mut runtime, &SWTPM_BIOS_COMMAND), SWTPM_BIOS_RESPONSE);
-        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA1]).len(), 4);
+        assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA1]).len(), 5);
         assert_eq!(snapshot(&runtime), before);
     }
 
@@ -1210,7 +1239,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
     }

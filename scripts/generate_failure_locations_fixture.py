@@ -22,9 +22,11 @@ FUNCTIONS = {
     "ExecuteCommand",
     "TestHash",
     "TestSymmetricAlgorithm",
+    "TestECDH",
     "TestRsaEncryptDecrypt",
     "DRBG_Generate",
     "EncryptDRBG",
+    "BnDiv",
 }
 
 SITE = re.compile(r"\b(SELF_TEST_FAILURE|FAIL_IMMEDIATE|FAIL_BOOL|FAIL_RC|FAIL_VOID|FAIL)\s*[(;]?")

@@ -5,10 +5,12 @@ mod capability;
 mod clock;
 mod command;
 mod command_bitmap;
+mod commit;
 mod compile_constants;
 mod context;
 mod crypto;
 mod dictionary_attack;
+mod ecc;
 mod entity;
 mod failure_mode;
 #[cfg(test)]

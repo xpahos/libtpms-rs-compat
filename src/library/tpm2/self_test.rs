@@ -4,16 +4,20 @@ use crate::ffi_types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 
 use super::algorithm::{
-    TPM_ALG_AES, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSA, TPM_ALG_RSAES, TPM_ALG_SHA1,
-    TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512, algorithm_enabled, hash_profile_name,
+    TPM_ALG_AES, TPM_ALG_ECDH, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSA, TPM_ALG_RSAES,
+    TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512, algorithm_enabled,
+    hash_profile_name,
 };
 use super::capability::algorithms::enabled_algorithms;
+use super::ecc::{EccPoint, point_multiply};
 use super::pcr::BankHasher;
 use super::profile::ValidatedProfile;
 
 const AES_BLOCK_SIZE: usize = 16;
 const AES256_KEY_SIZE: usize = 32;
 const AES_PROFILE_NAME: &[u8] = b"aes";
+const ECDH_PROFILE_NAME: &[u8] = b"ecdh";
+const ECDH_TEST_CURVE: u16 = 0x0003;
 
 const fn hex_nibble(digit: u8) -> u8 {
     match digit {
@@ -152,15 +156,17 @@ pub(in crate::library::tpm2) enum PrimitiveTest {
     Sha384,
     Sha512,
     Aes256,
+    Ecdh,
 }
 
 impl PrimitiveTest {
-    pub(in crate::library::tpm2) const ALL: [Self; 5] = [
+    pub(in crate::library::tpm2) const ALL: [Self; 6] = [
         Self::Sha1,
         Self::Aes256,
         Self::Sha256,
         Self::Sha384,
         Self::Sha512,
+        Self::Ecdh,
     ];
 
     const fn bit(self) -> u8 {
@@ -174,6 +180,7 @@ impl PrimitiveTest {
             Self::Sha384 => TPM_ALG_SHA384,
             Self::Sha512 => TPM_ALG_SHA512,
             Self::Aes256 => TPM_ALG_AES,
+            Self::Ecdh => TPM_ALG_ECDH,
         }
     }
 
@@ -190,6 +197,7 @@ impl PrimitiveTest {
             Self::Sha384 => hash_profile_name(TPM_ALG_SHA384),
             Self::Sha512 => hash_profile_name(TPM_ALG_SHA512),
             Self::Aes256 => Some(AES_PROFILE_NAME),
+            Self::Ecdh => Some(ECDH_PROFILE_NAME),
         };
         match name {
             Some(name) => name,
@@ -204,6 +212,7 @@ impl PrimitiveTest {
             Self::Sha384 => run_hash_vectors(2, &SHA384_VECTORS),
             Self::Sha512 => run_hash_vectors(3, &SHA512_VECTORS),
             Self::Aes256 => run_block_cipher_vectors(&AES256_VECTORS),
+            Self::Ecdh => run_ecdh_vector(&ECDH_VECTOR),
         }
     }
 }
@@ -224,6 +233,31 @@ fn run_block_cipher_vectors(vectors: &[BlockCipherVector]) -> bool {
         cipher.encrypt_block(&mut block);
         block.as_slice() == vector.ciphertext
     })
+}
+
+struct EcdhVector {
+    private: [u8; 32],
+    peer_x: [u8; 32],
+    peer_y: [u8; 32],
+    shared_x: [u8; 32],
+    shared_y: [u8; 32],
+}
+
+const ECDH_VECTOR: EcdhVector = EcdhVector {
+    private: hex_bytes(b"df8da4a388f6769689fc2f2da1b4397a78c47f718ca69185c0bff35420912f73"),
+    peer_x: hex_bytes(b"a51e80d1763e8b96cecc2182c9a2a2ed4721895344e9c792e7314838e6ea9347"),
+    peer_y: hex_bytes(b"30e64f9703a1cb3b322a703994eb4eea5588813fb500b85425abd4dafd537a18"),
+    shared_x: hex_bytes(b"6402689278db3352ed3bfa3b74a33d2c2f9c590307f82290ede345f82a0ad81d"),
+    shared_y: hex_bytes(b"58940582be5f330225903a339089e3e5104abc78a5c50764af91bce6ff851140"),
+};
+
+fn run_ecdh_vector(vector: &EcdhVector) -> bool {
+    let peer = EccPoint {
+        x: vector.peer_x.to_vec(),
+        y: vector.peer_y.to_vec(),
+    };
+    point_multiply(ECDH_TEST_CURVE, Some(&peer), &vector.private)
+        .is_ok_and(|shared| shared.x == vector.shared_x && shared.y == vector.shared_y)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -725,6 +759,11 @@ pub(in crate::library::tpm2) fn fails_on_sha512(test: PrimitiveTest) -> bool {
 }
 
 #[cfg(test)]
+pub(in crate::library::tpm2) fn fails_on_ecdh(test: PrimitiveTest) -> bool {
+    test != PrimitiveTest::Ecdh
+}
+
+#[cfg(test)]
 mod tests {
     use super::super::algorithm::{TPM_ALG_ERROR, TPM_ALG_HMAC, TPM_ALG_RSA};
     use super::*;
@@ -1004,7 +1043,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         state.set_runner(counting_runner);
         RUN_COUNT.with(|count| count.set(0));
         assert_eq!(state.run(false), Ok(()));
-        assert_eq!(RUN_COUNT.with(Cell::get), 3);
+        assert_eq!(RUN_COUNT.with(Cell::get), 4);
         assert!(state.pending.is_empty());
     }
 
@@ -1175,7 +1214,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_AES,
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
-                TPM_ALG_SHA512
+                TPM_ALG_SHA512,
+                TPM_ALG_ECDH
             ],
             "upstream CryptRunSelfTests walks the algorithm IDs in numeric order"
         );
@@ -1227,7 +1267,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ],
             "the reported list stays numerically sorted"
         );
@@ -1396,13 +1437,20 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
         assert_eq!(state.run_selected(&[TPM_ALG_SHA1, TPM_ALG_SHA384]), Ok(()));
         assert_eq!(
             state.pending_algorithms(),
-            [TPM_ALG_AES, TPM_ALG_SHA256, TPM_ALG_SHA512, TPM_ALG_OAEP]
+            [
+                TPM_ALG_AES,
+                TPM_ALG_SHA256,
+                TPM_ALG_SHA512,
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
+            ]
         );
         assert_eq!(state.run(true), Ok(()));
         assert_eq!(
@@ -1423,7 +1471,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_SHA256,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
         assert_eq!(
@@ -1447,6 +1496,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         );
         assert_eq!(restarted.run_selected(&[TPM_ALG_SHA256]), Ok(()));
     }
+
+    use super::super::command::{TPM_CC_COMMIT, find_command};
 
     const CANCEL_CHECKPOINTS: &str = include_str!("testdata/cancel_checkpoints.txt");
 
@@ -1482,7 +1533,67 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_vendored_cancellation_checkpoints_are_all_in_unimplemented_paths() {
+    fn the_ecdh_known_answer_test_reproduces_the_vendored_vector() {
+        assert!(
+            PrimitiveTest::Ecdh.run(),
+            "the vendored TestECDH vector reproduces"
+        );
+        assert_eq!(PrimitiveTest::Ecdh.algorithm(), TPM_ALG_ECDH);
+        assert_eq!(PrimitiveTest::Ecdh.profile_name(), b"ecdh");
+        let mut broken = ECDH_VECTOR;
+        broken.shared_x[31] ^= 0x01;
+        assert!(!run_ecdh_vector(&broken), "a wrong answer is refused");
+        let mut off_curve = ECDH_VECTOR;
+        off_curve.peer_y[31] ^= 0x01;
+        assert!(!run_ecdh_vector(&off_curve), "an off-curve peer is refused");
+    }
+
+    #[test]
+    fn a_profile_without_ecdh_never_reports_or_accepts_it() {
+        let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"ecdh");
+        let mut state = SelfTestState::for_algorithms(&algorithms);
+        assert!(!state.pending_algorithms().contains(&TPM_ALG_ECDH));
+        assert_eq!(
+            state.run_selected(&[TPM_ALG_ECDH]),
+            Err(SelectedTestError::UnsupportedAlgorithm(TPM_ALG_ECDH))
+        );
+        assert_eq!(state.run(true), Ok(()));
+    }
+
+    #[test]
+    fn a_failing_ecdh_test_is_recorded_and_stops_being_retried_once_it_passes() {
+        let mut state = default_state();
+        state.set_runner(fails_on_ecdh);
+        assert_eq!(state.run(true), Err(TPM_RC_FAILURE));
+        assert_eq!(
+            state.failure,
+            Some(SelfTestFailure {
+                primitive: PrimitiveTest::Ecdh
+            })
+        );
+        assert!(state.pending.contains(PrimitiveTest::Ecdh));
+
+        let mut state = default_state();
+        state.set_runner(counting_runner);
+        RUN_COUNT.with(|count| count.set(0));
+        assert_eq!(state.run_pending_algorithm(TPM_ALG_ECDH), Ok(()));
+        assert_eq!(RUN_COUNT.with(Cell::get), 1);
+        assert!(!state.pending.contains(PrimitiveTest::Ecdh));
+        assert_eq!(state.run_pending_algorithm(TPM_ALG_ECDH), Ok(()));
+        assert_eq!(RUN_COUNT.with(Cell::get), 1, "a cleared test never reruns");
+    }
+
+    #[test]
+    fn a_restart_makes_the_ecdh_test_pending_again() {
+        let mut state = default_state();
+        assert_eq!(state.run(true), Ok(()));
+        assert!(!state.pending.contains(PrimitiveTest::Ecdh));
+        let restarted = state.restarted();
+        assert!(restarted.pending.contains(PrimitiveTest::Ecdh));
+    }
+
+    #[test]
+    fn the_vendored_cancellation_checkpoints_match_the_generated_fixture() {
         let checkpoints = vendored_checkpoints();
         assert_eq!(
             checkpoints,
@@ -1537,8 +1648,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn no_vendored_checkpoint_sits_in_a_path_this_port_implements() {
-        const IMPLEMENTED_UPSTREAM_PATHS: [&str; 8] = [
+    fn no_vendored_checkpoint_sits_in_a_self_test_path_this_port_implements() {
+        const IMPLEMENTED_SELF_TEST_PATHS: [&str; 8] = [
             "CryptSelfTest",
             "CryptIncrementalSelfTest",
             "CryptRunSelfTests",
@@ -1551,13 +1662,46 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
 
         for checkpoint in vendored_checkpoints() {
             assert!(
-                !IMPLEMENTED_UPSTREAM_PATHS.contains(&checkpoint.function),
+                !IMPLEMENTED_SELF_TEST_PATHS.contains(&checkpoint.function),
                 "{}:{} polls the cancel flag from {}, which this port implements",
                 checkpoint.file,
                 checkpoint.line,
                 checkpoint.function
             );
         }
+    }
+
+    #[test]
+    fn the_commit_computation_is_the_only_cancelable_path_this_port_implements() {
+        const POLLED_BY_THIS_PORT: [&str; 1] = ["CryptEccCommitCompute"];
+        const STILL_UNIMPLEMENTED: [&str; 3] =
+            ["<macro>", "TestEccSignAndVerify", "CryptRsaGenerateKey"];
+
+        let checkpoints = vendored_checkpoints();
+        let polled: Vec<u32> = checkpoints
+            .iter()
+            .filter(|checkpoint| POLLED_BY_THIS_PORT.contains(&checkpoint.function))
+            .map(|checkpoint| checkpoint.line)
+            .collect();
+        assert_eq!(
+            polled,
+            [305, 325],
+            "TPM2_Commit polls both CryptEccCommitCompute checkpoints"
+        );
+        for checkpoint in &checkpoints {
+            assert!(
+                POLLED_BY_THIS_PORT.contains(&checkpoint.function)
+                    || STILL_UNIMPLEMENTED.contains(&checkpoint.function),
+                "{}:{} sits in {}, which is neither polled nor known to be unimplemented",
+                checkpoint.file,
+                checkpoint.line,
+                checkpoint.function
+            );
+        }
+        assert!(
+            find_command(TPM_CC_COMMIT).is_some(),
+            "the polled checkpoints belong to a registered command"
+        );
     }
 
     #[test]
@@ -1601,7 +1745,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                 TPM_ALG_AES,
                 TPM_ALG_SHA384,
                 TPM_ALG_SHA512,
-                TPM_ALG_OAEP
+                TPM_ALG_OAEP,
+                TPM_ALG_ECDH
             ]
         );
     }

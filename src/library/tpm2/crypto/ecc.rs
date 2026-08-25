@@ -12,9 +12,18 @@ pub(in crate::library::tpm2) const TPM_ECC_BN_P256: u16 = 0x0010;
 pub(in crate::library::tpm2) const TPM_ECC_BN_P638: u16 = 0x0011;
 pub(in crate::library::tpm2) const TPM_ECC_SM2_P256: u16 = 0x0020;
 
+const TPM_ALG_NULL: u16 = 0x0010;
+const TPM_ALG_SHA256: u16 = 0x000b;
+const TPM_ALG_SHA384: u16 = 0x000c;
+const TPM_ALG_SHA512: u16 = 0x000d;
+const TPM_ALG_SM3_256: u16 = 0x0012;
+const TPM_ALG_KDF1_SP800_56A: u16 = 0x0020;
+
 pub(in crate::library::tpm2) struct EccCurve {
     pub(in crate::library::tpm2) curve_id: u16,
     pub(in crate::library::tpm2) key_size_bits: u16,
+    kdf_scheme: u16,
+    kdf_hash: u16,
     prime: &'static str,
     a: &'static str,
     b: &'static str,
@@ -27,6 +36,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_NIST_P192,
         key_size_bits: 192,
+        kdf_scheme: TPM_ALG_KDF1_SP800_56A,
+        kdf_hash: TPM_ALG_SHA256,
         prime: "fffffffffffffffffffffffffffffffeffffffffffffffff",
         a: "fffffffffffffffffffffffffffffffefffffffffffffffc",
         b: "64210519e59c80e70fa7e9ab72243049feb8deecc146b9b1",
@@ -37,6 +48,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_NIST_P224,
         key_size_bits: 224,
+        kdf_scheme: TPM_ALG_KDF1_SP800_56A,
+        kdf_hash: TPM_ALG_SHA256,
         prime: "ffffffffffffffffffffffffffffffff000000000000000000000001",
         a: "fffffffffffffffffffffffffffffffefffffffffffffffffffffffe",
         b: "b4050a850c04b3abf54132565044b0b7d7bfd8ba270b39432355ffb4",
@@ -47,6 +60,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_NIST_P256,
         key_size_bits: 256,
+        kdf_scheme: TPM_ALG_KDF1_SP800_56A,
+        kdf_hash: TPM_ALG_SHA256,
         prime: "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
         a: "ffffffff00000001000000000000000000000000fffffffffffffffffffffffc",
         b: "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
@@ -57,6 +72,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_NIST_P384,
         key_size_bits: 384,
+        kdf_scheme: TPM_ALG_KDF1_SP800_56A,
+        kdf_hash: TPM_ALG_SHA384,
         prime: "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe\
                 ffffffff0000000000000000ffffffff",
         a: "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe\
@@ -73,6 +90,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_NIST_P521,
         key_size_bits: 521,
+        kdf_scheme: TPM_ALG_KDF1_SP800_56A,
+        kdf_hash: TPM_ALG_SHA512,
         prime: "01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
                 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
                 ffff",
@@ -95,6 +114,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_BN_P256,
         key_size_bits: 256,
+        kdf_scheme: TPM_ALG_NULL,
+        kdf_hash: TPM_ALG_NULL,
         prime: "fffffffffffcf0cd46e5f25eee71a49f0cdc65fb12980a82d3292ddbaed33013",
         a: "00",
         b: "03",
@@ -105,6 +126,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_BN_P638,
         key_size_bits: 638,
+        kdf_scheme: TPM_ALG_NULL,
+        kdf_hash: TPM_ALG_NULL,
         prime: "23fffffdc000000d7fffffb8000001d3fffff942d000165e3fff94870000d52f\
                 fffdd0e00008de55c00086520021e55bfffff51ffff4eb800000004c80015acd\
                 ffffffffffffece00000000000000067",
@@ -121,6 +144,8 @@ static ECC_CURVES: &[EccCurve] = &[
     EccCurve {
         curve_id: TPM_ECC_SM2_P256,
         key_size_bits: 256,
+        kdf_scheme: TPM_ALG_KDF1_SP800_56A,
+        kdf_hash: TPM_ALG_SM3_256,
         prime: "fffffffeffffffffffffffffffffffffffffffff00000000ffffffffffffffff",
         a: "fffffffeffffffffffffffffffffffffffffffff00000000fffffffffffffffc",
         b: "28e9fa9e9d9f5e344d5a9e4bcf6509a7f39789f515ab8f92ddbcbd414d940e93",
@@ -187,6 +212,60 @@ pub(in crate::library::tpm2) fn curve_parameters(curve_id: u16) -> Option<CurveP
 
 pub(in crate::library::tpm2) fn is_compiled_curve(curve_id: u16) -> bool {
     ECC_CURVES.iter().any(|entry| entry.curve_id == curve_id)
+}
+
+pub(in crate::library::tpm2) struct CurveDetail {
+    pub(in crate::library::tpm2) curve_id: u16,
+    pub(in crate::library::tpm2) key_size_bits: u16,
+    pub(in crate::library::tpm2) kdf_scheme: u16,
+    pub(in crate::library::tpm2) kdf_hash: u16,
+    pub(in crate::library::tpm2) sign_scheme: u16,
+    pub(in crate::library::tpm2) prime: Vec<u8>,
+    pub(in crate::library::tpm2) a: Vec<u8>,
+    pub(in crate::library::tpm2) b: Vec<u8>,
+    pub(in crate::library::tpm2) generator_x: Vec<u8>,
+    pub(in crate::library::tpm2) generator_y: Vec<u8>,
+    pub(in crate::library::tpm2) order: Vec<u8>,
+    pub(in crate::library::tpm2) cofactor: Vec<u8>,
+}
+
+fn minimal_bytes(value: &BigUint) -> Vec<u8> {
+    if value.is_zero() {
+        return vec![0u8];
+    }
+    value
+        .to_be_bytes(value.byte_len())
+        .expect("a value fits its own byte length")
+}
+
+fn padded_bytes(value: &BigUint, width: usize) -> Vec<u8> {
+    if value.is_zero() {
+        return vec![0u8];
+    }
+    value
+        .to_be_bytes(width.max(value.byte_len()))
+        .expect("a value fits the requested width")
+}
+
+pub(in crate::library::tpm2) fn curve_detail(curve_id: u16) -> Option<CurveDetail> {
+    let entry = ECC_CURVES.iter().find(|entry| entry.curve_id == curve_id)?;
+    let curve = curve_parameters(curve_id)?;
+    let prime = minimal_bytes(&curve.prime);
+    let width = prime.len();
+    Some(CurveDetail {
+        curve_id,
+        key_size_bits: entry.key_size_bits,
+        kdf_scheme: entry.kdf_scheme,
+        kdf_hash: entry.kdf_hash,
+        sign_scheme: TPM_ALG_NULL,
+        a: padded_bytes(&curve.a, width),
+        b: padded_bytes(&curve.b, width),
+        generator_x: padded_bytes(&curve.generator_x, width),
+        generator_y: padded_bytes(&curve.generator_y, width),
+        order: minimal_bytes(&curve.order),
+        cofactor: vec![0x01],
+        prime,
+    })
 }
 
 pub(in crate::library::tpm2) fn curve_key_size_bits(curve_id: u16) -> Option<u16> {
@@ -335,9 +414,23 @@ impl CurveParameters {
         point: (&BigUint, &BigUint),
         point_scalar: &BigUint,
     ) -> Option<(BigUint, BigUint)> {
-        let mut accumulator =
-            self.multiply_affine(&self.generator_x, &self.generator_y, generator_scalar);
-        let addend = self.multiply_affine(point.0, point.1, point_scalar);
+        self.multiply_and_add(
+            (&self.generator_x, &self.generator_y),
+            generator_scalar,
+            point,
+            point_scalar,
+        )
+    }
+
+    pub(in crate::library::tpm2) fn multiply_and_add(
+        &self,
+        first: (&BigUint, &BigUint),
+        first_scalar: &BigUint,
+        second: (&BigUint, &BigUint),
+        second_scalar: &BigUint,
+    ) -> Option<(BigUint, BigUint)> {
+        let mut accumulator = self.multiply_affine(first.0, first.1, first_scalar);
+        let addend = self.multiply_affine(second.0, second.1, second_scalar);
         if let Some((x, y)) = self.to_affine(&addend) {
             accumulator = self.add_affine(&accumulator, &x, &y);
         }
