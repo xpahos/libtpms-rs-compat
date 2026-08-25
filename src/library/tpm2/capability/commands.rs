@@ -98,6 +98,7 @@ mod tests {
     const TPMA_CC_CONTEXT_SAVE: u32 = 0x0200_0162;
     const TPMA_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
     const TPMA_CC_LOAD_EXTERNAL: u32 = 0x1000_0167;
+    const TPMA_CC_MAKE_CREDENTIAL: u32 = 0x0200_0168;
     const TPMA_CC_NV_READ_PUBLIC: u32 = 0x0200_0169;
     const TPMA_CC_READ_PUBLIC: u32 = 0x0200_0173;
     const TPMA_CC_VERIFY_SIGNATURE: u32 = 0x0200_0177;
@@ -122,6 +123,7 @@ mod tests {
     const TPMA_CC_SEQUENCE_COMPLETE: u32 = 0x0300_013e;
     const TPMA_CC_SET_ALGORITHM_SET: u32 = 0x0240_013f;
     const TPMA_CC_SET_COMMAND_CODE_AUDIT_STATUS: u32 = 0x0240_0140;
+    const TPMA_CC_ACTIVATE_CREDENTIAL: u32 = 0x0400_0147;
     const TPMA_CC_CERTIFY: u32 = 0x0400_0148;
     const TPMA_CC_CERTIFY_CREATION: u32 = 0x0400_014a;
     const TPMA_CC_DUPLICATE: u32 = 0x0400_014b;
@@ -220,6 +222,7 @@ mod tests {
                 TPMA_CC_STARTUP,
                 TPMA_CC_SHUTDOWN,
                 TPMA_CC_STIR_RANDOM,
+                TPMA_CC_ACTIVATE_CREDENTIAL,
                 TPMA_CC_CERTIFY,
                 TPMA_CC_POLICY_NV,
                 TPMA_CC_CERTIFY_CREATION,
@@ -249,6 +252,7 @@ mod tests {
                 TPMA_CC_ENCRYPT_DECRYPT,
                 TPMA_CC_FLUSH_CONTEXT,
                 TPMA_CC_LOAD_EXTERNAL,
+                TPMA_CC_MAKE_CREDENTIAL,
                 TPMA_CC_NV_READ_PUBLIC,
                 TPMA_CC_POLICY_AUTHORIZE,
                 TPMA_CC_POLICY_AUTH_VALUE,
@@ -546,21 +550,21 @@ mod tests {
 
     #[test]
     fn a_start_between_entries_skips_to_the_next_command() {
-        let page = implemented(0x0147, 11);
+        let page = implemented(0x0166, 11);
         assert_eq!(
             page.entries,
             [
-                TPMA_CC_CERTIFY,
-                TPMA_CC_POLICY_NV,
-                TPMA_CC_CERTIFY_CREATION,
-                TPMA_CC_DUPLICATE,
-                TPMA_CC_GET_TIME,
-                TPMA_CC_GET_SESSION_AUDIT_DIGEST,
-                TPMA_CC_NV_READ,
-                TPMA_CC_NV_READ_LOCK,
-                TPMA_CC_OBJECT_CHANGE_AUTH,
-                TPMA_CC_POLICY_SECRET,
-                TPMA_CC_REWRAP
+                TPMA_CC_LOAD_EXTERNAL,
+                TPMA_CC_MAKE_CREDENTIAL,
+                TPMA_CC_NV_READ_PUBLIC,
+                TPMA_CC_POLICY_AUTHORIZE,
+                TPMA_CC_POLICY_AUTH_VALUE,
+                TPMA_CC_POLICY_COMMAND_CODE,
+                TPMA_CC_POLICY_COUNTER_TIMER,
+                TPMA_CC_POLICY_CP_HASH,
+                TPMA_CC_POLICY_LOCALITY,
+                TPMA_CC_POLICY_NAME_HASH,
+                TPMA_CC_POLICY_OR
             ]
         );
         assert!(page.more_data);

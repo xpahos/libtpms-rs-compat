@@ -2,6 +2,7 @@ use super::crypto::{
     BigUint, RSA_DEFAULT_PUBLIC_EXPONENT, oaep_decode, oaep_encode, rsa_private_key_op,
     rsa_public_key_op, rsaes_decode, rsaes_encode,
 };
+use super::self_test::LazySelfTest;
 
 pub(super) const OAEP_TEST_LABEL: &[u8] = b"OAEP Test Value\0";
 pub(in crate::library::tpm2) const OAEP_TEST_SEED_SIZE: usize = 64;
@@ -189,7 +190,14 @@ impl Padding<'_> {
 
     fn decode(&self, padded: &[u8]) -> Option<Vec<u8>> {
         match self {
-            Self::Oaep { .. } => oaep_decode(TEST_HASH_ALG, OAEP_TEST_LABEL, padded),
+            Self::Oaep { .. } => oaep_decode(
+                TEST_HASH_ALG,
+                OAEP_TEST_LABEL,
+                padded,
+                &mut LazySelfTest::untested(),
+            )
+            .ok()
+            .flatten(),
             Self::Rsaes { .. } => rsaes_decode(padded),
         }
     }
@@ -418,7 +426,14 @@ mod tests {
         .expect("the encode succeeds");
         assert_ne!(padded, other, "the seed reaches the encoded block");
         assert_eq!(
-            oaep_decode(TEST_HASH_ALG, OAEP_TEST_LABEL, &padded).as_deref(),
+            oaep_decode(
+                TEST_HASH_ALG,
+                OAEP_TEST_LABEL,
+                &padded,
+                &mut LazySelfTest::untested(),
+            )
+            .expect("an untested gate never fails")
+            .as_deref(),
             Some(&TEST_VALUE[..TEST_MESSAGE_SIZE])
         );
     }

@@ -390,8 +390,8 @@ mod tests {
         let mut runtime = audit_runtime();
         run_ok(
             &mut runtime,
-            &audit_status(ALG_NULL, &[0x0000_0147], &[]),
-            "TPM2_ActivateCredential is audited",
+            &audit_status(ALG_NULL, &[0x0000_0197], &[]),
+            "TPM2_CertifyX509 is audited",
         );
         let expected = vector("CMD_AUDIT_DIGEST_UNREGISTERED");
         replay_clock(&mut runtime, expected);

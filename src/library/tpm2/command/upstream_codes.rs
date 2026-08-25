@@ -119,6 +119,10 @@ pub(in crate::library::tpm2) fn upstream_implements(code: u32) -> bool {
     UPSTREAM_IMPLEMENTED.binary_search(&code).is_ok()
 }
 
+pub(in crate::library::tpm2) fn upstream_command_codes() -> impl Iterator<Item = u32> {
+    UPSTREAM_IMPLEMENTED.into_iter()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::registry::implemented;

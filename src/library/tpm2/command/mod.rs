@@ -7,6 +7,7 @@ mod context;
 mod create;
 mod create_loaded;
 mod create_primary;
+mod credential;
 mod dictionary_attack_parameters;
 mod dispatcher;
 mod ecc_commitment;
@@ -95,4 +96,4 @@ pub(in crate::library::tpm2) use registry::{
     TPM_CC_GET_CAPABILITY, TPM_CC_GET_TEST_RESULT, find as find_command,
     implemented as implemented_commands,
 };
-pub(in crate::library::tpm2) use upstream_codes::upstream_implements;
+pub(in crate::library::tpm2) use upstream_codes::{upstream_command_codes, upstream_implements};

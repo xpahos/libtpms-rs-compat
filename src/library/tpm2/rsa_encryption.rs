@@ -15,6 +15,7 @@ use super::crypto::{
 use super::persistent::{OwnedObjectBody, OwnedPublicId, OwnedTpmtPublic};
 use super::profile::ValidatedProfile;
 use super::public::PublicParms;
+use super::self_test::LazySelfTest;
 use super::signature::{rsa_key_parts, rsa_modulus};
 use super::template::{TemplateReader, digest_size};
 
@@ -144,6 +145,7 @@ pub(super) fn crypt_rsa_encrypt(
     message: &[u8],
     label: &[u8],
     forbids_unpadded: bool,
+    gate: &mut LazySelfTest<'_>,
     rand: &mut SeededRand,
 ) -> Result<Vec<u8>, TpmResult> {
     let modulus = public_area_modulus(public)?;
@@ -168,6 +170,7 @@ pub(super) fn crypt_rsa_encrypt(
             if message.len() + 2 * hash_len + 2 > modulus_len {
                 return Err(TPM_RC_VALUE);
             }
+            gate.algorithm(scheme.hash_alg)?;
             let seed = draw(rand, hash_len)?;
             oaep_encode(scheme.hash_alg, label, message, &seed, modulus_len)
                 .ok_or(TPM_RC_FAILURE)?
@@ -197,6 +200,7 @@ pub(super) fn crypt_rsa_decrypt(
     ciphertext: &[u8],
     label: &[u8],
     forbids_unpadded: bool,
+    gate: &mut LazySelfTest<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
     check_ciphertext_size(body, ciphertext)?;
     let modulus = public_modulus(body)?;
@@ -212,7 +216,7 @@ pub(super) fn crypt_rsa_decrypt(
         TPM_ALG_RSAES => rsaes_decode(&recovered).ok_or(TPM_RC_VALUE),
         TPM_ALG_OAEP => {
             digest_size(scheme.hash_alg).ok_or(TPM_RC_VALUE)?;
-            oaep_decode(scheme.hash_alg, label, &recovered).ok_or(TPM_RC_VALUE)
+            oaep_decode(scheme.hash_alg, label, &recovered, gate)?.ok_or(TPM_RC_VALUE)
         }
         _ => Err(TPM_RC_SCHEME),
     }
@@ -236,6 +240,10 @@ fn private_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn no_gate() -> LazySelfTest<'static> {
+        LazySelfTest::untested()
+    }
     use crate::library::constants::TPM_RC_INSUFFICIENT;
     use crate::library::tpm2::algorithm::{
         TPM_ALG_RSAPSS, TPM_ALG_RSASSA, TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384,
@@ -518,6 +526,129 @@ mod tests {
             .expect("a non-empty derivation input")
     }
 
+    fn recorded_encrypt(
+        public: &OwnedTpmtPublic,
+        scheme: &RsaDecryptScheme,
+        message: &[u8],
+        failing: bool,
+        generator: &mut SeededRand,
+    ) -> (Result<Vec<u8>, TpmResult>, Vec<u16>) {
+        let mut calls = Vec::new();
+        let outcome = {
+            let mut run = |algorithm: u16| {
+                calls.push(algorithm);
+                if failing {
+                    return Err(crate::library::constants::TPM_RC_FAILURE);
+                }
+                Ok(())
+            };
+            crypt_rsa_encrypt(
+                public,
+                scheme,
+                message,
+                b"SECRET\0",
+                false,
+                &mut LazySelfTest::runtime(&mut run),
+                generator,
+            )
+        };
+        (outcome, calls)
+    }
+
+    fn oaep_scheme() -> RsaDecryptScheme {
+        RsaDecryptScheme {
+            scheme: TPM_ALG_OAEP,
+            hash_alg: TPM_ALG_SHA256,
+        }
+    }
+
+    #[test]
+    fn oaep_encoding_reaches_its_hash_test_before_drawing_the_padding_seed() {
+        let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
+        let mut generator = rand();
+        let (outcome, calls) = recorded_encrypt(
+            &key.public,
+            &oaep_scheme(),
+            b"payload",
+            true,
+            &mut generator,
+        );
+        assert_eq!(outcome, Err(crate::library::constants::TPM_RC_FAILURE));
+        assert_eq!(calls, [TPM_ALG_SHA256]);
+        assert_eq!(
+            generator.random_bytes(32).expect("the generator runs"),
+            rand().random_bytes(32).expect("the generator runs"),
+            "the reference hashes the label before it draws the OAEP seed"
+        );
+    }
+
+    #[test]
+    fn oaep_encoding_rejected_by_its_size_checks_reaches_no_hash_test() {
+        let wide = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
+        let narrow = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS[..128]);
+        for (what, key, scheme, message) in [
+            (
+                "a message that cannot fit",
+                &wide,
+                oaep_scheme(),
+                vec![0u8; 256 - 65],
+            ),
+            (
+                "a digest too large for the modulus",
+                &narrow,
+                RsaDecryptScheme {
+                    scheme: TPM_ALG_OAEP,
+                    hash_alg: TPM_ALG_SHA512,
+                },
+                b"payload".to_vec(),
+            ),
+        ] {
+            let mut generator = rand();
+            let (outcome, calls) =
+                recorded_encrypt(&key.public, &scheme, &message, false, &mut generator);
+            assert!(outcome.is_err(), "{what}");
+            assert!(calls.is_empty(), "{what}");
+            assert_eq!(
+                generator.random_bytes(32).expect("the generator runs"),
+                rand().random_bytes(32).expect("the generator runs"),
+                "{what} draws no padding seed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_successful_oaep_encryption_reaches_its_hash_test_once() {
+        let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
+        let mut generator = rand();
+        let (outcome, calls) = recorded_encrypt(
+            &key.public,
+            &oaep_scheme(),
+            b"payload",
+            false,
+            &mut generator,
+        );
+        assert!(outcome.is_ok());
+        assert_eq!(calls, [TPM_ALG_SHA256]);
+    }
+
+    #[test]
+    fn the_unpadded_and_rsaes_schemes_reach_no_hash_test() {
+        let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
+        for scheme in [
+            RsaDecryptScheme::NULL,
+            RsaDecryptScheme {
+                scheme: TPM_ALG_RSAES,
+                hash_alg: TPM_ALG_ERROR,
+            },
+        ] {
+            let mut generator = rand();
+            let (outcome, calls) =
+                recorded_encrypt(&key.public, &scheme, b"payload", false, &mut generator);
+            assert!(outcome.is_ok(), "{:#06x}", scheme.scheme);
+            assert!(calls.is_empty(), "{:#06x}", scheme.scheme);
+        }
+    }
+
     #[test]
     fn an_oaep_hash_too_large_for_the_modulus_is_a_hash_error() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS[..128]);
@@ -528,6 +659,7 @@ mod tests {
                 b"x",
                 b"",
                 false,
+                &mut no_gate(),
                 &mut rand(),
             ),
             Err(TPM_RC_HASH)
@@ -547,7 +679,8 @@ mod tests {
                 &[0u8; 191],
                 b"",
                 false,
-                &mut generator,
+                &mut no_gate(),
+                &mut generator
             ),
             Err(TPM_RC_VALUE)
         );
@@ -563,7 +696,8 @@ mod tests {
                 &[0u8; 246],
                 b"",
                 false,
-                &mut rand(),
+                &mut no_gate(),
+                &mut rand()
             ),
             Err(TPM_RC_VALUE)
         );
@@ -574,7 +708,8 @@ mod tests {
                 &[0u8; 245],
                 b"",
                 false,
-                &mut rand(),
+                &mut no_gate(),
+                &mut rand()
             )
             .is_ok(),
             "one byte less is the largest accepted message"
@@ -591,6 +726,7 @@ mod tests {
                 b"x",
                 b"",
                 true,
+                &mut no_gate(),
                 &mut rand()
             ),
             Err(TPM_RC_SCHEME)
@@ -598,10 +734,27 @@ mod tests {
         let mut ciphertext = TEST_MODULUS;
         ciphertext[0] -= 1;
         assert_eq!(
-            crypt_rsa_decrypt(&key, &RsaDecryptScheme::NULL, &ciphertext, b"", true),
+            crypt_rsa_decrypt(
+                &key,
+                &RsaDecryptScheme::NULL,
+                &ciphertext,
+                b"",
+                true,
+                &mut no_gate()
+            ),
             Err(TPM_RC_SCHEME)
         );
-        assert!(crypt_rsa_decrypt(&key, &RsaDecryptScheme::NULL, &ciphertext, b"", false).is_ok());
+        assert!(
+            crypt_rsa_decrypt(
+                &key,
+                &RsaDecryptScheme::NULL,
+                &ciphertext,
+                b"",
+                false,
+                &mut no_gate()
+            )
+            .is_ok()
+        );
         assert!(
             crypt_rsa_encrypt(
                 &key.public,
@@ -609,6 +762,7 @@ mod tests {
                 b"x",
                 b"",
                 false,
+                &mut no_gate(),
                 &mut rand()
             )
             .is_ok()
@@ -625,6 +779,7 @@ mod tests {
                 &TEST_MODULUS,
                 b"",
                 false,
+                &mut no_gate(),
                 &mut rand(),
             ),
             Err(TPM_RC_SIZE)
@@ -638,6 +793,7 @@ mod tests {
                 &below,
                 b"",
                 false,
+                &mut no_gate(),
                 &mut rand()
             )
             .is_ok()
@@ -656,6 +812,7 @@ mod tests {
                 &padded,
                 b"",
                 false,
+                &mut no_gate(),
                 &mut rand()
             )
             .is_ok(),
@@ -670,6 +827,7 @@ mod tests {
                 &significant,
                 b"",
                 false,
+                &mut no_gate(),
                 &mut rand(),
             ),
             Err(TPM_RC_VALUE)
@@ -679,9 +837,16 @@ mod tests {
     #[track_caller]
     fn round_trip(scheme: RsaDecryptScheme, message: &[u8], label: &[u8]) -> Vec<u8> {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
-        let ciphertext =
-            crypt_rsa_encrypt(&key.public, &scheme, message, label, false, &mut rand())
-                .expect("encrypts");
+        let ciphertext = crypt_rsa_encrypt(
+            &key.public,
+            &scheme,
+            message,
+            label,
+            false,
+            &mut no_gate(),
+            &mut rand(),
+        )
+        .expect("encrypts");
         assert_eq!(ciphertext.len(), TEST_MODULUS.len());
         ciphertext
     }
@@ -700,7 +865,8 @@ mod tests {
             let message = b"round trip payload";
             let ciphertext = round_trip(scheme, message, label);
             let recovered =
-                crypt_rsa_decrypt(&key, &scheme, &ciphertext, label, false).expect("decrypts");
+                crypt_rsa_decrypt(&key, &scheme, &ciphertext, label, false, &mut no_gate())
+                    .expect("decrypts");
             if scheme.scheme == TPM_ALG_NULL {
                 assert_eq!(&recovered[TEST_MODULUS.len() - message.len()..], message);
                 assert!(
@@ -720,11 +886,18 @@ mod tests {
         let scheme = requested(TPM_ALG_OAEP, TPM_ALG_SHA256);
         let ciphertext = round_trip(scheme, b"payload", b"right\0");
         assert_eq!(
-            crypt_rsa_decrypt(&key, &scheme, &ciphertext, b"wrong\0", false),
+            crypt_rsa_decrypt(
+                &key,
+                &scheme,
+                &ciphertext,
+                b"wrong\0",
+                false,
+                &mut no_gate()
+            ),
             Err(TPM_RC_VALUE)
         );
         assert_eq!(
-            crypt_rsa_decrypt(&key, &scheme, &ciphertext, b"", false),
+            crypt_rsa_decrypt(&key, &scheme, &ciphertext, b"", false, &mut no_gate()),
             Err(TPM_RC_VALUE)
         );
         assert_eq!(
@@ -734,6 +907,7 @@ mod tests {
                 &ciphertext,
                 b"right\0",
                 false,
+                &mut no_gate()
             ),
             Err(TPM_RC_VALUE)
         );
@@ -743,7 +917,8 @@ mod tests {
                 &requested(TPM_ALG_RSAES, TPM_ALG_ERROR),
                 &ciphertext,
                 b"",
-                false
+                false,
+                &mut no_gate()
             ),
             Err(TPM_RC_VALUE),
             "the padding of another scheme is rejected"
@@ -762,7 +937,8 @@ mod tests {
                 let original = ciphertext[position];
                 ciphertext[position] ^= 0x01;
                 assert!(
-                    crypt_rsa_decrypt(&key, &scheme, &ciphertext, b"", false).is_err(),
+                    crypt_rsa_decrypt(&key, &scheme, &ciphertext, b"", false, &mut no_gate())
+                        .is_err(),
                     "scheme {:#06x}, byte {position}",
                     scheme.scheme
                 );
@@ -775,7 +951,14 @@ mod tests {
     fn a_ciphertext_at_or_above_the_modulus_is_a_size_error() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
-            crypt_rsa_decrypt(&key, &RsaDecryptScheme::NULL, &TEST_MODULUS, b"", false),
+            crypt_rsa_decrypt(
+                &key,
+                &RsaDecryptScheme::NULL,
+                &TEST_MODULUS,
+                b"",
+                false,
+                &mut no_gate()
+            ),
             Err(TPM_RC_SIZE)
         );
     }
@@ -793,8 +976,16 @@ mod tests {
         ] {
             let mut generator = rand();
             let mut reference = rand();
-            crypt_rsa_encrypt(&key.public, &scheme, b"payload", b"", false, &mut generator)
-                .expect("encrypts");
+            crypt_rsa_encrypt(
+                &key.public,
+                &scheme,
+                b"payload",
+                b"",
+                false,
+                &mut no_gate(),
+                &mut generator,
+            )
+            .expect("encrypts");
             if expected > 0 {
                 reference.random_bytes(expected).expect("draws");
             }

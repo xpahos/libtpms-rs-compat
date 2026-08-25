@@ -10,6 +10,7 @@ use super::context;
 use super::create;
 use super::create_loaded;
 use super::create_primary;
+use super::credential;
 use super::dictionary_attack_parameters;
 use super::dispatcher::CommandFrame;
 use super::ecc_commitment;
@@ -110,6 +111,7 @@ pub(in crate::library::tpm2) const TPM_CC_SELF_TEST: u32 = 0x0000_0143;
 pub(in crate::library::tpm2) const TPM_CC_STARTUP: u32 = 0x0000_0144;
 pub(in crate::library::tpm2) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(in crate::library::tpm2) const TPM_CC_STIR_RANDOM: u32 = 0x0000_0146;
+pub(in crate::library::tpm2) const TPM_CC_ACTIVATE_CREDENTIAL: u32 = 0x0000_0147;
 pub(in crate::library::tpm2) const TPM_CC_CERTIFY: u32 = 0x0000_0148;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_NV: u32 = 0x0000_0149;
 pub(in crate::library::tpm2) const TPM_CC_CERTIFY_CREATION: u32 = 0x0000_014a;
@@ -139,6 +141,7 @@ pub(in crate::library::tpm2) const TPM_CC_ECDH_KEY_GEN: u32 = 0x0000_0163;
 pub(in crate::library::tpm2) const TPM_CC_ENCRYPT_DECRYPT: u32 = 0x0000_0164;
 pub(in crate::library::tpm2) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(in crate::library::tpm2) const TPM_CC_LOAD_EXTERNAL: u32 = 0x0000_0167;
+pub(in crate::library::tpm2) const TPM_CC_MAKE_CREDENTIAL: u32 = 0x0000_0168;
 pub(in crate::library::tpm2) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_AUTHORIZE: u32 = 0x0000_016a;
 pub(in crate::library::tpm2) const TPM_CC_POLICY_AUTH_VALUE: u32 = 0x0000_016b;
@@ -1029,6 +1032,30 @@ static COMMANDS: &[CommandDescriptor] = &[
         handler: stir_random::execute,
     },
     CommandDescriptor {
+        code: TPM_CC_ACTIVATE_CREDENTIAL,
+        attributes: tpma_cc(TPM_CC_ACTIVATE_CREDENTIAL, false, 2),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: true,
+                role: AuthRole::Admin,
+            },
+            HandleSpec {
+                kind: HandleKind::Object,
+                user_auth: true,
+                role: AuthRole::User,
+            },
+        ],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: credential::execute_activate_credential,
+    },
+    CommandDescriptor {
         code: TPM_CC_CERTIFY,
         attributes: tpma_cc(TPM_CC_CERTIFY, false, 2),
         physical_presence: false,
@@ -1590,6 +1617,23 @@ static COMMANDS: &[CommandDescriptor] = &[
         sessions_allowed: true,
         nv_access: NvAccess::Neither,
         handler: load::execute_external,
+    },
+    CommandDescriptor {
+        code: TPM_CC_MAKE_CREDENTIAL,
+        attributes: tpma_cc(TPM_CC_MAKE_CREDENTIAL, false, 1),
+        physical_presence: false,
+        physical_presence_required: false,
+        lifecycle: CommandLifecycle::RequiresStarted,
+        handles: &[HandleSpec {
+            kind: HandleKind::Object,
+            user_auth: false,
+            role: AuthRole::User,
+        }],
+        decrypt_size: 2,
+        encrypt_size: 2,
+        sessions_allowed: true,
+        nv_access: NvAccess::Neither,
+        handler: credential::execute_make_credential,
     },
     CommandDescriptor {
         code: TPM_CC_NV_READ_PUBLIC,
@@ -2447,6 +2491,7 @@ mod tests {
                 TPM_CC_STARTUP,
                 TPM_CC_SHUTDOWN,
                 TPM_CC_STIR_RANDOM,
+                TPM_CC_ACTIVATE_CREDENTIAL,
                 TPM_CC_CERTIFY,
                 TPM_CC_POLICY_NV,
                 TPM_CC_CERTIFY_CREATION,
@@ -2476,6 +2521,7 @@ mod tests {
                 TPM_CC_ENCRYPT_DECRYPT,
                 TPM_CC_FLUSH_CONTEXT,
                 TPM_CC_LOAD_EXTERNAL,
+                TPM_CC_MAKE_CREDENTIAL,
                 TPM_CC_NV_READ_PUBLIC,
                 TPM_CC_POLICY_AUTHORIZE,
                 TPM_CC_POLICY_AUTH_VALUE,

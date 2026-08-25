@@ -2,6 +2,7 @@ pub(in crate::library::tpm2) mod attestation;
 pub(in crate::library::tpm2) mod create;
 pub(in crate::library::tpm2) mod create_loaded;
 pub(in crate::library::tpm2) mod create_primary;
+pub(in crate::library::tpm2) mod credential_activation;
 pub(in crate::library::tpm2) mod dictionary_attack;
 pub(in crate::library::tpm2) mod ecc_commands;
 pub(in crate::library::tpm2) mod encrypt_decrypt;

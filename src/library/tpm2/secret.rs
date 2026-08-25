@@ -4,7 +4,7 @@ use crate::library::constants::{
     TPM_RC_KEY, TPM_RC_NO_RESULT, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
-use super::algorithm::{TPM_ALG_ECC, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSA};
+use super::algorithm::{TPM_ALG_ECC, TPM_ALG_ECDH, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSA};
 use super::crypto::{
     BigUint, EccKeyError, curve_parameters, kdfe, oaep_decode, rsa_private_key_op,
 };
@@ -12,11 +12,13 @@ use super::marshal::{BlobReader, Tpm2bError};
 use super::persistent::{OwnedObjectBody, OwnedPrivateExponent, OwnedPublicId};
 use super::public::PublicParms;
 use super::rsa_encryption::{RsaDecryptScheme, crypt_rsa_encrypt};
+use super::self_test::{LazySelfTest, self_test_algorithm, self_test_reached, self_test_rsa_oaep};
 use super::session::digest_size;
 use super::template::TPMA_OBJECT_DECRYPT;
 
 pub(super) const SECRET_LABEL: &[u8] = b"SECRET\0";
 pub(super) const DUPLICATE_LABEL: &[u8] = b"DUPLICATE\0";
+pub(super) const IDENTITY_LABEL: &[u8] = b"IDENTITY\0";
 
 pub(super) const MAX_ENCRYPTED_SECRET: usize = 384;
 
@@ -57,14 +59,12 @@ fn rsa_modulus(body: &OwnedObjectBody) -> Result<&[u8], TpmResult> {
     }
 }
 
-pub(super) fn rsa_secret_reaches_self_test(body: &OwnedObjectBody, secret: &[u8]) -> bool {
-    let Ok(modulus) = rsa_modulus(body) else {
-        return false;
-    };
-    oaep_hash_algorithm(body).is_ok() && secret.len() == modulus.len()
-}
-
-fn rsa_decrypt(body: &OwnedObjectBody, label: &[u8], secret: &[u8]) -> Result<Vec<u8>, TpmResult> {
+fn rsa_decrypt(
+    body: &OwnedObjectBody,
+    label: &[u8],
+    secret: &[u8],
+    gate: &mut LazySelfTest<'_>,
+) -> Result<Vec<u8>, TpmResult> {
     let hash_alg = oaep_hash_algorithm(body)?;
     let limit = digest_size(hash_alg).ok_or(TPM_RC_SCHEME)?;
 
@@ -72,6 +72,7 @@ fn rsa_decrypt(body: &OwnedObjectBody, label: &[u8], secret: &[u8]) -> Result<Ve
     if secret.len() != modulus.len() {
         return Err(TPM_RC_SIZE);
     }
+    gate.algorithm(TPM_ALG_OAEP)?;
     if BigUint::from_be_bytes(secret) >= BigUint::from_be_bytes(modulus) {
         return Err(TPM_RC_SIZE);
     }
@@ -88,7 +89,7 @@ fn rsa_decrypt(body: &OwnedObjectBody, label: &[u8], secret: &[u8]) -> Result<Ve
     let plain = rsa_private_key_op(&p, &q, &d_p, &d_q, &q_inv, &value).ok_or(TPM_RC_FAILURE)?;
     let padded = plain.to_be_bytes(modulus.len()).ok_or(TPM_RC_FAILURE)?;
 
-    let recovered = oaep_decode(hash_alg, label, &padded).ok_or(TPM_RC_VALUE)?;
+    let recovered = oaep_decode(hash_alg, label, &padded, gate)?.ok_or(TPM_RC_VALUE)?;
     if recovered.len() > limit {
         return Err(TPM_RC_VALUE);
     }
@@ -110,12 +111,18 @@ fn read_ecc_point(secret: &[u8]) -> Result<(&[u8], &[u8]), TpmResult> {
     Ok((x, y))
 }
 
-fn ecc_decrypt(body: &OwnedObjectBody, label: &[u8], secret: &[u8]) -> Result<Vec<u8>, TpmResult> {
+fn ecc_decrypt(
+    body: &OwnedObjectBody,
+    label: &[u8],
+    secret: &[u8],
+    gate: &mut LazySelfTest<'_>,
+) -> Result<Vec<u8>, TpmResult> {
     let PublicParms::Ecc { curve_id, .. } = &body.public.parameters else {
         return Err(TPM_RC_FAILURE);
     };
     let curve = curve_parameters(*curve_id).ok_or(TPM_RC_FAILURE)?;
     let (public_x, public_y) = read_ecc_point(secret)?;
+    gate.algorithm(TPM_ALG_ECDH)?;
 
     let peer_x = BigUint::from_be_bytes(public_x);
     let peer_y = BigUint::from_be_bytes(public_y);
@@ -136,6 +143,7 @@ fn ecc_decrypt(body: &OwnedObjectBody, label: &[u8], secret: &[u8]) -> Result<Ve
         return Err(TPM_RC_FAILURE);
     };
     let bits = digest_size(body.public.name_alg).ok_or(TPM_RC_SCHEME)? * 8;
+    gate.algorithm(body.public.name_alg)?;
     kdfe(body.public.name_alg, &z, label, public_x, x, bits as u32).ok_or(TPM_RC_FAILURE)
 }
 
@@ -143,12 +151,23 @@ pub(super) fn secret_decrypt(
     body: &OwnedObjectBody,
     label: &[u8],
     secret: &[u8],
+    gate: &mut LazySelfTest<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
     match body.public.object_type {
-        TPM_ALG_RSA => rsa_decrypt(body, label, secret),
-        TPM_ALG_ECC => ecc_decrypt(body, label, secret),
+        TPM_ALG_RSA => rsa_decrypt(body, label, secret, gate),
+        TPM_ALG_ECC => ecc_decrypt(body, label, secret, gate),
         _ => Err(TPM_RC_KEY),
     }
+}
+
+pub(super) fn secret_decrypt_with_runtime(
+    runtime: &mut super::runtime::Tpm2Runtime,
+    body: &OwnedObjectBody,
+    label: &[u8],
+    secret: &[u8],
+) -> Result<Vec<u8>, TpmResult> {
+    let mut run = |algorithm: u16| self_test_reached(runtime, algorithm);
+    secret_decrypt(body, label, secret, &mut LazySelfTest::runtime(&mut run))
 }
 
 pub(super) struct EncryptedSecret {
@@ -167,9 +186,20 @@ fn rsa_secret_encrypt(
         hash_alg: public.name_alg,
     };
     let data = super::random::generate_random(runtime, length)?;
-    super::self_test::self_test_rsa_oaep(runtime)?;
+    self_test_rsa_oaep(runtime)?;
     let mut rand = super::random::take_live_rand(runtime)?;
-    let secret = crypt_rsa_encrypt(public, &scheme, &data, label, false, &mut rand);
+    let secret = {
+        let mut run = |algorithm: u16| self_test_algorithm(runtime, algorithm);
+        crypt_rsa_encrypt(
+            public,
+            &scheme,
+            &data,
+            label,
+            false,
+            &mut LazySelfTest::runtime(&mut run),
+            &mut rand,
+        )
+    };
     super::random::finish_live_rand(runtime, rand)?;
     Ok(EncryptedSecret {
         data,
@@ -195,6 +225,7 @@ fn ecc_secret_encrypt(
     if !curve.is_point_on_curve(&peer_x, &peer_y) {
         return Err(TPM_RC_KEY);
     }
+    self_test_algorithm(runtime, TPM_ALG_ECDH)?;
 
     let mut rand = super::random::take_live_rand(runtime)?;
     let ephemeral = super::crypto::generate_ecc_key(*curve_id, &mut rand);
@@ -217,6 +248,7 @@ fn ecc_secret_encrypt(
     let z = shared_x
         .to_be_bytes(curve.key_size_bytes)
         .ok_or(TPM_RC_FAILURE)?;
+    self_test_algorithm(runtime, public.name_alg)?;
     let data = kdfe(
         public.name_alg,
         &z,
@@ -253,7 +285,7 @@ mod tests {
     use crate::library::tpm2::golden_responses::object_transfer::vector;
     use crate::library::tpm2::object_create::resolve_any_object;
     use crate::library::tpm2::object_load::replay::{clock, runtime_from};
-    use crate::library::tpm2::persistent::OwnedAnyObjectBody;
+    use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedSecret};
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
     const ECC_PARENT: u32 = 0x8000_0001;
@@ -279,6 +311,172 @@ mod tests {
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
     }
 
+    const RSA_PARENT: u32 = 0x8000_0001;
+    const ALG_SHA256: u16 = 0x000b;
+
+    fn rsa_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+        runtime_from(
+            vector("PERMALL_RSA_READY"),
+            vector("VOLATILE_RSA_READY"),
+            clock,
+        )
+    }
+
+    fn loaded_object(runtime: &Tpm2Runtime, handle: u32) -> Box<OwnedObjectBody> {
+        let object = resolve_any_object(runtime, handle).expect("the parent is loaded");
+        let OwnedAnyObjectBody::Object(body) = &object.body else {
+            panic!("an object body");
+        };
+        body.clone()
+    }
+
+    fn recorded_recovery(
+        body: &OwnedObjectBody,
+        secret: &[u8],
+        failing: Option<u16>,
+    ) -> (Result<Vec<u8>, TpmResult>, Vec<u16>) {
+        let mut calls = Vec::new();
+        let outcome = {
+            let mut run = |algorithm: u16| {
+                calls.push(algorithm);
+                if failing == Some(algorithm) {
+                    return Err(TPM_RC_FAILURE);
+                }
+                Ok(())
+            };
+            secret_decrypt(
+                body,
+                DUPLICATE_LABEL,
+                secret,
+                &mut LazySelfTest::runtime(&mut run),
+            )
+        };
+        (outcome, calls)
+    }
+
+    #[test]
+    fn an_ecc_recovery_reaches_ecdh_then_the_protector_name_algorithm() {
+        let clock = clock();
+        let mut runtime = ecc_runtime(&clock);
+        let parent = ecc_parent(&runtime);
+        let encrypted = secret_encrypt(&mut runtime, &parent.public, DUPLICATE_LABEL)
+            .expect("the ECC seed is encrypted");
+
+        let (recovered, calls) = recorded_recovery(&parent, &encrypted.secret, None);
+        assert_eq!(recovered, Ok(encrypted.data));
+        assert_eq!(calls, [TPM_ALG_ECDH, ALG_SHA256]);
+    }
+
+    #[test]
+    fn an_ecc_recovery_stops_before_the_name_algorithm_when_the_point_is_unusable() {
+        let clock = clock();
+        let runtime = ecc_runtime(&clock);
+        let parent = ecc_parent(&runtime);
+        let mut off_curve = 32u16.to_be_bytes().to_vec();
+        off_curve.extend_from_slice(&[0x07; 32]);
+        off_curve.extend_from_slice(&32u16.to_be_bytes());
+        off_curve.extend_from_slice(&[0x08; 32]);
+
+        for (what, secret, expected, calls_expected) in [
+            (
+                "an unparsable point",
+                Vec::new(),
+                TPM_RC_INSUFFICIENT,
+                vec![],
+            ),
+            (
+                "a truncated point",
+                off_curve[..35].to_vec(),
+                TPM_RC_INSUFFICIENT,
+                vec![],
+            ),
+            (
+                "a point off the curve",
+                off_curve.clone(),
+                TPM_RC_ECC_POINT,
+                vec![TPM_ALG_ECDH],
+            ),
+        ] {
+            let (recovered, calls) = recorded_recovery(&parent, &secret, None);
+            assert_eq!(recovered, Err(expected), "{what}");
+            assert_eq!(calls, calls_expected, "{what}");
+        }
+    }
+
+    #[test]
+    fn an_ecc_recovery_whose_multiplication_yields_nothing_never_starts_the_derivation() {
+        let clock = clock();
+        let mut runtime = ecc_runtime(&clock);
+        let mut parent = ecc_parent(&runtime);
+        let encrypted = secret_encrypt(&mut runtime, &parent.public, DUPLICATE_LABEL)
+            .expect("the ECC seed is encrypted");
+        parent.sensitive.sensitive = Some(OwnedSecret::from_vec(vec![0u8; 32]));
+
+        let (recovered, calls) = recorded_recovery(&parent, &encrypted.secret, None);
+        assert_eq!(
+            recovered,
+            Err(TPM_RC_NO_RESULT),
+            "a zero scalar multiplies the on-curve point to infinity"
+        );
+        assert_eq!(
+            calls,
+            [TPM_ALG_ECDH],
+            "the point multiply is reached, but KDFe never starts"
+        );
+    }
+
+    #[test]
+    fn a_failing_ecc_name_algorithm_test_stops_the_recovery_at_the_key_derivation() {
+        let clock = clock();
+        let mut runtime = ecc_runtime(&clock);
+        let parent = ecc_parent(&runtime);
+        let encrypted = secret_encrypt(&mut runtime, &parent.public, DUPLICATE_LABEL)
+            .expect("the ECC seed is encrypted");
+
+        let (recovered, calls) = recorded_recovery(&parent, &encrypted.secret, Some(ALG_SHA256));
+        assert_eq!(recovered, Err(TPM_RC_FAILURE));
+        assert_eq!(calls, [TPM_ALG_ECDH, ALG_SHA256]);
+    }
+
+    #[test]
+    fn an_rsa_recovery_reaches_the_scheme_then_the_protector_name_algorithm() {
+        let clock = clock();
+        let mut runtime = rsa_runtime(&clock);
+        let parent = loaded_object(&runtime, RSA_PARENT);
+        let encrypted = secret_encrypt(&mut runtime, &parent.public, DUPLICATE_LABEL)
+            .expect("the RSA seed is encrypted");
+
+        let (recovered, calls) = recorded_recovery(&parent, &encrypted.secret, None);
+        assert_eq!(recovered, Ok(encrypted.data));
+        assert_eq!(calls, [TPM_ALG_OAEP, ALG_SHA256]);
+    }
+
+    #[test]
+    fn an_rsa_recovery_rejected_by_its_size_check_reaches_no_test() {
+        let clock = clock();
+        let mut runtime = rsa_runtime(&clock);
+        let parent = loaded_object(&runtime, RSA_PARENT);
+        let encrypted = secret_encrypt(&mut runtime, &parent.public, DUPLICATE_LABEL)
+            .expect("the RSA seed is encrypted");
+
+        let (recovered, calls) = recorded_recovery(&parent, &encrypted.secret[..255], None);
+        assert_eq!(recovered, Err(TPM_RC_SIZE));
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn a_failing_rsa_name_algorithm_test_stops_the_recovery_inside_the_decoding() {
+        let clock = clock();
+        let mut runtime = rsa_runtime(&clock);
+        let parent = loaded_object(&runtime, RSA_PARENT);
+        let encrypted = secret_encrypt(&mut runtime, &parent.public, DUPLICATE_LABEL)
+            .expect("the RSA seed is encrypted");
+
+        let (recovered, calls) = recorded_recovery(&parent, &encrypted.secret, Some(ALG_SHA256));
+        assert_eq!(recovered, Err(TPM_RC_FAILURE));
+        assert_eq!(calls, [TPM_ALG_OAEP, ALG_SHA256]);
+    }
+
     #[test]
     fn an_ecc_secret_encryption_round_trips_through_the_parent_private_key() {
         let clock = clock();
@@ -298,7 +496,12 @@ mod tests {
         assert!(curve.is_point_on_curve(&BigUint::from_be_bytes(x), &BigUint::from_be_bytes(y)));
 
         assert_eq!(
-            secret_decrypt(&parent, DUPLICATE_LABEL, &encrypted.secret),
+            secret_decrypt(
+                &parent,
+                DUPLICATE_LABEL,
+                &encrypted.secret,
+                &mut LazySelfTest::untested(),
+            ),
             Ok(encrypted.data)
         );
         assert!(!runtime.entropy_bad);

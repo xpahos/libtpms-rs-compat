@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn known_but_unimplemented_command_answers_command_code() {
-        assert_eq!(dispatch_code(0x0000_0147).code(), TPM_RC_COMMAND_CODE);
+        assert_eq!(dispatch_code(0x0000_0197).code(), TPM_RC_COMMAND_CODE);
     }
 
     #[test]
@@ -410,7 +410,7 @@ mod tests {
     fn unsupported_commands_do_not_mutate_the_runtime() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
-        for code in [0x2000_0000, 0x0000_0147, 0xffff_ffff, 0x0000_0000] {
+        for code in [0x2000_0000, 0x0000_0197, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
             let response = dispatch(&mut runtime, &parsed);
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn session_tagged_commands_take_the_same_path() {
-        let bytes = framed(0x8002, 0x0000_0147, &[0x00; 4]);
+        let bytes = framed(0x8002, 0x0000_0197, &[0x00; 4]);
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         let mut runtime = empty_state_runtime();

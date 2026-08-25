@@ -395,21 +395,21 @@ mod tests {
         assert_eq!(
             run(
                 &mut runtime,
-                &audit_status(TPM_RH_OWNER, ALG_NULL, &[0x0000_0147], &[])
+                &audit_status(TPM_RH_OWNER, ALG_NULL, &[0x0000_0197], &[])
             ),
             vector("AUDIT_STATUS_UNREGISTERED_UPSTREAM")
         );
         assert_matches_oracle(
             &runtime,
             vector("PERMALL_AUDIT_UNREGISTERED"),
-            "TPM2_ActivateCredential is enabled by the profile",
+            "TPM2_CertifyX509 is enabled by the profile",
         );
         assert!(
-            find(0x0000_0147).is_none(),
-            "the registry does not implement TPM2_ActivateCredential"
+            find(0x0000_0197).is_none(),
+            "the registry does not implement TPM2_CertifyX509"
         );
         let bitmap = audit_bitmap(&runtime).expect("the bitmap reads");
-        let index = command_index(0x0000_0147).expect("an upstream command index");
+        let index = command_index(0x0000_0197).expect("an upstream command index");
         assert_ne!(bitmap[index / 8] & (1 << (index % 8)), 0);
     }
 

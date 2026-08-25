@@ -13,7 +13,7 @@ use super::super::rsa_encryption::{
     is_label_properly_formatted, parse_rsa_decrypt_scheme, select_rsa_scheme,
 };
 use super::super::runtime::Tpm2Runtime;
-use super::super::self_test::self_test_rsa_scheme;
+use super::super::self_test::{LazySelfTest, self_test_algorithm, self_test_rsa_scheme};
 use super::super::template::{TPMA_OBJECT_DECRYPT, TPMA_OBJECT_RESTRICTED, TemplateReader};
 use super::dispatcher::CommandFrame;
 use super::nv_common::{TPM_RC_1, TPM_RC_2, TPM_RC_3, TPM_RC_H, TPM_RC_P, handle_at};
@@ -101,14 +101,18 @@ pub(super) fn execute_encrypt(
 
     let forbids_unpadded = forbids_unpadded_encryption(runtime)?;
     let mut rand = take_live_rand(runtime)?;
-    let outcome = crypt_rsa_encrypt(
-        &key.public,
-        &scheme,
-        &parameters.data,
-        &parameters.label,
-        forbids_unpadded,
-        &mut rand,
-    );
+    let outcome = {
+        let mut run = |algorithm: u16| self_test_algorithm(runtime, algorithm);
+        crypt_rsa_encrypt(
+            &key.public,
+            &scheme,
+            &parameters.data,
+            &parameters.label,
+            forbids_unpadded,
+            &mut LazySelfTest::runtime(&mut run),
+            &mut rand,
+        )
+    };
     finish_live_rand(runtime, rand)?;
     framed(outcome?)
 }
@@ -137,12 +141,14 @@ pub(super) fn execute_decrypt(
     self_test_rsa_scheme(runtime, scheme.scheme)?;
 
     let forbids_unpadded = forbids_unpadded_encryption(runtime)?;
+    let mut run = |algorithm: u16| self_test_algorithm(runtime, algorithm);
     let message = crypt_rsa_decrypt(
         &key,
         &scheme,
         &parameters.data,
         &parameters.label,
         forbids_unpadded,
+        &mut LazySelfTest::runtime(&mut run),
     )?;
     framed(message)
 }

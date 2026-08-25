@@ -4,7 +4,7 @@ use crate::library::constants::{
     TPM_RC_SIZE, TPM_RC_VALUE,
 };
 
-use super::super::algorithm::{TPM_ALG_CFB, TPM_ALG_NULL, TPM_ALG_RSA, TPM_ALG_XOR};
+use super::super::algorithm::{TPM_ALG_CFB, TPM_ALG_NULL, TPM_ALG_XOR};
 use super::super::crypto::kdfa;
 use super::super::dictionary_attack::is_da_protected_handle;
 use super::super::entity::{entity_auth_value, strip_trailing_zeros};
@@ -19,9 +19,8 @@ use super::super::public::{StateFormatLimit, SymDefObject};
 use super::super::random::generate_random;
 use super::super::runtime::Tpm2Runtime;
 use super::super::secret::{
-    MAX_ENCRYPTED_SECRET, SECRET_LABEL, is_asymmetric, rsa_secret_reaches_self_test, secret_decrypt,
+    MAX_ENCRYPTED_SECRET, SECRET_LABEL, is_asymmetric, secret_decrypt_with_runtime,
 };
-use super::super::self_test::self_test_rsa_oaep;
 use super::super::session::{
     SESSION_ATTR_IS_BOUND, SESSION_ATTR_IS_DA_BOUND, SESSION_ATTR_IS_LOCKOUT_BOUND,
     SESSION_ATTR_IS_POLICY, SESSION_ATTR_IS_TRIAL_POLICY, TPM_SE_HMAC, TPM_SE_POLICY, TPM_SE_TRIAL,
@@ -146,12 +145,13 @@ fn decrypt_salt(
     }
 
     let body = body.clone();
-    if body.public.object_type == TPM_ALG_RSA && rsa_secret_reaches_self_test(&body, encrypted_salt)
-    {
-        self_test_rsa_oaep(runtime)?;
-    }
-    secret_decrypt(&body, SECRET_LABEL, encrypted_salt)
-        .map_err(|_| TPM_RC_VALUE + RC_ENCRYPTED_SALT)
+    secret_decrypt_with_runtime(runtime, &body, SECRET_LABEL, encrypted_salt).map_err(|code| {
+        if code == TPM_RC_FAILURE {
+            code
+        } else {
+            TPM_RC_VALUE + RC_ENCRYPTED_SALT
+        }
+    })
 }
 
 fn check_bind(runtime: &Tpm2Runtime, bind: u32) -> Result<(), TpmResult> {

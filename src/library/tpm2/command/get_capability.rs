@@ -4,8 +4,10 @@ use crate::library::constants::{
 };
 
 use super::super::capability::{
-    TPM_CAP_ACT, TPM_CAP_ALGS, TPM_CAP_COMMANDS, TPM_CAP_HANDLES, TPM_CAP_PCRS,
-    TPM_CAP_PP_COMMANDS, TPM_CAP_TPM_PROPERTIES, algorithms, commands, handles, pcrs, properties,
+    TPM_CAP_ACT, TPM_CAP_ALGS, TPM_CAP_AUDIT_COMMANDS, TPM_CAP_AUTH_POLICIES, TPM_CAP_COMMANDS,
+    TPM_CAP_ECC_CURVES, TPM_CAP_HANDLES, TPM_CAP_PCR_PROPERTIES, TPM_CAP_PCRS, TPM_CAP_PP_COMMANDS,
+    TPM_CAP_TPM_PROPERTIES, algorithms, audit_commands, auth_policies, commands, ecc_curves,
+    handles, pcr_properties, pcrs, properties,
 };
 use super::super::hierarchy::{TPM_RH_ACT_0, TPM_RH_ACT_F};
 use super::super::runtime::Tpm2Runtime;
@@ -19,6 +21,9 @@ const TPM_RC_3: TpmResult = 0x300;
 const RC_GET_CAPABILITY_CAPABILITY: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_GET_CAPABILITY_PROPERTY: TpmResult = TPM_RC_P + TPM_RC_2;
 const RC_GET_CAPABILITY_PROPERTY_COUNT: TpmResult = TPM_RC_P + TPM_RC_3;
+
+const HR_SHIFT: u32 = 24;
+const TPM_HT_PERMANENT: u32 = 0x40;
 
 struct GetCapabilityIn {
     capability: u32,
@@ -110,6 +115,44 @@ fn collect_capability(
             let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
             for code in &page.entries {
                 out.extend_from_slice(&code.to_be_bytes());
+            }
+            Ok(out)
+        }
+        TPM_CAP_AUDIT_COMMANDS => {
+            let page = audit_commands::collect(runtime, input.property, input.property_count);
+            let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
+            for code in &page.entries {
+                out.extend_from_slice(&code.to_be_bytes());
+            }
+            Ok(out)
+        }
+        TPM_CAP_PCR_PROPERTIES => {
+            let page = pcr_properties::collect(input.property, input.property_count);
+            let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
+            for selection in &page.entries {
+                out.extend_from_slice(&selection.marshal());
+            }
+            Ok(out)
+        }
+        TPM_CAP_ECC_CURVES => {
+            // TODO: Support runtimes without decoded state after the NVChip
+            // fallback is implemented.
+            let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+            let page = ecc_curves::collect(state, input.property, input.property_count);
+            let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
+            for curve in &page.entries {
+                out.extend_from_slice(&curve.to_be_bytes());
+            }
+            Ok(out)
+        }
+        TPM_CAP_AUTH_POLICIES => {
+            if input.property >> HR_SHIFT != TPM_HT_PERMANENT {
+                return Err(TPM_RC_VALUE + RC_GET_CAPABILITY_PROPERTY);
+            }
+            let page = auth_policies::collect(runtime, input.property, input.property_count);
+            let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
+            for policy in &page.entries {
+                out.extend_from_slice(&policy.marshal());
             }
             Ok(out)
         }
@@ -382,7 +425,7 @@ mod tests {
 
     #[test]
     fn unsupported_capability_selectors_return_value_for_parameter_one() {
-        for capability in [4u32, 7, 8, 9, 0x100, 0x7fff_ffff, u32::MAX] {
+        for capability in [0x100u32, 0x101, 0x7fff_ffff, u32::MAX] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
             assert_eq!(
@@ -391,6 +434,135 @@ mod tests {
                 "capability {capability:#x}"
             );
             assert_unchanged(&runtime, &before);
+        }
+    }
+
+    fn capability_page(response: &[u8], capability: u32) -> (bool, Vec<u8>) {
+        assert_eq!(&response[6..10], &[0, 0, 0, 0], "the query succeeds");
+        assert_eq!(&response[11..15], &capability.to_be_bytes());
+        (response[10] != 0, response[19..].to_vec())
+    }
+
+    fn capability_count(response: &[u8]) -> u32 {
+        u32::from_be_bytes(response[15..19].try_into().expect("four bytes"))
+    }
+
+    #[test]
+    fn the_audit_command_list_is_serialized_as_a_command_code_list() {
+        let mut runtime = started_runtime();
+        let response = query(&mut runtime, TPM_CAP_AUDIT_COMMANDS, 0, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_AUDIT_COMMANDS);
+        assert!(!more);
+        assert_eq!(capability_count(&response), 1);
+        assert_eq!(entries, 0x0000_0140u32.to_be_bytes());
+
+        let response = query(&mut runtime, TPM_CAP_AUDIT_COMMANDS, 0x0000_0141, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_AUDIT_COMMANDS);
+        assert!(!more);
+        assert_eq!(capability_count(&response), 0);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn the_pcr_property_list_is_serialized_as_tagged_selections() {
+        let mut runtime = started_runtime();
+        let response = query(&mut runtime, TPM_CAP_PCR_PROPERTIES, 0, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_PCR_PROPERTIES);
+        assert!(!more);
+        assert_eq!(capability_count(&response), 15);
+        assert_eq!(entries.len(), 15 * (4 + 1 + 3));
+        assert_eq!(&entries[..8], &[0, 0, 0, 0, 3, 0xff, 0xff, 0x00]);
+
+        let response = query(&mut runtime, TPM_CAP_PCR_PROPERTIES, 0, 2);
+        let (more, entries) = capability_page(&response, TPM_CAP_PCR_PROPERTIES);
+        assert!(more, "a truncated page still has properties left");
+        assert_eq!(capability_count(&response), 2);
+        assert_eq!(entries.len(), 2 * 8);
+
+        let response = query(&mut runtime, TPM_CAP_PCR_PROPERTIES, 0x0000_0015, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_PCR_PROPERTIES);
+        assert!(!more, "a start past the last property leaves nothing");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn the_ecc_curve_list_is_serialized_as_curve_identifiers() {
+        let mut runtime = started_runtime();
+        let response = query(&mut runtime, TPM_CAP_ECC_CURVES, 0, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_ECC_CURVES);
+        assert!(!more);
+        assert_eq!(capability_count(&response), 8);
+        assert_eq!(entries, hex("0001 0002 0003 0004 0005 0010 0011 0020"));
+
+        let response = query(&mut runtime, TPM_CAP_ECC_CURVES, 0x0004, 2);
+        let (more, entries) = capability_page(&response, TPM_CAP_ECC_CURVES);
+        assert!(more);
+        assert_eq!(entries, hex("0004 0005"));
+
+        let response = query(&mut runtime, TPM_CAP_ECC_CURVES, 0x0021, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_ECC_CURVES);
+        assert!(!more);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn the_authorization_policy_list_is_serialized_as_tagged_policies() {
+        let mut runtime = started_runtime();
+        let response = query(&mut runtime, TPM_CAP_AUTH_POLICIES, 0x4000_0000, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_AUTH_POLICIES);
+        assert!(!more);
+        assert_eq!(capability_count(&response), 4);
+        assert_eq!(
+            entries,
+            hex("40000001 0010 4000000a 0010 4000000b 0010 4000000c 0010"),
+            "an unset hierarchy policy carries a null hash and no digest"
+        );
+
+        let response = query(&mut runtime, TPM_CAP_AUTH_POLICIES, 0x4000_000b, 1);
+        let (more, entries) = capability_page(&response, TPM_CAP_AUTH_POLICIES);
+        assert!(more);
+        assert_eq!(entries, hex("4000000b 0010"));
+
+        let response = query(&mut runtime, TPM_CAP_AUTH_POLICIES, 0x4000_000d, 64);
+        let (more, entries) = capability_page(&response, TPM_CAP_AUTH_POLICIES);
+        assert!(!more);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn an_authorization_policy_property_outside_the_permanent_range_is_a_value_error() {
+        for property in [0u32, 0x0000_0001, 0x8000_0000, 0x0100_0000, u32::MAX] {
+            let mut runtime = started_runtime();
+            let before = snapshot(&runtime);
+            for count in [0u32, 1, 64] {
+                assert_eq!(
+                    query(&mut runtime, TPM_CAP_AUTH_POLICIES, property, count),
+                    error_response(RC_VALUE_PARAM2),
+                    "property {property:#010x}, count {count}"
+                );
+            }
+            assert_unchanged(&runtime, &before);
+        }
+    }
+
+    #[test]
+    fn a_zero_property_count_reports_more_data_for_every_new_selector() {
+        let mut runtime = started_runtime();
+        for (capability, property, expected) in [
+            (TPM_CAP_AUDIT_COMMANDS, 0u32, true),
+            (TPM_CAP_AUDIT_COMMANDS, 0x0000_0141, false),
+            (TPM_CAP_PCR_PROPERTIES, 0, true),
+            (TPM_CAP_PCR_PROPERTIES, 0x0000_0015, false),
+            (TPM_CAP_ECC_CURVES, 0, true),
+            (TPM_CAP_ECC_CURVES, 0x0021, false),
+            (TPM_CAP_AUTH_POLICIES, 0x4000_0000, true),
+            (TPM_CAP_AUTH_POLICIES, 0x4000_000d, false),
+        ] {
+            let response = query(&mut runtime, capability, property, 0);
+            let (more, entries) = capability_page(&response, capability);
+            assert!(entries.is_empty(), "{capability:#x}/{property:#x}");
+            assert_eq!(capability_count(&response), 0);
+            assert_eq!(more, expected, "{capability:#x}/{property:#x}");
         }
     }
 
@@ -495,7 +667,7 @@ mod tests {
         assert_eq!(
             query(&mut runtime, 2, 0, 1000),
             hex(
-                "8001 000001cf 00000000 00 00000002 0000006f 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a 0200019b 0200019c"
+                "8001 000001d7 00000000 00 00000002 00000071 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000147 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000168 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a 0200019b 0200019c"
             )
         );
     }
@@ -626,9 +798,9 @@ mod tests {
         assert_eq!(
             query(&mut runtime, 2, 0x0147, 10),
             hex(
-                "80010000003b0000000001000000020000000a 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151"
+                "80010000003b0000000001000000020000000a 04000147 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150"
             ),
-            "between StirRandom and NV_Read"
+            "ActivateCredential leads the page that starts at its own command code"
         );
         assert_eq!(
             query(&mut runtime, 2, 0x0173, 2),
@@ -698,21 +870,21 @@ mod tests {
         assert_eq!(
             query(&mut runtime, 2, 0, registry_count() - 2),
             hex(
-                "8001 000001c7 00000000 01 00000002 0000006d 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a"
+                "8001 000001cf 00000000 01 00000002 0000006f 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000147 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000168 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a"
             ),
             "two short of the registry still leaves more data"
         );
         assert_eq!(
             query(&mut runtime, 2, 0, registry_count() - 1),
             hex(
-                "8001 000001cb 00000000 01 00000002 0000006e 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a 0200019b"
+                "8001 000001d3 00000000 01 00000002 00000070 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000147 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000168 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a 0200019b"
             ),
             "one short of the registry still leaves more data"
         );
         assert_eq!(
             query(&mut runtime, 2, 0, registry_count()),
             hex(
-                "8001 000001cf 00000000 00 00000002 0000006f 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a 0200019b 0200019c"
+                "8001 000001d7 00000000 00 00000002 00000071 0440011f 04400120 02c00121 04400122 02c00124 02c00125 02c00126 02400127 02400128 02400129 0240012a 0240012b 0240012c 0240012d 0240012e 02000130 12000131 02400132 04400133 04400134 04400135 04400136 04400137 04400138 02400139 0240013a 0240013b 0200013c 0200013d 0300013e 0240013f 02400140 00400142 00400143 00400144 00400145 00400146 04000147 04000148 06000149 0400014a 0400014b 0400014c 0600014d 0400014e 0440014f 04000150 04000151 04000152 02000153 02000154 02000155 02000156 12000157 02000158 02000159 1200015b 0200015c 0200015d 0200015e 04000160 10000161 02000162 02000163 02000164 00000165 10000167 02000168 02000169 0200016a 0200016b 0200016c 0200016d 0200016e 0200016f 02000170 02000171 02000172 02000173 02000174 14000176 02000177 00000178 0000017a 0000017b 0000017c 0000017d 0000017e 0200017f 02000180 00000181 02000182 02000183 06000184 05400185 10000186 02000187 02000188 02000189 0000018a 0200018b 0200018c 0200018d 0000018e 0200018f 02000190 12000191 06000192 02000193 02000199 0200019a 0200019b 0200019c"
             ),
             "an exact count consumes the registry"
         );
@@ -1681,6 +1853,206 @@ ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cf
                     let _ = serialize_response(&dispatch(&mut runtime, &parsed));
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod oracle {
+    use super::super::registry::TPM_CC_GET_CAPABILITY;
+    use crate::library::tpm2::capability::{
+        TPM_CAP_AUDIT_COMMANDS, TPM_CAP_AUTH_POLICIES, TPM_CAP_ECC_CURVES, TPM_CAP_PCR_PROPERTIES,
+    };
+    use crate::library::tpm2::clock::SteppingClock;
+    use crate::library::tpm2::golden_responses::{
+        attestation, ecc_commands, hierarchy_management, platform_state,
+    };
+    use crate::library::tpm2::object_load::replay::{clock, exec_raw, plain, runtime_from};
+    use crate::library::tpm2::runtime::Tpm2Runtime;
+
+    const TPM_RH_OWNER: u32 = 0x4000_0001;
+    const RS_PW: u32 = 0x4000_0009;
+    const TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS: u32 = 0x0000_0140;
+    const TPM_CC_SET_PRIMARY_POLICY: u32 = 0x0000_012e;
+    const ALG_NULL: u16 = 0x0010;
+    const ALG_SHA256: u16 = 0x000b;
+
+    fn ready(vector: fn(&str) -> &'static [u8], clock: &SteppingClock) -> Box<Tpm2Runtime> {
+        runtime_from(vector("PERMALL_READY"), vector("VOLATILE_READY"), clock)
+    }
+
+    fn capability(capability: u32, property: u32, count: u32) -> Vec<u8> {
+        let mut payload = capability.to_be_bytes().to_vec();
+        payload.extend_from_slice(&property.to_be_bytes());
+        payload.extend_from_slice(&count.to_be_bytes());
+        plain(TPM_CC_GET_CAPABILITY, &payload)
+    }
+
+    fn password_area() -> Vec<u8> {
+        let mut area = RS_PW.to_be_bytes().to_vec();
+        area.extend_from_slice(&0u16.to_be_bytes());
+        area.push(0x00);
+        area.extend_from_slice(&0u16.to_be_bytes());
+        let mut out = (area.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(&area);
+        out
+    }
+
+    fn owner_command(code: u32, parameters: &[u8]) -> Vec<u8> {
+        let mut payload = TPM_RH_OWNER.to_be_bytes().to_vec();
+        payload.extend_from_slice(&password_area());
+        payload.extend_from_slice(parameters);
+        let mut out = 0x8002u16.to_be_bytes().to_vec();
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&code.to_be_bytes());
+        out.extend_from_slice(&payload);
+        let size = (out.len() as u32).to_be_bytes();
+        out[2..6].copy_from_slice(&size);
+        out
+    }
+
+    #[track_caller]
+    fn expect(
+        runtime: &mut Tpm2Runtime,
+        clock: &SteppingClock,
+        vector: fn(&str) -> &'static [u8],
+        label: &str,
+        bytes: Vec<u8>,
+    ) {
+        assert_eq!(exec_raw(runtime, clock, bytes), vector(label), "{label}");
+    }
+
+    #[test]
+    fn the_audit_command_list_matches_the_oracle() {
+        let clock = clock();
+        let vector = attestation::vector;
+        let mut runtime = ready(vector, &clock);
+        let mut set_list = ALG_NULL.to_be_bytes().to_vec();
+        set_list.extend_from_slice(&2u32.to_be_bytes());
+        set_list.extend_from_slice(&0x0000_014eu32.to_be_bytes());
+        set_list.extend_from_slice(&0x0000_017bu32.to_be_bytes());
+        set_list.extend_from_slice(&0u32.to_be_bytes());
+
+        for (label, bytes) in [
+            ("AUDITCC_INITIAL", capability(TPM_CAP_AUDIT_COMMANDS, 0, 64)),
+            (
+                "AUDITCC_SET",
+                owner_command(TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, &set_list),
+            ),
+            (
+                "AUDITCC_AFTER_SET",
+                capability(TPM_CAP_AUDIT_COMMANDS, 0, 64),
+            ),
+            (
+                "AUDITCC_FROM_NV_READ",
+                capability(TPM_CAP_AUDIT_COMMANDS, 0x0000_014e, 64),
+            ),
+            (
+                "AUDITCC_AFTER_NV_READ",
+                capability(TPM_CAP_AUDIT_COMMANDS, 0x0000_014f, 64),
+            ),
+            ("AUDITCC_ONE", capability(TPM_CAP_AUDIT_COMMANDS, 0, 1)),
+            (
+                "AUDITCC_COUNT_ZERO",
+                capability(TPM_CAP_AUDIT_COMMANDS, 0, 0),
+            ),
+            (
+                "AUDITCC_PAST_END",
+                capability(TPM_CAP_AUDIT_COMMANDS, 0x0000_017c, 64),
+            ),
+            (
+                "AUDITCC_COUNT_ZERO_PAST_END",
+                capability(TPM_CAP_AUDIT_COMMANDS, 0x0000_017c, 0),
+            ),
+            (
+                "AUDITCC_VENDOR_START",
+                capability(TPM_CAP_AUDIT_COMMANDS, 0x2000_0000, 64),
+            ),
+        ] {
+            expect(&mut runtime, &clock, vector, label, bytes);
+        }
+    }
+
+    #[test]
+    fn the_pcr_property_list_matches_the_oracle() {
+        let clock = clock();
+        let vector = platform_state::vector;
+        let mut runtime = ready(vector, &clock);
+        for (label, property, count) in [
+            ("PCRPROP_ALL", 0u32, 64u32),
+            ("PCRPROP_FROM_MIDDLE", 6, 64),
+            ("PCRPROP_FROM_HOLE", 0x0b, 64),
+            ("PCRPROP_ONE", 0, 1),
+            ("PCRPROP_TRUNCATED", 0, 14),
+            ("PCRPROP_EXACT", 0, 15),
+            ("PCRPROP_COUNT_ZERO", 0, 0),
+            ("PCRPROP_PAST_END", 0x15, 64),
+            ("PCRPROP_COUNT_ZERO_PAST_END", 0x15, 0),
+        ] {
+            let bytes = capability(TPM_CAP_PCR_PROPERTIES, property, count);
+            expect(&mut runtime, &clock, vector, label, bytes);
+        }
+    }
+
+    #[test]
+    fn the_ecc_curve_list_matches_the_oracle() {
+        let clock = clock();
+        let vector = ecc_commands::vector;
+        let mut runtime = ready(vector, &clock);
+        for (label, property, count) in [
+            ("CURVES_ALL", 0u32, 64u32),
+            ("CURVES_FROM_P384", 0x0004, 64),
+            ("CURVES_BETWEEN", 0x0006, 64),
+            ("CURVES_ONE", 0, 1),
+            ("CURVES_TRUNCATED", 0, 7),
+            ("CURVES_EXACT", 0, 8),
+            ("CURVES_COUNT_ZERO", 0, 0),
+            ("CURVES_PAST_END", 0x0021, 64),
+            ("CURVES_COUNT_ZERO_PAST_END", 0x0021, 0),
+        ] {
+            let bytes = capability(TPM_CAP_ECC_CURVES, property, count);
+            expect(&mut runtime, &clock, vector, label, bytes);
+        }
+    }
+
+    #[test]
+    fn the_authorization_policy_list_matches_the_oracle() {
+        let clock = clock();
+        let vector = hierarchy_management::vector;
+        let mut runtime = ready(vector, &clock);
+        let mut policy = (32u16).to_be_bytes().to_vec();
+        policy.extend((0u8..32).collect::<Vec<u8>>());
+        policy.extend_from_slice(&ALG_SHA256.to_be_bytes());
+
+        expect(
+            &mut runtime,
+            &clock,
+            vector,
+            "AUTHPOL_INITIAL",
+            capability(TPM_CAP_AUTH_POLICIES, 0x4000_0000, 64),
+        );
+        expect(
+            &mut runtime,
+            &clock,
+            vector,
+            "AUTHPOL_SET_OWNER",
+            owner_command(TPM_CC_SET_PRIMARY_POLICY, &policy),
+        );
+        for (label, property, count) in [
+            ("AUTHPOL_AFTER_OWNER", 0x4000_0000u32, 64u32),
+            ("AUTHPOL_FROM_ENDORSEMENT", 0x4000_000b, 64),
+            ("AUTHPOL_FROM_NULL_HANDLE", 0x4000_0007, 64),
+            ("AUTHPOL_ONE", 0x4000_0000, 1),
+            ("AUTHPOL_TRUNCATED", 0x4000_0000, 3),
+            ("AUTHPOL_EXACT", 0x4000_0000, 4),
+            ("AUTHPOL_COUNT_ZERO", 0x4000_0000, 0),
+            ("AUTHPOL_PAST_END", 0x4000_000d, 64),
+            ("AUTHPOL_COUNT_ZERO_PAST_END", 0x4000_000d, 0),
+            ("AUTHPOL_BAD_HANDLE_TYPE", 0x8000_0000, 64),
+            ("AUTHPOL_TRANSIENT_HANDLE_TYPE", 0x0000_0000, 64),
+        ] {
+            let bytes = capability(TPM_CAP_AUTH_POLICIES, property, count);
+            expect(&mut runtime, &clock, vector, label, bytes);
         }
     }
 }

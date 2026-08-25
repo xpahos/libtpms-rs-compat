@@ -8,6 +8,7 @@ use super::crypto::{
 };
 use super::persistent::{OwnedTpmtPublic, OwnedTpmtSensitive};
 use super::public::{DIGEST_SIZE, PublicParms, SymDefObject, TPM_ALG_NULL};
+use super::self_test::LazySelfTest;
 use super::session::digests_equal;
 use super::template::{TemplateReader, digest_size};
 
@@ -15,6 +16,8 @@ pub(super) const STORAGE_KEY_LABEL: &[u8] = b"STORAGE\0";
 pub(super) const INTEGRITY_KEY_LABEL: &[u8] = b"INTEGRITY\0";
 
 pub(super) const MAX_PRIVATE: usize = 1230;
+
+pub(super) const MAX_ID_OBJECT: usize = 2 * (2 + DIGEST_SIZE);
 
 const MAX_SYM_BLOCK_SIZE: usize = 16;
 
@@ -87,6 +90,7 @@ pub(super) fn produce_outer_wrap(
     seed: Option<&[u8]>,
     use_iv: bool,
     data: &[u8],
+    gate: &mut LazySelfTest<'_>,
     rand: &mut SeededRand,
 ) -> Result<Vec<u8>, TpmResult> {
     let (sym_alg, key_bits) = parent_storage_symmetric(protector.public)?;
@@ -102,6 +106,7 @@ pub(super) fn produce_outer_wrap(
     };
 
     let kdf_seed = protector.kdf_seed(seed);
+    gate.algorithm(hash_alg)?;
     let sym_key = storage_key(hash_alg, kdf_seed, name, key_bits)?;
     let cipher_iv = if use_iv {
         iv.clone()
@@ -109,6 +114,9 @@ pub(super) fn produce_outer_wrap(
         vec![0u8; sym_block_size(sym_alg).ok_or(TPM_RC_SYMMETRIC)?]
     };
     let mut encrypted = data.to_vec();
+    if !encrypted.is_empty() {
+        gate.algorithm(sym_alg)?;
+    }
     sym_cfb_encrypt(sym_alg, &sym_key, &cipher_iv, &mut encrypted)?;
 
     let mut protected = Vec::with_capacity(2 + iv.len() + encrypted.len());
@@ -134,6 +142,7 @@ pub(super) fn unwrap_outer(
     use_iv: bool,
     blob: &[u8],
     block_size_error: TpmResult,
+    gate: &mut LazySelfTest<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
     let (sym_alg, key_bits) = parent_storage_symmetric(protector.public)?;
     let block_size = sym_block_size(sym_alg).ok_or(block_size_error)?;
@@ -144,6 +153,7 @@ pub(super) fn unwrap_outer(
     let protected = blob.get(protected_start..).ok_or(TPM_RC_FAILURE)?;
 
     let kdf_seed = protector.kdf_seed(seed);
+    gate.algorithm(hash_alg)?;
     if !digests_equal(
         integrity,
         &outer_integrity(hash_alg, kdf_seed, name, protected)?,
@@ -168,8 +178,61 @@ pub(super) fn unwrap_outer(
         .get(cipher_start..)
         .ok_or(TPM_RC_FAILURE)?
         .to_vec();
+    if !payload.is_empty() {
+        gate.algorithm(sym_alg)?;
+    }
     sym_cfb_decrypt(sym_alg, &sym_key, &iv, &mut payload)?;
     Ok(payload)
+}
+
+pub(super) fn secret_to_credential(
+    credential: &[u8],
+    name: &[u8],
+    seed: &[u8],
+    protector: &Protector<'_>,
+    gate: &mut LazySelfTest<'_>,
+    rand: &mut SeededRand,
+) -> Result<Vec<u8>, TpmResult> {
+    let outer_hash = protector.public.name_alg;
+    let mut marshalled = Vec::with_capacity(2 + credential.len());
+    marshalled.extend_from_slice(&(credential.len() as u16).to_be_bytes());
+    marshalled.extend_from_slice(credential);
+    produce_outer_wrap(
+        protector,
+        name,
+        outer_hash,
+        Some(seed),
+        false,
+        &marshalled,
+        gate,
+        rand,
+    )
+}
+
+pub(super) fn credential_to_secret(
+    blob: &[u8],
+    name: &[u8],
+    seed: &[u8],
+    protector: &Protector<'_>,
+    gate: &mut LazySelfTest<'_>,
+) -> Result<Vec<u8>, TpmResult> {
+    let outer_hash = protector.public.name_alg;
+    let payload = unwrap_outer(
+        protector,
+        name,
+        outer_hash,
+        Some(seed),
+        false,
+        blob,
+        TPM_RC_FAILURE,
+        gate,
+    )?;
+    let mut reader = TemplateReader::new(&payload);
+    let secret = reader.tpm2b(DIGEST_SIZE)?.to_vec();
+    if !reader.remaining().is_empty() {
+        return Err(TPM_RC_SIZE);
+    }
+    Ok(secret)
 }
 
 fn inner_integrity(hash_alg: u16, name: &[u8], data: &[u8]) -> Result<Vec<u8>, TpmResult> {
@@ -288,7 +351,16 @@ pub(super) fn sensitive_to_duplicate(
     if !seed.is_empty() {
         let parent = parent.ok_or(TPM_RC_FAILURE)?;
         let outer_hash = parent.public.name_alg;
-        data = produce_outer_wrap(parent, name, outer_hash, Some(seed), false, &data, rand)?;
+        data = produce_outer_wrap(
+            parent,
+            name,
+            outer_hash,
+            Some(seed),
+            false,
+            &data,
+            &mut LazySelfTest::untested(),
+            rand,
+        )?;
     }
 
     Ok(DuplicationBlob {
@@ -319,6 +391,7 @@ pub(super) fn duplicate_to_sensitive(
             false,
             blob,
             TPM_RC_FAILURE,
+            &mut LazySelfTest::untested(),
         )?
     };
 
@@ -356,7 +429,16 @@ pub(super) fn sensitive_to_private(
 ) -> Result<Vec<u8>, TpmResult> {
     let hash_alg = parent.public.name_alg;
     let data = marshal_sensitive(sensitive, name_alg)?;
-    produce_outer_wrap(parent, name, hash_alg, None, true, &data, rand)
+    produce_outer_wrap(
+        parent,
+        name,
+        hash_alg,
+        None,
+        true,
+        &data,
+        &mut LazySelfTest::untested(),
+        rand,
+    )
 }
 
 pub(super) fn private_to_sensitive(
@@ -373,6 +455,7 @@ pub(super) fn private_to_sensitive(
         true,
         in_private,
         TPM_RC_FAILURE,
+        &mut LazySelfTest::untested(),
     )?;
     let mut reader = TemplateReader::new(&payload);
     let declared = usize::from(reader.u16().map_err(|_| TPM_RC_SENSITIVE)?);
@@ -395,8 +478,9 @@ mod tests {
     use crate::library::tpm2::persistent::OwnedSecret;
     use crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE;
     use crate::library::tpm2::public::{
-        StateFormatLimit, TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_CFB, TPM_ALG_KEYEDHASH,
-        TPM_ALG_RSA, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SYMCIPHER, TPM_ALG_TDES,
+        StateFormatLimit, TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_CFB, TPM_ALG_ECC,
+        TPM_ALG_KEYEDHASH, TPM_ALG_RSA, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SYMCIPHER,
+        TPM_ALG_TDES,
     };
     use crate::library::tpm2::template::{
         AlgorithmPolicy, TPMA_OBJECT_DECRYPT, TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM,
@@ -407,6 +491,10 @@ mod tests {
     const NAME: [u8; 34] = [0x11; 34];
     const OTHER_NAME: [u8; 34] = [0x12; 34];
     const SEED: [u8; 32] = [0x22; 32];
+
+    fn no_gate() -> LazySelfTest<'static> {
+        LazySelfTest::untested()
+    }
 
     fn rand(label: &[u8]) -> SeededRand {
         SeededRand::instantiate(&[0x77; 64], PRIMARY_OBJECT_CREATION, label, &[], 1, false)
@@ -420,9 +508,14 @@ mod tests {
         }
     }
 
-    fn template(object_type: u16, attributes: u32, tail: &[u8]) -> OwnedTpmtPublic {
+    fn named_template(
+        object_type: u16,
+        name_alg: u16,
+        attributes: u32,
+        tail: &[u8],
+    ) -> OwnedTpmtPublic {
         let mut bytes = object_type.to_be_bytes().to_vec();
-        bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
+        bytes.extend_from_slice(&name_alg.to_be_bytes());
         bytes.extend_from_slice(&attributes.to_be_bytes());
         bytes.extend_from_slice(&0u16.to_be_bytes());
         bytes.extend_from_slice(tail);
@@ -430,7 +523,15 @@ mod tests {
         parse_public_area(&mut reader, &policy(), false).expect("a valid template")
     }
 
+    fn template(object_type: u16, attributes: u32, tail: &[u8]) -> OwnedTpmtPublic {
+        named_template(object_type, TPM_ALG_SHA256, attributes, tail)
+    }
+
     fn parent(sym_algorithm: u16) -> OwnedTpmtPublic {
+        parent_named(sym_algorithm, TPM_ALG_SHA256)
+    }
+
+    fn parent_named(sym_algorithm: u16, name_alg: u16) -> OwnedTpmtPublic {
         let mut tail = sym_algorithm.to_be_bytes().to_vec();
         tail.extend_from_slice(&128u16.to_be_bytes());
         tail.extend_from_slice(&TPM_ALG_CFB.to_be_bytes());
@@ -438,8 +539,9 @@ mod tests {
         tail.extend_from_slice(&2048u16.to_be_bytes());
         tail.extend_from_slice(&0u32.to_be_bytes());
         tail.extend_from_slice(&0u16.to_be_bytes());
-        template(
+        named_template(
             TPM_ALG_RSA,
+            name_alg,
             TPMA_OBJECT_FIXED_TPM
                 | TPMA_OBJECT_FIXED_PARENT
                 | TPMA_OBJECT_SENSITIVE_DATA_ORIGIN
@@ -589,6 +691,7 @@ mod tests {
             Some(&SEED),
             false,
             b"payload",
+            &mut no_gate(),
             &mut rand(b"outer"),
         )
         .expect("the wrap succeeds");
@@ -602,6 +705,7 @@ mod tests {
             false,
             &wrapped,
             TPM_RC_FAILURE,
+            &mut no_gate(),
         )
         .expect("the unwrap succeeds");
         assert_eq!(recovered, b"payload");
@@ -617,6 +721,7 @@ mod tests {
             Some(&SEED),
             false,
             b"payload",
+            &mut no_gate(),
             &mut rand(b"hmac"),
         )
         .expect("the wrap succeeds");
@@ -645,6 +750,7 @@ mod tests {
             Some(&SEED),
             false,
             b"payload",
+            &mut no_gate(),
             &mut rand(b"reject"),
         )
         .expect("the wrap succeeds");
@@ -658,6 +764,7 @@ mod tests {
                     false,
                     &wrapped,
                     TPM_RC_FAILURE,
+                    &mut no_gate(),
                 ),
                 Err(TPM_RC_INTEGRITY)
             );
@@ -880,6 +987,408 @@ mod tests {
         }
     }
 
+    fn ecc_parent() -> OwnedTpmtPublic {
+        let mut tail = TPM_ALG_AES.to_be_bytes().to_vec();
+        tail.extend_from_slice(&128u16.to_be_bytes());
+        tail.extend_from_slice(&TPM_ALG_CFB.to_be_bytes());
+        tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
+        tail.extend_from_slice(&0x0003u16.to_be_bytes());
+        tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
+        tail.extend_from_slice(&0u16.to_be_bytes());
+        tail.extend_from_slice(&0u16.to_be_bytes());
+        template(
+            TPM_ALG_ECC,
+            TPMA_OBJECT_FIXED_TPM
+                | TPMA_OBJECT_FIXED_PARENT
+                | TPMA_OBJECT_SENSITIVE_DATA_ORIGIN
+                | TPMA_OBJECT_USER_WITH_AUTH
+                | TPMA_OBJECT_RESTRICTED
+                | TPMA_OBJECT_DECRYPT,
+            &tail,
+        )
+    }
+
+    const RSA_DERIVED_SEED: [u8; 32] = [0x31; 32];
+    const ECC_DERIVED_SEED: [u8; 32] = [0x32; 32];
+    const CREDENTIAL: [u8; 32] = [0x77; 32];
+
+    fn credential_protectors() -> [(&'static str, OwnedTpmtPublic, [u8; 32]); 2] {
+        [
+            ("an RSA-derived seed", parent(TPM_ALG_AES), RSA_DERIVED_SEED),
+            ("an ECC-derived seed", ecc_parent(), ECC_DERIVED_SEED),
+        ]
+    }
+
+    fn credential_blob(public: &OwnedTpmtPublic, credential: &[u8], seed: &[u8]) -> Vec<u8> {
+        secret_to_credential(
+            credential,
+            &NAME,
+            seed,
+            &protector(public, &[]),
+            &mut no_gate(),
+            &mut rand(b"credential"),
+        )
+        .expect("the credential is produced")
+    }
+
+    #[test]
+    fn a_credential_round_trips_for_every_protector_shape() {
+        for (label, public, seed) in credential_protectors() {
+            for credential in [&[][..], &[0xaa][..], &CREDENTIAL[..]] {
+                let blob = credential_blob(&public, credential, &seed);
+                assert_eq!(
+                    blob.len(),
+                    2 + 32 + 2 + credential.len(),
+                    "{label}: integrity, then the marshalled digest"
+                );
+                assert_eq!(&blob[..2], &32u16.to_be_bytes());
+                assert_eq!(
+                    blob,
+                    credential_blob(&public, credential, &seed),
+                    "{label}: the wrap is deterministic"
+                );
+                assert_eq!(
+                    credential_to_secret(
+                        &blob,
+                        &NAME,
+                        &seed,
+                        &protector(&public, &[]),
+                        &mut no_gate()
+                    ),
+                    Ok(credential.to_vec()),
+                    "{label}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_credential_is_bound_to_its_name_and_its_seed() {
+        for (label, public, seed) in credential_protectors() {
+            let blob = credential_blob(&public, &CREDENTIAL, &seed);
+            for (what, name, other_seed) in [
+                ("another name", &OTHER_NAME[..], &seed[..]),
+                ("another seed", &NAME[..], &[0x33u8; 32][..]),
+            ] {
+                assert_eq!(
+                    credential_to_secret(
+                        &blob,
+                        name,
+                        other_seed,
+                        &protector(&public, &[]),
+                        &mut no_gate()
+                    ),
+                    Err(TPM_RC_INTEGRITY),
+                    "{label}: {what}"
+                );
+            }
+            assert_ne!(
+                blob,
+                credential_blob(&public, &CREDENTIAL, &[0x33; 32]),
+                "{label}: the seed changes the blob"
+            );
+        }
+    }
+
+    #[test]
+    fn every_corruption_of_a_credential_is_refused() {
+        let public = parent(TPM_ALG_AES);
+        let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
+        for position in 0..blob.len() {
+            let corrupt = {
+                let mut out = blob.clone();
+                out[position] ^= 0x01;
+                out
+            };
+            let outcome = credential_to_secret(
+                &corrupt,
+                &NAME,
+                &RSA_DERIVED_SEED,
+                &protector(&public, &[]),
+                &mut no_gate(),
+            );
+            let expected = if position == 0 {
+                Err(TPM_RC_SIZE)
+            } else {
+                Err(TPM_RC_INTEGRITY)
+            };
+            assert_eq!(outcome, expected, "byte {position}");
+        }
+    }
+
+    #[test]
+    fn every_prefix_of_a_credential_is_refused_without_panicking() {
+        let public = parent(TPM_ALG_AES);
+        let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
+        for length in 0..blob.len() {
+            assert!(
+                credential_to_secret(
+                    &blob[..length],
+                    &NAME,
+                    &RSA_DERIVED_SEED,
+                    &protector(&public, &[]),
+                    &mut no_gate(),
+                )
+                .is_err(),
+                "prefix {length}"
+            );
+        }
+    }
+
+    fn wrapped_payload(public: &OwnedTpmtPublic, payload: &[u8]) -> Vec<u8> {
+        produce_outer_wrap(
+            &protector(public, &[]),
+            &NAME,
+            TPM_ALG_SHA256,
+            Some(&RSA_DERIVED_SEED),
+            false,
+            payload,
+            &mut no_gate(),
+            &mut rand(b"payload"),
+        )
+        .expect("the payload is wrapped")
+    }
+
+    #[test]
+    fn the_decrypted_credential_must_be_exactly_one_digest() {
+        let public = parent(TPM_ALG_AES);
+        let mut digest = 32u16.to_be_bytes().to_vec();
+        digest.extend_from_slice(&CREDENTIAL);
+        for (what, payload, expected) in [
+            (
+                "trailing bytes",
+                [digest.clone(), vec![0x00]].concat(),
+                TPM_RC_SIZE,
+            ),
+            (
+                "a truncated digest",
+                digest[..digest.len() - 1].to_vec(),
+                TPM_RC_INSUFFICIENT,
+            ),
+            ("a missing length", Vec::new(), TPM_RC_INSUFFICIENT),
+            ("a single length byte", vec![0x00], TPM_RC_INSUFFICIENT),
+            (
+                "an oversized digest",
+                65u16.to_be_bytes().to_vec(),
+                TPM_RC_SIZE,
+            ),
+        ] {
+            let blob = wrapped_payload(&public, &payload);
+            assert_eq!(
+                credential_to_secret(
+                    &blob,
+                    &NAME,
+                    &RSA_DERIVED_SEED,
+                    &protector(&public, &[]),
+                    &mut no_gate()
+                ),
+                Err(expected),
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_integrity_of_a_credential_is_compared_in_constant_time() {
+        let public = parent(TPM_ALG_AES);
+        let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
+        for position in 2..34 {
+            let mut corrupt = blob.clone();
+            corrupt[position] ^= 0xff;
+            assert_eq!(
+                credential_to_secret(
+                    &corrupt,
+                    &NAME,
+                    &RSA_DERIVED_SEED,
+                    &protector(&public, &[]),
+                    &mut no_gate()
+                ),
+                Err(TPM_RC_INTEGRITY),
+                "a wrong digest never reveals how many leading bytes matched, byte {position}"
+            );
+        }
+        let mut short = blob.clone();
+        short[1] = 31;
+        short.remove(33);
+        assert_eq!(
+            credential_to_secret(
+                &short,
+                &NAME,
+                &RSA_DERIVED_SEED,
+                &protector(&public, &[]),
+                &mut no_gate()
+            ),
+            Err(TPM_RC_INTEGRITY),
+            "a shorter integrity value never matches"
+        );
+    }
+
+    fn recorded<'a>(
+        calls: &'a mut Vec<u16>,
+        failing: Option<u16>,
+    ) -> impl FnMut(u16) -> Result<(), TpmResult> + 'a {
+        move |algorithm| {
+            calls.push(algorithm);
+            if failing == Some(algorithm) {
+                return Err(TPM_RC_FAILURE);
+            }
+            Ok(())
+        }
+    }
+
+    fn gated_credential(
+        public: &OwnedTpmtPublic,
+        seed: &[u8],
+        failing: Option<u16>,
+    ) -> (Result<Vec<u8>, TpmResult>, Vec<u16>) {
+        let mut calls = Vec::new();
+        let produced = {
+            let mut run = recorded(&mut calls, failing);
+            secret_to_credential(
+                &CREDENTIAL,
+                &NAME,
+                seed,
+                &protector(public, &[]),
+                &mut LazySelfTest::runtime(&mut run),
+                &mut rand(b"credential"),
+            )
+        };
+        (produced, calls)
+    }
+
+    fn gated_open(
+        public: &OwnedTpmtPublic,
+        seed: &[u8],
+        blob: &[u8],
+        failing: Option<u16>,
+    ) -> (Result<Vec<u8>, TpmResult>, Vec<u16>) {
+        let mut calls = Vec::new();
+        let opened = {
+            let mut run = recorded(&mut calls, failing);
+            credential_to_secret(
+                blob,
+                &NAME,
+                seed,
+                &protector(public, &[]),
+                &mut LazySelfTest::runtime(&mut run),
+            )
+        };
+        (opened, calls)
+    }
+
+    #[test]
+    fn creating_a_credential_tests_the_name_algorithm_then_the_symmetric_algorithm() {
+        for (label, public, symmetric, name_alg) in [
+            (
+                "RSA SHA-256/AES",
+                parent(TPM_ALG_AES),
+                TPM_ALG_AES,
+                TPM_ALG_SHA256,
+            ),
+            (
+                "RSA SHA-384/AES",
+                parent_named(TPM_ALG_AES, TPM_ALG_SHA384),
+                TPM_ALG_AES,
+                TPM_ALG_SHA384,
+            ),
+            (
+                "RSA SHA-256/Camellia",
+                parent(TPM_ALG_CAMELLIA),
+                TPM_ALG_CAMELLIA,
+                TPM_ALG_SHA256,
+            ),
+            ("ECC SHA-256/AES", ecc_parent(), TPM_ALG_AES, TPM_ALG_SHA256),
+        ] {
+            let (produced, calls) = gated_credential(&public, &RSA_DERIVED_SEED, None);
+            assert!(produced.is_ok(), "{label}");
+            assert_eq!(calls, [name_alg, symmetric], "{label}");
+        }
+    }
+
+    #[test]
+    fn a_failing_self_test_stops_the_credential_at_its_own_boundary() {
+        let public = parent(TPM_ALG_AES);
+        for (label, failing, expected) in [
+            ("the name algorithm", TPM_ALG_SHA256, vec![TPM_ALG_SHA256]),
+            (
+                "the symmetric algorithm",
+                TPM_ALG_AES,
+                vec![TPM_ALG_SHA256, TPM_ALG_AES],
+            ),
+        ] {
+            let (produced, calls) = gated_credential(&public, &RSA_DERIVED_SEED, Some(failing));
+            assert_eq!(produced, Err(TPM_RC_FAILURE), "{label}");
+            assert_eq!(calls, expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn opening_a_credential_tests_the_symmetric_algorithm_only_after_the_integrity_matches() {
+        let public = parent(TPM_ALG_AES);
+        let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
+        let mut oversized = blob.clone();
+        oversized[0] = 0x01;
+
+        for (label, candidate, outcome, expected) in [
+            (
+                "an unparsable integrity length",
+                Vec::new(),
+                Err(TPM_RC_INSUFFICIENT),
+                vec![],
+            ),
+            (
+                "an oversized integrity length",
+                oversized,
+                Err(TPM_RC_SIZE),
+                vec![],
+            ),
+            (
+                "a truncated integrity value",
+                blob[..20].to_vec(),
+                Err(TPM_RC_INSUFFICIENT),
+                vec![],
+            ),
+            (
+                "a wrong integrity value",
+                {
+                    let mut wrong = blob.clone();
+                    wrong[10] ^= 0xff;
+                    wrong
+                },
+                Err(TPM_RC_INTEGRITY),
+                vec![TPM_ALG_SHA256],
+            ),
+            (
+                "a matching integrity value",
+                blob.clone(),
+                Ok(CREDENTIAL.to_vec()),
+                vec![TPM_ALG_SHA256, TPM_ALG_AES],
+            ),
+        ] {
+            let (opened, calls) = gated_open(&public, &RSA_DERIVED_SEED, &candidate, None);
+            assert_eq!(opened, outcome, "{label}");
+            assert_eq!(calls, expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn a_failing_self_test_stops_the_credential_open_at_its_own_boundary() {
+        let public = parent(TPM_ALG_AES);
+        let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
+        for (label, failing, expected) in [
+            ("the name algorithm", TPM_ALG_SHA256, vec![TPM_ALG_SHA256]),
+            (
+                "the symmetric algorithm",
+                TPM_ALG_AES,
+                vec![TPM_ALG_SHA256, TPM_ALG_AES],
+            ),
+        ] {
+            let (opened, calls) = gated_open(&public, &RSA_DERIVED_SEED, &blob, Some(failing));
+            assert_eq!(opened, Err(TPM_RC_FAILURE), "{label}");
+            assert_eq!(calls, expected, "{label}");
+        }
+    }
+
     #[test]
     fn a_marshalled_sensitive_area_pads_its_authorization_value_to_the_digest() {
         let mut sensitive = child_sensitive();
@@ -910,6 +1419,7 @@ mod tests {
             Some(&SEED),
             false,
             &sized,
+            &mut no_gate(),
             &mut rand(b"type"),
         )
         .expect("the wrap succeeds");

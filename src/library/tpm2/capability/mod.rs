@@ -1,6 +1,10 @@
 pub(super) mod algorithms;
+pub(super) mod audit_commands;
+pub(super) mod auth_policies;
 pub(super) mod commands;
+pub(super) mod ecc_curves;
 pub(super) mod handles;
+pub(super) mod pcr_properties;
 pub(super) mod pcrs;
 pub(super) mod properties;
 pub(super) mod single;
@@ -54,6 +58,52 @@ pub(super) fn paginate<T>(
         }
     }
     CapabilityPage { entries, more_data }
+}
+
+#[cfg(test)]
+pub(in crate::library::tpm2) mod test_runtime {
+    use crate::library::CommandInput;
+    use crate::library::tpm2::command::{dispatch, parse_command};
+    use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::profile::validate_user_profile;
+    use crate::library::tpm2::runtime::{Tpm2Runtime, commit_manufactured_state};
+
+    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), crate::ffi_types::TpmResult> {
+        let len = buffer.len() as u8;
+        for (index, byte) in buffer.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_add(len) ^ 0x4b;
+        }
+        Ok(())
+    }
+
+    pub(in crate::library::tpm2) fn started() -> Box<Tpm2Runtime> {
+        started_with_profile(None)
+    }
+
+    pub(in crate::library::tpm2) fn started_with_algorithms(algorithms: &str) -> Box<Tpm2Runtime> {
+        let json = format!(r#"{{"Name":"custom","Algorithms":"{algorithms}"}}"#);
+        started_with_profile(Some(json))
+    }
+
+    fn started_with_profile(json: Option<String>) -> Box<Tpm2Runtime> {
+        let profile = validate_user_profile(json.as_ref().map(|text| text.as_bytes()))
+            .expect("the profile validates");
+        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let mut runtime = commit_manufactured_state(state).expect("commits");
+        runtime.entropy = deterministic_entropy;
+        let bytes = vec![
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0, 0,
+        ];
+        let input = CommandInput::new(bytes.len() as u32, bytes);
+        let parsed = parse_command(&input).expect("the header parses");
+        assert_eq!(
+            dispatch(&mut runtime, &parsed).code(),
+            0,
+            "Startup succeeds"
+        );
+        runtime.nv_update_pending = false;
+        runtime
+    }
 }
 
 #[cfg(test)]

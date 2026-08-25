@@ -14,14 +14,13 @@ use super::super::object_wrap::{
     sensitive_to_private, unwrap_outer,
 };
 use super::super::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedTpmtPublic};
-use super::super::public::{NAME_SIZE, SymDefObject, TPM_ALG_NULL, TPM_ALG_RSA, TPM_ALG_SYMCIPHER};
+use super::super::public::{NAME_SIZE, SymDefObject, TPM_ALG_NULL, TPM_ALG_SYMCIPHER};
 use super::super::random::{finish_live_rand, take_live_rand};
 use super::super::runtime::Tpm2Runtime;
 use super::super::secret::{
-    DUPLICATE_LABEL, MAX_ENCRYPTED_SECRET, rsa_secret_reaches_self_test, secret_decrypt,
-    secret_encrypt,
+    DUPLICATE_LABEL, MAX_ENCRYPTED_SECRET, secret_decrypt_with_runtime, secret_encrypt,
 };
-use super::super::self_test::self_test_rsa_oaep;
+use super::super::self_test::LazySelfTest;
 use super::super::template::{
     TPMA_OBJECT_ENCRYPTED_DUPLICATION, TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM,
     TemplateReader, digest_size,
@@ -233,13 +232,14 @@ pub(super) fn execute_rewrap(
             return Err(TPM_RC_TYPE + RC_REWRAP_OLD_PARENT);
         }
         let old_parent = object_body(runtime, old_parent_handle, RC_REWRAP_OLD_PARENT)?;
-        if old_parent.public.object_type == TPM_ALG_RSA
-            && rsa_secret_reaches_self_test(&old_parent, &in_sym_seed)
-        {
-            self_test_rsa_oaep(runtime)?;
-        }
-        let data = secret_decrypt(&old_parent, DUPLICATE_LABEL, &in_sym_seed)
-            .map_err(|_| TPM_RC_VALUE + RC_REWRAP_IN_SYM_SEED)?;
+        let data = secret_decrypt_with_runtime(runtime, &old_parent, DUPLICATE_LABEL, &in_sym_seed)
+            .map_err(|code| {
+                if code == TPM_RC_FAILURE {
+                    code
+                } else {
+                    TPM_RC_VALUE + RC_REWRAP_IN_SYM_SEED
+                }
+            })?;
         let protector = duplication_protector(&old_parent.public);
         unwrap_outer(
             &protector,
@@ -249,6 +249,7 @@ pub(super) fn execute_rewrap(
             false,
             &in_duplicate,
             TPM_RC_FAILURE,
+            &mut LazySelfTest::untested(),
         )
         .map_err(|code| add_modifier(code, RC_REWRAP_IN_DUPLICATE))?
     };
@@ -275,6 +276,7 @@ pub(super) fn execute_rewrap(
         Some(&encrypted.data),
         false,
         &private_blob,
+        &mut LazySelfTest::untested(),
         &mut rand,
     );
     finish_live_rand(runtime, rand)?;
@@ -346,12 +348,7 @@ pub(super) fn execute_import(
         if parent.public.object_type == TPM_ALG_SYMCIPHER {
             return Err(TPM_RC_TYPE + RC_IMPORT_PARENT_HANDLE);
         }
-        if parent.public.object_type == TPM_ALG_RSA
-            && rsa_secret_reaches_self_test(&parent, &in_sym_seed)
-        {
-            self_test_rsa_oaep(runtime)?;
-        }
-        secret_decrypt(&parent, DUPLICATE_LABEL, &in_sym_seed)
+        secret_decrypt_with_runtime(runtime, &parent, DUPLICATE_LABEL, &in_sym_seed)
             .map_err(|code| add_modifier(code, RC_IMPORT_IN_SYM_SEED))?
     };
 
@@ -1119,6 +1116,52 @@ mod tests {
             "LOAD_DUP_CHILD_UNDER_ECC",
             load(H0, &private, &public),
         );
+    }
+
+    #[test]
+    fn duplication_recovers_its_seed_through_the_shared_encrypted_secret_helpers() {
+        const ALG_SHA256: u16 = 0x000b;
+        const ALG_OAEP: u16 = 0x0017;
+        const ALG_ECDH: u16 = 0x0019;
+
+        for (label, snapshot, asymmetric) in [
+            ("an RSA parent", "RSA_READY", ALG_OAEP),
+            ("an ECC parent", "ECC_READY", ALG_ECDH),
+        ] {
+            let clock = clock();
+            let mut runtime = runtime_at(snapshot, &clock);
+            run(&mut runtime, &clock, start_policy_session());
+            run(&mut runtime, &clock, policy_command_code(CC_DUPLICATE));
+            let response = exec_raw(&mut runtime, &clock, duplicate(H2, H1));
+            assert_eq!(&response[6..10], &[0, 0, 0, 0], "{label} duplicates");
+
+            let parameters =
+                super::super::super::object_load::replay::response_parameters(&response);
+            let key_len = u16::from_be_bytes(parameters[..2].try_into().unwrap()) as usize;
+            let at = 2 + key_len;
+            let blob_len = u16::from_be_bytes(parameters[at..at + 2].try_into().unwrap()) as usize;
+            let blob = parameters[at + 2..at + 2 + blob_len].to_vec();
+            let at = at + 2 + blob_len;
+            let seed_len = u16::from_be_bytes(parameters[at..at + 2].try_into().unwrap()) as usize;
+            let seed = parameters[at + 2..at + 2 + seed_len].to_vec();
+
+            runtime.self_test = runtime.self_test.restarted();
+            let response = exec_raw(
+                &mut runtime,
+                &clock,
+                import(H1, &[], &child_public(), &blob, &seed),
+            );
+            assert_eq!(&response[6..10], &[0, 0, 0, 0], "{label} imports");
+            let pending = runtime.self_test.pending_algorithms();
+            assert!(
+                !pending.contains(&asymmetric),
+                "{label} reaches its asymmetric self-test while recovering the seed"
+            );
+            assert!(
+                !pending.contains(&ALG_SHA256),
+                "{label} reaches the parent name algorithm while recovering the seed"
+            );
+        }
     }
 
     #[test]

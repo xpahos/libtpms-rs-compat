@@ -2,6 +2,7 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::ffi_types::TpmResult;
 
+use super::super::self_test::LazySelfTest;
 use super::bignum::BigUint;
 use super::prime::{PrimeSelection, is_prime_int, prime_select_with_sieve};
 use super::rand_state::{SEED_COMPAT_LEVEL_ORIGINAL, SeededRand};
@@ -256,12 +257,25 @@ pub(in crate::library::tpm2) fn oaep_decode(
     hash_alg: u16,
     label: &[u8],
     padded: &[u8],
-) -> Option<Vec<u8>> {
-    let hash_len = hash_length(hash_alg)?;
+    gate: &mut LazySelfTest<'_>,
+) -> Result<Option<Vec<u8>>, TpmResult> {
+    let Some(hash_len) = hash_length(hash_alg) else {
+        return Ok(None);
+    };
     if padded.len() < 2 * hash_len + 2 {
-        return None;
+        return Ok(None);
+    }
+    if padded[0] == 0 {
+        gate.algorithm(hash_alg)?;
     }
 
+    let Some(decoded) = decode_padding(hash_alg, label, padded, hash_len) else {
+        return Ok(None);
+    };
+    Ok(Some(decoded))
+}
+
+fn decode_padding(hash_alg: u16, label: &[u8], padded: &[u8], hash_len: usize) -> Option<Vec<u8>> {
     let mut seed = super::kdf::mgf1(hash_alg, &padded[hash_len + 1..], hash_len)?;
     for (index, byte) in seed.iter_mut().enumerate() {
         *byte ^= padded[1 + index];
@@ -480,6 +494,11 @@ mod oaep_tests {
     const HASH: u16 = TPM_ALG_SHA256;
     const LABEL: &[u8] = b"SECRET\0";
 
+    fn decode(hash_alg: u16, label: &[u8], padded: &[u8]) -> Option<Vec<u8>> {
+        oaep_decode(hash_alg, label, padded, &mut LazySelfTest::untested())
+            .expect("an untested gate never fails")
+    }
+
     fn seed() -> Vec<u8> {
         (0..32u8).map(|index| index ^ 0x37).collect()
     }
@@ -527,7 +546,7 @@ mod oaep_tests {
             let padded = encoded(&message);
             assert_eq!(padded.len(), MODULUS_LEN, "message of {length} bytes");
             assert_eq!(
-                oaep_decode(HASH, LABEL, &padded).as_deref(),
+                decode(HASH, LABEL, &padded).as_deref(),
                 Some(&message[..]),
                 "message of {length} bytes"
             );
@@ -537,29 +556,29 @@ mod oaep_tests {
     #[test]
     fn an_unsupported_hash_or_short_block_fails_on_public_inputs_alone() {
         let padded = encoded(b"salt");
-        assert!(oaep_decode(TPM_ALG_NULL, LABEL, &padded).is_none());
-        assert!(oaep_decode(HASH, LABEL, &padded[..65]).is_none());
-        assert!(oaep_decode(HASH, LABEL, &[]).is_none());
+        assert!(decode(TPM_ALG_NULL, LABEL, &padded).is_none());
+        assert!(decode(HASH, LABEL, &padded[..65]).is_none());
+        assert!(decode(HASH, LABEL, &[]).is_none());
     }
 
     #[test]
     fn a_wrong_leading_byte_is_rejected() {
         let db = strip(&encoded(b"salt"));
         for leading in [0x01u8, 0x80, 0xff] {
-            assert!(oaep_decode(HASH, LABEL, &reencode(leading, &db)).is_none());
+            assert!(decode(HASH, LABEL, &reencode(leading, &db)).is_none());
         }
     }
 
     #[test]
     fn a_wrong_label_hash_is_rejected() {
         let padded = encoded(b"salt");
-        assert!(oaep_decode(HASH, b"OTHER\0", &padded).is_none());
+        assert!(decode(HASH, b"OTHER\0", &padded).is_none());
         let mut db = strip(&padded);
         db[0] ^= 0x01;
-        assert!(oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none());
+        assert!(decode(HASH, LABEL, &reencode(0, &db)).is_none());
         let mut db = strip(&padded);
         db[31] ^= 0x80;
-        assert!(oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none());
+        assert!(decode(HASH, LABEL, &reencode(0, &db)).is_none());
     }
 
     #[test]
@@ -569,7 +588,7 @@ mod oaep_tests {
         for byte in db[hash_len..].iter_mut() {
             *byte = 0x00;
         }
-        assert!(oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none());
+        assert!(decode(HASH, LABEL, &reencode(0, &db)).is_none());
     }
 
     #[test]
@@ -586,7 +605,7 @@ mod oaep_tests {
             let mut db = original.clone();
             db[position] = 0x02;
             assert!(
-                oaep_decode(HASH, LABEL, &reencode(0, &db)).is_none(),
+                decode(HASH, LABEL, &reencode(0, &db)).is_none(),
                 "padding byte {position}"
             );
         }
@@ -607,7 +626,7 @@ mod oaep_tests {
                 .map(|offset| offset as u8 | 0x80)
                 .collect();
             assert_eq!(
-                oaep_decode(HASH, LABEL, &reencode(0, &db)).as_deref(),
+                decode(HASH, LABEL, &reencode(0, &db)).as_deref(),
                 Some(&expected[..]),
                 "delimiter at {delimiter}"
             );
@@ -633,7 +652,7 @@ mod oaep_tests {
         invalid.push(reencode(0, &db));
         for (index, padded) in invalid.iter().enumerate() {
             assert!(
-                oaep_decode(HASH, LABEL, padded).is_none(),
+                decode(HASH, LABEL, padded).is_none(),
                 "invalid encoding {index}"
             );
         }
@@ -644,9 +663,82 @@ mod oaep_tests {
         let padded = encoded(b"salt");
         for length in [0usize, 1, 65, 66, 128, MODULUS_LEN - 1] {
             let truncated = &padded[..length];
-            let decoded = oaep_decode(HASH, LABEL, truncated);
+            let decoded = decode(HASH, LABEL, truncated);
             assert!(decoded.is_none(), "length {length}");
         }
+    }
+
+    fn recorded_decode(
+        hash_alg: u16,
+        padded: &[u8],
+        failing: bool,
+    ) -> (Result<Option<Vec<u8>>, TpmResult>, Vec<u16>) {
+        let mut calls = Vec::new();
+        let outcome = {
+            let mut run = |algorithm: u16| {
+                calls.push(algorithm);
+                if failing {
+                    return Err(crate::library::constants::TPM_RC_FAILURE);
+                }
+                Ok(())
+            };
+            oaep_decode(
+                hash_alg,
+                LABEL,
+                padded,
+                &mut LazySelfTest::runtime(&mut run),
+            )
+        };
+        (outcome, calls)
+    }
+
+    #[test]
+    fn decoding_reaches_the_hash_test_at_its_first_mask_generation() {
+        let padded = encoded(b"salt");
+        let (decoded, calls) = recorded_decode(HASH, &padded, false);
+        assert_eq!(
+            decoded.expect("the gate passes").as_deref(),
+            Some(&b"salt"[..])
+        );
+        assert_eq!(calls, [HASH]);
+    }
+
+    #[test]
+    fn a_block_rejected_by_the_early_checks_reaches_no_hash_test() {
+        let padded = encoded(b"salt");
+        let mut leading = padded.clone();
+        leading[0] = 0x01;
+        for (what, candidate) in [
+            ("a nonzero leading byte", leading),
+            ("a block shorter than two digests", padded[..65].to_vec()),
+            ("an empty block", Vec::new()),
+        ] {
+            let (decoded, calls) = recorded_decode(HASH, &candidate, false);
+            assert_eq!(decoded, Ok(None), "{what}");
+            assert!(calls.is_empty(), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_block_that_reaches_the_hash_but_fails_its_padding_still_ran_one_test() {
+        let padded = encoded(b"salt");
+        let mut corrupt = padded.clone();
+        corrupt[100] ^= 0xff;
+        let (decoded, calls) = recorded_decode(HASH, &corrupt, false);
+        assert_eq!(decoded, Ok(None));
+        assert_eq!(
+            calls,
+            [HASH],
+            "the reference has already hashed by this point"
+        );
+    }
+
+    #[test]
+    fn a_failing_hash_test_stops_the_decode() {
+        let padded = encoded(b"salt");
+        let (decoded, calls) = recorded_decode(HASH, &padded, true);
+        assert_eq!(decoded, Err(crate::library::constants::TPM_RC_FAILURE));
+        assert_eq!(calls, [HASH]);
     }
 
     #[test]

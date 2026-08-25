@@ -37,6 +37,16 @@ fixture = "src/library/tpm2/testdata/golden_responses/create_primary.bin"
 reader = "src/library/tpm2/golden_responses/create_primary.rs"
 commands = ["TPM2_CreatePrimary"]
 
+[families."credential-activation"]
+magic = "CAORACLE"
+scenario = "scripts/golden_responses/scenarios/credential_activation.scenario"
+fixture = "src/library/tpm2/testdata/golden_responses/credential_activation.bin"
+reader = "src/library/tpm2/golden_responses/credential_activation.rs"
+commands = [
+    "TPM2_MakeCredential",
+    "TPM2_ActivateCredential",
+]
+
 [families."dictionary-attack"]
 magic = "DAORACLE"
 scenario = "scripts/golden_responses/scenarios/dictionary_attack.scenario"
@@ -462,7 +472,8 @@ reason = "pinned by module tests predating the fixture format"
 
 [commands.ActivateCredential]
 code = 0x00000147
-status = "todo"
+status = "implemented"
+family = "credential-activation"
 
 [commands.Certify]
 code = 0x00000148
@@ -613,7 +624,8 @@ family = "object-lifecycle"
 
 [commands.MakeCredential]
 code = 0x00000168
-status = "todo"
+status = "implemented"
+family = "credential-activation"
 
 [commands.NV_ReadPublic]
 code = 0x00000169

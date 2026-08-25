@@ -214,6 +214,10 @@ pub(in crate::library::tpm2) fn is_compiled_curve(curve_id: u16) -> bool {
     ECC_CURVES.iter().any(|entry| entry.curve_id == curve_id)
 }
 
+pub(in crate::library::tpm2) fn compiled_curves() -> impl Iterator<Item = u16> {
+    ECC_CURVES.iter().map(|entry| entry.curve_id)
+}
+
 pub(in crate::library::tpm2) struct CurveDetail {
     pub(in crate::library::tpm2) curve_id: u16,
     pub(in crate::library::tpm2) key_size_bits: u16,

@@ -302,11 +302,127 @@ unaudited commands, reading and resetting the digest, changing its hash
 algorithm, duplicate list entries, and entries that cause no state change.
 Permanent-state records pin the bitmap and audit counter after mutations.
 
-One deliberate compatibility case enables auditing for
-`TPM2_ActivateCredential`. The vendored reference implements that command and
-the active profile enables it, although the Rust dispatcher does not implement
-it yet. The fixture therefore preserves the upstream audit bit and includes it
-in the command-list digest.
+The `AUDITCC_*` records pin `TPM_CAP_AUDIT_COMMANDS`. The list is built from the
+upstream command table rather than the Rust registry, so it reports every
+command the reference implements whose audit bit is set, in command-code order.
+A freshly manufactured TPM already audits `TPM2_SetCommandCodeAuditStatus`.
+
+One deliberate compatibility case enables auditing for `TPM2_CertifyX509`. The
+vendored reference implements that command and the active profile enables it,
+although the Rust dispatcher does not implement it yet. The fixture therefore
+preserves the upstream audit bit and includes it in the command-list digest.
+
+## Notes about the credential-activation family
+
+The `credential-activation` family covers `TPM2_MakeCredential` and
+`TPM2_ActivateCredential`. Its scenario is a sequence of independent sections;
+each one starts from `restore READY`, or from a snapshot taken right after the
+section's keys were created, so no section consumes another section's
+randomness.
+
+Every key is a primary key created from a fixed template, so the reference DRBG
+makes the key material, and therefore each Name, reproducible. The activation
+objects carry the authorization value `ak` and the protectors carry `srk`, which
+lets the same section cover both a successful authorization and a refused one.
+
+Three kinds of bytes are produced by one record and consumed by another, so the
+family needs the two-pass workflow described above:
+
+- the `READPUBLIC_*` records carry the Name that `TPM2_MakeCredential` binds the
+  credential to;
+- the `MC_*` records carry the `credentialBlob` and `secret` that the matching
+  `AC_*` records activate;
+- `SAS_PLAIN` and `SAS_AES` carry the `nonceTPM` that the session
+  authorization HMACs and the parameter-encryption keys are derived from.
+
+The Rust tests slice those bytes out of the producing fixture record rather than
+repeating them, so a regenerated fixture keeps both sides in step.
+
+`MC_RSA_OTHER_NAME` binds a credential to a second activation object.
+`AC_RSA_BOUND_TO_OTHER_NAME` presents it to the first object and is refused with
+`TPM_RC_INTEGRITY`, while `AC_RSA_OTHER_NAME_ON_OTHER_OBJECT` presents it to the
+object it was bound to and recovers the credential. `AC_RSA_WRONG_ACTIVATE_OBJECT`
+is the mirror image: the right blob on the wrong object.
+
+The protector must be an asymmetric, restricted decryption key.
+`MC_SYM_PARENT`, `MC_KEYEDHASH`, `MC_UNRESTRICTED_RSAES`, `MC_UNRESTRICTED_NULL`,
+and `MC_SIGN_ONLY_KEY` cover the four ways that check fails, and the matching
+`AC_*` records show `TPM2_ActivateCredential` blaming its second handle for the
+same shapes. A restricted decryption key can never carry a scheme, so the
+"wrong scheme" case is an unrestricted `TPM_ALG_RSAES` key that is refused for
+being unrestricted before its scheme is ever consulted.
+
+The credential may not be larger than the digest produced by the protector's
+`nameAlg`. `MC_RSA_AT_LIMIT`, `MC_RSA_OVER_LIMIT`, `MC_ECC_AT_LIMIT`,
+`MC_ECC_OVER_LIMIT`, `MC_RSA_SHA384_AT_LIMIT`, and `MC_RSA_SHA384_OVER_LIMIT`
+pin that boundary for both enabled name algorithms, and `MC_RSA_EMPTY_CREDENTIAL`
+shows that an empty credential round-trips to an empty `certInfo`.
+
+`AC_RSA_ENCRYPTED_REQUEST`, `AC_RSA_ENCRYPTED_RESPONSE`, and the three
+`MC_RSA_ENCRYPTED_*` records use an unbound, unsalted AES-CFB session. Its
+session key is empty, so `TPM2_MakeCredential`, which has no authorization
+handle, is accepted with an empty session HMAC and its parameter key is
+`KDFa(SHA256, "", "CFB", nonceCaller, nonceTPM)`. `TPM2_ActivateCredential`
+authorizes its first handle with the same session, so the activation object's
+authorization value is concatenated with the empty session key for both the
+command HMAC and the parameter key.
+
+`CP_POLICY_AK` is created with an `authPolicy` of
+`H(0^32 || TPM2_PolicyCommandCode || TPM2_ActivateCredential)`. Because
+`activateHandle` carries the admin role, a policy session must have that command
+code set: `AC_POLICY_ADMIN` succeeds after `PCC_ACTIVATE` and
+`AC_POLICY_WITHOUT_COMMAND_CODE` answers `TPM_RC_POLICY_FAIL`. The object leaves
+`adminWithPolicy` CLEAR, so `AC_POLICY_AK_PASSWORD` shows the same object still
+accepting its authorization value.
+
+Both commands run lazy known-answer tests. The asymmetric test is RSA-OAEP for
+an RSA protector and ECDH for an ECC one.
+
+Only `TPM2_MakeCredential` draws operational entropy: it generates the seed and,
+for an RSA protector, the OAEP padding seed. `TPM2_ActivateCredential` recovers
+a seed that already exists and never draws entropy for the recovery itself. It
+can still draw once, indirectly, when an RSA protector makes the pending
+RSA-OAEP known-answer test run, because that vector needs a random input; once
+that test has settled, a later RSA activation draws nothing. ECC activation
+draws nothing at all, because the ECDH and hash known-answer tests are
+deterministic.
+
+The protector's `nameAlg` test is reached while the seed is generated or
+recovered, not later. `OaepEncode()` hashes the label with `CryptHashBlock()`
+and `OaepDecode()` runs `CryptMGF_KDF()`; both reach `CryptHashStart(nameAlg)`.
+The ECC path reaches the same place through `CryptKDFe(nameAlg)`. So by the time
+`SecretToCredential()` or `CredentialToSecret()` touches the outer wrap, the hash
+test has already settled.
+
+Inside `OaepEncode()` the label hash comes before `DRBG_Generate()` draws the
+padding seed, so a hash test that fails during encoding stops the command after
+the secret data was generated but before the padding seed is drawn. Inside
+`OaepDecode()` the size and leading-zero checks come first, so a block the
+reference rejects there never reaches the hash at all.
+
+The reference returns from `OaepDecode()` as soon as the leading byte is not
+zero. The Rust decoder does not: it keeps the whole padding check constant time
+so a malformed block never reveals through timing which part of the encoding was
+wrong. Only the self-test gate follows the reference's early-exit condition, and
+that gate does work at most once per boot, after which it is a no-op.
+
+The outer wrap reaches the same hash again through its `CryptKDFa()` storage and
+integrity keys, and the gate is kept there because `ProduceOuterWrap()` and
+`UnwrapOuter()` also serve duplication and private blobs. In the normal
+credential flow that second gate is already settled and does nothing.
+
+The symmetric test belongs to the outer wrap. `TPM2_MakeCredential` reaches it
+when `CryptSymmetricEncrypt()` encrypts the marshaled credential.
+`TPM2_ActivateCredential` reaches it only after the outer integrity value
+matches, so a malformed or incorrect `credentialBlob` leaves the symmetric test
+pending while the `nameAlg` test is already settled by the seed recovery.
+
+The capture harness cannot make the entropy or self-test paths fail.
+`entropy_shim.c` always succeeds and the scenario language has no operation that
+starves the generator or breaks a known-answer vector, so a fixture can only
+ever record the passing side. The injected entropy and self-test failures are
+therefore covered by Rust module tests, which drive the generator into reseed
+starvation and swap the known-answer runner, rather than by fixture records.
 
 ## Notes about the policy-sessions family
 
@@ -481,6 +597,12 @@ an orderly shutdown to show `TPM2_ClockSet` making the clock safe again.
 answered with `TPM2_ECC_Encrypt`, the next implemented command code. Both
 implementations now register `0x0199`, so the record is compared byte for byte.
 
+The `PCRPROP_*` records pin `TPM_CAP_PCR_PROPERTIES`. The vendored property
+range runs from `TPM_PT_PCR_FIRST` to `TPM_PT_PCR_LAST` with a hole between
+`TPM_PT_PCR_RESET_L4` and `TPM_PT_PCR_NO_INCREMENT`; the unimplemented tags in
+that hole are skipped without ending the scan, so `PCRPROP_FROM_HOLE` still
+reports the four properties above it.
+
 The `PERMALL_*_RESTART` snapshots are compared field by field instead of byte for
 byte, because a reboot re-seeds the DRBG from host entropy and the Rust test
 entropy is not the container's.
@@ -565,6 +687,11 @@ a digest that reduces to an abscissa with a square root modulo `p`, because the
 reference builds `P2` as `H_nameAlg(s2) mod p` and requires the caller-supplied
 `y2` to complete a point on the curve.
 
+The `CURVES_*` records pin `TPM_CAP_ECC_CURVES`. The reference walks its
+`eccCurves[]` array and skips any curve below the requested one, so the list
+follows the vendored array order and the profile's curve and minimum-key-size
+filters, not a numeric sort of the curve identifiers.
+
 The `RESUME_*`, `RESTART_*`, and `RESET_*` records pin how a startup treats the
 commitment state. `TPM2_Shutdown(TPM_SU_STATE)` followed by
 `TPM2_Startup(TPM_SU_STATE)` resumes and by `TPM2_Startup(TPM_SU_CLEAR)`
@@ -628,6 +755,14 @@ restores the reference DRBG.
 When new hierarchy seeds make raw state unsuitable for direct comparison, the
 scenario checks observable effects through normal TPM commands: capabilities,
 PCR values, public objects, NV indexes, and shutdown/startup behavior.
+
+The `AUTHPOL_*` records pin `TPM_CAP_AUTH_POLICIES`. Only the four hierarchies
+whose authorization policy the reference can report are listed: owner, lockout,
+endorsement, and platform. `TPM_RH_NULL`, `TPM_RS_PW`, and `TPM_RH_PLATFORM_NV`
+are implemented permanent handles, but `EntityGetAuthPolicy()` answers
+`TPM_ALG_ERROR` for them, so they never appear. An unset policy is reported with
+a null hash algorithm and no digest. A property outside the permanent handle
+range answers `TPM_RC_VALUE` for parameter two.
 
 The `hierarchy-management` family also preserves an upstream state-format
 quirk. Legacy level-1 persistent objects and newer `ANY_OBJECT` entries place

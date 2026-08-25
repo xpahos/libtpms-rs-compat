@@ -572,6 +572,45 @@ fn parks_on_the_gate_once(_test: PrimitiveTest) -> bool {
     true
 }
 
+pub(in crate::library::tpm2) struct LazySelfTest<'a>(
+    Option<&'a mut dyn FnMut(u16) -> Result<(), TpmResult>>,
+);
+
+impl<'a> LazySelfTest<'a> {
+    // TODO: Give the duplication and private-blob outer-wrap paths a
+    // runtime-backed gate; they do not model the lazy hash and symmetric
+    // known-answer tests they reach yet. The known-answer runners themselves
+    // stay ungated, because the reference suppresses nested tests while one is
+    // running.
+    pub(in crate::library::tpm2) fn untested() -> Self {
+        Self(None)
+    }
+
+    pub(in crate::library::tpm2) fn runtime(
+        run: &'a mut dyn FnMut(u16) -> Result<(), TpmResult>,
+    ) -> Self {
+        Self(Some(run))
+    }
+
+    pub(in crate::library::tpm2) fn algorithm(&mut self, algorithm: u16) -> Result<(), TpmResult> {
+        match &mut self.0 {
+            Some(run) => run(algorithm),
+            None => Ok(()),
+        }
+    }
+}
+
+pub(in crate::library::tpm2) fn self_test_reached(
+    runtime: &mut super::runtime::Tpm2Runtime,
+    algorithm: u16,
+) -> Result<(), TpmResult> {
+    match algorithm {
+        TPM_ALG_OAEP => self_test_rsa_oaep(runtime),
+        TPM_ALG_RSAES => run_rsaes_test_if_pending(runtime),
+        _ => self_test_algorithm(runtime, algorithm),
+    }
+}
+
 pub(in crate::library::tpm2) fn self_test_rsa_oaep(
     runtime: &mut super::runtime::Tpm2Runtime,
 ) -> Result<(), TpmResult> {
@@ -749,8 +788,18 @@ pub(in crate::library::tpm2) fn always_fails(_test: PrimitiveTest) -> bool {
 }
 
 #[cfg(test)]
+pub(in crate::library::tpm2) fn fails_on_sha256(test: PrimitiveTest) -> bool {
+    test != PrimitiveTest::Sha256
+}
+
+#[cfg(test)]
 pub(in crate::library::tpm2) fn fails_on_sha384(test: PrimitiveTest) -> bool {
     test != PrimitiveTest::Sha384
+}
+
+#[cfg(test)]
+pub(in crate::library::tpm2) fn fails_on_aes(test: PrimitiveTest) -> bool {
+    test != PrimitiveTest::Aes256
 }
 
 #[cfg(test)]
