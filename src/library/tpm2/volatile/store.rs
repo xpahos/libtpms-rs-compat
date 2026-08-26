@@ -1067,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn single_byte_corruptions_of_a_produced_blob_never_panic() {
+    fn produced_blob_byte_mutations_do_not_panic() {
         let runtime = restored_from_c_fixture();
         let blob = store(&runtime);
         let seeds = runtime_seed_tie(&runtime);

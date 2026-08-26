@@ -2059,7 +2059,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_transfer_commands_never_panic() {
+    fn transfer_command_mutations_do_not_panic() {
         let clock = clock();
         let (_key, blob, seed) = duplicated("DUP_RSA");
         let public = child_public();

@@ -1433,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_requests_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let valid = Request::default().bytes();
         for length in 10..valid.len() {
             for byte in [0x00u8, 0x01, 0x80, 0xff] {

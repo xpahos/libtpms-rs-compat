@@ -1451,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn bit_flips_do_not_panic() {
         let valid = authorized_extend(10, &one_digest(TPM_ALG_SHA256, 0xaa));
         for index in 6..valid.len() {
             for flip in [0x01u8, 0x80, 0xff] {

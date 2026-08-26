@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn lockout_byte_mutations_do_not_panic() {
         for len in 0..20usize {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {
                 let _ = parse(&vec![byte; len]);

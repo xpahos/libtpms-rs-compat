@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameter_areas_never_panic() {
+    fn short_parameters_return_upstream_error() {
         let filler = [0x00u8, 0xff, 0x80, 0x7f];
         for length in 0..=6usize {
             for &byte in &filler {

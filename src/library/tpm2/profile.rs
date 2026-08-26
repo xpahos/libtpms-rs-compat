@@ -1949,7 +1949,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn profile_byte_mutations_do_not_panic() {
         let base = json(
             "custom",
             0,

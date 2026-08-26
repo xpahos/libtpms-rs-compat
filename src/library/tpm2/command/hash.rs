@@ -922,7 +922,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn malformed_parameter_areas_never_panic() {
+    fn short_parameters_return_framed_responses() {
         let filler = [0x00u8, 0xff, 0x80, 0x7f, 0x01, 0x40];
         let mut runtime = oracle_runtime();
         for length in 0..=10usize {

@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"HAORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "TPM2 one-shot HMAC",
     MAGIC,
     include_bytes!("../testdata/golden_responses/hmac.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"EDORACLE", b"SQORACLE"],
+        magic: b"HAORACLE",
+        file: "../testdata/golden_responses/hmac.bin",
     }
 }

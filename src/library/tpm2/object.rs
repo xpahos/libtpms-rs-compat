@@ -1398,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn object_slot_byte_mutations_do_not_panic() {
         for full in [
             any_rsa_object(3),
             any_rsa_object(4),

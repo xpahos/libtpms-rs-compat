@@ -1138,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_never_panic() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let mut runtime = restored("KEYS");
         let templates = [
             encrypt_command(

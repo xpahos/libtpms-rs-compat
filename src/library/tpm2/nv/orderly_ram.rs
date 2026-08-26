@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn orderly_ram_byte_mutations_do_not_panic() {
         let full = IndexOrderlyRamFixture {
             entries: vec![IndexOrderlyRamFixture::entry(0x0100_000b, 1, &[0x99; 5])],
             ..IndexOrderlyRamFixture::default()

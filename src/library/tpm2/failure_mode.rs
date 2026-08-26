@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_and_malformed_requests_never_panic() {
+    fn request_mutations_stay_on_failure_route() {
         let valid = get_capability(TPM_CAP_TPM_PROPERTIES, 0x0000_0100, 1);
         for length in 0..=valid.len() {
             let truncated = &valid[..length];

@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_command_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         let valid = event_sequence_complete(10, 0x8000_0000, b"ab");

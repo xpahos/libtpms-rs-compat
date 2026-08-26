@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_branch_lists_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let valid = command(
             CC_POLICY_OR,
             &[POLICY_SESSION_0],

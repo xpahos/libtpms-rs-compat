@@ -1059,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_sign_parameters_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let full = sign_parameters(&sha256(), TPM_ALG_RSASSA, TPM_ALG_SHA256, &owner_ticket());
         let mut runtime = asym_runtime();
         for index in 0..full.len() {

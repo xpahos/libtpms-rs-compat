@@ -2390,66 +2390,14 @@ mod tests {
 
     #[test]
     fn lookup_finds_every_registered_command() {
-        assert_eq!(
-            find(TPM_CC_EVICT_CONTROL).map(|d| d.code),
-            Some(TPM_CC_EVICT_CONTROL)
-        );
-        assert_eq!(
-            find(TPM_CC_CHANGE_EPS).map(|d| d.code),
-            Some(TPM_CC_CHANGE_EPS)
-        );
-        assert_eq!(
-            find(TPM_CC_HIERARCHY_CHANGE_AUTH).map(|d| d.code),
-            Some(TPM_CC_HIERARCHY_CHANGE_AUTH)
-        );
-        assert_eq!(
-            find(TPM_CC_PCR_ALLOCATE).map(|d| d.code),
-            Some(TPM_CC_PCR_ALLOCATE)
-        );
-        assert_eq!(
-            find(TPM_CC_CREATE_PRIMARY).map(|d| d.code),
-            Some(TPM_CC_CREATE_PRIMARY)
-        );
-        assert_eq!(
-            find(TPM_CC_PCR_RESET).map(|d| d.code),
-            Some(TPM_CC_PCR_RESET)
-        );
-        assert_eq!(
-            find(TPM_CC_INCREMENTAL_SELF_TEST).map(|d| d.code),
-            Some(TPM_CC_INCREMENTAL_SELF_TEST)
-        );
-        assert_eq!(
-            find(TPM_CC_SELF_TEST).map(|d| d.code),
-            Some(TPM_CC_SELF_TEST)
-        );
-        assert_eq!(find(TPM_CC_STARTUP).map(|d| d.code), Some(TPM_CC_STARTUP));
-        assert_eq!(find(TPM_CC_SHUTDOWN).map(|d| d.code), Some(TPM_CC_SHUTDOWN));
-        assert_eq!(
-            find(TPM_CC_STIR_RANDOM).map(|d| d.code),
-            Some(TPM_CC_STIR_RANDOM)
-        );
-        assert_eq!(
-            find(TPM_CC_READ_PUBLIC).map(|d| d.code),
-            Some(TPM_CC_READ_PUBLIC)
-        );
-        assert_eq!(
-            find(TPM_CC_VERIFY_SIGNATURE).map(|d| d.code),
-            Some(TPM_CC_VERIFY_SIGNATURE)
-        );
-        assert_eq!(
-            find(TPM_CC_GET_CAPABILITY).map(|d| d.code),
-            Some(TPM_CC_GET_CAPABILITY)
-        );
-        assert_eq!(
-            find(TPM_CC_GET_RANDOM).map(|d| d.code),
-            Some(TPM_CC_GET_RANDOM)
-        );
-        assert_eq!(find(TPM_CC_HASH).map(|d| d.code), Some(TPM_CC_HASH));
-        assert_eq!(find(TPM_CC_PCR_READ).map(|d| d.code), Some(TPM_CC_PCR_READ));
-        assert_eq!(
-            find(TPM_CC_PCR_EXTEND).map(|d| d.code),
-            Some(TPM_CC_PCR_EXTEND)
-        );
+        for descriptor in implemented() {
+            assert_eq!(
+                find(descriptor.code).map(|found| found.code),
+                Some(descriptor.code),
+                "code {:#x}",
+                descriptor.code
+            );
+        }
     }
 
     #[test]
@@ -2599,30 +2547,77 @@ mod tests {
     }
 
     #[test]
-    fn change_eps_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_CHANGE_EPS).unwrap().attributes, 0x02c0_0124);
+    fn registered_attributes_match_upstream() {
+        for (code, attributes) in [
+            (TPM_CC_CHANGE_EPS, 0x02c0_0124u32),
+            (TPM_CC_DICTIONARY_ATTACK_PARAMETERS, 0x0240_013a),
+            (TPM_CC_HIERARCHY_CHANGE_AUTH, 0x0240_0129),
+            (TPM_CC_PCR_ALLOCATE, 0x0240_012b),
+            (TPM_CC_PCR_EVENT, 0x0200_013c),
+            (TPM_CC_PCR_RESET, 0x0200_013d),
+            (TPM_CC_INCREMENTAL_SELF_TEST, 0x0040_0142),
+            (TPM_CC_SELF_TEST, 0x0040_0143),
+            (TPM_CC_STARTUP, 0x0040_0144),
+            (TPM_CC_SHUTDOWN, 0x0040_0145),
+            (TPM_CC_STIR_RANDOM, 0x0040_0146),
+            (TPM_CC_FLUSH_CONTEXT, 0x0000_0165),
+            (TPM_CC_GET_CAPABILITY, 0x0000_017a),
+            (TPM_CC_GET_RANDOM, 0x0000_017b),
+            (TPM_CC_HASH, 0x0000_017d),
+            (TPM_CC_PCR_READ, 0x0000_017e),
+            (TPM_CC_PCR_EXTEND, 0x0200_0182),
+        ] {
+            let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
+            assert_eq!(descriptor.attributes, attributes, "code {code:#x}");
+        }
     }
 
     #[test]
-    fn change_eps_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_CHANGE_EPS)
-            .count();
-        assert_eq!(count, 1);
+    fn handle_free_commands_allow_sessions() {
+        for code in [
+            TPM_CC_INCREMENTAL_SELF_TEST,
+            TPM_CC_SELF_TEST,
+            TPM_CC_STIR_RANDOM,
+            TPM_CC_GET_RANDOM,
+            TPM_CC_HASH,
+        ] {
+            let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
+            assert!(descriptor.handles.is_empty(), "code {code:#x}");
+            assert!(descriptor.sessions_allowed, "code {code:#x}");
+            assert!(
+                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
+                "code {code:#x}"
+            );
+        }
     }
 
     #[test]
-    fn change_eps_declares_one_platform_handle_requiring_user_authorization() {
-        let descriptor = find(TPM_CC_CHANGE_EPS).unwrap();
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Platform));
-        assert!(descriptor.sessions_allowed);
+    fn authorized_handle_nv_attributes_match() {
+        for (code, updates_nv) in [
+            (TPM_CC_CHANGE_EPS, true),
+            (TPM_CC_HIERARCHY_CHANGE_AUTH, true),
+            (TPM_CC_PCR_ALLOCATE, true),
+            (TPM_CC_PCR_EXTEND, false),
+            (TPM_CC_PCR_RESET, false),
+        ] {
+            let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
+            assert_eq!(descriptor.handles.len(), 1, "code {code:#x}");
+            assert!(descriptor.handles[0].user_auth, "code {code:#x}");
+            assert!(descriptor.sessions_allowed, "code {code:#x}");
+            assert!(
+                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
+                "code {code:#x}"
+            );
+            assert_eq!(
+                descriptor.attributes & (1 << 22) != 0,
+                updates_nv,
+                "code {code:#x}"
+            );
+        }
         assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
+            find(TPM_CC_CHANGE_EPS).unwrap().handles[0].kind,
+            HandleKind::Platform
         ));
-        assert_ne!(descriptor.attributes & (1 << 22), 0, "ChangeEPS updates NV");
     }
 
     #[test]
@@ -2641,24 +2636,6 @@ mod tests {
                 descriptor.code
             );
         }
-    }
-
-    #[test]
-    fn dictionary_attack_parameters_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(
-            find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS)
-                .unwrap()
-                .attributes,
-            0x0240_013a
-        );
-    }
-
-    #[test]
-    fn dictionary_attack_parameters_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_DICTIONARY_ATTACK_PARAMETERS)
-            .count();
-        assert_eq!(count, 1);
     }
 
     #[test]
@@ -2706,34 +2683,6 @@ mod tests {
     }
 
     #[test]
-    fn hierarchy_change_auth_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(
-            find(TPM_CC_HIERARCHY_CHANGE_AUTH).unwrap().attributes,
-            0x0240_0129
-        );
-    }
-
-    #[test]
-    fn hierarchy_change_auth_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_HIERARCHY_CHANGE_AUTH)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn hierarchy_change_auth_declares_one_command_handle_requiring_user_authorization() {
-        let descriptor = find(TPM_CC_HIERARCHY_CHANGE_AUTH).unwrap();
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
     fn the_hierarchy_auth_handle_kind_accepts_only_the_four_hierarchies() {
         use crate::library::tpm2::hierarchy::{
             TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
@@ -2767,36 +2716,6 @@ mod tests {
     }
 
     #[test]
-    fn pcr_allocate_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_PCR_ALLOCATE).unwrap().attributes, 0x0240_012b);
-    }
-
-    #[test]
-    fn pcr_allocate_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_PCR_ALLOCATE)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn pcr_allocate_declares_one_command_handle_requiring_user_authorization() {
-        let descriptor = find(TPM_CC_PCR_ALLOCATE).unwrap();
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_ne!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "PCR_Allocate updates NV"
-        );
-    }
-
-    #[test]
     fn the_platform_handle_kind_accepts_only_the_platform_hierarchy() {
         use crate::library::tpm2::hierarchy::{
             TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
@@ -2820,201 +2739,8 @@ mod tests {
     }
 
     #[test]
-    fn incremental_self_test_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(
-            find(TPM_CC_INCREMENTAL_SELF_TEST).unwrap().attributes,
-            0x0040_0142
-        );
-    }
-
-    #[test]
-    fn incremental_self_test_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_INCREMENTAL_SELF_TEST)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn incremental_self_test_declares_no_handles_and_allows_sessions() {
-        let descriptor = find(TPM_CC_INCREMENTAL_SELF_TEST).unwrap();
-        assert!(descriptor.handles.is_empty());
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn self_test_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_SELF_TEST).unwrap().attributes, 0x0040_0143);
-    }
-
-    #[test]
-    fn self_test_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_SELF_TEST)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn self_test_declares_no_handles_and_allows_sessions() {
-        let descriptor = find(TPM_CC_SELF_TEST).unwrap();
-        assert!(descriptor.handles.is_empty());
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn startup_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_STARTUP).unwrap().attributes, 0x0040_0144);
-    }
-
-    #[test]
-    fn shutdown_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_SHUTDOWN).unwrap().attributes, 0x0040_0145);
-    }
-
-    #[test]
-    fn stir_random_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_STIR_RANDOM).unwrap().attributes, 0x0040_0146);
-    }
-
-    #[test]
-    fn stir_random_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_STIR_RANDOM)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn stir_random_declares_no_handles_and_allows_sessions() {
-        let descriptor = find(TPM_CC_STIR_RANDOM).unwrap();
-        assert!(descriptor.handles.is_empty());
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn get_capability_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_GET_CAPABILITY).unwrap().attributes, 0x0000_017a);
-    }
-
-    #[test]
-    fn get_capability_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_GET_CAPABILITY)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn get_random_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_GET_RANDOM).unwrap().attributes, 0x0000_017b);
-    }
-
-    #[test]
-    fn get_random_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_GET_RANDOM)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn get_random_declares_no_handles_and_allows_sessions() {
-        let descriptor = find(TPM_CC_GET_RANDOM).unwrap();
-        assert!(descriptor.handles.is_empty());
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn hash_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_HASH).unwrap().attributes, 0x0000_017d);
-    }
-
-    #[test]
-    fn hash_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_HASH)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn hash_declares_no_handles_and_allows_sessions() {
-        let descriptor = find(TPM_CC_HASH).unwrap();
-        assert!(descriptor.handles.is_empty());
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
     fn hash_carries_no_nv_attribute() {
         assert_eq!(find(TPM_CC_HASH).unwrap().attributes & (1 << 22), 0);
-    }
-
-    #[test]
-    fn pcr_read_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_PCR_READ).unwrap().attributes, 0x0000_017e);
-    }
-
-    #[test]
-    fn pcr_read_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_PCR_READ)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn pcr_extend_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_PCR_EXTEND).unwrap().attributes, 0x0200_0182);
-    }
-
-    #[test]
-    fn pcr_extend_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_PCR_EXTEND)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn pcr_extend_declares_one_command_handle_requiring_user_authorization() {
-        let descriptor = find(TPM_CC_PCR_EXTEND).unwrap();
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.sessions_allowed);
-    }
-
-    #[test]
-    fn pcr_event_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_PCR_EVENT).unwrap().attributes, 0x0200_013c);
-    }
-
-    #[test]
-    fn pcr_event_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_PCR_EVENT)
-            .count();
-        assert_eq!(count, 1);
     }
 
     #[test]
@@ -3077,31 +2803,6 @@ mod tests {
             .expect("PCR_Event is registered");
         assert_eq!(codes[at - 1], TPM_CC_NV_CHANGE_AUTH);
         assert_eq!(codes[at + 1], TPM_CC_PCR_RESET);
-    }
-
-    #[test]
-    fn pcr_reset_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_PCR_RESET).unwrap().attributes, 0x0200_013d);
-    }
-
-    #[test]
-    fn pcr_reset_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_PCR_RESET)
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn pcr_reset_declares_one_command_handle_requiring_user_authorization() {
-        let descriptor = find(TPM_CC_PCR_RESET).unwrap();
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
     }
 
     #[test]
@@ -3180,19 +2881,6 @@ mod tests {
                 descriptor.code
             );
         }
-    }
-
-    #[test]
-    fn flush_context_attributes_match_the_upstream_tpma_cc() {
-        assert_eq!(find(TPM_CC_FLUSH_CONTEXT).unwrap().attributes, 0x0000_0165);
-    }
-
-    #[test]
-    fn flush_context_is_registered_exactly_once() {
-        let count = implemented()
-            .filter(|descriptor| descriptor.code == TPM_CC_FLUSH_CONTEXT)
-            .count();
-        assert_eq!(count, 1);
     }
 
     #[test]

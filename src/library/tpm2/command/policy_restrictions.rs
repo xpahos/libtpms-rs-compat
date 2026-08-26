@@ -745,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_direct_assertion_requests_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let valid = policy_command(CC_POLICY_DUPLICATION_SELECT, &{
             let mut out = sized(&[0xa1; 34]);
             out.extend_from_slice(&sized(&[0xb2; 34]));

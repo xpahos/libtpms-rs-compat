@@ -2894,7 +2894,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_authorization_areas_never_panic() {
+    fn authorization_area_mutations_do_not_panic() {
         let valid = hex(HMAC_AUTH_PCR_EXTEND);
         for length in 10..valid.len() {
             for byte in [0x00u8, 0x01, 0x80, 0xff] {

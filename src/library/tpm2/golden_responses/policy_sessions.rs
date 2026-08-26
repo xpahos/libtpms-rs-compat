@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"PSORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "TPM2_StartAuthSession and the policy commands",
     MAGIC,
     include_bytes!("../testdata/golden_responses/policy_sessions.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"RVORACLE", b"CPORACLE"],
+        magic: b"PSORACLE",
+        file: "../testdata/golden_responses/policy_sessions.bin",
     }
 }

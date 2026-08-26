@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_read_parameters_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let full = [0x00u8, 0x08, 0x00, 0x00];
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {

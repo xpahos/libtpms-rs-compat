@@ -1089,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_arguments_never_panic() {
+    fn invalid_symmetric_arguments_are_rejected() {
         for algorithm in [0x0000u16, TPM_ALG_AES, TPM_ALG_TDES, 0xffff] {
             for mode in [0x0000u16, TPM_ALG_CFB, TPM_ALG_ECB, 0xffff] {
                 for key_len in [0usize, 1, 16, 33] {

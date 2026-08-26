@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let valid = pcr_read_command(&one_bank_params(TPM_ALG_SHA256, [1, 0, 0]));
         for len in 10..=valid.len() {
             for index in 6..len {

@@ -670,15 +670,15 @@ mod tests {
     }
 
     #[test]
-    fn malformed_certify_parameters_never_panic() {
+    fn certify_parameter_mutations_do_not_panic() {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
+        let mut runtime = two_signers();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {
                 let mut parameters = full.clone();
                 parameters[index] = byte;
-                let mut runtime = two_signers();
-                let _ = run(
+                let response = run(
                     &mut runtime,
                     &command(
                         TPM_CC_CERTIFY,
@@ -687,6 +687,7 @@ mod tests {
                         &parameters,
                     ),
                 );
+                assert!(response.len() >= 10, "index {index} byte {byte:#04x}");
             }
         }
     }

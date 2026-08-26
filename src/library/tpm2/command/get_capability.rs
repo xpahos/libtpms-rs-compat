@@ -590,18 +590,23 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
-        let valid = get_capability_command(6, 0x100, 10);
-        for len in 10..=valid.len() {
-            for index in 6..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
-                    mutated[index] ^= flip;
-                    let mut runtime = started_runtime();
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+    fn capability_request_mutations_do_not_panic() {
+        for valid in [
+            get_capability_command(6, 0x100, 10),
+            get_capability_command(TPM_CAP_HANDLES, 0x4000_0000, 10),
+            get_capability_command(TPM_CAP_PCRS, 0, 64),
+        ] {
+            for len in 10..=valid.len() {
+                for index in 6..len {
+                    for flip in [0x01u8, 0x80, 0xff] {
+                        let mut mutated = valid[..len].to_vec();
+                        mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
+                        mutated[index] ^= flip;
+                        let mut runtime = started_runtime();
+                        let input = CommandInput::new(mutated.len() as u32, mutated);
+                        let parsed = parse_command(&input).expect("the header parses");
+                        let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                    }
                 }
             }
         }
@@ -1582,24 +1587,6 @@ mod tests {
         assert_eq!(&response, &error_response(RC_HANDLE_PARAM2));
     }
 
-    #[test]
-    fn malformed_handle_requests_never_panic() {
-        let valid = get_capability_command(TPM_CAP_HANDLES, 0x4000_0000, 10);
-        for len in 10..=valid.len() {
-            for index in 6..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
-                    mutated[index] ^= flip;
-                    let mut runtime = started_runtime();
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
-                }
-            }
-        }
-    }
-
     const SWTPM_SETUP_GET_CAPABILITY: &str = "80010000001600000 17a 00000005 00000000 00000040";
 
     const ORACLE_PCRS_ALL_BANKS: &str = "80010000002b000000000000000005000000 04 \
@@ -1904,24 +1891,6 @@ ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cf
         })
         .expect("the command processes");
         assert_eq!(response, error_response(RC_VALUE_PARAM2));
-    }
-
-    #[test]
-    fn malformed_pcr_bank_requests_never_panic() {
-        let valid = get_capability_command(TPM_CAP_PCRS, 0, 64);
-        for len in 10..=valid.len() {
-            for index in 6..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
-                    mutated[index] ^= flip;
-                    let mut runtime = started_runtime();
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
-                }
-            }
-        }
     }
 }
 

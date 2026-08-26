@@ -2527,14 +2527,14 @@ mod tests {
     }
 
     #[test]
-    fn malformed_certify_parameters_never_panic() {
+    fn certify_parameter_mutations_do_not_panic() {
         let full = certify_parameters(&QUALIFY, TPM_ALG_RSASSA, TPM_ALG_SHA256, 32, 0);
+        let (mut runtime, endorsement) = oracle_runtime();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {
                 let mut parameters = full.clone();
                 parameters[index] = byte;
-                let (mut runtime, endorsement) = oracle_runtime();
-                let _ = dispatch_bytes(
+                let response = dispatch_bytes(
                     &mut runtime,
                     &command(
                         TPM_CC_NV_CERTIFY,
@@ -2543,6 +2543,7 @@ mod tests {
                         &parameters,
                     ),
                 );
+                assert!(response.len() >= 10, "index {index} byte {byte:#04x}");
             }
         }
     }

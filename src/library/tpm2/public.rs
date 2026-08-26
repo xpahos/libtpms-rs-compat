@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn public_area_byte_mutations_do_not_panic() {
         let full = rsa_public(8);
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x10, 0xff] {

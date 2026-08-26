@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"HMORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "hierarchy management",
     MAGIC,
     include_bytes!("../testdata/golden_responses/hierarchy_management.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"PEORACLE", b"ECORACLE"],
+        magic: b"HMORACLE",
+        file: "../testdata/golden_responses/hierarchy_management.bin",
     }
 }

@@ -932,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn bit_flips_do_not_panic() {
         let valid = authorized_reset(20);
         for index in 6..valid.len() {
             for flip in [0x01u8, 0x80, 0xff] {

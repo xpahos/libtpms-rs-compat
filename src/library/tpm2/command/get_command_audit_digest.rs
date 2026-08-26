@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_command_audit_parameters_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = audit_runtime();

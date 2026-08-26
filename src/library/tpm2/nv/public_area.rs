@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_public_areas_never_panic() {
+    fn nv_public_area_byte_mutations_do_not_panic() {
         let full = marshal_nv_public(&NvPublic {
             auth_policy: vec![0x33; 8],
             ..sample()

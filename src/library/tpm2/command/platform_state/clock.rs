@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_clock_requests_never_panic() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let clock = replay_clock();
         for valid in [
             clock_set(TPM_RH_PLATFORM, 0x10000, &[]),

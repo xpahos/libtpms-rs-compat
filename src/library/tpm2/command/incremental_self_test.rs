@@ -1263,7 +1263,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn malformed_command_bodies_never_panic() {
+    fn short_command_bodies_do_not_panic() {
         for length in 0..=6usize {
             for byte in 0..=u8::MAX {
                 let payload: Vec<u8> = (0..length).map(|_| byte).collect();

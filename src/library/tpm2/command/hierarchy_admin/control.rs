@@ -745,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let clock = replay_clock();
         let valid = hierarchy_control(TPM_RH_PLATFORM, TPM_RH_OWNER, 0, &[]);
         for len in 0..=valid.len() {

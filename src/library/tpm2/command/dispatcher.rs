@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_framing_never_panics() {
+    fn parameter_area_mutations_do_not_panic() {
         let mut valid = 0x0000_000au32.to_be_bytes().to_vec();
         valid.extend_from_slice(&0x09u32.to_be_bytes());
         valid.extend_from_slice(&[0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]);

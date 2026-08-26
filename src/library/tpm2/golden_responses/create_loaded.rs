@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"CLORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "TPM2_CreateLoaded",
     MAGIC,
     include_bytes!("../testdata/golden_responses/create_loaded.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"CPORACLE"],
+        magic: b"CLORACLE",
+        file: "../testdata/golden_responses/create_loaded.bin",
     }
 }

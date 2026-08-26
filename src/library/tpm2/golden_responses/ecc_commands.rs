@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"EAORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "TPM2 ECC commands",
     MAGIC,
     include_bytes!("../testdata/golden_responses/ecc_commands.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"REORACLE", b"SGORACLE"],
+        magic: b"EAORACLE",
+        file: "../testdata/golden_responses/ecc_commands.bin",
     }
 }

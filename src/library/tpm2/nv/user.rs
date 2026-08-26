@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn user_nv_byte_mutations_do_not_panic() {
         let index = NvIndexFixture::default().bytes();
         let full = UserNvramFixture {
             entries: vec![UserNvramFixture::nv_index_entry(

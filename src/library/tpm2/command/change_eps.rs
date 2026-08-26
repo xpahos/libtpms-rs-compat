@@ -1378,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let valid = change_eps();
         for len in 0..=valid.len() {
             for index in 0..len {

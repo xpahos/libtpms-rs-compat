@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn pcr_block_byte_mutations_do_not_panic() {
         let full = PcrFixture::default().bytes();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0xff] {

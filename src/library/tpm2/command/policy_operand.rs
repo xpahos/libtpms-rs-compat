@@ -688,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_operand_requests_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let valid = command(
             CC_POLICY_NV,
             &[NV_INDEX, NV_INDEX, POLICY_SESSION_0],

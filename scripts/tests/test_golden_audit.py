@@ -57,7 +57,7 @@ def baseline_manifest():
 def reader_source(magic, fixture):
     return (
         f'const MAGIC: &[u8; 8] = b"{magic}";\n\n'
-        "const FIXTURE: Fixture = Fixture::new(\n"
+        "static FIXTURE: Fixture = Fixture::new(\n"
         '    "label",\n'
         "    MAGIC,\n"
         f'    include_bytes!("../testdata/golden_responses/{fixture}"),\n'
@@ -1387,83 +1387,55 @@ class GoldenCommandLineTest(unittest.TestCase):
             self.assertNotIn(forbidden, body)
 
 
-OBSOLETE_BANNER = "########################## New targets ###################"
-GOLDEN_TARGETS = [
-    "golden-audit",
-    "test-golden",
-    "update-golden",
-    "update-golden-all",
-    "ci",
-]
-TARGET_DEFINITION = re.compile(r"^([^\s:#=]+)\s*:(?!=)")
-
-UNRELATED_TARGET = "unrelated-target:\n\t@true\n\n"
-LATER_TARGET = (
-    "\n# An ordinary comment on a later target.\n"
-    "later-target:\n"
-    "\t@printf '%s\\n' '#not-a-comment'\n"
-)
-
-
 class GoldenMakefileTest(unittest.TestCase):
     def setUp(self):
         self.makefile = (golden.ROOT / "Makefile").read_text()
 
-    def assert_golden_targets_are_grouped(self, makefile):
-        self.assertNotIn(OBSOLETE_BANNER, makefile)
-        self.assertIn("\nGOLDEN :=", makefile)
-        lines = makefile.splitlines()
-        phony = [
+    def target_line(self, target):
+        return next(
+            line for line in self.makefile.splitlines() if line.startswith(f"{target}:")
+        )
+
+    def target_recipe(self, target):
+        section = self.makefile[self.makefile.index(f"\n{target}:") + 1 :]
+        return section.partition("\n\n")[0]
+
+    def test_check_is_the_default_goal(self):
+        line = next(
             line
-            for line in lines
-            if line.startswith(".PHONY:") and "golden-audit" in line.split()
-        ]
-        self.assertEqual(len(phony), 1, ".PHONY declarations naming golden-audit")
-        self.assertEqual(phony[0].split()[1:], GOLDEN_TARGETS, ".PHONY golden targets")
-        defined = [
-            match.group(1)
-            for line in lines
-            if not line.startswith(".") and (match := TARGET_DEFINITION.match(line))
-        ]
+            for line in self.makefile.splitlines()
+            if line.startswith(".DEFAULT_GOAL")
+        )
+        self.assertEqual(line.partition(":=")[2].strip(), "check")
+
+    def test_build_only_builds_the_selected_profile(self):
+        self.assertEqual(self.target_line("build"), "build:")
+        recipe = self.target_recipe("build")
+        self.assertIn("$(CARGO) build $(CARGO_BUILD_FLAGS)", recipe)
+        for forbidden in ("golden-audit", "generate-abi", "test-abi", "test-rust"):
+            self.assertNotIn(forbidden, recipe)
+
+    def test_check_runs_the_three_validation_stages(self):
         self.assertEqual(
-            [name for name in defined if name in GOLDEN_TARGETS],
-            GOLDEN_TARGETS,
-            "golden targets in order",
+            self.target_line("check").split(),
+            ["check:", "golden-audit", "test-abi", "test-rust"],
         )
-        first = defined.index(GOLDEN_TARGETS[0])
-        last = defined.index(GOLDEN_TARGETS[-1])
+
+    def test_abi_tools_finish_before_the_abi_checks(self):
         self.assertEqual(
-            defined[first : last + 1], GOLDEN_TARGETS, "targets inside the golden group"
+            self.target_line("test-abi").split(), ["test-abi:", "test-abi-tools"]
+        )
+        self.assertIn(
+            "$(PYTHON) -m unittest discover -s scripts/tests",
+            self.target_recipe("test-abi-tools"),
         )
 
-    def test_the_committed_makefile_groups_the_golden_targets(self):
-        self.assert_golden_targets_are_grouped(self.makefile)
-
-    def test_the_obsolete_banner_is_rejected(self):
-        with self.assertRaises(AssertionError):
-            self.assert_golden_targets_are_grouped(
-                self.makefile.replace(
-                    "\nGOLDEN :=", f"\n{OBSOLETE_BANNER}\n\nGOLDEN :=", 1
-                )
-            )
-
-    def test_an_unrelated_target_inside_the_group_is_rejected(self):
-        with self.assertRaises(AssertionError):
-            self.assert_golden_targets_are_grouped(
-                self.makefile.replace("test-golden:\n", UNRELATED_TARGET + "test-golden:\n", 1)
-            )
-
-    def test_reordered_golden_targets_are_rejected(self):
-        swapped = self.makefile.replace("\nupdate-golden:\n", "\nSWAP:\n", 1).replace(
-            "\nupdate-golden-all:\n", "\nupdate-golden:\n", 1
-        )
-        with self.assertRaises(AssertionError):
-            self.assert_golden_targets_are_grouped(
-                swapped.replace("\nSWAP:\n", "\nupdate-golden-all:\n", 1)
-            )
-
-    def test_a_later_target_with_a_comment_and_hash_syntax_is_accepted(self):
-        self.assert_golden_targets_are_grouped(self.makefile + LATER_TARGET)
+    def test_rust_checks_and_tests_run_exactly_once(self):
+        recipe = self.target_recipe("test-rust")
+        self.assertIn("$(CARGO) check", recipe)
+        self.assertIn("$(CARGO) test --all-features", recipe)
+        self.assertEqual(self.makefile.count("$(CARGO) check"), 1)
+        self.assertEqual(self.makefile.count("$(CARGO) test --all-features"), 1)
 
     def test_target_command_mapping(self):
         for target, command in (
@@ -1472,24 +1444,41 @@ class GoldenMakefileTest(unittest.TestCase):
             ("update-golden", '$(GOLDEN) update "$(FAMILY)"'),
             ("update-golden-all", "$(GOLDEN) update --all --confirm-reference-update"),
         ):
-            section = self.makefile[self.makefile.index(f"\n{target}:") :]
-            self.assertIn(command, section[: section.index("\n\n")])
+            self.assertIn(command, self.target_recipe(target))
 
-    def test_build_targets_depend_on_the_static_audit(self):
-        for target in ("build:", "build-release:"):
-            line = next(
-                entry for entry in self.makefile.splitlines() if entry.startswith(target)
+    def test_removed_public_targets_do_not_return(self):
+        for target in (
+            "all",
+            "build-release",
+            "ci",
+            "cargo-check",
+            "prepare-swtpm",
+            "build-swtpm",
+            "verify-swtpm-linkage",
+        ):
+            self.assertFalse(
+                any(line.startswith(f"{target}:") for line in self.makefile.splitlines()),
+                target,
             )
-            self.assertIn("golden-audit", line)
+
+    def test_swtpm_build_linkage_and_tests_share_one_target(self):
+        self.assertEqual(
+            self.target_line("test-swtpm").split(),
+            ["test-swtpm:", "$(SWTPM_CONFIGURE_STAMP)"],
+        )
+        recipe = self.target_recipe("test-swtpm")
+        self.assertIn("$(MAKE) -C $(SWTPM_BUILD_DIR) -j$(JOBS)", recipe)
+        self.assertIn("scripts/verify_tis_symbols.py", recipe)
+        self.assertIn("$(MAKE) -C $(SWTPM_BUILD_DIR) check", recipe)
+        self.assertNotIn("--no-print-directory", self.makefile)
 
     def test_update_targets_are_not_in_build_or_check_chains(self):
         for line in self.makefile.splitlines():
-            if line.startswith(("build:", "build-release:", "check:", "ci:")):
+            if line.startswith(("build:", "check:")):
                 self.assertNotIn("update-golden", line)
 
     def test_golden_audit_does_not_use_offline(self):
-        section = self.makefile[self.makefile.index("\ngolden-audit:") :]
-        self.assertNotIn("--offline", section[: section.index("\n\n")])
+        self.assertNotIn("--offline", self.target_recipe("golden-audit"))
 
 
 class GoldenMalformedManifestTest(unittest.TestCase):
@@ -1851,8 +1840,8 @@ class GoldenReaderContractTest(unittest.TestCase):
 
         def mutate(_manifest, facts):
             facts["reader_sources"][reader] = source.replace(
-                "const FIXTURE: Fixture = Fixture::new(",
-                "const FIXTURE: Fixture = Fixture::new(MAGIC, ",
+                "static FIXTURE: Fixture = Fixture::new(",
+                "static FIXTURE: Fixture = Fixture::new(MAGIC, ",
                 1,
             )
 
@@ -1929,7 +1918,7 @@ class GoldenReaderContractTest(unittest.TestCase):
 
     def test_a_canonical_and_a_spaced_declaration_are_not_accepted(self):
         canonical = (
-            "const FIXTURE: Fixture = Fixture::new(\n"
+            "static FIXTURE: Fixture = Fixture::new(\n"
             '    "TPM2_Create",\n'
             "    MAGIC,\n"
             '    include_bytes!("../testdata/golden_responses/create.bin"),\n'
@@ -1951,7 +1940,7 @@ class GoldenReaderContractTest(unittest.TestCase):
 
     def test_an_unused_canonical_declaration_cannot_bless_a_spaced_one(self):
         canonical = (
-            "const FIXTURE: Fixture = Fixture::new(\n"
+            "static FIXTURE: Fixture = Fixture::new(\n"
             '    "TPM2_Create",\n'
             "    MAGIC,\n"
             '    include_bytes!("../testdata/golden_responses/create.bin"),\n'
@@ -1995,7 +1984,7 @@ class GoldenReaderContractTest(unittest.TestCase):
         )
 
     CANONICAL = (
-        "const FIXTURE: Fixture = Fixture::new(\n"
+        "static FIXTURE: Fixture = Fixture::new(\n"
         '    "TPM2_Create",\n'
         "    MAGIC,\n"
         '    include_bytes!("../testdata/golden_responses/create.bin"),\n'
@@ -2314,7 +2303,7 @@ class GoldenReaderContractTest(unittest.TestCase):
         reader = golden.READER_DIR + "create.rs"
         source = (golden.ROOT / reader).read_text("utf-8")
         declaration = (
-            "const FIXTURE: Fixture = Fixture::new(\n"
+            "static FIXTURE: Fixture = Fixture::new(\n"
             '    "TPM2_Create",\n'
             "    MAGIC,\n"
             '    include_bytes!("../testdata/golden_responses/create.bin"),\n'
@@ -2384,6 +2373,87 @@ class GoldenReaderContractTest(unittest.TestCase):
             code = golden.run_audit(manifest=manifest, facts=golden.collect_facts(manifest))
         self.assertEqual(code, 1)
         self.assertIn("declares no Fixture::new", err.getvalue())
+
+    def test_every_committed_reader_declares_its_fixtures_as_static(self):
+        for family, entry in sorted(golden.well_formed_families(golden.load_manifest()).items()):
+            reader = entry["reader"]
+            declarations, errors = golden.parse_reader_fixtures(
+                reader, (golden.ROOT / reader).read_text("utf-8")
+            )
+            self.assertEqual(errors, [], family)
+            self.assertEqual(
+                sorted({declaration["kind"] for declaration in declarations}),
+                ["static"],
+                family,
+            )
+
+    def test_the_canonical_static_declaration_is_accepted(self):
+        reader = golden.READER_DIR + "create.rs"
+        source = (golden.ROOT / reader).read_text("utf-8")
+        declarations, errors = golden.parse_reader_fixtures(reader, source)
+        self.assertEqual(errors, [])
+        self.assertEqual([entry["kind"] for entry in declarations], ["static"])
+        self.assertEqual(self.violations_for(reader, source), [])
+
+    def test_a_manifest_associated_const_fixture_is_rejected(self):
+        reader, source = self.reader_variant(
+            "static FIXTURE: Fixture = Fixture::new(",
+            "const FIXTURE: Fixture = Fixture::new(",
+        )
+        declarations, errors = self.parse(source)
+        self.assertEqual(errors, [])
+        self.assertEqual([entry["kind"] for entry in declarations], ["const"])
+        violations = self.violations_for(reader, source)
+        self.assertTrue(any("must be static" in v for v in violations), violations)
+        self.assertTrue(any("const Fixture" in v for v in violations), violations)
+        self.assertTrue(any("FIXTURE" in v for v in violations), violations)
+
+    def test_an_additional_active_const_fixture_stays_visible_to_the_audit(self):
+        second = self.CANONICAL.replace("FIXTURE", "SECOND")
+        reader, source = self.reader_variant(
+            self.CANONICAL, self.CANONICAL + "\n\n" + second.replace("static", "const")
+        )
+        declarations, errors = self.parse(source)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [(entry["name"], entry["kind"]) for entry in declarations],
+            [("FIXTURE", "static"), ("SECOND", "const")],
+        )
+        self.assertTrue(
+            any("more than once" in v for v in self.violations_for(reader, source))
+        )
+
+    def test_an_unassociated_active_const_fixture_is_parsed_without_the_static_error(self):
+        other = (
+            self.CANONICAL.replace("FIXTURE", "OTHER")
+            .replace("static", "const")
+            .replace("create.bin", "pcr_event.bin")
+        )
+        reader, source = self.reader_variant(
+            self.CANONICAL, self.CANONICAL + "\n\n" + other
+        )
+        declarations, errors = self.parse(source)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [(entry["name"], entry["kind"]) for entry in declarations],
+            [("FIXTURE", "static"), ("OTHER", "const")],
+        )
+        self.assertEqual(self.violations_for(reader, source), [])
+
+    def test_a_test_only_const_fixture_does_not_trigger_the_static_requirement(self):
+        reader, source = self.reader_variant(
+            "#[cfg(test)]\nmod tests {",
+            "#[cfg(test)]\nmod tests {\n"
+            "    const PLANTED: Fixture = Fixture::new(\n"
+            '        "planted",\n'
+            "        MAGIC,\n"
+            '        include_bytes!("../testdata/golden_responses/create.bin"),\n'
+            "    );\n",
+        )
+        declarations, errors = self.parse(source)
+        self.assertEqual(errors, [])
+        self.assertEqual([entry["name"] for entry in declarations], ["FIXTURE"])
+        self.assertEqual(self.violations_for(reader, source), [])
 
 
 class GoldenRunnerContractTest(unittest.TestCase):

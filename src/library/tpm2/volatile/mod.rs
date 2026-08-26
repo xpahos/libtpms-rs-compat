@@ -1662,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_single_byte_corruption_never_panics() {
+    fn volatile_blob_byte_mutations_do_not_panic() {
         let blob = VolatileFixture::default().bytes();
         for index in (0..blob.len()).step_by(3) {
             for byte in [0x00u8, 0x01, 0xff] {

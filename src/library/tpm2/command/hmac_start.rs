@@ -1375,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_command_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "Q_CREATE_HMAC_KEY", &hmac_key(TPM_ALG_SHA256));
         let valid = mac_start(0x8000_0000, b"a", TPM_ALG_SHA256);

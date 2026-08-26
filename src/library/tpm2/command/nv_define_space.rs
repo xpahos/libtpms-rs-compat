@@ -1261,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_definitions_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let full = define_parameters(b"pw", &owner_ordinary());
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {

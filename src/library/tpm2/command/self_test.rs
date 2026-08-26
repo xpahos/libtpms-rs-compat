@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_command_bodies_never_panic() {
+    fn short_command_bodies_do_not_panic() {
         for length in 0..=4usize {
             for byte in 0..=u8::MAX {
                 let payload: Vec<u8> = (0..length).map(|_| byte).collect();

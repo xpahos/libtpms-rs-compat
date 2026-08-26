@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_malformed_input_never_panics() {
+    fn random_blob_corpus_does_not_panic() {
         let mut seed = 0x1234_5678u32;
         let mut next = move || {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);

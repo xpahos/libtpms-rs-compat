@@ -1540,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_command_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(

@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_audit_status_parameters_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let mut full = ALG_SHA256.to_be_bytes().to_vec();
         full.extend_from_slice(&1u32.to_be_bytes());
         full.extend_from_slice(&CC_GET_RANDOM.to_be_bytes());

@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"REORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "TPM2_RSA_Encrypt",
     MAGIC,
     include_bytes!("../testdata/golden_responses/rsa_encryption.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"SGORACLE", b"OLORACLE"],
+        magic: b"REORACLE",
+        file: "../testdata/golden_responses/rsa_encryption.bin",
     }
 }

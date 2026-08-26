@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"PLORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "platform and state management",
     MAGIC,
     include_bytes!("../testdata/golden_responses/platform_state.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"HMORACLE"],
+        magic: b"PLORACLE",
+        file: "../testdata/golden_responses/platform_state.bin",
     }
 }

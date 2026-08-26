@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn bit_flips_do_not_panic() {
         let valid = change_auth(TPM_RH_PLATFORM, &[], &BIOS_AUTH);
         for index in 6..valid.len() {
             for flip in [0x01u8, 0x80, 0xff] {

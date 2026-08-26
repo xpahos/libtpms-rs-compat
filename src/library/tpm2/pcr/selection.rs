@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn pcr_selection_byte_mutations_do_not_panic() {
         for len in 0..12usize {
             for byte in [0x00u8, 0x03, 0x0b, 0xff] {
                 let _ = parse(&vec![byte; len]);

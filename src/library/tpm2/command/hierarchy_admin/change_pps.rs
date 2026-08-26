@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let clock = replay_clock();
         let valid = change_pps(TPM_RH_PLATFORM, &[]);
         for len in 0..=valid.len() {

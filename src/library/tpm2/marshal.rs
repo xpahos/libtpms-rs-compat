@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn short_blob_reads_are_rejected() {
         for len in 0..8usize {
             let data = vec![0xa5; len];
             let mut reader = BlobReader::new(&data);

@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_certify_creation_parameters_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let (_, creation_hash, ticket) = created_primary();
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&tpm2b(&creation_hash));

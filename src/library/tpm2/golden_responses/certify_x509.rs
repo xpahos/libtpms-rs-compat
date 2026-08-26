@@ -2,7 +2,7 @@ use super::{Fixture, GoldenVector};
 
 const MAGIC: &[u8; 8] = b"CXORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "certify-x509",
     MAGIC,
     include_bytes!("../testdata/golden_responses/certify_x509.bin"),
@@ -27,7 +27,8 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"ATORACLE", b"DCORACLE"],
+        magic: b"CXORACLE",
+        file: "../testdata/golden_responses/certify_x509.bin",
     }
 
     #[test]

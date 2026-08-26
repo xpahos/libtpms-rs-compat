@@ -1783,7 +1783,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_partial_certificates_never_panic() {
+    fn partial_certificate_mutations_do_not_panic() {
         let full = default_body();
         let mut runtime = with_keys(&signer_pair());
         for index in 0..full.len() {
@@ -1799,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_certify_parameters_never_panic() {
+    fn leading_parameter_mutations_do_not_panic() {
         let mut full = tpm2b(&[]);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         full.extend_from_slice(&tpm2b(&default_body()));

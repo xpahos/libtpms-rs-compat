@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let clock = replay_clock();
         let valid = pcr_set_auth_policy(TPM_RH_PLATFORM, &DIGEST, TPM_ALG_SHA256, 20, &[]);
         for len in 0..=valid.len() {

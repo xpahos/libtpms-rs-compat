@@ -3,13 +3,13 @@ use super::{Fixture, GoldenVector};
 const COMMAND_MAGIC: &[u8; 8] = b"NVORACLE";
 const CERTIFY_MAGIC: &[u8; 8] = b"NCORACLE";
 
-const COMMAND_FIXTURE: Fixture = Fixture::new(
+static COMMAND_FIXTURE: Fixture = Fixture::new(
     "NV command",
     COMMAND_MAGIC,
     include_bytes!("../testdata/golden_responses/nv_commands.bin"),
 );
 
-const CERTIFY_FIXTURE: Fixture = Fixture::new(
+static CERTIFY_FIXTURE: Fixture = Fixture::new(
     "TPM2_NV_Certify",
     CERTIFY_MAGIC,
     include_bytes!("../testdata/golden_responses/nv_certify.bin"),
@@ -44,26 +44,16 @@ mod tests {
         module: command_fixture,
         fixture: COMMAND_FIXTURE,
         lookup: nv_vector,
-        foreign_magics: [b"CPORACLE", b"ECORACLE"],
+        magic: b"NVORACLE",
+        file: "../testdata/golden_responses/nv_commands.bin",
     }
 
     golden_fixture! {
         module: certify_fixture,
         fixture: CERTIFY_FIXTURE,
         lookup: certify_vector,
-        foreign_magics: [b"CPORACLE", b"ECORACLE"],
-    }
-
-    #[test]
-    fn both_fixtures_parse_into_named_records() {
-        assert_eq!(nv_vectors().len(), 94);
-        assert_eq!(certify_vectors().len(), 24);
-        for vectors in [nv_vectors(), certify_vectors()] {
-            for vector in &vectors {
-                assert!(!vector.name.is_empty());
-                assert!(!vector.bytes.is_empty(), "{}", vector.name);
-            }
-        }
+        magic: b"NCORACLE",
+        file: "../testdata/golden_responses/nv_certify.bin",
     }
 
     #[test]

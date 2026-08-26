@@ -725,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let valid = allocate(&params(&[
             (TPM_ALG_SHA256, [0xff, 0xff, 0xff]),
             (TPM_ALG_SHA1, [0x00, 0x00, 0x00]),

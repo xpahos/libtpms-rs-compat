@@ -2,7 +2,7 @@ use super::Fixture;
 
 const MAGIC: &[u8; 8] = b"FCORACLE";
 
-const FIXTURE: Fixture = Fixture::new(
+static FIXTURE: Fixture = Fixture::new(
     "TPM2_FlushContext",
     MAGIC,
     include_bytes!("../testdata/golden_responses/flush_context.bin"),
@@ -21,6 +21,7 @@ mod tests {
         module: fixture,
         fixture: FIXTURE,
         lookup: vector,
-        foreign_magics: [b"ECORACLE"],
+        magic: b"FCORACLE",
+        file: "../testdata/golden_responses/flush_context.bin",
     }
 }

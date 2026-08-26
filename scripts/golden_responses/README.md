@@ -22,10 +22,9 @@ Rust code. Do not regenerate the fixture to make the failure disappear.
 | `make test-golden` | Captures every scenario again and compares it with the committed fixtures. | Yes |
 | `make update-golden FAMILY=<family>` | Regenerates one fixture after an intentional reference or scenario change. | Yes |
 | `make update-golden-all` | Regenerates every fixture after the reference environment changes. | Yes |
-| `make ci` | Runs the golden suite and the normal repository checks. | Yes |
 
-`make build` and `make build-release` run `make golden-audit` automatically.
-The audit is fast and read-only; it does not start Docker.
+`make check` includes `make golden-audit`. `make build` only builds the library;
+use `make build PROFILE=release` for a release build.
 
 To see the available families:
 
@@ -37,11 +36,10 @@ python3 scripts/golden_responses/golden.py list
 
 ### You changed only Rust code
 
-Run the audit, the Rust tests, and the golden suite:
+Run the normal checks and the golden suite:
 
 ```sh
-make golden-audit
-cargo test
+make check
 make test-golden
 ```
 
@@ -71,7 +69,8 @@ This can affect every fixture:
 
 ```sh
 make update-golden-all
-make ci
+make check
+make test-golden
 ```
 
 Review every changed fixture. A new reference result may also require a Rust

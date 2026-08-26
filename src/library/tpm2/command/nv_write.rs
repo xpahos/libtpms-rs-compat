@@ -1051,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_modification_parameters_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let full = write_parameters(&DATA8, 4);
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {

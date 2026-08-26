@@ -1905,7 +1905,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn prefixes_and_bit_flips_do_not_panic() {
         let valid = evict_command(TPM_RH_OWNER, 0x8000_0000, OWNER_HANDLE);
         for len in 0..=valid.len() {
             for index in 0..len {

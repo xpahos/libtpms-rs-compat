@@ -1277,7 +1277,9 @@ def scenario_command_codes(manifest, entry, family):
 TEST_MODULE_ATTRIBUTE = re.compile(r"#\s*!?\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 TEST_MODULE_HEAD = re.compile(r"\s*mod\s+tests\b\s*")
 FIXTURE_CONSTRUCTOR = re.compile(r"\bFixture\s*::\s*new\b")
-FIXTURE_DECLARATION = re.compile(r"^const\s+(\w+)\s*:\s*Fixture\s*=\s*Fixture::new\($")
+FIXTURE_DECLARATION = re.compile(
+    r"^(const|static)\s+(\w+)\s*:\s*Fixture\s*=\s*Fixture::new\($"
+)
 MAGIC_DECLARATION = re.compile(r'^const\s+(\w+)\s*:\s*&\[u8;\s*8\]\s*=\s*b"([ -~]{8})";$')
 MASKED_MAGIC_DECLARATION = re.compile(r"^const\s+(\w+)\s*:\s*&\[u8;\s*8\]\s*=\s{12};$")
 MASKED_INCLUDE_BYTES = re.compile(r"^include_bytes!\( +\)$")
@@ -1438,7 +1440,7 @@ def parse_reader_fixtures(reader, source):
                 errors.append(f"line {index}: unparsable Fixture::new declaration")
             continue
         accounted += len(FIXTURE_CONSTRUCTOR.findall(stripped))
-        name = opening.group(1)
+        kind, name = opening.group(1), opening.group(2)
         arguments = []
         closed = False
         malformed = False
@@ -1481,7 +1483,9 @@ def parse_reader_fixtures(reader, source):
         path = posixpath.normpath(
             posixpath.join(posixpath.dirname(reader), included.group(1))
         )
-        declarations.append({"name": name, "magic": magic, "fixture": path})
+        declarations.append(
+            {"name": name, "kind": kind, "magic": magic, "fixture": path}
+        )
     if accounted != constructors:
         errors.append(
             f"{constructors} Fixture::new constructor(s) are present, {accounted} could be located"
@@ -1502,6 +1506,18 @@ def reader_association_violations(family, entry, reader, source):
         if declaration["magic"] == magic and declaration["fixture"] == fixture
     ]
     if len(matching) == 1:
+        declaration = matching[0]
+        if declaration["kind"] != "static":
+            violations.append(
+                Violation(
+                    "replay",
+                    f"{reader} declares {declaration['name']} as a "
+                    f"{declaration['kind']} Fixture; the manifest-associated "
+                    f"fixture {fixture} must be static so its parsed records are "
+                    "cached once",
+                    family,
+                )
+            )
         return violations
     if len(matching) > 1:
         names = ", ".join(declaration["name"] for declaration in matching)

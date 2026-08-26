@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_authorize_requests_never_panic() {
+    fn parameter_mutations_do_not_panic() {
         let valid = command(
             CC_POLICY_AUTHORIZE,
             &[POLICY_SESSION_0],

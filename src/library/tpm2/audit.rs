@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_never_panics() {
+    fn audit_block_byte_mutations_do_not_panic() {
         for version in [0u16, 4, 5, 0xffff] {
             for len in 0..8usize {
                 for byte in [0x00u8, 0x11, 0xff] {
