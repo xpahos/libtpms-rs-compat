@@ -462,7 +462,17 @@ test-swtpm-docker:
 	platform="$$($(DOCKER) image inspect --format '{{.Os}}-{{.Architecture}}' "$(SWTPM_DOCKER_IMAGE)")"; \
 	repository_id="$$(printf '%s' "$(CURDIR)" | cksum | awk '{print $$1}')"; \
 	target_volume="$(SWTPM_DOCKER_TARGET_VOLUME_PREFIX)-$$repository_id-$$platform"; \
-	$(DOCKER) run --rm --init $(DOCKER_PLATFORM_FLAG) \
+	interfaces=; \
+	[ ! -c /dev/cuse ] || interfaces=CUSE; \
+	[ ! -c /dev/vtpmx ] || interfaces="$${interfaces:+$$interfaces, }vTPM-proxy"; \
+	docker_device_args=; \
+	if [ -n "$$interfaces" ]; then \
+		docker_device_args="--privileged --volume /dev:/dev"; \
+		echo "test-swtpm-docker: enabling privileged container for $$interfaces"; \
+	else \
+		echo "test-swtpm-docker: /dev/cuse and /dev/vtpmx are unavailable; kernel-interface tests may skip"; \
+	fi; \
+	$(DOCKER) run --rm --init $(DOCKER_PLATFORM_FLAG) $$docker_device_args \
 		-v "$(CURDIR):/repo:ro" \
 		-v "$$target_volume:/cache/target" \
 		-v "$(SWTPM_DOCKER_REGISTRY_VOLUME):/usr/local/cargo/registry" \

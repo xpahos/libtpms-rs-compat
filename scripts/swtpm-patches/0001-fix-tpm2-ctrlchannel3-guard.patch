@@ -1,0 +1,5 @@
+--- a/tests/test_tpm2_ctrlchannel3
++++ b/tests/test_tpm2_ctrlchannel3
+@@ -29 +29 @@
+-skip_test_no_tpm12 "${SWTPM_EXE}"
++skip_test_no_tpm20 "${SWTPM_EXE}"

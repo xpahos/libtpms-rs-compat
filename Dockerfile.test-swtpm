@@ -18,7 +18,9 @@ RUN apt-get update \
         libssl-dev \
         libtasn1-6-dev \
         libtool \
+        patch \
         pkg-config \
+        python-is-python3 \
         python3 \
         python3-pycparser \
         socat \
