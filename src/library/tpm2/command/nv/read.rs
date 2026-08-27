@@ -1,5 +1,5 @@
 use super::access::{MAX_NV_BUFFER_SIZE, read_access_checks, resolve};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_NV_RANGE, TPM_RC_SIZE, TPM_RC_VALUE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;

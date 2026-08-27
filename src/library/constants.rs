@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use crate::ffi_types::{TpmResult, TpmlibTpmProperty, TpmlibTpmVersion};
+use crate::ffi::types::{TpmResult, TpmlibTpmProperty, TpmlibTpmVersion};
 
 pub const TPM_SUCCESS: TpmResult = 0;
 pub const TPM_FAIL: TpmResult = 9;

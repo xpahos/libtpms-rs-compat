@@ -150,8 +150,8 @@ pub(super) fn filter_selection(
 pub(super) fn parse_selection_list(
     reader: &mut super::template::TemplateReader<'_>,
     profile_algorithms: &[u8],
-    error_index: crate::ffi_types::TpmResult,
-) -> Result<Vec<super::persistent::OwnedPcrSelection>, crate::ffi_types::TpmResult> {
+    error_index: crate::ffi::types::TpmResult,
+) -> Result<Vec<super::persistent::OwnedPcrSelection>, crate::ffi::types::TpmResult> {
     use super::algorithm::{algorithm_enabled, hash_profile_name};
     use crate::library::constants::{TPM_RC_HASH, TPM_RC_SIZE, TPM_RC_VALUE};
 
@@ -185,7 +185,7 @@ pub(super) fn compute_current_digest(
     runtime: &super::runtime::Tpm2Runtime,
     hash_alg: u16,
     selections: &mut [super::persistent::OwnedPcrSelection],
-) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
     use crate::library::constants::TPM_RC_FAILURE;
 
     let allocation = runtime

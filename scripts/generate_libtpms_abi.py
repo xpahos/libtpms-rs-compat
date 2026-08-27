@@ -192,7 +192,7 @@ PRIMITIVE_MAP = {
 }
 
 # libtpms typedefs, mapped to Rust-style aliases handwritten in
-# src/ffi_types.rs.
+# src/ffi/types.rs.
 TYPEDEF_MAP = {
     "TPM_RESULT": "TpmResult",
     "TPM_BOOL": "TpmBool",
@@ -200,7 +200,7 @@ TYPEDEF_MAP = {
     "TPMLIB_TPMVersion": "TpmlibTpmVersion",
 }
 
-# Known enum tags (C enums have the ABI of int; src/ffi_types.rs defines
+# Known enum tags (C enums have the ABI of int; src/ffi/types.rs defines
 # c_int aliases under the mapped Rust names).
 ENUM_TAG_MAP = {
     "TPMLIB_TPMProperty": "TpmlibTpmProperty",
@@ -262,7 +262,7 @@ def _fail(func_name, node, message):
         "function '%s' (declared at %s) uses unsupported C type '%s': %s. "
         "If this type should be part of the ABI, add it to the mapping "
         "tables in scripts/generate_libtpms_abi.py and, for named types, "
-        "declare its Rust counterpart in src/ffi_types.rs."
+        "declare its Rust counterpart in src/ffi/types.rs."
         % (func_name, coord or "<unknown location>", _render_c_type(node),
            message)
     )
@@ -330,7 +330,7 @@ _NAME_TOKEN_RE = re.compile(
 
 
 def rust_impl_name(c_name):
-    """Derive the snake_case name of the crate::ffi_api adapter.
+    """Derive the snake_case name of the crate::ffi::api adapter.
 
     ``TPMLIB_ChooseTPMVersion`` -> ``choose_tpm_version``,
     ``TPMLIB_VolatileAll_Store`` -> ``volatile_all_store``.
@@ -847,9 +847,9 @@ def _render_body(func):
     impl_name = rust_impl_name(func.name)
     if not func.params:
         # `ffi_guard(f)` instead of `ffi_guard(|| f())`: no redundant closure.
-        return ["    ffi_guard(crate::ffi_api::%s)" % impl_name]
+        return ["    ffi_guard(crate::ffi::api::%s)" % impl_name]
     args = ", ".join(name for name, _ in func.params)
-    call = "crate::ffi_api::%s(%s)" % (impl_name, args)
+    call = "crate::ffi::api::%s(%s)" % (impl_name, args)
     has_raw_pointer = any(rust_type.startswith("*") for _, rust_type in func.params)
     if has_raw_pointer:
         single = "    ffi_guard(|| unsafe { %s })" % call
@@ -858,7 +858,7 @@ def _render_body(func):
         inner = "        %s" % call
         if len(inner) <= RUST_MAX_WIDTH:
             return ["    ffi_guard(|| unsafe {", inner, "    })"]
-        lines = ["    ffi_guard(|| unsafe {", "        crate::ffi_api::%s(" % impl_name]
+        lines = ["    ffi_guard(|| unsafe {", "        crate::ffi::api::%s(" % impl_name]
         for name, _ in func.params:
             lines.append("            %s," % name)
         lines += ["        )", "    })"]
@@ -869,7 +869,7 @@ def _render_body(func):
     inner = "        %s" % call
     if len(inner) <= RUST_MAX_WIDTH:
         return ["    ffi_guard(|| {", inner, "    })"]
-    lines = ["    ffi_guard(|| {", "        crate::ffi_api::%s(" % impl_name]
+    lines = ["    ffi_guard(|| {", "        crate::ffi::api::%s(" % impl_name]
     for name, _ in func.params:
         lines.append("            %s," % name)
     lines += ["        )", "    })"]
@@ -894,12 +894,12 @@ def render_rust(functions, header_display):
         "#![allow(non_snake_case)]",
         "#![allow(unused_imports)]",
         "// Thin delegating wrappers only; the C-to-Rust adaptation lives in",
-        "// src/ffi_api.rs. The wrappers carry no per-function safety docs; the",
+        "// src/ffi/api.rs. The wrappers carry no per-function safety docs; the",
         "// safety contract is the libtpms C API documented in %s." % os.path.basename(header_display),
         "#![allow(clippy::missing_safety_doc)]",
         "",
-        "use crate::ffi_support::ffi_guard;",
-        "use crate::ffi_types::*;",
+        "use crate::ffi::memory::ffi_guard;",
+        "use crate::ffi::types::*;",
     ]
     for func in functions:
         lines += ["", "#[unsafe(no_mangle)]"]
@@ -948,7 +948,7 @@ def main(argv=None):
     parser.add_argument("--check-ffi-types", default=None, metavar="FFI_RS",
                         help="cross-check the header's type names against "
                              "the handwritten Rust FFI type module "
-                             "(e.g. src/ffi_types.rs); no files are written")
+                             "(e.g. src/ffi/types.rs); no files are written")
     args = parser.parse_args(argv)
 
     if not args.output and not args.check_ffi_types:

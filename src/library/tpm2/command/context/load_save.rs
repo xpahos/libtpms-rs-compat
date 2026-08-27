@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_HIERARCHY, TPM_RC_INTEGRITY, TPM_RC_OBJECT_MEMORY,
     TPM_RC_SIZE, TPM_RC_VALUE,

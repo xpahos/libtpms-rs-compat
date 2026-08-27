@@ -1,6 +1,6 @@
 use sha1::{Digest, Sha1};
 
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_FAIL;
 
 use super::attach::{

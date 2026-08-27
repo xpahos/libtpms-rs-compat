@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
 
@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn dropped_preparation_executes_nothing_and_releases_the_library() {
-        use crate::ffi_types::TpmModifierIndicator;
+        use crate::ffi::types::TpmModifierIndicator;
         use crate::library::state_blob::StateBlobKind;
 
         unsafe extern "C" fn getlocality_four(
@@ -608,9 +608,9 @@ mod tests {
         }
 
         let library = Library::new();
-        library.register_callbacks(crate::ffi_types::LibtpmsCallbacks {
+        library.register_callbacks(crate::ffi::types::LibtpmsCallbacks {
             tpm_io_getlocality: Some(getlocality_four),
-            ..crate::ffi_types::LibtpmsCallbacks::empty()
+            ..crate::ffi::types::LibtpmsCallbacks::empty()
         });
         assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
         library.stage_empty_state(StateBlobKind::Permanent);
@@ -631,7 +631,7 @@ mod tests {
 
     mod physical_presence {
         use super::*;
-        use crate::ffi_types::{LibtpmsCallbacks, TpmBool};
+        use crate::ffi::types::{LibtpmsCallbacks, TpmBool};
         use crate::library::state_blob::StateBlobKind;
         use std::sync::Mutex;
 
@@ -749,7 +749,7 @@ mod tests {
 
     mod platform_physical_presence {
         use super::*;
-        use crate::ffi_types::{LibtpmsCallbacks, TpmBool};
+        use crate::ffi::types::{LibtpmsCallbacks, TpmBool};
         use crate::library::state_blob::StateBlobKind;
         use crate::library::tpm2::golden_responses::policy_sessions::vector;
 
@@ -1072,7 +1072,7 @@ mod tests {
 
     mod locality {
         use super::*;
-        use crate::ffi_types::{LibtpmsCallbacks, TpmModifierIndicator};
+        use crate::ffi::types::{LibtpmsCallbacks, TpmModifierIndicator};
         use crate::library::state_blob::StateBlobKind;
         use std::sync::Mutex;
 
@@ -1379,7 +1379,7 @@ mod tests {
 
         #[test]
         fn missing_storage_backend_falls_through_successfully() {
-            use crate::ffi_types::LibtpmsCallbacks;
+            use crate::ffi::types::LibtpmsCallbacks;
             use crate::library::tpm2::{HostNvram, host_nv_commit};
 
             let host_nvram = HostNvram::new(LibtpmsCallbacks::empty());
@@ -1485,7 +1485,7 @@ mod tests {
 
         #[test]
         fn successful_shutdown_reaches_tpm_nvram_storedata() {
-            use crate::ffi_types::LibtpmsCallbacks;
+            use crate::ffi::types::LibtpmsCallbacks;
             use crate::library::tpm2::{HostNvram, host_nv_commit};
             use std::sync::Mutex;
 

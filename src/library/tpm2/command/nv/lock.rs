@@ -1,5 +1,5 @@
 use super::access::{read_access_checks, resolve, write_access_checks};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_NV_AUTHORIZATION, TPM_RC_NV_LOCKED,
     TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,

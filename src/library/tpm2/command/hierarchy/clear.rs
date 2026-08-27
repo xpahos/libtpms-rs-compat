@@ -3,7 +3,7 @@ use super::{
     hierarchy_object_attribute, recompute_user_nvram_capacity, regenerate_hierarchy_secrets,
     remove_hierarchy_persistent_objects, with_rollback,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_DISABLED, TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
 };

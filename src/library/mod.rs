@@ -11,7 +11,7 @@ mod tpm2;
 
 use core::ffi::c_int;
 
-use crate::ffi_types::{
+use crate::ffi::types::{
     LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion,
 };
 #[cfg(feature = "tpm2")]

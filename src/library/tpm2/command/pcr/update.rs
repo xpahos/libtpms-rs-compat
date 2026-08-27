@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 use crate::library::tpm2::orderly::{commit_clear_orderly, prepare_clear_orderly};
 use crate::library::tpm2::pcr::{pcr_in_tcb_group, pcr_is_state_saved};

@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE, TPM_RC_NV_UNINITIALIZED};
 

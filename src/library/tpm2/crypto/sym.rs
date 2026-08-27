@@ -1,6 +1,6 @@
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_MODE, TPM_RC_SIZE, TPM_RC_SYMMETRIC};
 
 use super::super::algorithm::{

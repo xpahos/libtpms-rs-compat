@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_LOCKOUT, TPM_RC_NV_UNAVAILABLE};
 
 use super::hierarchy::TPM_RH_LOCKOUT;
@@ -192,7 +192,7 @@ fn commit_dictionary_attack_state(runtime: &mut Tpm2Runtime) -> Result<(), TpmRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi_types::TpmResult;
+    use crate::ffi::types::TpmResult;
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
     };

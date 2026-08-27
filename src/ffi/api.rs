@@ -1,6 +1,6 @@
 use core::ffi::{c_char, c_int, c_uchar, c_uint};
 
-use crate::ffi_types::{
+use crate::ffi::types::{
     LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
     TpmlibTpmProperty, TpmlibTpmVersion,
 };
@@ -155,7 +155,7 @@ unsafe fn return_blob(
             let Ok(len) = u32::try_from(blob.len()) else {
                 return TPM_SIZE;
             };
-            let allocated = crate::ffi_support::malloc_bytes(&blob);
+            let allocated = crate::ffi::memory::malloc_bytes(&blob);
             if allocated.is_null() && !blob.is_empty() {
                 return TPM_SIZE;
             }
@@ -193,7 +193,7 @@ pub(crate) unsafe fn get_tpm_property(prop: TpmlibTpmProperty, result: *mut c_in
 
 pub(crate) fn get_info(flags: TpmlibInfoFlags) -> *mut c_char {
     match library::get_info(flags) {
-        Some(json) => crate::ffi_support::malloc_c_string(&json),
+        Some(json) => crate::ffi::memory::malloc_c_string(&json),
         None => core::ptr::null_mut(),
     }
 }
@@ -300,7 +300,7 @@ pub(crate) unsafe fn decode_blob(
         Ok(decoded) => decoded,
         Err(code) => return code,
     };
-    let allocated = crate::ffi_support::malloc_bytes(&decoded);
+    let allocated = crate::ffi::memory::malloc_bytes(&decoded);
     if allocated.is_null() {
         return TPM_FAIL;
     }
@@ -321,21 +321,21 @@ fn blob_kind(blob_type: TpmlibBlobType) -> Option<EncodedBlobKind> {
 }
 
 pub(crate) fn set_debug_fd(fd: c_int) {
-    crate::debug_logging::set_fd(fd);
+    crate::ffi::debug::set_fd(fd);
 }
 
 pub(crate) fn set_debug_level(level: c_uint) {
-    crate::debug_logging::set_level(level);
+    crate::ffi::debug::set_level(level);
 }
 
 pub(crate) unsafe fn set_debug_prefix(prefix: *const c_char) -> TpmResult {
     if prefix.is_null() {
-        return crate::debug_logging::set_prefix(None);
+        return crate::ffi::debug::set_prefix(None);
     }
     // SAFETY: the C API contract requires a non-null, NUL-terminated string
     // that remains valid for this call; the null case was handled above.
     // `set_prefix` copies the bytes before this call returns.
-    crate::debug_logging::set_prefix(Some(unsafe { core::ffi::CStr::from_ptr(prefix) }))
+    crate::ffi::debug::set_prefix(Some(unsafe { core::ffi::CStr::from_ptr(prefix) }))
 }
 
 pub(crate) unsafe fn set_buffer_size(
@@ -726,8 +726,8 @@ mod tests {
     #[cfg(all(feature = "tpm2", feature = "tpm1"))]
     #[test]
     fn the_exported_cancel_command_covers_the_whole_dispatch_matrix() {
-        const TPMLIB_TPM_VERSION_1_2: crate::ffi_types::TpmlibTpmVersion = 0;
-        const TPMLIB_TPM_VERSION_2: crate::ffi_types::TpmlibTpmVersion = 1;
+        const TPMLIB_TPM_VERSION_1_2: crate::ffi::types::TpmlibTpmVersion = 0;
+        const TPMLIB_TPM_VERSION_2: crate::ffi::types::TpmlibTpmVersion = 1;
 
         let _serial = GLOBAL_LIBRARY_LOCK
             .lock()
@@ -1134,15 +1134,15 @@ mod tests {
 
     #[test]
     fn debug_fd_and_level_reach_the_debug_configuration() {
-        let _state = crate::debug_logging::test_support::DebugStateGuard::hold();
+        let _state = crate::ffi::debug::test_support::DebugStateGuard::hold();
         set_debug_fd(21);
         set_debug_level(4);
-        assert_eq!(crate::debug_logging::fd_and_level(), (21, 4));
+        assert_eq!(crate::ffi::debug::fd_and_level(), (21, 4));
     }
 
     #[test]
     fn debug_prefix_is_owned_replaced_and_cleared() {
-        let _state = crate::debug_logging::test_support::DebugStateGuard::hold();
+        let _state = crate::ffi::debug::test_support::DebugStateGuard::hold();
         let mut caller = b"first\0".to_vec();
         // SAFETY: `caller` is NUL-terminated and remains live for the call.
         assert_eq!(
@@ -1151,27 +1151,24 @@ mod tests {
         );
         caller[0] = b'X';
         assert_eq!(
-            crate::debug_logging::prefix().as_deref(),
+            crate::ffi::debug::prefix().as_deref(),
             Some(b"first".as_slice())
         );
 
         // SAFETY: the byte string is statically live and NUL-terminated.
         assert_eq!(unsafe { set_debug_prefix(c"second".as_ptr()) }, TPM_SUCCESS);
         assert_eq!(
-            crate::debug_logging::prefix().as_deref(),
+            crate::ffi::debug::prefix().as_deref(),
             Some(b"second".as_slice())
         );
 
         // SAFETY: NULL clears the prefix without being dereferenced.
         assert_eq!(unsafe { set_debug_prefix(core::ptr::null()) }, TPM_SUCCESS);
-        assert_eq!(crate::debug_logging::prefix(), None);
+        assert_eq!(crate::ffi::debug::prefix(), None);
 
         // SAFETY: the byte string is statically live and NUL-terminated.
         assert_eq!(unsafe { set_debug_prefix(c"".as_ptr()) }, TPM_SUCCESS);
-        assert_eq!(
-            crate::debug_logging::prefix().as_deref(),
-            Some(b"".as_slice())
-        );
+        assert_eq!(crate::ffi::debug::prefix().as_deref(), Some(b"".as_slice()));
 
         // SAFETY: restore the process-global setting for other tests.
         assert_eq!(unsafe { set_debug_prefix(core::ptr::null()) }, TPM_SUCCESS);
@@ -1179,7 +1176,7 @@ mod tests {
 
     #[test]
     fn a_debug_prefix_of_many_kilobytes_is_kept_whole() {
-        let _state = crate::debug_logging::test_support::DebugStateGuard::hold();
+        let _state = crate::ffi::debug::test_support::DebugStateGuard::hold();
         let mut caller = vec![b'p'; 5000];
         caller.push(0);
         // SAFETY: `caller` is NUL-terminated and remains live for the call.
@@ -1188,7 +1185,7 @@ mod tests {
             TPM_SUCCESS
         );
         assert_eq!(
-            crate::debug_logging::prefix().as_deref(),
+            crate::ffi::debug::prefix().as_deref(),
             Some(&caller[..5000])
         );
 
@@ -1329,7 +1326,7 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn process_end_to_end_follows_the_c_buffer_and_response_contract() {
-        const TPMLIB_TPM_VERSION_2: crate::ffi_types::TpmlibTpmVersion = 1;
+        const TPMLIB_TPM_VERSION_2: crate::ffi::types::TpmlibTpmVersion = 1;
         const TPM_BUFFER_MAX: u32 = RESPONSE_BUFFER_SIZE as u32;
 
         let _serial = GLOBAL_LIBRARY_LOCK
@@ -1378,7 +1375,7 @@ mod tests {
         assert_eq!(outputs.response(), INSUFFICIENT_RESPONSE);
 
         let mut small = ProcessOutputs::new();
-        small.respbuffer = crate::ffi_support::malloc_bytes(&[0u8; 16]);
+        small.respbuffer = crate::ffi::memory::malloc_bytes(&[0u8; 16]);
         small.respbufsize = 16;
         assert_eq!(small.call(&UNKNOWN_COMMAND), TPM_SUCCESS);
         assert_eq!(small.respbufsize, TPM_BUFFER_MAX);
@@ -1386,7 +1383,7 @@ mod tests {
         drop(small);
 
         let mut large = ProcessOutputs::new();
-        large.respbuffer = crate::ffi_support::malloc_bytes(&[0u8; 2 * RESPONSE_BUFFER_SIZE]);
+        large.respbuffer = crate::ffi::memory::malloc_bytes(&[0u8; 2 * RESPONSE_BUFFER_SIZE]);
         large.respbufsize = 2 * TPM_BUFFER_MAX;
         let large_buffer = large.respbuffer;
         assert_eq!(large.call(&UNKNOWN_COMMAND), TPM_SUCCESS);
@@ -1396,7 +1393,7 @@ mod tests {
         drop(large);
 
         let mut shared = ProcessOutputs::new();
-        shared.respbuffer = crate::ffi_support::malloc_bytes(&UNKNOWN_COMMAND);
+        shared.respbuffer = crate::ffi::memory::malloc_bytes(&UNKNOWN_COMMAND);
         shared.respbufsize = UNKNOWN_COMMAND.len() as u32;
         let shared_command = shared.respbuffer;
         // SAFETY: the command and response share one live allocation; the
@@ -1418,7 +1415,7 @@ mod tests {
         let mut shared = ProcessOutputs::new();
         let mut contents = [0u8; RESPONSE_BUFFER_SIZE];
         contents[..UNKNOWN_COMMAND.len()].copy_from_slice(&UNKNOWN_COMMAND);
-        shared.respbuffer = crate::ffi_support::malloc_bytes(&contents);
+        shared.respbuffer = crate::ffi::memory::malloc_bytes(&contents);
         shared.respbufsize = TPM_BUFFER_MAX;
         let shared_command = shared.respbuffer;
         // SAFETY: the shared allocation contains the complete command and is
@@ -1478,7 +1475,7 @@ mod tests {
         }
 
         let mut shared = ProcessOutputs::new();
-        shared.respbuffer = crate::ffi_support::malloc_bytes(&[0x80, 0x01, 0x00, 0x01, 0x00, 0x00]);
+        shared.respbuffer = crate::ffi::memory::malloc_bytes(&[0x80, 0x01, 0x00, 0x01, 0x00, 0x00]);
         shared.respbufsize = 6;
         let shared_command = shared.respbuffer;
         // SAFETY: oversized input requires only the six-byte prefix stored in
@@ -1639,7 +1636,7 @@ mod tests {
         let taken = core::mem::replace(&mut blob.result, PTR_SENTINEL);
         // SAFETY: `taken` is the C allocation the call handed us, with
         // `result_len` valid bytes and no other owner.
-        let owned = unsafe { crate::ffi_support::MallocBuffer::from_raw(taken, blob.result_len) };
+        let owned = unsafe { crate::ffi::memory::MallocBuffer::from_raw(taken, blob.result_len) };
         assert_eq!(owned.expect("a non-null allocation").as_slice(), b"ABC");
     }
 

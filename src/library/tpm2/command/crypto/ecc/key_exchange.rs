@@ -1,5 +1,5 @@
 use super::key::{RC_KEY_HANDLE, ecc_key, ecc_key_derivation_allowed};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_KEY, TPM_RC_NO_RESULT,
     TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,

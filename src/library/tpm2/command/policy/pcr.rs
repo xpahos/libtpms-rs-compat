@@ -1,5 +1,5 @@
 use super::session::{PolicySession, extend_policy_digest, policy_session};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_PCR_CHANGED, TPM_RC_SIZE, TPM_RC_VALUE,
 };

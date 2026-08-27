@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_OBJECT_MEMORY};
 
 use super::crypto::{COMPILED_HASHES, CmacState, SequenceHmac, ShaState, ShaStatePayload};
@@ -544,7 +544,7 @@ pub(super) fn cleanup_evicted(runtime: &mut Tpm2Runtime) {
 
 #[cfg(test)]
 pub(in crate::library::tpm2) mod replay {
-    use crate::ffi_types::TpmResult;
+    use crate::ffi::types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::tpm2::clock::SteppingClock;
     pub(in crate::library::tpm2) use crate::library::tpm2::golden_responses::sequence_commands::vector;

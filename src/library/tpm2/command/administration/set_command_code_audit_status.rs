@@ -1,7 +1,7 @@
 use super::command_audit_state::{
     audit_hash_alg, clear_command, mark_algorithm_change, set_command,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE, TPM_RC_VALUE,
 };

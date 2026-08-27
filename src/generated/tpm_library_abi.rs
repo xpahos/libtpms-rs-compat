@@ -5,31 +5,31 @@
 #![allow(non_snake_case)]
 #![allow(unused_imports)]
 // Thin delegating wrappers only; the C-to-Rust adaptation lives in
-// src/ffi_api.rs. The wrappers carry no per-function safety docs; the
+// src/ffi/api.rs. The wrappers carry no per-function safety docs; the
 // safety contract is the libtpms C API documented in tpm_library.h.
 #![allow(clippy::missing_safety_doc)]
 
-use crate::ffi_support::ffi_guard;
-use crate::ffi_types::*;
+use crate::ffi::memory::ffi_guard;
+use crate::ffi::types::*;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_GetVersion() -> u32 {
-    ffi_guard(crate::ffi_api::get_version)
+    ffi_guard(crate::ffi::api::get_version)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_ChooseTPMVersion(ver: TpmlibTpmVersion) -> TpmResult {
-    ffi_guard(|| crate::ffi_api::choose_tpm_version(ver))
+    ffi_guard(|| crate::ffi::api::choose_tpm_version(ver))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_MainInit() -> TpmResult {
-    ffi_guard(crate::ffi_api::main_init)
+    ffi_guard(crate::ffi::api::main_init)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_Terminate() {
-    ffi_guard(crate::ffi_api::terminate)
+    ffi_guard(crate::ffi::api::terminate)
 }
 
 #[unsafe(no_mangle)]
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn TPMLIB_Process(
     command_size: u32,
 ) -> TpmResult {
     ffi_guard(|| unsafe {
-        crate::ffi_api::process(respbuffer, resp_size, respbufsize, command, command_size)
+        crate::ffi::api::process(respbuffer, resp_size, respbufsize, command, command_size)
     })
 }
 
@@ -50,12 +50,12 @@ pub unsafe extern "C" fn TPMLIB_VolatileAll_Store(
     buffer: *mut *mut core::ffi::c_uchar,
     buflen: *mut u32,
 ) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::volatile_all_store(buffer, buflen) })
+    ffi_guard(|| unsafe { crate::ffi::api::volatile_all_store(buffer, buflen) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_CancelCommand() -> TpmResult {
-    ffi_guard(crate::ffi_api::cancel_command)
+    ffi_guard(crate::ffi::api::cancel_command)
 }
 
 #[unsafe(no_mangle)]
@@ -63,17 +63,17 @@ pub unsafe extern "C" fn TPMLIB_GetTPMProperty(
     prop: TpmlibTpmProperty,
     result: *mut core::ffi::c_int,
 ) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::get_tpm_property(prop, result) })
+    ffi_guard(|| unsafe { crate::ffi::api::get_tpm_property(prop, result) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_GetInfo(flags: TpmlibInfoFlags) -> *mut core::ffi::c_char {
-    ffi_guard(|| crate::ffi_api::get_info(flags))
+    ffi_guard(|| crate::ffi::api::get_info(flags))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_RegisterCallbacks(arg0: *mut LibtpmsCallbacks) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::register_callbacks(arg0) })
+    ffi_guard(|| unsafe { crate::ffi::api::register_callbacks(arg0) })
 }
 
 #[unsafe(no_mangle)]
@@ -83,22 +83,22 @@ pub unsafe extern "C" fn TPMLIB_DecodeBlob(
     result: *mut *mut core::ffi::c_uchar,
     result_len: *mut usize,
 ) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::decode_blob(data, r#type, result, result_len) })
+    ffi_guard(|| unsafe { crate::ffi::api::decode_blob(data, r#type, result, result_len) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetDebugFD(fd: core::ffi::c_int) {
-    ffi_guard(|| crate::ffi_api::set_debug_fd(fd))
+    ffi_guard(|| crate::ffi::api::set_debug_fd(fd))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetDebugLevel(level: core::ffi::c_uint) {
-    ffi_guard(|| crate::ffi_api::set_debug_level(level))
+    ffi_guard(|| crate::ffi::api::set_debug_level(level))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetDebugPrefix(prefix: *const core::ffi::c_char) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::set_debug_prefix(prefix) })
+    ffi_guard(|| unsafe { crate::ffi::api::set_debug_prefix(prefix) })
 }
 
 #[unsafe(no_mangle)]
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn TPMLIB_SetBufferSize(
     min_size: *mut u32,
     max_size: *mut u32,
 ) -> u32 {
-    ffi_guard(|| unsafe { crate::ffi_api::set_buffer_size(wanted_size, min_size, max_size) })
+    ffi_guard(|| unsafe { crate::ffi::api::set_buffer_size(wanted_size, min_size, max_size) })
 }
 
 #[unsafe(no_mangle)]
@@ -115,7 +115,7 @@ pub unsafe extern "C" fn TPMLIB_ValidateState(
     st: TpmlibStateType,
     flags: core::ffi::c_uint,
 ) -> TpmResult {
-    ffi_guard(|| crate::ffi_api::validate_state(st, flags))
+    ffi_guard(|| crate::ffi::api::validate_state(st, flags))
 }
 
 #[unsafe(no_mangle)]
@@ -124,7 +124,7 @@ pub unsafe extern "C" fn TPMLIB_SetState(
     buffer: *const core::ffi::c_uchar,
     buflen: u32,
 ) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::set_state(st, buffer, buflen) })
+    ffi_guard(|| unsafe { crate::ffi::api::set_state(st, buffer, buflen) })
 }
 
 #[unsafe(no_mangle)]
@@ -133,15 +133,15 @@ pub unsafe extern "C" fn TPMLIB_GetState(
     buffer: *mut *mut core::ffi::c_uchar,
     buflen: *mut u32,
 ) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::get_state(st, buffer, buflen) })
+    ffi_guard(|| unsafe { crate::ffi::api::get_state(st, buffer, buflen) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_SetProfile(profile: *const core::ffi::c_char) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::set_profile(profile) })
+    ffi_guard(|| unsafe { crate::ffi::api::set_profile(profile) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPMLIB_WasManufactured() -> TpmBool {
-    ffi_guard(crate::ffi_api::was_manufactured)
+    ffi_guard(crate::ffi::api::was_manufactured)
 }

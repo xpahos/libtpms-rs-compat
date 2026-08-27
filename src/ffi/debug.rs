@@ -3,7 +3,7 @@ use core::fmt;
 use std::ffi::CString;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::{TPM_FAIL, TPM_SUCCESS};
 
 struct DebugConfig {

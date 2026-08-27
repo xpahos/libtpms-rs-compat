@@ -265,14 +265,15 @@ class OutputTests(GeneratorTestCase):
         self.assertIn("#![allow(non_snake_case)]", rust)
         self.assertIn("#[unsafe(no_mangle)]", rust)
         self.assertIn('pub unsafe extern "C" fn Foo(x: u32) -> u32 {', rust)
-        self.assertIn("ffi_guard(|| crate::ffi_api::foo(x))", rust)
-        self.assertIn("use crate::ffi_support::ffi_guard;", rust)
+        self.assertIn("ffi_guard(|| crate::ffi::api::foo(x))", rust)
+        self.assertIn("use crate::ffi::memory::ffi_guard;", rust)
+        self.assertIn("use crate::ffi::types::*;", rust)
         self.assertIn("#![allow(clippy::missing_safety_doc)]", rust)
 
     def test_raw_pointer_call_is_explicitly_unsafe(self):
         rust = self.render("uint32_t Foo(const char *name);\n")
         self.assertIn(
-            "ffi_guard(|| unsafe { crate::ffi_api::foo(name) })",
+            "ffi_guard(|| unsafe { crate::ffi::api::foo(name) })",
             rust,
         )
 
@@ -416,7 +417,7 @@ class FfiTypeCheckTests(GeneratorTestCase):
     )
 
     def write_ffi(self, source):
-        path = self.tmpdir / "ffi_types.rs"
+        path = self.tmpdir / "types.rs"
         path.write_text(source, encoding="utf-8")
         return str(path)
 
@@ -602,7 +603,7 @@ class RealHeaderTests(GeneratorTestCase):
         self.assertEqual([f.name for f in funcs], self.EXPECTED)
 
     def test_real_ffi_types_module_matches_header(self):
-        ffi_path = _REPO_ROOT / "src" / "ffi_types.rs"
+        ffi_path = _REPO_ROOT / "src" / "ffi" / "types.rs"
         self.assertTrue(ffi_path.is_file())
         ast, real = gen.parse_header(str(_REAL_HEADER))
         header_types = gen.collect_header_types(ast, real)

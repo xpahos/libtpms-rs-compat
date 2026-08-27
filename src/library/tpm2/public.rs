@@ -744,7 +744,10 @@ mod tests {
         Ok(public)
     }
 
-    fn parse_public_at(data: &[u8], state_format: StateFormatLimit) -> crate::ffi_types::TpmResult {
+    fn parse_public_at(
+        data: &[u8],
+        state_format: StateFormatLimit,
+    ) -> crate::ffi::types::TpmResult {
         let mut reader = BlobReader::new(data);
         match parse_tpmt_public(&mut reader, SECTION, true, state_format) {
             Ok(_) => crate::library::constants::TPM_SUCCESS,

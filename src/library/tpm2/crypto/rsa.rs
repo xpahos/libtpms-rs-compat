@@ -1,6 +1,6 @@
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 
 use super::super::self_test::LazySelfTest;
 use super::bignum::BigUint;

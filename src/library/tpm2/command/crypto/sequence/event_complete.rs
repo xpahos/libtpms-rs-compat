@@ -1,5 +1,5 @@
 use super::update::{RC_BUFFER_P1, RC_HANDLE_H2, parse_buffer};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_LOCALITY, TPM_RC_MODE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;

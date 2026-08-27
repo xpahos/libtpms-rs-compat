@@ -3,7 +3,7 @@ use super::builder::{
     parse_scheme, sign_and_respond,
 };
 use super::certify::certified_object;
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TAG, TPM_RC_TICKET, TPM_RC_VALUE,
 };

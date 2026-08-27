@@ -52,7 +52,7 @@ mod volatile;
 
 use core::ffi::c_int;
 
-use crate::ffi_types::{LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty};
+use crate::ffi::types::{LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty};
 
 use super::constants::{
     TPM_FAIL, TPM_RC_FAILURE, TPM_RETRY, TPM_SUCCESS, TPMPROP_TPM_KEY_HANDLES,
@@ -1194,7 +1194,7 @@ mod tests {
     unsafe fn hand_out(data: *mut *mut core::ffi::c_uchar, length: *mut u32, bytes: &[u8]) {
         // SAFETY: forwarded from the fixture's caller.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(bytes);
+            *data = crate::ffi::memory::malloc_bytes(bytes);
             *length = bytes.len() as u32;
         }
     }

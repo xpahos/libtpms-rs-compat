@@ -1,5 +1,5 @@
 use super::create_loaded::{object_hierarchy, resolve_parent};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_HIERARCHY, TPM_RC_OBJECT_MEMORY,
     TPM_RC_SIZE, TPM_RC_TYPE,

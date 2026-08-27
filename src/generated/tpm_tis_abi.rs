@@ -5,16 +5,16 @@
 #![allow(non_snake_case)]
 #![allow(unused_imports)]
 // Thin delegating wrappers only; the C-to-Rust adaptation lives in
-// src/ffi_api.rs. The wrappers carry no per-function safety docs; the
+// src/ffi/api.rs. The wrappers carry no per-function safety docs; the
 // safety contract is the libtpms C API documented in tpm_tis.h.
 #![allow(clippy::missing_safety_doc)]
 
-use crate::ffi_support::ffi_guard;
-use crate::ffi_types::*;
+use crate::ffi::memory::ffi_guard;
+use crate::ffi::types::*;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPM_IO_Hash_Start() -> TpmResult {
-    ffi_guard(crate::ffi_api::tpm_io_hash_start)
+    ffi_guard(crate::ffi::api::tpm_io_hash_start)
 }
 
 #[unsafe(no_mangle)]
@@ -22,20 +22,20 @@ pub unsafe extern "C" fn TPM_IO_Hash_Data(
     data: *const core::ffi::c_uchar,
     data_length: u32,
 ) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::tpm_io_hash_data(data, data_length) })
+    ffi_guard(|| unsafe { crate::ffi::api::tpm_io_hash_data(data, data_length) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPM_IO_Hash_End() -> TpmResult {
-    ffi_guard(crate::ffi_api::tpm_io_hash_end)
+    ffi_guard(crate::ffi::api::tpm_io_hash_end)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPM_IO_TpmEstablished_Get(tpmEstablished: *mut TpmBool) -> TpmResult {
-    ffi_guard(|| unsafe { crate::ffi_api::tpm_io_tpm_established_get(tpmEstablished) })
+    ffi_guard(|| unsafe { crate::ffi::api::tpm_io_tpm_established_get(tpmEstablished) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPM_IO_TpmEstablished_Reset() -> TpmResult {
-    ffi_guard(crate::ffi_api::tpm_io_tpm_established_reset)
+    ffi_guard(crate::ffi::api::tpm_io_tpm_established_reset)
 }

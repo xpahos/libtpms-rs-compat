@@ -2,7 +2,7 @@ use super::session::{
     PolicyUpdate, hash_parts, live_session, policy_context_update, policy_digest_clear,
     policy_session_at,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_SIZE, TPM_RC_TAG, TPM_RC_VALUE,
 };

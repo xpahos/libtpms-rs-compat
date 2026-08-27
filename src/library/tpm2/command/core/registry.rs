@@ -1,6 +1,6 @@
 use super::dispatcher::CommandFrame;
 use super::output::CommandOutput;
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::tpm2::command::{
     administration, attestation, context, crypto, hierarchy, lifecycle, nv, object, pcr, platform,
     policy, session,

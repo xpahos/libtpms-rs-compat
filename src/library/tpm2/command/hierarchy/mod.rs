@@ -8,7 +8,7 @@ pub(super) mod lock_reset;
 pub(super) mod pcr_policy;
 pub(super) mod primary_policy;
 
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use crate::library::tpm2::nv::stored_object_attributes;

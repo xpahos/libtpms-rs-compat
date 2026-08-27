@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_CPHASH, TPM_RC_EXPIRED, TPM_RC_FAILURE, TPM_RC_NONCE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
 };

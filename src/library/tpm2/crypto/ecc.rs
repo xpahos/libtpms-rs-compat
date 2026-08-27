@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 
 use super::bignum::BigUint;
 use super::rand_state::SeededRand;

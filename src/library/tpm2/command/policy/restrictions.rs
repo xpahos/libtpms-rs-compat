@@ -2,7 +2,7 @@ use super::session::{
     PolicySession, hash_parts, is_cp_hash_union_occupied, live_session, live_session_mut,
     next_policy_digest, no_parameters, policy_session,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_COMMAND_CODE, TPM_RC_CPHASH, TPM_RC_FAILURE, TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
 };

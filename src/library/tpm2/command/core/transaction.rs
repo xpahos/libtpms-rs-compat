@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 use crate::library::tpm2::clock::{RuntimeClock, TpmTimer};
 use crate::library::tpm2::live::{LiveState, RestoredVolatile};

@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 
 pub(in crate::library::tpm2::command) const TPM_RC_H: TpmResult = 0x000;
 pub(in crate::library::tpm2::command) const TPM_RC_P: TpmResult = 0x040;

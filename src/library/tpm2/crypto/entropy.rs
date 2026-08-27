@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_FAIL;
 
 pub(in crate::library) type EntropySource = fn(&mut [u8]) -> Result<(), TpmResult>;

@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_NO_RESULT, TPM_RC_SYMMETRIC};
 
 use super::rand_state::SeededRand;

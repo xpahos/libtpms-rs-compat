@@ -406,7 +406,7 @@ fn nv_counter_avail(state: &OwnedPersistentState, live: &LiveState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi_types::TpmResult;
+    use crate::ffi::types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::tpm2::command::{dispatch, parse_command};
     use crate::library::tpm2::manufacture::manufacture_state;

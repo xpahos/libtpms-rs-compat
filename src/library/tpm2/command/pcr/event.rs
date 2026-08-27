@@ -1,5 +1,5 @@
 use super::extend::{DigestValue, commit_extend, prepare_extend};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY, TPM_RC_SIZE,
 };
@@ -72,8 +72,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi_types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+        ) -> Result<(), crate::ffi::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),

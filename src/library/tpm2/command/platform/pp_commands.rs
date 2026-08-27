@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE};
 use crate::library::tpm2::capability::commands::MAX_CAP_CC;
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;

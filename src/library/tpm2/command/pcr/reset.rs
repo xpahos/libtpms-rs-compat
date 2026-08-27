@@ -1,7 +1,7 @@
 use super::update::{
     commit_orderly_clear, commit_pcr_counter, live_pcr_counter, pcr_changed, prepare_orderly_clear,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_LOCALITY, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -80,8 +80,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi_types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi_types::TpmResult> {
+        ) -> Result<(), crate::ffi::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),

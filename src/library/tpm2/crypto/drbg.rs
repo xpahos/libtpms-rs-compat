@@ -1,6 +1,6 @@
 use aes::cipher::{BlockEncrypt, KeyInit};
 
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_FAIL;
 
 use super::entropy::EntropySource;

@@ -2,7 +2,7 @@ use super::builder::{
     Attested, check_signing_object, fill_in_attest_info, parse_qualifying_data, parse_scheme,
     sign_and_respond,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_NV_RANGE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,
 };

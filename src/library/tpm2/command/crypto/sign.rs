@@ -2,7 +2,7 @@ use super::signing_state::{
     RC_SIGN_HANDLE, hierarchy_proof_for, load_signing_state, publish_signing_outcome,
     signing_object,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_KEY, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TAG,
     TPM_RC_TICKET, TPM_RC_VALUE,

@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_KEY};
 use crate::library::tpm2::command::core::response_code::{TPM_RC_1, TPM_RC_H};
 use crate::library::tpm2::commit::CommitState;

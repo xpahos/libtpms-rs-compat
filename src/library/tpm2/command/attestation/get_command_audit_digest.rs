@@ -2,7 +2,7 @@ use super::builder::{
     Attested, attestation_response, check_signing_object, fill_in_attest_info,
     parse_qualifying_data, parse_scheme, sign_attest_info,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE};
 use crate::library::tpm2::command::administration::command_audit_state::{
     audit_counter, audit_digest, audit_hash_alg, command_list_digest, reset_digest,

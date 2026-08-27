@@ -1,8 +1,8 @@
 use core::ffi::{CStr, c_uchar};
 use core::ptr;
 
-use crate::ffi_support::MallocBuffer;
-use crate::ffi_types::{LibtpmsCallbacks, TpmBool, TpmResult};
+use crate::ffi::memory::MallocBuffer;
+use crate::ffi::types::{LibtpmsCallbacks, TpmBool, TpmResult};
 use crate::library::constants::{TPM_FAIL, TPM_RETRY, TPM_SUCCESS};
 use crate::library::state_blob::StateBlobKind;
 
@@ -238,7 +238,7 @@ mod tests {
         // SAFETY: out-pointers are valid per the callback contract; the
         // buffer is malloc'ed and ownership transfers to the caller.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&[1, 2, 3]);
+            *data = crate::ffi::memory::malloc_bytes(&[1, 2, 3]);
             *length = 3;
         }
         TPM_SUCCESS
@@ -263,7 +263,7 @@ mod tests {
         // buffer is malloc'ed and ownership transfers to the caller even
         // though the result is TPM_RETRY.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&[0xCC]);
+            *data = crate::ffi::memory::malloc_bytes(&[0xCC]);
             *length = 1;
         }
         TPM_RETRY
@@ -289,7 +289,7 @@ mod tests {
         // though the result is an error (mirrors hosts that fill the
         // buffer before failing).
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&[0xAA, 0xBB]);
+            *data = crate::ffi::memory::malloc_bytes(&[0xAA, 0xBB]);
             *length = 2;
         }
         77

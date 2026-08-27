@@ -40,7 +40,7 @@ mod tests {
     use core::cell::RefCell;
 
     use super::*;
-    use crate::ffi_types::TpmResult;
+    use crate::ffi::types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_FAIL;
     use crate::library::tpm2::clock::{SteppingClock, time_power_on};

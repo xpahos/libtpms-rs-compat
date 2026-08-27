@@ -2,7 +2,7 @@ use super::session::{
     PolicySession, check_condition, extend_policy_digest, hash_parts, operation_is_supported,
     policy_session_at,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_NV_UNAVAILABLE, TPM_RC_POLICY, TPM_RC_RANGE, TPM_RC_SIZE,
     TPM_RC_VALUE,

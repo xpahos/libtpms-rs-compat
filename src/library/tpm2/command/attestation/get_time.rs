@@ -2,7 +2,7 @@ use super::builder::{
     Attested, check_signing_object, fill_in_attest_info, firmware_version, parse_qualifying_data,
     parse_scheme, sign_and_respond, time_clock_info,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;

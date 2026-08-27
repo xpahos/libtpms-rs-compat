@@ -1,6 +1,6 @@
 use super::dispatcher::dispatch;
 use super::header::{parse_command, serialize_response};
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::tpm2::command::session::processing::TPM_RS_PW;
 use crate::library::tpm2::manufacture::manufacture_state;

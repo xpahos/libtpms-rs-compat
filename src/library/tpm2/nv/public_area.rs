@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_HASH, TPM_RC_RESERVED_BITS, TPM_RC_SIZE, TPM_RC_VALUE};
 
 use super::attributes::TPMA_NV_RESERVED;

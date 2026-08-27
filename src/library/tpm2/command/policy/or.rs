@@ -2,7 +2,7 @@ use super::session::{
     PolicySession, policy_digest, policy_session, start_policy_hash, store_policy_digest,
     zero_policy_digest,
 };
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;

@@ -1,4 +1,4 @@
-use crate::ffi_types::TpmResult;
+use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::tpm2::clock::SteppingClock;
 pub(super) use crate::library::tpm2::command::core::test_support::{command, framed};

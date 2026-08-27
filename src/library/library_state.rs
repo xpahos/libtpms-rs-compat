@@ -1,7 +1,7 @@
 use core::ffi::c_int;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
-use crate::ffi_types::{
+use crate::ffi::types::{
     LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion,
 };
 
@@ -731,7 +731,7 @@ fn host_locality_raw(callbacks: &LibtpmsCallbacks) -> u32 {
     let Some(callback) = callbacks.tpm_io_getlocality else {
         return 0;
     };
-    let mut locality: crate::ffi_types::TpmModifierIndicator = 0;
+    let mut locality: crate::ffi::types::TpmModifierIndicator = 0;
     // SAFETY: the registered callback has the exact C ABI signature and must
     // not unwind, and the out-pointer references a live local for the
     // duration of the call.
@@ -749,7 +749,7 @@ fn host_physical_presence(callbacks: &LibtpmsCallbacks) -> bool {
     let Some(callback) = callbacks.tpm_io_getphysicalpresence else {
         return false;
     };
-    let mut asserted: crate::ffi_types::TpmBool = 0;
+    let mut asserted: crate::ffi::types::TpmBool = 0;
     // SAFETY: the registered callback has the exact C ABI signature and must
     // not unwind, and the out-pointer references a live local for the
     // duration of the call.
@@ -1259,7 +1259,7 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn valid_permanent_state_initializes_and_consumes_the_staged_blob() {
-        const INFO_ACTIVE_PROFILE: crate::ffi_types::TpmlibInfoFlags = 32;
+        const INFO_ACTIVE_PROFILE: crate::ffi::types::TpmlibInfoFlags = 32;
 
         let library = Library::new();
         assert_eq!(
@@ -1316,7 +1316,7 @@ mod tests {
         // SAFETY: out-pointers are valid per the callback contract; the
         // buffer is malloc'ed and ownership transfers to the caller.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&BACKEND_BLOB);
+            *data = crate::ffi::memory::malloc_bytes(&BACKEND_BLOB);
             *length = BACKEND_BLOB.len() as u32;
         }
         TPM_SUCCESS
@@ -1426,7 +1426,7 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn volatile_boundary_failure_preserves_both_staged_blobs() {
-        const INFO_ACTIVE_PROFILE: crate::ffi_types::TpmlibInfoFlags = 32;
+        const INFO_ACTIVE_PROFILE: crate::ffi::types::TpmlibInfoFlags = 32;
 
         let library = Library::new();
         assert_eq!(
@@ -1581,7 +1581,7 @@ mod tests {
         // SAFETY: out-pointers are valid per the callback contract; the
         // buffer is malloc'ed and ownership transfers to the caller.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&blob);
+            *data = crate::ffi::memory::malloc_bytes(&blob);
             *length = blob.len() as u32;
         }
         TPM_SUCCESS
@@ -1633,7 +1633,7 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    const INFO_ACTIVE_PROFILE: crate::ffi_types::TpmlibInfoFlags = 32;
+    const INFO_ACTIVE_PROFILE: crate::ffi::types::TpmlibInfoFlags = 32;
 
     #[cfg(feature = "tpm2")]
     #[test]
@@ -1943,7 +1943,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     unsafe extern "C" fn tis_locality_callback(
-        locality: *mut crate::ffi_types::TpmModifierIndicator,
+        locality: *mut crate::ffi::types::TpmModifierIndicator,
         _tpm_number: u32,
     ) -> TpmResult {
         // SAFETY: the library passes a live out-pointer per the contract.
@@ -2421,7 +2421,7 @@ mod tests {
         // SAFETY: out-pointers are valid per the callback contract; the
         // buffer is malloc'ed and ownership transfers to the caller.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&[0xa5, 0x5a]);
+            *data = crate::ffi::memory::malloc_bytes(&[0xa5, 0x5a]);
             *length = 2;
         }
         TPM_SUCCESS
@@ -2661,7 +2661,7 @@ mod tests {
         // SAFETY: out-pointers are valid per the callback contract; the
         // buffer is malloc'ed and ownership transfers to the caller.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&blob);
+            *data = crate::ffi::memory::malloc_bytes(&blob);
             *length = blob.len() as u32;
         }
         TPM_SUCCESS
@@ -2681,7 +2681,7 @@ mod tests {
         // SAFETY: out-pointers are valid per the callback contract; the
         // one-byte allocation is handed over with a declared length of zero.
         unsafe {
-            *data = crate::ffi_support::malloc_bytes(&[0]);
+            *data = crate::ffi::memory::malloc_bytes(&[0]);
             *length = 0;
         }
         TPM_SUCCESS
