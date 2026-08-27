@@ -1,6 +1,6 @@
-use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
+use crate::types::TpmResult;
 
 use super::clock::{HostClock, time_update};
 use super::command::{self, Response};
@@ -595,8 +595,8 @@ mod tests {
 
     #[test]
     fn dropped_preparation_executes_nothing_and_releases_the_library() {
-        use crate::ffi::types::TpmModifierIndicator;
         use crate::library::state_blob::StateBlobKind;
+        use crate::types::TpmModifierIndicator;
 
         unsafe extern "C" fn getlocality_four(
             locality: *mut TpmModifierIndicator,
@@ -608,9 +608,9 @@ mod tests {
         }
 
         let library = Library::new();
-        library.register_callbacks(crate::ffi::types::LibtpmsCallbacks {
+        library.register_callbacks(crate::types::LibtpmsCallbacks {
             tpm_io_getlocality: Some(getlocality_four),
-            ..crate::ffi::types::LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
         assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
         library.stage_empty_state(StateBlobKind::Permanent);
@@ -631,8 +631,8 @@ mod tests {
 
     mod physical_presence {
         use super::*;
-        use crate::ffi::types::{LibtpmsCallbacks, TpmBool};
         use crate::library::state_blob::StateBlobKind;
+        use crate::types::{LibtpmsCallbacks, TpmBool};
         use std::sync::Mutex;
 
         static CALLS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
@@ -749,9 +749,9 @@ mod tests {
 
     mod platform_physical_presence {
         use super::*;
-        use crate::ffi::types::{LibtpmsCallbacks, TpmBool};
         use crate::library::state_blob::StateBlobKind;
         use crate::library::tpm2::golden_responses::policy_sessions::vector;
+        use crate::types::{LibtpmsCallbacks, TpmBool};
 
         const TPM_CC_CLEAR_CONTROL: u32 = 0x0000_0127;
         const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
@@ -1072,8 +1072,8 @@ mod tests {
 
     mod locality {
         use super::*;
-        use crate::ffi::types::{LibtpmsCallbacks, TpmModifierIndicator};
         use crate::library::state_blob::StateBlobKind;
+        use crate::types::{LibtpmsCallbacks, TpmModifierIndicator};
         use std::sync::Mutex;
 
         static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
@@ -1379,8 +1379,8 @@ mod tests {
 
         #[test]
         fn missing_storage_backend_falls_through_successfully() {
-            use crate::ffi::types::LibtpmsCallbacks;
             use crate::library::tpm2::{HostNvram, host_nv_commit};
+            use crate::types::LibtpmsCallbacks;
 
             let host_nvram = HostNvram::new(LibtpmsCallbacks::empty());
             let mut runtime = manufactured_runtime();
@@ -1485,8 +1485,8 @@ mod tests {
 
         #[test]
         fn successful_shutdown_reaches_tpm_nvram_storedata() {
-            use crate::ffi::types::LibtpmsCallbacks;
             use crate::library::tpm2::{HostNvram, host_nv_commit};
+            use crate::types::LibtpmsCallbacks;
             use std::sync::Mutex;
 
             static STORED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());

@@ -1,6 +1,5 @@
 use super::dispatcher::CommandFrame;
 use super::output::CommandOutput;
-use crate::ffi::types::TpmResult;
 use crate::library::tpm2::command::{
     administration, attestation, context, crypto, hierarchy, lifecycle, nv, object, pcr, platform,
     policy, session,
@@ -8,6 +7,7 @@ use crate::library::tpm2::command::{
 use crate::library::tpm2::hierarchy::is_hierarchy_auth_handle;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2) const TPM_CC_NV_UNDEFINE_SPACE_SPECIAL: u32 = 0x0000_011f;
 pub(in crate::library::tpm2) const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
 pub(in crate::library::tpm2) const TPM_CC_HIERARCHY_CONTROL: u32 = 0x0000_0121;

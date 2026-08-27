@@ -2,7 +2,6 @@ use super::session::{
     PolicyUpdate, hash_parts, live_session, policy_context_update, policy_digest_clear,
     policy_session_at,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_SIZE, TPM_RC_TAG, TPM_RC_VALUE,
 };
@@ -28,6 +27,7 @@ use crate::library::tpm2::self_test::self_test_algorithm;
 use crate::library::tpm2::session::{digest_size, digests_equal};
 use crate::library::tpm2::template::TemplateReader;
 use crate::library::tpm2::ticket::{CONTEXT_INTEGRITY_HASH_ALG, TPM_ST_VERIFIED, compute_verified};
+use crate::types::TpmResult;
 
 const RC_APPROVED_POLICY: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_POLICY_REF: TpmResult = TPM_RC_P + TPM_RC_2;

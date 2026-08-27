@@ -1,7 +1,7 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_INTEGRITY, TPM_RC_SENSITIVE, TPM_RC_SIZE, TPM_RC_SYMMETRIC, TPM_RC_VALUE,
 };
+use crate::types::TpmResult;
 
 use super::crypto::{
     Hasher, HmacState, SeededRand, kdfa, sym_block_size, sym_cfb_decrypt, sym_cfb_encrypt,

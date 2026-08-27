@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_SYMMETRIC;
+use crate::types::TpmResult;
 
 use super::sym::{SymCipher, sym_key_block_size};
 

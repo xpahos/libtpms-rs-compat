@@ -1,6 +1,5 @@
 use super::key::{RC_KEY_HANDLE, ecc_key, ecc_key_derivation_allowed, object_is_public_only};
 use super::parameters::parse_curve_id;
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_KEY, TPM_RC_NO_RESULT, TPM_RC_SCHEME, TPM_RC_SIZE,
 };
@@ -19,6 +18,7 @@ use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::self_test::self_test_algorithm;
 use crate::library::tpm2::template::TemplateReader;
 use crate::library::tpm2::ticket::CONTEXT_INTEGRITY_HASH_ALG;
+use crate::types::TpmResult;
 
 const RC_P1: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_S2: TpmResult = TPM_RC_P + TPM_RC_2;

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -10,6 +9,7 @@ use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::session::{
     flush_session, is_session_handle, session_is_loaded, session_is_saved,
 };
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

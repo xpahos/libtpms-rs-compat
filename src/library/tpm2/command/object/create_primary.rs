@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_OBJECT_MEMORY, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -24,6 +23,7 @@ use crate::library::tpm2::template::{
     marshal_public_area, object_name, parse_public_area, parse_sensitive_create,
 };
 use crate::library::tpm2::ticket::CONTEXT_INTEGRITY_HASH_ALG;
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

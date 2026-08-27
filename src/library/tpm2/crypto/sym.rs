@@ -1,7 +1,7 @@
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_MODE, TPM_RC_SIZE, TPM_RC_SYMMETRIC};
+use crate::types::TpmResult;
 
 use super::super::algorithm::{
     TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_CBC, TPM_ALG_CFB, TPM_ALG_CTR, TPM_ALG_ECB, TPM_ALG_OFB,

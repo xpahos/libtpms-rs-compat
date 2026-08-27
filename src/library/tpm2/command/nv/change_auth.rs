@@ -1,5 +1,4 @@
 use super::access::resolve;
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_SIZE;
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -7,6 +6,7 @@ use crate::library::tpm2::command::core::response_code::{TPM_RC_1, TPM_RC_P};
 use crate::library::tpm2::nv::{checked_auth_value, transact, write_index_auth};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_NEW_AUTH: TpmResult = TPM_RC_P + TPM_RC_1;
 

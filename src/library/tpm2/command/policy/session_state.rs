@@ -1,5 +1,4 @@
 use super::session::{extend_policy_digest, no_parameters, policy_digest, policy_session};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_POLICY_CC, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -16,6 +15,7 @@ use crate::library::tpm2::session::{
     SESSION_ATTR_IS_AUTH_VALUE_NEEDED, SESSION_ATTR_IS_PASSWORD_NEEDED, loaded_session_mut,
     reset_policy_data,
 };
+use crate::types::TpmResult;
 
 const RC_POLICY_COMMAND_CODE_CODE: TpmResult = TPM_RC_P + TPM_RC_1;
 

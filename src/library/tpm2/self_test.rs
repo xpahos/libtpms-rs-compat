@@ -1,7 +1,7 @@
 use aes::cipher::{BlockEncrypt, KeyInit};
 
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
+use crate::types::TpmResult;
 
 use super::algorithm::{
     TPM_ALG_AES, TPM_ALG_ECDH, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSA, TPM_ALG_RSAES,

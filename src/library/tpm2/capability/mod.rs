@@ -68,7 +68,7 @@ pub(in crate::library::tpm2) mod test_runtime {
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::{Tpm2Runtime, commit_manufactured_state};
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), crate::ffi::types::TpmResult> {
+    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), crate::types::TpmResult> {
         let len = buffer.len() as u8;
         for (index, byte) in buffer.iter_mut().enumerate() {
             *byte = (index as u8).wrapping_add(len) ^ 0x4b;

@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_FAIL;
+use crate::types::TpmResult;
 
 use super::crypto::{DRBG_MAGIC, Drbg, EntropySource};
 use super::nv::RAM_INDEX_SPACE;

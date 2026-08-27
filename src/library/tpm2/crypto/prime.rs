@@ -1,4 +1,4 @@
-use crate::ffi::types::TpmResult;
+use crate::types::TpmResult;
 
 use super::bignum::BigUint;
 use super::rand_state::{SEED_COMPAT_LEVEL_RSA_PRIME_ADJUST_FIX, SeededRand};

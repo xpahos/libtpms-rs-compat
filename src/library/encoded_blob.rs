@@ -1,4 +1,4 @@
-use crate::ffi::types::TpmResult;
+use crate::types::TpmResult;
 
 use super::constants::TPM_FAIL;
 

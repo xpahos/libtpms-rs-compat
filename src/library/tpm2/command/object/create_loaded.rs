@@ -1,5 +1,4 @@
 use super::create_primary::{add_modifier, parse_sized_sensitive_create};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_OBJECT_MEMORY, TPM_RC_SIZE, TPM_RC_TYPE,
 };
@@ -33,6 +32,7 @@ use crate::library::tpm2::template::{
     create_checks, marshal_public_area, object_name, parent_public_info, parse_template_to_public,
     public_attributes_validation, set_label_and_context,
 };
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_SIZE};
 use crate::library::tpm2::algorithm::{algorithm_enabled, hash_profile_name};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
@@ -11,6 +10,7 @@ use crate::library::tpm2::self_test::self_test_algorithm;
 use crate::library::tpm2::sequence::{
     SequenceKind, allocate_sequence_slot, init_event_sequence, init_hash_sequence,
 };
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

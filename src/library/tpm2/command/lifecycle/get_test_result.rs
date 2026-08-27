@@ -1,8 +1,8 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_SIZE, TPM_SUCCESS};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) fn execute(
     _runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,

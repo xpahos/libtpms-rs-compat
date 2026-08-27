@@ -1,12 +1,12 @@
 use core::ffi::{c_char, c_int, c_uchar, c_uint};
 
-use crate::ffi::types::{
-    LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
-    TpmlibTpmProperty, TpmlibTpmVersion,
-};
 use crate::library::{
     self, EncodedBlobKind, StateBlobKind, StateInput, StateOutput, StateValidationMask, TPM_FAIL,
     TPM_SIZE, TPM_SUCCESS,
+};
+use crate::types::{
+    LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
+    TpmlibTpmProperty, TpmlibTpmVersion,
 };
 
 const BUFLEN_EMPTY_BUFFER: u32 = 0xffff_ffff;
@@ -726,8 +726,8 @@ mod tests {
     #[cfg(all(feature = "tpm2", feature = "tpm1"))]
     #[test]
     fn the_exported_cancel_command_covers_the_whole_dispatch_matrix() {
-        const TPMLIB_TPM_VERSION_1_2: crate::ffi::types::TpmlibTpmVersion = 0;
-        const TPMLIB_TPM_VERSION_2: crate::ffi::types::TpmlibTpmVersion = 1;
+        const TPMLIB_TPM_VERSION_1_2: crate::types::TpmlibTpmVersion = 0;
+        const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
 
         let _serial = GLOBAL_LIBRARY_LOCK
             .lock()
@@ -1326,7 +1326,7 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn process_end_to_end_follows_the_c_buffer_and_response_contract() {
-        const TPMLIB_TPM_VERSION_2: crate::ffi::types::TpmlibTpmVersion = 1;
+        const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
         const TPM_BUFFER_MAX: u32 = RESPONSE_BUFFER_SIZE as u32;
 
         let _serial = GLOBAL_LIBRARY_LOCK

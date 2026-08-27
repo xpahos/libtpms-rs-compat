@@ -1,8 +1,8 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_CURVE, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY, TPM_RC_KEY_SIZE, TPM_RC_NO_RESULT,
     TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
 };
+use crate::types::TpmResult;
 
 use super::crypto::{
     BigUint, EccKeyError, Hasher, HmacState, RsaKeyError, SeededRand, generate_ecc_key,

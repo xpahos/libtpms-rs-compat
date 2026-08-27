@@ -10,7 +10,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use crate::ffi::memory::ffi_guard;
-use crate::ffi::types::*;
+use crate::types::*;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn TPM_IO_Hash_Start() -> TpmResult {

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_SIZE, TPM_RC_TYPE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -7,6 +6,7 @@ use crate::library::tpm2::public::{
 };
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::{AlgorithmPolicy, TemplateReader, parse_public_parms};
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

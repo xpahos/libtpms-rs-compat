@@ -2,7 +2,6 @@ use super::builder::{
     Attested, attestation_response, check_signing_object, fill_in_attest_info,
     parse_qualifying_data, parse_scheme, sign_attest_info,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE};
 use crate::library::tpm2::command::administration::command_audit_state::{
     audit_counter, audit_digest, audit_hash_alg, command_list_digest, reset_digest,
@@ -16,6 +15,7 @@ use crate::library::tpm2::profile::ValidatedProfile;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::signature::{SigScheme, select_sign_scheme};
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_SIGN_HANDLE: TpmResult = TPM_RC_H + TPM_RC_2;
 const RC_QUALIFYING_DATA: TpmResult = TPM_RC_P + TPM_RC_1;

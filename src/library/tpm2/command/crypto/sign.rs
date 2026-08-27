@@ -2,7 +2,6 @@ use super::signing_state::{
     RC_SIGN_HANDLE, hierarchy_proof_for, load_signing_state, publish_signing_outcome,
     signing_object,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_KEY, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TAG,
     TPM_RC_TICKET, TPM_RC_VALUE,
@@ -24,6 +23,7 @@ use crate::library::tpm2::template::{
     TPMA_OBJECT_RESTRICTED, TPMA_OBJECT_X509_SIGN, TemplateReader, digest_size,
 };
 use crate::library::tpm2::ticket::{TPM_ST_HASHCHECK, Ticket, compute_hash_check};
+use crate::types::TpmResult;
 
 const RC_DIGEST: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_IN_SCHEME: TpmResult = TPM_RC_P + TPM_RC_2;

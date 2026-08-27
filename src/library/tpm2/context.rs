@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_SIZE};
+use crate::types::TpmResult;
 
 use super::crypto::{HmacState, kdfa};
 use super::nv::layout::{

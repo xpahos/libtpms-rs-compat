@@ -1,10 +1,10 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_BAD_PARAMETER, TPM_RC_BAD_TAG, TPM_RC_BAD_VERSION, TPM_RC_CURVE, TPM_RC_FAILURE,
     TPM_RC_HANDLE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_KDF, TPM_RC_KEY_SIZE, TPM_RC_MODE,
     TPM_RC_NO_RESULT, TPM_RC_RESERVED_BITS, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_SYMMETRIC,
     TPM_RC_TYPE, TPM_RC_VALUE,
 };
+use crate::types::TpmResult;
 
 mod attach;
 mod compat_tail;

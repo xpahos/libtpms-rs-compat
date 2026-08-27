@@ -1,5 +1,4 @@
 use super::session::{PolicySession, extend_policy_digest, policy_session};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_PCR_CHANGED, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -14,6 +13,7 @@ use crate::library::tpm2::persistent::OwnedPcrAllocation;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::session::{digests_equal, loaded_session_mut};
 use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
+use crate::types::TpmResult;
 
 const RC_POLICY_PCR_PCR_DIGEST: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_POLICY_PCR_PCRS: TpmResult = TPM_RC_P + TPM_RC_2;

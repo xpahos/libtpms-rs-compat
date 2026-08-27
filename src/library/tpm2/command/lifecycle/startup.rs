@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_LOCALITY, TPM_RC_NV_UNAVAILABLE,
     TPM_RC_NV_UNINITIALIZED, TPM_RC_SIZE, TPM_RC_VALUE,
@@ -23,6 +22,7 @@ use crate::library::tpm2::random::{startup_live_drbg, startup_secret};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::state::{COMMIT_ARRAY_SIZE, MAX_ACTIVE_SESSIONS};
 use crate::library::tpm2::volatile::{IMPLEMENTATION_PCR, MAX_LOADED_SESSIONS, OwnedPcr};
+use crate::types::TpmResult;
 pub(in crate::library::tpm2) const TPM_SU_CLEAR: u16 = 0x0000;
 pub(in crate::library::tpm2) const TPM_SU_STATE: u16 = 0x0001;
 
@@ -561,8 +561,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
+        ) -> Result<(), crate::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),
@@ -572,7 +572,6 @@ mod tests {
         )
     }
     use super::*;
-    use crate::ffi::types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_FAIL;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
@@ -596,6 +595,7 @@ mod tests {
     use crate::library::tpm2::{
         audit, compile_constants, lockout, parse_persistent_all_payload, pp_list,
     };
+    use crate::types::TpmResult;
 
     const SUCCESS_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
     const INITIALIZE_RESPONSE: [u8; 10] =

@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
+use crate::types::TpmResult;
 
 use super::crypto::{BigUint, CurveParameters, kdfa_from};
 use super::persistent::OwnedSecret;

@@ -1,10 +1,10 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::marshal::BlobReader;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::self_test::{SelectedTestError, run_incremental_self_test};
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

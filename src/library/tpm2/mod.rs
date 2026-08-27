@@ -52,7 +52,7 @@ mod volatile;
 
 use core::ffi::c_int;
 
-use crate::ffi::types::{LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty};
+use crate::types::{LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty};
 
 use super::constants::{
     TPM_FAIL, TPM_RC_FAILURE, TPM_RETRY, TPM_SUCCESS, TPMPROP_TPM_KEY_HANDLES,

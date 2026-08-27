@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
+use crate::types::TpmResult;
 
 use super::algorithm::TPM_ALG_NULL;
 use super::hierarchy::{

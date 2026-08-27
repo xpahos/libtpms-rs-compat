@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE};
 use crate::library::tpm2::capability::commands::MAX_CAP_CC;
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
@@ -13,6 +12,7 @@ use crate::library::tpm2::pp_list::PP_LIST_SIZE;
 use crate::library::tpm2::profile::command_enabled;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_SET_LIST: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_CLEAR_LIST: TpmResult = TPM_RC_P + TPM_RC_2;

@@ -1,8 +1,8 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_BINDING, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_SCHEME, TPM_RC_SELECTOR, TPM_RC_SIZE,
     TPM_RC_VALUE,
 };
+use crate::types::TpmResult;
 
 use super::algorithm::{
     TPM_ALG_ERROR, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSAES, algorithm_enabled,

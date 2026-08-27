@@ -1,11 +1,11 @@
 use super::sequence::hmac_start::{parse_mac_scheme, select_mac};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::marshal::{BlobReader, BlobWriter, Tpm2bError};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::self_test::self_test_algorithm;
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

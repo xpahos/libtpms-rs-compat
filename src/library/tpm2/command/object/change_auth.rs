@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_SIZE, TPM_RC_TYPE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -11,6 +10,7 @@ use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::sequence::sequence_kind;
 use crate::library::tpm2::session::digests_equal;
 use crate::library::tpm2::template::{TemplateReader, adjusted_auth_value};
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

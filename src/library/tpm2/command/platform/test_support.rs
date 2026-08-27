@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::tpm2::clock::SteppingClock;
 pub(super) use crate::library::tpm2::command::core::test_support::{command, framed};
@@ -12,6 +11,7 @@ use crate::library::tpm2::pp_list::PP_LIST_SIZE;
 use crate::library::tpm2::process::process;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::{attach_volatile_blob_for_replay, restore_permanent_blob_for_test};
+use crate::types::TpmResult;
 pub(super) const TPM_RH_OWNER: u32 = 0x4000_0001;
 pub(super) const TPM_RH_NULL: u32 = 0x4000_0007;
 pub(super) const TPM_RH_LOCKOUT: u32 = 0x4000_000a;

@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE};
+use crate::types::TpmResult;
 
 use super::nv::build_nv_image;
 use super::runtime::Tpm2Runtime;

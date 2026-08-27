@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_LOCKOUT, TPM_RC_NV_UNAVAILABLE};
+use crate::types::TpmResult;
 
 use super::hierarchy::TPM_RH_LOCKOUT;
 use super::nv::{TPMA_NV_NO_DA, build_nv_image, is_nv_index_handle, resolve_index};
@@ -192,7 +192,6 @@ fn commit_dictionary_attack_state(runtime: &mut Tpm2Runtime) -> Result<(), TpmRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::types::TpmResult;
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
     };
@@ -201,6 +200,7 @@ mod tests {
     use crate::library::tpm2::persistent::OwnedSecret;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::{commit_manufactured_state, empty_state_runtime};
+    use crate::types::TpmResult;
 
     const DA_INDEX: u32 = 0x0100_0000;
 

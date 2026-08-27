@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -10,6 +9,7 @@ use crate::library::tpm2::pcr::{HASH_COUNT, PCR_SELECT_MAX, PCR_SELECT_MIN, bank
 use crate::library::tpm2::persistent::OwnedPcrAllocation;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -200,8 +200,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
+        ) -> Result<(), crate::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),

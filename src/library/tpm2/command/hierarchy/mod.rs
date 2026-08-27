@@ -8,7 +8,6 @@ pub(super) mod lock_reset;
 pub(super) mod pcr_policy;
 pub(super) mod primary_policy;
 
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use crate::library::tpm2::nv::stored_object_attributes;
@@ -22,6 +21,7 @@ use crate::library::tpm2::persistent::{
 use crate::library::tpm2::profile::PersistentObjectFormat;
 use crate::library::tpm2::random::regenerate_secret;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) const PRIMARY_SEED_SIZE: usize = 64;
 pub(in crate::library::tpm2::command) const PROOF_SIZE: usize = 64;
 

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -12,6 +11,7 @@ use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::hierarchy::{TPM_RH_ACT_0, TPM_RH_ACT_F};
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;
@@ -204,8 +204,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
+        ) -> Result<(), crate::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),

@@ -3,7 +3,6 @@ use super::{
     hierarchy_object_attribute, recompute_user_nvram_capacity, regenerate_hierarchy_secrets,
     remove_hierarchy_persistent_objects, with_rollback,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_DISABLED, TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
 };
@@ -18,6 +17,7 @@ use crate::library::tpm2::nv::{TPMA_NV_PLATFORMCREATE, delete_index, resolve_ind
 use crate::library::tpm2::orderly::prepare_clear_orderly;
 use crate::library::tpm2::persistent::{OwnedSecret, OwnedUserNvramEntry};
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const DA_DEFAULT_MAX_TRIES: u32 = 3;
 const DA_DEFAULT_RECOVERY_TIME: u32 = 1000;

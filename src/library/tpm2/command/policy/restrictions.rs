@@ -2,7 +2,6 @@ use super::session::{
     PolicySession, hash_parts, is_cp_hash_union_occupied, live_session, live_session_mut,
     next_policy_digest, no_parameters, policy_session,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_COMMAND_CODE, TPM_RC_CPHASH, TPM_RC_FAILURE, TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -24,6 +23,7 @@ use crate::library::tpm2::session::{
     SESSION_ATTR_NV_WRITTEN_STATE, digest_size, digests_equal,
 };
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_FIRST: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_SECOND: TpmResult = TPM_RC_P + TPM_RC_2;

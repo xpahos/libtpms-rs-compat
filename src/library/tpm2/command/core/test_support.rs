@@ -1,11 +1,11 @@
 use super::dispatcher::dispatch;
 use super::header::{parse_command, serialize_response};
-use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::tpm2::command::session::processing::TPM_RS_PW;
 use crate::library::tpm2::manufacture::manufacture_state;
 use crate::library::tpm2::profile::validate_user_profile;
 use crate::library::tpm2::runtime::{Tpm2Runtime, commit_manufactured_state};
+use crate::types::TpmResult;
 
 pub(in crate::library::tpm2::command) const TPM_ALG_SHA1: u16 = 0x0004;
 pub(in crate::library::tpm2::command) const TPM_ALG_SHA256: u16 = 0x000b;

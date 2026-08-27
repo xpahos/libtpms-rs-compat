@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_INSUFFICIENT, TPM_RC_KEY, TPM_RC_MODE,
     TPM_RC_SIZE, TPM_RC_VALUE,
@@ -32,6 +31,7 @@ use crate::library::tpm2::session::{
 };
 use crate::library::tpm2::template::{AlgorithmPolicy, TPMA_OBJECT_DECRYPT, TemplateReader};
 use crate::library::tpm2::volatile::OwnedSession;
+use crate::types::TpmResult;
 
 const TPM_RC_5: TpmResult = 0x500;
 

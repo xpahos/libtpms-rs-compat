@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::command::crypto::signing_state::{
@@ -20,6 +19,7 @@ use crate::library::tpm2::signature::{
 };
 use crate::library::tpm2::template::{TemplateReader, digest_size};
 use crate::library::tpm2::ticket::{CONTEXT_INTEGRITY_HASH_ALG, TPM_GENERATED_VALUE};
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) const TPM_ST_ATTEST_NV: u16 = 0x8014;
 pub(in crate::library::tpm2::command) const TPM_ST_ATTEST_COMMAND_AUDIT: u16 = 0x8015;
 pub(in crate::library::tpm2::command) const TPM_ST_ATTEST_SESSION_AUDIT: u16 = 0x8016;

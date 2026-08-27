@@ -406,7 +406,6 @@ fn nv_counter_avail(state: &OwnedPersistentState, live: &LiveState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::tpm2::command::{dispatch, parse_command};
     use crate::library::tpm2::manufacture::manufacture_state;
@@ -415,6 +414,7 @@ mod tests {
     };
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
+    use crate::types::TpmResult;
 
     fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
         let len = buffer.len() as u8;

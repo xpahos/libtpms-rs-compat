@@ -1,4 +1,4 @@
-use crate::ffi::types::TpmlibInfoFlags;
+use crate::types::TpmlibInfoFlags;
 
 use super::profile;
 

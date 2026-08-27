@@ -1,5 +1,4 @@
 use super::access::MAX_NV_BUFFER_SIZE;
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_HIERARCHY, TPM_RC_NV_DEFINED,
     TPM_RC_SIZE,
@@ -20,6 +19,7 @@ use crate::library::tpm2::nv::{
 };
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::{TemplateReader, digest_size};
+use crate::types::TpmResult;
 
 const RC_AUTH_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
 const RC_AUTH: TpmResult = TPM_RC_P + TPM_RC_1;

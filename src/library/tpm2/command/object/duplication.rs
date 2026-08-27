@@ -1,5 +1,4 @@
 use super::load::{algorithm_policy, parse_sized_public};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_HASH, TPM_RC_HIERARCHY, TPM_RC_SIZE,
     TPM_RC_SYMMETRIC, TPM_RC_TYPE, TPM_RC_VALUE,
@@ -32,6 +31,7 @@ use crate::library::tpm2::template::{
     TPMA_OBJECT_ENCRYPTED_DUPLICATION, TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM,
     TemplateReader, digest_size,
 };
+use crate::types::TpmResult;
 
 const RC_DUPLICATE_OBJECT_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
 const RC_DUPLICATE_NEW_PARENT_HANDLE: TpmResult = TPM_RC_H + TPM_RC_2;

@@ -1,5 +1,4 @@
 use super::key::{RC_KEY_HANDLE, ecc_key, ecc_key_derivation_allowed};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_KEY, TPM_RC_NO_RESULT,
     TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,
@@ -24,6 +23,7 @@ use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::self_test::self_test_algorithm;
 use crate::library::tpm2::template::{TPMA_OBJECT_DECRYPT, TPMA_OBJECT_RESTRICTED, TemplateReader};
 use crate::library::tpm2::ticket::CONTEXT_INTEGRITY_HASH_ALG;
+use crate::types::TpmResult;
 
 const RC_IN_POINT: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_IN_QS_B: TpmResult = TPM_RC_P + TPM_RC_1;

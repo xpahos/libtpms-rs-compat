@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_KEY, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -19,6 +18,7 @@ use crate::library::tpm2::rsa_encryption::{
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::self_test::{LazySelfTest, self_test_algorithm, self_test_rsa_scheme};
 use crate::library::tpm2::template::{TPMA_OBJECT_DECRYPT, TPMA_OBJECT_RESTRICTED, TemplateReader};
+use crate::types::TpmResult;
 
 const RC_KEY_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
 const RC_MESSAGE: TpmResult = TPM_RC_P + TPM_RC_1;

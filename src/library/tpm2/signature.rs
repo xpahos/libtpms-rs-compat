@@ -1,10 +1,10 @@
 use subtle::ConstantTimeEq;
 
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_HASH, TPM_RC_KEY_SIZE, TPM_RC_NO_RESULT, TPM_RC_SCHEME,
     TPM_RC_SIGNATURE, TPM_RC_SIZE, TPM_RC_VALUE,
 };
+use crate::types::TpmResult;
 
 use super::algorithm::{
     TPM_ALG_ECC, TPM_ALG_ECDAA, TPM_ALG_ECDSA, TPM_ALG_ECSCHNORR, TPM_ALG_HMAC, TPM_ALG_KEYEDHASH,

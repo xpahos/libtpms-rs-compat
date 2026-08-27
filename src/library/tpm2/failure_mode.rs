@@ -1,6 +1,6 @@
-use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE, TPM_RC_NV_UNINITIALIZED};
+use crate::types::TpmResult;
 
 use super::capability::TPM_CAP_TPM_PROPERTIES;
 use super::capability::properties::{

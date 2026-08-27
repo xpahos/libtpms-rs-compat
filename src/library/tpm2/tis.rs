@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_BAD_LOCALITY, TPM_SUCCESS};
+use crate::types::TpmResult;
 
 use super::object::{ATTR_EVENT_SEQ, ATTR_OCCUPIED, ATTR_TEMPORARY, HASH_OBJECT_VERSION};
 use super::pcr::{
@@ -203,8 +203,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
+        ) -> Result<(), crate::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),

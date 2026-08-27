@@ -1,10 +1,10 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 use crate::library::tpm2::clock::{RuntimeClock, TpmTimer};
 use crate::library::tpm2::live::{LiveState, RestoredVolatile};
 use crate::library::tpm2::nv::build_nv_image;
 use crate::library::tpm2::persistent::{OwnedPcrAllocation, OwnedPersistentState};
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) struct CommandTransaction {
     state: Option<OwnedPersistentState>,
     live: LiveState,

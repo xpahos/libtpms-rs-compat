@@ -2,7 +2,6 @@ use super::session::{
     PolicySession, policy_digest, policy_session, start_policy_hash, store_policy_digest,
     zero_policy_digest,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -11,6 +10,7 @@ use crate::library::tpm2::command::core::response_code::{TPM_RC_1, TPM_RC_P};
 use crate::library::tpm2::marshal::{BlobReader, Tpm2bError};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::session::digests_equal;
+use crate::types::TpmResult;
 
 const RC_POLICY_OR_P_HASH_LIST: TpmResult = TPM_RC_P + TPM_RC_1;
 

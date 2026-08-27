@@ -1,9 +1,9 @@
-use crate::ffi::types::TpmResult;
 use crate::library::CommandInput;
 use crate::library::constants::{
     TPM_RC_BAD_TAG, TPM_RC_COMMAND_SIZE, TPM_RC_INSUFFICIENT, TPM_SUCCESS,
 };
 use crate::library::tpm2::marshal::BlobWriter;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2) const TPM_ST_NO_SESSIONS: u16 = 0x8001;
 pub(in crate::library::tpm2) const TPM_ST_SESSIONS: u16 = 0x8002;
 

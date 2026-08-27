@@ -1,4 +1,4 @@
-use crate::ffi::types::TpmlibStateType;
+use crate::types::TpmlibStateType;
 
 const TPMLIB_STATE_PERMANENT: TpmlibStateType = 1;
 const TPMLIB_STATE_VOLATILE: TpmlibStateType = 2;

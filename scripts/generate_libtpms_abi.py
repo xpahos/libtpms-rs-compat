@@ -192,7 +192,7 @@ PRIMITIVE_MAP = {
 }
 
 # libtpms typedefs, mapped to Rust-style aliases handwritten in
-# src/ffi/types.rs.
+# src/types/mod.rs.
 TYPEDEF_MAP = {
     "TPM_RESULT": "TpmResult",
     "TPM_BOOL": "TpmBool",
@@ -200,7 +200,7 @@ TYPEDEF_MAP = {
     "TPMLIB_TPMVersion": "TpmlibTpmVersion",
 }
 
-# Known enum tags (C enums have the ABI of int; src/ffi/types.rs defines
+# Known enum tags (C enums have the ABI of int; src/types/mod.rs defines
 # c_int aliases under the mapped Rust names).
 ENUM_TAG_MAP = {
     "TPMLIB_TPMProperty": "TpmlibTpmProperty",
@@ -262,7 +262,7 @@ def _fail(func_name, node, message):
         "function '%s' (declared at %s) uses unsupported C type '%s': %s. "
         "If this type should be part of the ABI, add it to the mapping "
         "tables in scripts/generate_libtpms_abi.py and, for named types, "
-        "declare its Rust counterpart in src/ffi/types.rs."
+        "declare its Rust counterpart in src/types/mod.rs."
         % (func_name, coord or "<unknown location>", _render_c_type(node),
            message)
     )
@@ -899,7 +899,7 @@ def render_rust(functions, header_display):
         "#![allow(clippy::missing_safety_doc)]",
         "",
         "use crate::ffi::memory::ffi_guard;",
-        "use crate::ffi::types::*;",
+        "use crate::types::*;",
     ]
     for func in functions:
         lines += ["", "#[unsafe(no_mangle)]"]
@@ -948,7 +948,7 @@ def main(argv=None):
     parser.add_argument("--check-ffi-types", default=None, metavar="FFI_RS",
                         help="cross-check the header's type names against "
                              "the handwritten Rust FFI type module "
-                             "(e.g. src/ffi/types.rs); no files are written")
+                             "(e.g. src/types/mod.rs); no files are written")
     args = parser.parse_args(argv)
 
     if not args.output and not args.check_ffi_types:

@@ -40,7 +40,6 @@ mod tests {
     use core::cell::RefCell;
 
     use super::*;
-    use crate::ffi::types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_FAIL;
     use crate::library::tpm2::clock::{SteppingClock, time_power_on};
@@ -58,6 +57,7 @@ mod tests {
         VolatileDecodeBoundary, attach_volatile_blob, decode_volatile_blob,
         parse_persistent_all_payload, volatile_validation_context,
     };
+    use crate::types::TpmResult;
 
     const TPM_RH_OWNER: u32 = 0x4000_0001;
     const TPM_RH_LOCKOUT: u32 = 0x4000_000a;

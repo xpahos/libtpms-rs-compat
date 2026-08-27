@@ -1,5 +1,4 @@
 use super::access::{MAX_NV_BUFFER_SIZE, resolve, write_access_checks};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_HASH, TPM_RC_NV_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -15,6 +14,7 @@ use crate::library::tpm2::nv::{
 use crate::library::tpm2::orderly::{commit_clear_orderly, prepare_clear_orderly};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::{TemplateReader, digest_size};
+use crate::types::TpmResult;
 
 const RC_NV_INDEX: TpmResult = TPM_RC_H + TPM_RC_2;
 const RC_PARAM_1: TpmResult = TPM_RC_P + TPM_RC_1;

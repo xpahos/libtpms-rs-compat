@@ -1,5 +1,4 @@
 use super::update::{RC_BUFFER_P1, RC_HANDLE_H1, read_max_buffer};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_MODE, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -19,6 +18,7 @@ use crate::library::tpm2::sequence::{
 use crate::library::tpm2::ticket::{
     CONTEXT_INTEGRITY_HASH_ALG, TPM_ST_HASHCHECK, Ticket, compute_hash_check, ticket_is_safe,
 };
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_2: TpmResult = 0x200;

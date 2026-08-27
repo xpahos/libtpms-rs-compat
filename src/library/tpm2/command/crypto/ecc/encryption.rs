@@ -1,5 +1,4 @@
 use super::key::{RC_KEY_HANDLE, ecc_key};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE};
 use crate::library::tpm2::algorithm::TPM_ALG_ECDH;
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
@@ -19,6 +18,7 @@ use crate::library::tpm2::random::{finish_live_rand, take_live_rand};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::self_test::self_test_algorithm;
 use crate::library::tpm2::template::{TPMA_OBJECT_DECRYPT, TPMA_OBJECT_RESTRICTED, TemplateReader};
+use crate::types::TpmResult;
 
 const RC_PLAIN_TEXT: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_ENCRYPT_SCHEME: TpmResult = TPM_RC_P + TPM_RC_2;

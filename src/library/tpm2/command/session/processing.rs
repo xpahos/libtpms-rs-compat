@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_AUTH_FAIL, TPM_RC_AUTH_MISSING, TPM_RC_AUTH_TYPE,
     TPM_RC_AUTH_UNAVAILABLE, TPM_RC_BAD_AUTH, TPM_RC_EXCLUSIVE, TPM_RC_EXPIRED, TPM_RC_FAILURE,
@@ -48,6 +47,7 @@ use crate::library::tpm2::session::{
 };
 use crate::library::tpm2::state::MAX_ACTIVE_SESSIONS;
 use crate::library::tpm2::template::{TPMA_OBJECT_ADMIN_WITH_POLICY, TPMA_OBJECT_USER_WITH_AUTH};
+use crate::types::TpmResult;
 use subtle::ConstantTimeEq;
 
 const TPM_RC_S: TpmResult = 0x800;

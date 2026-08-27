@@ -1,5 +1,4 @@
 use super::access::{MAX_NV_BUFFER_SIZE, read_access_checks, resolve};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_NV_RANGE, TPM_RC_SIZE, TPM_RC_VALUE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -8,6 +7,7 @@ use crate::library::tpm2::marshal::BlobWriter;
 use crate::library::tpm2::nv::{marshal_sized_nv_public, nv_index_name, read_index_data};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_SIZE_PARAM: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_OFFSET_PARAM: TpmResult = TPM_RC_P + TPM_RC_2;

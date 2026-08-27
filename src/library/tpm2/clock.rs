@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
+use crate::types::TpmResult;
 
 use super::live::CLOCK_NOMINAL;
 use super::nv::build_nv_image;
@@ -659,7 +659,7 @@ mod tests {
         }
     }
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), crate::ffi::types::TpmResult> {
+    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), crate::types::TpmResult> {
         let len = buffer.len() as u8;
         for (index, byte) in buffer.iter_mut().enumerate() {
             *byte = (index as u8).wrapping_add(len) ^ 0x2c;

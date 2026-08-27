@@ -3,7 +3,6 @@ use super::builder::{
     parse_scheme, sign_and_respond,
 };
 use super::certify::certified_object;
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TAG, TPM_RC_TICKET, TPM_RC_VALUE,
 };
@@ -24,6 +23,7 @@ use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::session::digests_equal;
 use crate::library::tpm2::signature::{SigScheme, select_sign_scheme};
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_QUALIFYING_DATA: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_CREATION_HASH: TpmResult = TPM_RC_P + TPM_RC_2;

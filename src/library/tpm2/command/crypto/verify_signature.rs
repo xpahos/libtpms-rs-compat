@@ -1,5 +1,4 @@
 use super::signing_state::hierarchy_proof_for;
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE};
 use crate::library::tpm2::algorithm::TPM_ALG_NULL;
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
@@ -20,6 +19,7 @@ use crate::library::tpm2::template::{TPMA_OBJECT_SIGN, TemplateReader};
 use crate::library::tpm2::ticket::{
     CONTEXT_INTEGRITY_HASH_ALG, TPM_ST_VERIFIED, Ticket, compute_verified,
 };
+use crate::types::TpmResult;
 
 const RC_KEY_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
 const RC_DIGEST: TpmResult = TPM_RC_P + TPM_RC_1;

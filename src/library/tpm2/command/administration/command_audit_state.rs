@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE};
 use crate::library::tpm2::audit::AUDIT_COMMANDS_SIZE;
 use crate::library::tpm2::command::core::registry::{
@@ -16,6 +15,7 @@ use crate::library::tpm2::profile::command_enabled;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::self_test::self_test_algorithm;
 use crate::library::tpm2::template::digest_size;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) const COMMAND_FIRST: u32 = 0x0000_011f;
 
 pub(in crate::library::tpm2) fn command_index(code: u32) -> Option<usize> {

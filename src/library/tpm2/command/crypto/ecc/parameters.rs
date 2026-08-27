@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_CURVE, TPM_RC_FAILURE, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -8,6 +7,7 @@ use crate::library::tpm2::crypto::is_compiled_curve;
 use crate::library::tpm2::ecc::algorithm_detail;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_CURVE_ID: TpmResult = TPM_RC_P + TPM_RC_1;
 

@@ -1,5 +1,4 @@
 use super::hash_start::parse_auth;
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_KEY, TPM_RC_SCHEME, TPM_RC_SIZE,
     TPM_RC_SYMMETRIC, TPM_RC_TYPE, TPM_RC_VALUE,
@@ -20,6 +19,7 @@ use crate::library::tpm2::sequence::{
     MacKey, SequenceKind, allocate_sequence_slot, init_mac_sequence, reserve_evict_slot,
 };
 use crate::library::tpm2::template::{TPMA_OBJECT_RESTRICTED, TPMA_OBJECT_SIGN};
+use crate::types::TpmResult;
 
 const TPM_RC_H: TpmResult = 0x000;
 const TPM_RC_P: TpmResult = 0x040;

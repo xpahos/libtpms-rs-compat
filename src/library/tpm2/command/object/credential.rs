@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_KEY, TPM_RC_SIZE, TPM_RC_TYPE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -21,6 +20,7 @@ use crate::library::tpm2::self_test::{LazySelfTest, self_test_reached};
 use crate::library::tpm2::template::{
     TPMA_OBJECT_DECRYPT, TPMA_OBJECT_RESTRICTED, TemplateReader, digest_size,
 };
+use crate::types::TpmResult;
 
 const RC_MAKE_CREDENTIAL_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
 const RC_MAKE_CREDENTIAL_CREDENTIAL: TpmResult = TPM_RC_P + TPM_RC_1;

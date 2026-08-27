@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_CPHASH, TPM_RC_EXPIRED, TPM_RC_FAILURE, TPM_RC_NONCE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
 };
@@ -12,6 +11,7 @@ use crate::library::tpm2::session::{
     SESSION_ATTR_IS_TRIAL_POLICY, digest_size, digests_equal, loaded_session, loaded_session_mut,
 };
 use crate::library::tpm2::volatile::OwnedSession;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) const EXPIRATION_BIT: u64 = 1 << 63;
 
 pub(in crate::library::tpm2::command) const TPM_EO_EQ: u16 = 0x0000;

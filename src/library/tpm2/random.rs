@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NO_RESULT};
+use crate::types::TpmResult;
 
 use super::crypto::{DRBG_MAGIC, Drbg, LiveDrbg, ReseedError, SeededRand, StirError, df_buffer};
 use super::failure_mode::{FailureLocation, enter_failure_mode};

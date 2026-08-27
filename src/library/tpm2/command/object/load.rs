@@ -1,5 +1,4 @@
 use super::create_loaded::{object_hierarchy, resolve_parent};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_HIERARCHY, TPM_RC_OBJECT_MEMORY,
     TPM_RC_SIZE, TPM_RC_TYPE,
@@ -22,6 +21,7 @@ use crate::library::tpm2::template::{
     AlgorithmPolicy, TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM, TPMA_OBJECT_RESTRICTED,
     TemplateReader, parse_public_area,
 };
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

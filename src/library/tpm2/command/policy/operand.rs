@@ -2,7 +2,6 @@ use super::session::{
     PolicySession, check_condition, extend_policy_digest, hash_parts, operation_is_supported,
     policy_session_at,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_NV_UNAVAILABLE, TPM_RC_POLICY, TPM_RC_RANGE, TPM_RC_SIZE,
     TPM_RC_VALUE,
@@ -22,6 +21,7 @@ use crate::library::tpm2::entity::entity_name;
 use crate::library::tpm2::nv::read_index_data;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::TemplateReader;
+use crate::types::TpmResult;
 
 const RC_OPERAND_B: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_OFFSET: TpmResult = TPM_RC_P + TPM_RC_2;

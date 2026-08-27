@@ -1,8 +1,8 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_RC_FAILURE;
 use crate::library::tpm2::orderly::{commit_clear_orderly, prepare_clear_orderly};
 use crate::library::tpm2::pcr::{pcr_in_tcb_group, pcr_is_state_saved};
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) fn prepare_orderly_clear(
     runtime: &Tpm2Runtime,
     pcr: usize,

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_KEY};
 use crate::library::tpm2::command::core::response_code::{TPM_RC_1, TPM_RC_H};
 use crate::library::tpm2::commit::CommitState;
@@ -8,6 +7,7 @@ use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedObjectBody};
 use crate::library::tpm2::random::{finish_live_rand, take_live_rand};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::signature::{Signature, SigningState};
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) const RC_SIGN_HANDLE: TpmResult = TPM_RC_H + TPM_RC_1;
 
 pub(in crate::library::tpm2::command) fn signing_object(

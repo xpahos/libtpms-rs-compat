@@ -3,7 +3,6 @@ use super::{
     hierarchy_object_attribute, regenerate_hierarchy_secrets, remove_hierarchy_persistent_objects,
     with_rollback,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -11,6 +10,7 @@ use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM};
 use crate::library::tpm2::orderly::prepare_clear_orderly;
 use crate::library::tpm2::persistent::OwnedSecret;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const TPM_ALG_NULL: u16 = 0x0010;
 
@@ -89,8 +89,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
+        ) -> Result<(), crate::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),

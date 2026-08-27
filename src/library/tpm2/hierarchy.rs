@@ -47,10 +47,10 @@ pub(super) fn hierarchy_proof(persistent: &OwnedPersistentData, hierarchy: u32) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::types::TpmResult;
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
+    use crate::types::TpmResult;
 
     fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
         let len = buffer.len() as u8;

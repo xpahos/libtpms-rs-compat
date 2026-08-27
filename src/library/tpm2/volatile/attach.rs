@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_FAIL;
+use crate::types::TpmResult;
 
 use super::{
     DecodedVolatileState, IMPLEMENTATION_PCR, MAX_LOADED_OBJECTS, MAX_LOADED_SESSIONS,

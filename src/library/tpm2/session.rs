@@ -1,10 +1,10 @@
 use subtle::ConstantTimeEq;
 
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_CONTEXT_GAP, TPM_RC_FAILURE, TPM_RC_SESSION_HANDLES, TPM_RC_SESSION_MEMORY,
     TPM_RC_TOO_MANY_CONTEXTS,
 };
+use crate::types::TpmResult;
 
 use super::crypto::COMPILED_HASHES;
 use super::live::LiveState;

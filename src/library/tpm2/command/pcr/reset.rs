@@ -1,12 +1,12 @@
 use super::update::{
     commit_orderly_clear, commit_pcr_counter, live_pcr_counter, pcr_changed, prepare_orderly_clear,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_LOCALITY, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::pcr::{PCR_SLOT_BANKS, allocation_selects, pcr_reset_allowed};
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 struct PreparedReset {
     banks: [Option<Vec<u8>>; PCR_SLOT_BANKS.len()],
@@ -80,8 +80,8 @@ mod tests {
         command: &crate::library::CommandInput,
         commit_nv: impl FnOnce(
             &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::ffi::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::ffi::types::TpmResult> {
+        ) -> Result<(), crate::types::TpmResult>,
+    ) -> Result<Vec<u8>, crate::types::TpmResult> {
         crate::library::tpm2::process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(locality),

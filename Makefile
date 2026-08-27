@@ -29,7 +29,7 @@ ABI_GENERATOR   := scripts/generate_libtpms_abi.py
 ABI_OUTPUT      := src/generated/tpm_library_abi.rs
 TIS_HEADER      := libtpms/include/libtpms/tpm_tis.h
 TIS_ABI_OUTPUT  := src/generated/tpm_tis_abi.rs
-FFI_TYPES       := src/ffi/types.rs
+FFI_TYPES       := src/types/mod.rs
 
 PA_FIXTURE_GENERATOR := scripts/generate_pa_compile_constants_fixture.py
 NVMARSHAL_SOURCE     := libtpms/src/tpm2/NVMarshal.c

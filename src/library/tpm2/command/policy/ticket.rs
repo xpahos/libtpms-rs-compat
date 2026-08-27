@@ -2,7 +2,6 @@ use super::session::{
     EXPIRATION_BIT, ParameterBlame, PolicySession, PolicyUpdate, compute_auth_timeout, hash_parts,
     live_session, policy_context_update, policy_parameter_checks, policy_session_at,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TICKET,
 };
@@ -32,6 +31,7 @@ use crate::library::tpm2::ticket::{
     AuthTicketInput, CONTEXT_INTEGRITY_HASH_ALG, TPM_ST_AUTH_SECRET, TPM_ST_AUTH_SIGNED, Ticket,
     compute_auth,
 };
+use crate::types::TpmResult;
 
 const RC_NONCE_TPM: TpmResult = TPM_RC_P + TPM_RC_1;
 const RC_CP_HASH_A: TpmResult = TPM_RC_P + TPM_RC_2;

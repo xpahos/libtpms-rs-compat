@@ -267,7 +267,7 @@ class OutputTests(GeneratorTestCase):
         self.assertIn('pub unsafe extern "C" fn Foo(x: u32) -> u32 {', rust)
         self.assertIn("ffi_guard(|| crate::ffi::api::foo(x))", rust)
         self.assertIn("use crate::ffi::memory::ffi_guard;", rust)
-        self.assertIn("use crate::ffi::types::*;", rust)
+        self.assertIn("use crate::types::*;", rust)
         self.assertIn("#![allow(clippy::missing_safety_doc)]", rust)
 
     def test_raw_pointer_call_is_explicitly_unsafe(self):
@@ -603,7 +603,7 @@ class RealHeaderTests(GeneratorTestCase):
         self.assertEqual([f.name for f in funcs], self.EXPECTED)
 
     def test_real_ffi_types_module_matches_header(self):
-        ffi_path = _REPO_ROOT / "src" / "ffi" / "types.rs"
+        ffi_path = _REPO_ROOT / "src" / "types" / "mod.rs"
         self.assertTrue(ffi_path.is_file())
         ast, real = gen.parse_header(str(_REAL_HEADER))
         header_types = gen.collect_header_types(ast, real)

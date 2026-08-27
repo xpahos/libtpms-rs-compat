@@ -1,6 +1,5 @@
 use super::primary_policy::hash_algorithm_allowed;
 use super::{commit_persistent_state, digest_size_of, with_rollback};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
     TPM_RC_VALUE,
@@ -12,6 +11,7 @@ use crate::library::tpm2::marshal::{BlobReader, Tpm2bError};
 use crate::library::tpm2::pcr::pcr_policy_group;
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

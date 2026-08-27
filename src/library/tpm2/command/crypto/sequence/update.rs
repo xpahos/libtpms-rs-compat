@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_MODE, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -9,6 +8,7 @@ use crate::library::tpm2::sequence::{
     update_sequence,
 };
 use crate::library::tpm2::ticket::ticket_is_safe;
+use crate::types::TpmResult;
 
 const TPM_RC_H: TpmResult = 0x000;
 const TPM_RC_P: TpmResult = 0x040;

@@ -1,5 +1,4 @@
 use super::{flush_loaded_hierarchy_objects, hierarchy_object_attribute, with_rollback};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_AUTH_TYPE, TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE,
 };
@@ -11,6 +10,7 @@ use crate::library::tpm2::hierarchy::{
 use crate::library::tpm2::marshal::BlobReader;
 use crate::library::tpm2::orderly::{commit_clear_orderly, prepare_clear_orderly};
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_NV_AUTHORIZATION, TPM_RC_NV_LOCKED, TPM_RC_NV_UNINITIALIZED,
 };
@@ -8,6 +7,7 @@ use crate::library::tpm2::nv::{
     TPMA_NV_READLOCKED, TPMA_NV_WRITELOCKED, TPMA_NV_WRITTEN, resolve_index,
 };
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) const MAX_NV_BUFFER_SIZE: usize = 1024;
 
 pub(in crate::library::tpm2::command) fn resolve(

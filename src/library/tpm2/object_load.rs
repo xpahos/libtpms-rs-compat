@@ -1,8 +1,8 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_BINDING, TPM_RC_CURVE, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY,
     TPM_RC_KEY_SIZE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TYPE, TPM_RC_VALUE,
 };
+use crate::types::TpmResult;
 
 use super::crypto::{
     BigUint, Hasher, HmacState, curve_key_size_bits, curve_parameters,
@@ -505,7 +505,6 @@ pub(super) fn parse_object_context_image(
 
 #[cfg(test)]
 pub(in crate::library::tpm2) mod replay {
-    use crate::ffi::types::TpmResult;
     use crate::library::CommandInput;
     use crate::library::tpm2::clock::SteppingClock;
     pub(in crate::library::tpm2) use crate::library::tpm2::golden_responses::object_lifecycle::vector;
@@ -514,6 +513,7 @@ pub(in crate::library::tpm2) mod replay {
     use crate::library::tpm2::{
         VolatileDecodeBoundary, attach_volatile_blob, restore_permanent_blob_for_test,
     };
+    use crate::types::TpmResult;
 
     pub(in crate::library::tpm2) const RH_OWNER: u32 = 0x4000_0001;
     pub(in crate::library::tpm2) const RH_NULL: u32 = 0x4000_0007;

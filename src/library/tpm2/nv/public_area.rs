@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_HASH, TPM_RC_RESERVED_BITS, TPM_RC_SIZE, TPM_RC_VALUE};
+use crate::types::TpmResult;
 
 use super::attributes::TPMA_NV_RESERVED;
 use super::index::MAX_NV_INDEX_SIZE;

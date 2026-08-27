@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_FAIL;
+use crate::types::TpmResult;
 
 use super::persistent::{
     PersistentAllError, ProfileComponent, ProfileField, SEED_COMPAT_LEVEL_LAST,

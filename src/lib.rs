@@ -1,5 +1,6 @@
 pub mod ffi;
 pub mod library;
+pub mod types;
 mod version;
 
 #[path = "generated/tpm_library_abi.rs"]

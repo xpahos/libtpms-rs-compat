@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HANDLE, TPM_RC_HIERARCHY, TPM_RC_INTEGRITY, TPM_RC_OBJECT_MEMORY,
     TPM_RC_SIZE, TPM_RC_VALUE,
@@ -40,6 +39,7 @@ use crate::library::tpm2::session::{
 };
 use crate::library::tpm2::template::TemplateReader;
 use crate::library::tpm2::volatile::volatile_object_version;
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

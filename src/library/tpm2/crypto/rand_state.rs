@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NO_RESULT};
+use crate::types::TpmResult;
 
 use super::bignum::BigUint;
 use super::drbg::{Drbg, ReseedError};

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
 };
@@ -8,6 +7,7 @@ use crate::library::tpm2::command::core::response_code::{TPM_RC_1, TPM_RC_P};
 use crate::library::tpm2::command::core::transaction::{commit_persistent_state, with_rollback};
 use crate::library::tpm2::marshal::BlobReader;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const RC_ALGORITHM_SET: TpmResult = TPM_RC_P + TPM_RC_1;
 

@@ -1,5 +1,5 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::TPM_FAIL;
+use crate::types::TpmResult;
 
 use super::data::PersistentDataPrefix;
 use super::orderly::{DrbgState, OrderlyData};

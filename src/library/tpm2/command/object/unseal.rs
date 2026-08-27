@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_SIZE, TPM_RC_TYPE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -10,6 +9,7 @@ use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::{
     TPMA_OBJECT_DECRYPT, TPMA_OBJECT_RESTRICTED, TPMA_OBJECT_SIGN,
 };
+use crate::types::TpmResult;
 
 const TPM_RC_1: TpmResult = 0x100;
 const RC_ITEM_HANDLE: TpmResult = TPM_RC_1;

@@ -1,5 +1,4 @@
 use super::access::resolve;
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_ATTRIBUTES, TPM_RC_NV_AUTHORIZATION, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -8,6 +7,7 @@ use crate::library::tpm2::command::session::processing::remove_session_associati
 use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
 use crate::library::tpm2::nv::{TPMA_NV_POLICY_DELETE, delete_index, transact};
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const RC_UNDEFINE_NV_INDEX: TpmResult = TPM_RC_H + TPM_RC_2;
 const RC_SPECIAL_NV_INDEX: TpmResult = TPM_RC_H + TPM_RC_1;

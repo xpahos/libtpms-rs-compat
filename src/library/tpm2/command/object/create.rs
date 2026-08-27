@@ -2,7 +2,6 @@ use super::create_loaded::{object_hierarchy, resolve_parent};
 use super::create_primary::{
     TPM_ST_CREATION, add_modifier, compute_creation_ticket, creation_data_bytes, parse_parameters,
 };
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_OBJECT_MEMORY, TPM_RC_SIZE, TPM_RC_TYPE,
 };
@@ -21,6 +20,7 @@ use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::library::tpm2::template::{
     AlgorithmPolicy, adjusted_auth_value, create_checks, marshal_public_area, parent_public_info,
 };
+use crate::types::TpmResult;
 
 const TPM_RC_P: TpmResult = 0x040;
 const TPM_RC_1: TpmResult = 0x100;

@@ -1,4 +1,3 @@
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_SIZE, TPM_RC_VALUE};
 use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
@@ -10,6 +9,7 @@ use crate::library::tpm2::orderly::{commit_clear_orderly, prepare_clear_orderly}
 use crate::library::tpm2::pcr::pcr_auth_value_group;
 use crate::library::tpm2::persistent::OwnedSecret;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const RC_AUTH: TpmResult = TPM_RC_P + TPM_RC_1;
 const MAX_DIGEST_SIZE: usize = 64;

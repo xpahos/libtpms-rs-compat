@@ -1,5 +1,4 @@
 use super::access::{read_access_checks, resolve, write_access_checks};
-use crate::ffi::types::TpmResult;
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_FAILURE, TPM_RC_NV_AUTHORIZATION, TPM_RC_NV_LOCKED,
     TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
@@ -14,6 +13,7 @@ use crate::library::tpm2::nv::{
 };
 use crate::library::tpm2::persistent::OwnedUserNvramEntry;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::types::TpmResult;
 
 const RC_NV_INDEX: TpmResult = TPM_RC_H + TPM_RC_2;
 

@@ -2,9 +2,9 @@ use core::ffi::{CStr, c_uchar};
 use core::ptr;
 
 use crate::ffi::memory::MallocBuffer;
-use crate::ffi::types::{LibtpmsCallbacks, TpmBool, TpmResult};
 use crate::library::constants::{TPM_FAIL, TPM_RETRY, TPM_SUCCESS};
 use crate::library::state_blob::StateBlobKind;
+use crate::types::{LibtpmsCallbacks, TpmBool, TpmResult};
 
 const TPM_NUMBER: u32 = 0;
 
