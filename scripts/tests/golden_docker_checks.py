@@ -216,7 +216,7 @@ class GoldenStaleMigrationTest(unittest.TestCase):
                 root / tree,
                 ignore=shutil.ignore_patterns("__pycache__"),
             )
-        for path in ("src/library/tpm2/command/registry.rs", "src/version.rs", "Makefile"):
+        for path in ("src/library/tpm2/command/core/registry.rs", "src/version.rs", "Makefile"):
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(golden.ROOT / path, root / path)
         (root / "libtpms").symlink_to(golden.ROOT / "libtpms")

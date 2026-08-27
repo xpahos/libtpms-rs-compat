@@ -1,100 +1,33 @@
-mod attest;
-mod certify;
-mod certify_creation;
-mod certify_x509;
-mod change_eps;
-mod command_audit;
-mod context;
-mod create;
-mod create_loaded;
-mod create_primary;
-mod credential;
-mod dictionary_attack_parameters;
-mod dispatcher;
-mod ecc_commitment;
-mod ecc_common;
-mod ecc_encryption;
-mod ecc_key_exchange;
-mod ecc_parameters;
-mod encrypt_decrypt;
-mod event_sequence_complete;
-mod evict_control;
-mod flush_context;
-mod get_capability;
-mod get_command_audit_digest;
-mod get_random;
-mod get_session_audit_digest;
-mod get_test_result;
-mod get_time;
-mod hash;
-mod hash_sequence_start;
-mod header;
-mod hierarchy_admin;
-mod hierarchy_change_auth;
-mod hmac;
-mod hmac_start;
-mod incremental_self_test;
-mod load;
-mod nv_certify;
-mod nv_change_auth;
-mod nv_common;
-mod nv_define_space;
-mod nv_lock;
-mod nv_read;
-mod nv_undefine_space;
-mod nv_write;
-mod object_change_auth;
-mod object_transfer;
-mod output;
-mod pcr_allocate;
-mod pcr_event;
-mod pcr_extend;
-mod pcr_read;
-mod pcr_reset;
-mod pcr_update;
-mod platform_state;
-mod policy_authorization;
-mod policy_authorize;
-mod policy_commands;
-mod policy_common;
-mod policy_operand;
-mod policy_or;
-mod policy_pcr;
-mod policy_restrictions;
-mod quote;
-mod read_public;
-mod registry;
-mod rsa_encryption;
-mod self_test;
-mod sequence_complete;
-mod sequence_update;
-mod session;
-mod set_command_code_audit_status;
-mod shutdown;
-mod sign;
-mod signing;
-mod start_auth_session;
-mod startup;
-mod stir_random;
-mod test_parms;
-mod transaction;
-mod unseal;
-mod upstream_codes;
-mod verify_signature;
+mod core;
 
-pub(in crate::library::tpm2) use command_audit::{
-    command_index as command_bitmap_index, is_required as command_audit_is_required,
-};
-pub(super) use dispatcher::dispatch;
+mod administration;
+mod attestation;
+mod context;
+mod crypto;
+mod hierarchy;
+mod lifecycle;
+mod nv;
+mod object;
+mod pcr;
+mod platform;
+mod policy;
+mod session;
+
+pub(super) use self::core::dispatcher::dispatch;
 #[cfg(test)]
-pub(super) use header::parse_command;
-pub(super) use header::{
+pub(super) use self::core::header::parse_command;
+pub(super) use self::core::header::{
     HEADER_SIZE, Response, TPM_ST_NO_SESSIONS, parse_command_within, serialize_response_within,
 };
 #[cfg(test)]
-pub(in crate::library::tpm2) use registry::TPM_CC_COMMIT;
-pub(in crate::library::tpm2) use registry::{
+pub(in crate::library::tpm2) use self::core::registry::TPM_CC_COMMIT;
+pub(in crate::library::tpm2) use self::core::registry::{
     TPM_CC_GET_CAPABILITY, TPM_CC_GET_TEST_RESULT, find as find_command,
     implemented as implemented_commands,
 };
-pub(in crate::library::tpm2) use upstream_codes::{upstream_command_codes, upstream_implements};
+pub(in crate::library::tpm2) use self::core::upstream_codes::{
+    upstream_command_codes, upstream_implements,
+};
+pub(in crate::library::tpm2) use administration::command_audit_state::{
+    command_index as command_bitmap_index, is_required as command_audit_is_required,
+};

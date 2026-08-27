@@ -1197,8 +1197,10 @@ mod tests {
         ];
 
         const TEST_ONLY_MODULES: &[&str] = &[
-            "command/hierarchy_admin/harness.rs",
-            "command/platform_state/harness.rs",
+            "command/core/test_support.rs",
+            "command/hierarchy/test_support.rs",
+            "command/nv/test_support.rs",
+            "command/platform/test_support.rs",
         ];
 
         fn production_slice(source: &str) -> &str {
