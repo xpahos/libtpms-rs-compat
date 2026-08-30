@@ -20,7 +20,7 @@ pub(in crate::library::tpm2::command) fn execute(
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{
@@ -32,7 +32,7 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
             .expect("the response serializes")
     }
 
@@ -141,7 +141,7 @@ mod tests {
         runtime.buffer_size = MIN_BUFFER_SIZE;
         let input = CommandInput::new(10, command());
         let parsed = parse_command(&input).expect("the header parses");
-        let response = dispatch(&mut runtime, &parsed, Cancellation::disabled());
+        let response = dispatch(&mut runtime, &parsed, CancellationToken::disabled());
         assert_eq!(
             serialize_response_within(&response, MIN_BUFFER_SIZE).expect("fits"),
             vector("GTR_OK"),
@@ -163,7 +163,7 @@ mod tests {
                         let _ = serialize_response(&dispatch(
                             &mut runtime,
                             &parsed,
-                            Cancellation::disabled(),
+                            CancellationToken::disabled(),
                         ));
                     }
                 }

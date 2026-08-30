@@ -157,7 +157,7 @@ pub(in crate::library::tpm2::command) fn execute_decrypt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_RSA_DECRYPT, TPM_CC_RSA_ENCRYPT, find,
     };
@@ -1262,7 +1262,7 @@ mod tests {
                 command,
                 &RecordingClock::new(1_600_000_000_000, 5_000_000),
                 |_| panic!("failure mode must not schedule an NV commit"),
-                Cancellation::disabled(),
+                CancellationToken::disabled(),
             )
         }
 

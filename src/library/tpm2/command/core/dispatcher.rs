@@ -1,7 +1,7 @@
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
 use super::transaction;
-use crate::library::cancel::Cancellation;
+use crate::library::cancel::CancellationToken;
 use crate::library::constants::{
     TPM_RC_AUTH_CONTEXT, TPM_RC_AUTH_MISSING, TPM_RC_COMMAND_CODE, TPM_RC_FAILURE, TPM_RC_HANDLE,
     TPM_RC_HIERARCHY, TPM_RC_INITIALIZE, TPM_RC_INSUFFICIENT, TPM_RC_OBJECT_MEMORY,
@@ -37,13 +37,13 @@ const MIN_AUTH_AREA_SIZE: usize = 9;
 pub(in crate::library::tpm2::command) struct CommandFrame<'a> {
     pub(in crate::library::tpm2::command) handles: Vec<u32>,
     pub(in crate::library::tpm2::command) parameters: &'a [u8],
-    pub(in crate::library::tpm2::command) cancellation: Cancellation<'a>,
+    pub(in crate::library::tpm2::command) cancellation: CancellationToken<'a>,
 }
 
 pub(in crate::library::tpm2) fn dispatch(
     runtime: &mut Tpm2Runtime,
     command: &Command<'_>,
-    cancellation: Cancellation<'_>,
+    cancellation: CancellationToken<'_>,
 ) -> Response {
     let Some(descriptor) = registry::find(command.command_code) else {
         return Response::error(TPM_RC_COMMAND_CODE);
@@ -64,7 +64,7 @@ fn run(
     runtime: &mut Tpm2Runtime,
     descriptor: &CommandDescriptor,
     command: &Command<'_>,
-    cancellation: Cancellation<'_>,
+    cancellation: CancellationToken<'_>,
 ) -> Result<Response, TpmResult> {
     let (handles, rest) = parse_handles(descriptor, command.payload)?;
     check_load_status(runtime, descriptor, &handles)?;
@@ -342,7 +342,7 @@ mod tests {
         let mut runtime = empty_state_runtime();
         let input = command(code);
         let parsed = parse_command(&input).expect("a valid header");
-        dispatch(&mut runtime, &parsed, Cancellation::disabled())
+        dispatch(&mut runtime, &parsed, CancellationToken::disabled())
     }
 
     #[track_caller]
@@ -351,7 +351,7 @@ mod tests {
         runtime.startup_received = true;
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        dispatch(&mut runtime, &parsed, Cancellation::disabled()).code()
+        dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code()
     }
 
     fn framed(tag: u16, code: u32, payload: &[u8]) -> Vec<u8> {
@@ -404,7 +404,7 @@ mod tests {
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         assert_eq!(
-            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code(),
             TPM_RC_FAILURE
         );
     }
@@ -416,7 +416,7 @@ mod tests {
         let input = command(TPM_CC_STARTUP);
         let parsed = parse_command(&input).unwrap();
         assert_eq!(
-            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code(),
             TPM_RC_INITIALIZE
         );
     }
@@ -427,7 +427,7 @@ mod tests {
         let input = command(TPM_CC_SHUTDOWN);
         let parsed = parse_command(&input).unwrap();
         assert_eq!(
-            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code(),
             TPM_RC_INITIALIZE
         );
     }
@@ -500,7 +500,7 @@ mod tests {
         for code in [0x2000_0000, 0x0000_019f, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
-            let response = dispatch(&mut runtime, &parsed, Cancellation::disabled());
+            let response = dispatch(&mut runtime, &parsed, CancellationToken::disabled());
             assert_eq!(response.code(), TPM_RC_COMMAND_CODE, "code {code:#x}");
             assert!(!runtime.manufactured);
             assert!(!runtime.was_manufactured);
@@ -517,7 +517,7 @@ mod tests {
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         let mut runtime = empty_state_runtime();
-        let response = dispatch(&mut runtime, &parsed, Cancellation::disabled());
+        let response = dispatch(&mut runtime, &parsed, CancellationToken::disabled());
         assert_eq!(response.code(), TPM_RC_COMMAND_CODE);
         let bytes = serialize_response(&response).unwrap();
         assert_eq!(&bytes[..2], &TPM_ST_NO_SESSIONS.to_be_bytes());
@@ -634,7 +634,7 @@ mod tests {
                         let _ = serialize_response(&dispatch(
                             &mut runtime,
                             &parsed,
-                            Cancellation::disabled(),
+                            CancellationToken::disabled(),
                         ));
                     }
                 }
@@ -678,7 +678,7 @@ mod tests {
         fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
             let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
             let parsed = parse_command(&input).expect("the header parses");
-            serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
                 .expect("the response serializes")
         }
 

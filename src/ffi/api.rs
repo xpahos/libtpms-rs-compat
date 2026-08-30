@@ -1,12 +1,13 @@
 use core::ffi::{c_char, c_int, c_uchar, c_uint};
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crate::ffi::platform::CallbackPlatform;
 use crate::ffi::storage::CallbackStorage;
 use crate::library::{
-    self, EncodedBlobKind, ExternalServices, StateBlobKind, StateInput, StateOutput,
-    StateValidationMask, TPM_FAIL, TPM_SIZE, TPM_SUCCESS,
+    self, EncodedBlobKind, ExternalServices, InformationFlags, StateBlobKind, StateInput,
+    StateOutput, StateValidationMask, TPM_FAIL, TPM_SIZE, TPM_SUCCESS, Tpm, TpmProperty,
+    TpmVersion,
 };
 use crate::types::{
     LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
@@ -16,24 +17,37 @@ use crate::types::{
 const BUFLEN_EMPTY_BUFFER: u32 = 0xffff_ffff;
 
 const TPMLIB_BLOB_TYPE_INITSTATE: TpmlibBlobType = 0;
+const TPMLIB_TPM_VERSION_1_2: TpmlibTpmVersion = 0;
+const TPMLIB_TPM_VERSION_2: TpmlibTpmVersion = 1;
+const TPMPROP_TPM_RSA_KEY_LENGTH_MAX: TpmlibTpmProperty = 1;
+const TPMPROP_TPM_BUFFER_MAX: TpmlibTpmProperty = 2;
+const TPMPROP_TPM_KEY_HANDLES: TpmlibTpmProperty = 3;
+const STATE_PERMANENT: TpmlibStateType = 1;
+const STATE_VOLATILE: TpmlibStateType = 2;
+const STATE_SAVE_STATE: TpmlibStateType = 4;
+
+static C_ABI_TPM: LazyLock<Tpm> = LazyLock::new(Tpm::default);
 
 #[cfg(feature = "tpm2")]
 const RESPONSE_BUFFER_SIZE: usize = library::TPM_BUFFER_MAX as usize;
 
 pub(crate) fn get_version() -> u32 {
-    library::get_version()
+    crate::version::TPM_LIBRARY_VERSION
 }
 
 pub(crate) fn choose_tpm_version(version: TpmlibTpmVersion) -> TpmResult {
-    library::choose_tpm_version(version)
+    let Some(version) = tpm_version(version) else {
+        return TPM_FAIL;
+    };
+    C_ABI_TPM.set_version(version)
 }
 
 pub(crate) fn main_init() -> TpmResult {
-    library::main_init()
+    C_ABI_TPM.initialize()
 }
 
 pub(crate) fn terminate() {
-    library::terminate();
+    C_ABI_TPM.terminate();
 }
 
 pub(crate) unsafe fn process(
@@ -63,7 +77,7 @@ pub(crate) unsafe fn process(
                 unsafe { core::slice::from_raw_parts(command, prefix_len) }.to_vec()
             },
         );
-        if !library::tpm2_selected() {
+        if !C_ABI_TPM.tpm2_selected() {
             return TPM_FAIL;
         }
         // SAFETY: the output pointers were null-checked above and
@@ -73,7 +87,7 @@ pub(crate) unsafe fn process(
             Ok(prepared) => prepared,
             Err(code) => return code,
         };
-        match library::process(&command_input) {
+        match C_ABI_TPM.process_input(&command_input) {
             // SAFETY: null-checked above; `publish` leaves `*respbuffer`
             // with at least `*respbufsize` writable bytes, and the command
             // bytes were copied before the old allocation can be freed.
@@ -113,8 +127,9 @@ fn allocate_response_buffer() -> *mut c_uchar {
 }
 
 #[cfg(feature = "tpm2")]
-struct PreparedResponseBuffer {
-    replacement: *mut c_uchar,
+enum PreparedResponseBuffer {
+    Existing,
+    Replacement(core::ptr::NonNull<c_uchar>),
 }
 
 #[cfg(feature = "tpm2")]
@@ -132,15 +147,11 @@ impl PreparedResponseBuffer {
         let sufficient =
             unsafe { !(*respbuffer).is_null() && (*respbufsize as usize) >= RESPONSE_BUFFER_SIZE };
         if sufficient {
-            return Ok(Self {
-                replacement: core::ptr::null_mut(),
-            });
+            return Ok(Self::Existing);
         }
-        let replacement = allocate_response_buffer();
-        if replacement.is_null() {
-            return Err(TPM_SIZE);
-        }
-        Ok(Self { replacement })
+        core::ptr::NonNull::new(allocate_response_buffer())
+            .map(Self::Replacement)
+            .ok_or(TPM_SIZE)
     }
 
     /// # Safety
@@ -148,27 +159,27 @@ impl PreparedResponseBuffer {
     /// `respbuffer` and `respbufsize` must be non-null and writable,
     /// `*respbuffer` must be null or a caller-owned C-allocator allocation,
     /// and no live borrow may still alias that allocation.
-    unsafe fn publish(mut self, respbuffer: *mut *mut c_uchar, respbufsize: *mut u32) {
-        if self.replacement.is_null() {
+    unsafe fn publish(self, respbuffer: *mut *mut c_uchar, respbufsize: *mut u32) {
+        let prepared = core::mem::ManuallyDrop::new(self);
+        let Self::Replacement(replacement) = &*prepared else {
             return;
-        }
+        };
         // SAFETY: the displaced allocation is caller-owned and unaliased per
         // this function's contract; the replacement takes over its role.
         unsafe {
             libc::free((*respbuffer).cast());
-            *respbuffer = self.replacement;
+            *respbuffer = replacement.as_ptr();
             *respbufsize = RESPONSE_BUFFER_SIZE as u32;
         }
-        self.replacement = core::ptr::null_mut();
     }
 }
 
 #[cfg(feature = "tpm2")]
 impl Drop for PreparedResponseBuffer {
     fn drop(&mut self) {
-        if !self.replacement.is_null() {
+        if let Self::Replacement(replacement) = self {
             // SAFETY: an unpublished replacement is exclusively owned here.
-            unsafe { libc::free(self.replacement.cast()) };
+            unsafe { libc::free(replacement.as_ptr().cast()) };
         }
     }
 }
@@ -200,7 +211,7 @@ pub(crate) unsafe fn volatile_all_store(buffer: *mut *mut c_uchar, buflen: *mut 
     // SAFETY: forwarded from TPMLIB_VolatileAll_Store.
     unsafe {
         return_blob(buffer, buflen, || {
-            library::volatile_all_store().map(StateOutput::Data)
+            C_ABI_TPM.volatile_all_store().map(StateOutput::Data)
         })
     }
 }
@@ -244,17 +255,23 @@ unsafe fn return_blob(
 }
 
 pub(crate) fn cancel_command() -> TpmResult {
-    library::cancel_command()
+    C_ABI_TPM.cancel()
 }
 
 pub(crate) unsafe fn get_tpm_property(prop: TpmlibTpmProperty, result: *mut c_int) -> TpmResult {
     if result.is_null() {
         return TPM_FAIL;
     }
-    match library::get_tpm_property(prop) {
+    let Some(prop) = tpm_property(prop) else {
+        return TPM_FAIL;
+    };
+    match C_ABI_TPM.get_tpm_property(prop) {
         Some(value) => {
             // SAFETY: the C API contract requires `result` to point to a
             // writable int; the null case was rejected above.
+            let Ok(value) = c_int::try_from(value) else {
+                return TPM_FAIL;
+            };
             unsafe { result.write(value) };
             TPM_SUCCESS
         }
@@ -263,7 +280,7 @@ pub(crate) unsafe fn get_tpm_property(prop: TpmlibTpmProperty, result: *mut c_in
 }
 
 pub(crate) fn get_info(flags: TpmlibInfoFlags) -> *mut c_char {
-    match library::get_info(flags) {
+    match C_ABI_TPM.get_info(InformationFlags::from_bits(flags as u32)) {
         Some(json) => crate::ffi::memory::malloc_c_string(&json),
         None => core::ptr::null_mut(),
     }
@@ -361,10 +378,8 @@ pub(crate) unsafe fn register_callbacks(callbacks: *mut LibtpmsCallbacks) -> Tpm
     // SAFETY: forwarded from TPMLIB_RegisterCallbacks after the null check.
     let copied = unsafe { copy_callbacks(callbacks) };
     let (platform, storage) = split_callbacks(copied);
-    library::register_external_services(ExternalServices::new(
-        Arc::new(platform),
-        Arc::new(storage),
-    ));
+    C_ABI_TPM
+        .register_external_services(ExternalServices::new(Arc::new(platform), Arc::new(storage)));
     TPM_SUCCESS
 }
 
@@ -443,7 +458,7 @@ pub(crate) unsafe fn set_buffer_size(
 ) -> u32 {
     // SAFETY: forwarded from TPMLIB_SetBufferSize, whose contract allows both
     // output pointers to be null and otherwise requires them to be writable.
-    unsafe { report_buffer_size(library::set_buffer_size(wanted_size), min_size, max_size) }
+    unsafe { report_buffer_size(C_ABI_TPM.set_buffer_size(wanted_size), min_size, max_size) }
 }
 
 /// # Safety
@@ -469,7 +484,7 @@ unsafe fn report_buffer_size(
 }
 
 pub(crate) fn validate_state(st: TpmlibStateType, _flags: c_uint) -> TpmResult {
-    library::validate_state(StateValidationMask::from_c(st))
+    C_ABI_TPM.validate_state(state_validation_mask(st))
 }
 
 pub(crate) unsafe fn set_state(
@@ -477,12 +492,12 @@ pub(crate) unsafe fn set_state(
     buffer: *const c_uchar,
     buflen: u32,
 ) -> TpmResult {
-    let Some(kind) = StateBlobKind::from_c(st) else {
+    let Some(kind) = state_blob_kind(st) else {
         return TPM_FAIL;
     };
     // SAFETY: forwarded from TPMLIB_SetState, whose contract allows a null
     // buffer and otherwise guarantees `buflen` readable bytes.
-    library::set_state(kind, unsafe { copy_state_input(buffer, buflen) })
+    C_ABI_TPM.set_state(kind, unsafe { copy_state_input(buffer, buflen) })
 }
 
 /// # Safety
@@ -506,29 +521,29 @@ pub(crate) unsafe fn get_state(
     // output pointers before it asks the library for any state.
     unsafe {
         return_blob(buffer, buflen, || {
-            let kind = StateBlobKind::from_c(st).ok_or(TPM_FAIL)?;
-            library::get_state(kind)
+            let kind = state_blob_kind(st).ok_or(TPM_FAIL)?;
+            C_ABI_TPM.get_state(kind)
         })
     }
 }
 
 pub(crate) unsafe fn set_profile(profile: *const c_char) -> TpmResult {
     if profile.is_null() {
-        return library::set_profile(None);
+        return C_ABI_TPM.set_profile(None);
     }
     // SAFETY: the C API contract requires a non-null, NUL-terminated string
     // that remains valid for this call; the null case was handled above.
     // `set_profile` copies the bytes it keeps before this call returns.
     let bytes = unsafe { core::ffi::CStr::from_ptr(profile) }.to_bytes();
-    library::set_profile(Some(bytes))
+    C_ABI_TPM.set_profile(Some(bytes))
 }
 
 pub(crate) fn was_manufactured() -> TpmBool {
-    TpmBool::from(library::was_manufactured())
+    TpmBool::from(C_ABI_TPM.was_manufactured())
 }
 
 pub(crate) fn tpm_io_hash_start() -> TpmResult {
-    library::tis_hash_start()
+    C_ABI_TPM.tis_hash_start()
 }
 
 pub(crate) unsafe fn tpm_io_hash_data(data: *const c_uchar, data_length: u32) -> TpmResult {
@@ -536,23 +551,23 @@ pub(crate) unsafe fn tpm_io_hash_data(data: *const c_uchar, data_length: u32) ->
         if data_length != 0 {
             return TPM_FAIL;
         }
-        return library::tis_hash_data(&[]);
+        return C_ABI_TPM.tis_hash_data(&[]);
     }
     // SAFETY: `data` is non-null and points to `data_length` readable bytes
     // by the FFI contract.
     let bytes = unsafe { core::slice::from_raw_parts(data, data_length as usize) };
-    library::tis_hash_data(bytes)
+    C_ABI_TPM.tis_hash_data(bytes)
 }
 
 pub(crate) fn tpm_io_hash_end() -> TpmResult {
-    library::tis_hash_end()
+    C_ABI_TPM.tis_hash_end()
 }
 
 pub(crate) unsafe fn tpm_io_tpm_established_get(tpm_established: *mut TpmBool) -> TpmResult {
     if tpm_established.is_null() {
         return TPM_FAIL;
     }
-    match library::tis_established_get() {
+    match C_ABI_TPM.tis_established_get() {
         Ok(established) => {
             // SAFETY: the C API contract requires `tpm_established` to point
             // to a writable TPM_BOOL; the null case was rejected above.
@@ -564,7 +579,48 @@ pub(crate) unsafe fn tpm_io_tpm_established_get(tpm_established: *mut TpmBool) -
 }
 
 pub(crate) fn tpm_io_tpm_established_reset() -> TpmResult {
-    library::tis_established_reset()
+    C_ABI_TPM.tis_established_reset()
+}
+
+fn tpm_version(value: TpmlibTpmVersion) -> Option<TpmVersion> {
+    match value {
+        TPMLIB_TPM_VERSION_1_2 => Some(TpmVersion::V1_2),
+        TPMLIB_TPM_VERSION_2 => Some(TpmVersion::V2_0),
+        _ => None,
+    }
+}
+
+fn tpm_property(value: TpmlibTpmProperty) -> Option<TpmProperty> {
+    match value {
+        TPMPROP_TPM_RSA_KEY_LENGTH_MAX => Some(TpmProperty::RsaKeyLengthMax),
+        TPMPROP_TPM_BUFFER_MAX => Some(TpmProperty::BufferMax),
+        TPMPROP_TPM_KEY_HANDLES => Some(TpmProperty::KeyHandles),
+        _ => None,
+    }
+}
+
+fn state_blob_kind(value: TpmlibStateType) -> Option<StateBlobKind> {
+    match value {
+        STATE_PERMANENT => Some(StateBlobKind::Permanent),
+        STATE_VOLATILE => Some(StateBlobKind::Volatile),
+        STATE_SAVE_STATE => Some(StateBlobKind::SaveState),
+        _ => None,
+    }
+}
+
+fn state_validation_mask(value: TpmlibStateType) -> StateValidationMask {
+    let bits = value as u32;
+    let mut mask = StateValidationMask::NONE;
+    if bits & STATE_PERMANENT as u32 != 0 {
+        mask = mask.union(StateValidationMask::PERMANENT);
+    }
+    if bits & STATE_VOLATILE as u32 != 0 {
+        mask = mask.union(StateValidationMask::VOLATILE);
+    }
+    if bits & STATE_SAVE_STATE as u32 != 0 {
+        mask = mask.union(StateValidationMask::SAVE_STATE);
+    }
+    mask
 }
 
 #[cfg(test)]
@@ -573,6 +629,42 @@ mod tests {
     use crate::library::{Platform, Storage};
 
     const BUFFER_MAX_PROPERTY: TpmlibTpmProperty = 2;
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    #[test]
+    fn c_abi_singleton_identity() {
+        const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
+
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = CAbiStateGuard::hold();
+        terminate();
+
+        // SAFETY: both exported functions take value arguments only.
+        unsafe {
+            assert_eq!(
+                crate::tpm_library_abi::TPMLIB_ChooseTPMVersion(TPMLIB_TPM_VERSION_1_2),
+                TPM_SUCCESS
+            );
+            assert_eq!(crate::tpm_library_abi::TPMLIB_CancelCommand(), TPM_FAIL);
+            assert_eq!(
+                crate::tpm_library_abi::TPMLIB_ChooseTPMVersion(TPMLIB_TPM_VERSION_2),
+                TPM_SUCCESS
+            );
+            assert_eq!(crate::tpm_library_abi::TPMLIB_CancelCommand(), TPM_SUCCESS);
+        }
+
+        state.restore();
+    }
+
+    #[test]
+    fn unknown_property_rejection() {
+        let mut value = 41;
+        // SAFETY: `value` is a live writable C integer.
+        assert_eq!(unsafe { get_tpm_property(i32::MAX, &mut value) }, TPM_FAIL);
+        assert_eq!(value, 41);
+    }
 
     unsafe extern "C" fn dummy_init() -> TpmResult {
         TPM_SUCCESS
@@ -643,17 +735,51 @@ mod tests {
     #[test]
     fn storage_callback_isolation() {
         let (platform, storage) = split_callbacks(every_callback_table());
-        assert_eq!(storage.init(), Ok(library::StorageOperation::Done));
-        assert!(storage.can_store());
-        assert_eq!(
-            storage.delete(StateBlobKind::Permanent, false),
-            Ok(library::StorageOperation::Done)
-        );
+        assert_eq!(storage.initialize(), Ok(()));
+        assert!(storage.supports_store());
+        assert_eq!(storage.delete(StateBlobKind::Permanent, false), Ok(()));
         assert_eq!(
             storage.load(StateBlobKind::Permanent),
             Ok(library::StorageLoad::Empty)
         );
         assert_eq!(platform.locality(), 0, "the dummy platform writes nothing");
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    #[test]
+    fn loaddata_without_init_c_abi() {
+        const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
+
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = CAbiStateGuard::hold();
+        terminate();
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
+
+        let mut callbacks = LibtpmsCallbacks {
+            size_of_struct: core::mem::size_of::<LibtpmsCallbacks>() as c_int,
+            tpm_nvram_loaddata: Some(dummy_loaddata),
+            ..LibtpmsCallbacks::empty()
+        };
+        let mut buffer = core::ptr::dangling_mut::<c_uchar>();
+        let mut buflen = u32::MAX;
+
+        // SAFETY: the callback table and both state outputs are live and writable.
+        unsafe {
+            assert_eq!(
+                crate::tpm_library_abi::TPMLIB_RegisterCallbacks(&mut callbacks),
+                TPM_SUCCESS
+            );
+            assert_eq!(
+                crate::tpm_library_abi::TPMLIB_GetState(PERMANENT_STATE, &mut buffer, &mut buflen,),
+                TPM_SUCCESS
+            );
+        }
+        assert!(buffer.is_null());
+        assert_eq!(buflen, 0);
+
+        state.restore();
     }
 
     #[test]
@@ -667,15 +793,15 @@ mod tests {
         });
         assert_eq!(platform.initialize(), Ok(()));
         assert!(!platform.physical_presence());
-        assert_eq!(storage.init(), Ok(library::StorageOperation::Unsupported));
-        assert!(!storage.can_store());
+        assert_eq!(storage.initialize(), Ok(()));
+        assert!(!storage.supports_store());
         assert_eq!(
             storage.load(StateBlobKind::Permanent),
             Ok(library::StorageLoad::Unsupported)
         );
         assert_eq!(
             storage.delete(StateBlobKind::Permanent, false),
-            Ok(library::StorageOperation::Unsupported)
+            Err(TPM_FAIL)
         );
     }
 
@@ -685,8 +811,8 @@ mod tests {
         assert_eq!(platform.initialize(), Ok(()));
         assert_eq!(platform.locality(), 0);
         assert!(!platform.physical_presence());
-        assert_eq!(storage.init(), Ok(library::StorageOperation::Unsupported));
-        assert!(!storage.can_store());
+        assert_eq!(storage.initialize(), Ok(()));
+        assert!(!storage.supports_store());
     }
 
     #[test]
@@ -924,6 +1050,42 @@ mod tests {
     static GLOBAL_LIBRARY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    const TPMLIB_TPM_VERSION_1_2: crate::types::TpmlibTpmVersion = 0;
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    struct CAbiStateGuard {
+        armed: bool,
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    impl CAbiStateGuard {
+        fn hold() -> Self {
+            Self { armed: true }
+        }
+
+        fn reset() -> TpmResult {
+            terminate();
+            C_ABI_TPM.register_external_services(ExternalServices::default());
+            choose_tpm_version(TPMLIB_TPM_VERSION_1_2)
+        }
+
+        fn restore(mut self) {
+            let result = Self::reset();
+            self.armed = false;
+            assert_eq!(result, TPM_SUCCESS);
+        }
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    impl Drop for CAbiStateGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                let _ = Self::reset();
+            }
+        }
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
     #[test]
     fn exported_cancel_command_dispatch_matrix_coverage() {
         const TPMLIB_TPM_VERSION_1_2: crate::types::TpmlibTpmVersion = 0;
@@ -944,7 +1106,7 @@ mod tests {
         assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
         assert_eq!(cancel(), TPM_SUCCESS, "before MainInit");
 
-        crate::library::stage_empty_permanent_state_for_tests();
+        C_ABI_TPM.stage_empty_state(StateBlobKind::Permanent);
         assert_eq!(main_init(), TPM_SUCCESS);
         assert_eq!(cancel(), TPM_SUCCESS, "while TPM 2.0 is running");
         assert_eq!(cancel(), TPM_SUCCESS, "repeated requests stay successful");
@@ -1535,6 +1697,11 @@ mod tests {
         RESPONSE_ALLOCATION_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
     }
 
+    #[test]
+    fn unknown_version_rejection() {
+        assert_eq!(choose_tpm_version(99), TPM_FAIL);
+    }
+
     #[cfg(all(feature = "tpm2", feature = "tpm1"))]
     #[test]
     fn version_switch_rollback() {
@@ -1605,7 +1772,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         terminate();
         assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
-        crate::library::stage_empty_permanent_state_for_tests();
+        C_ABI_TPM.stage_empty_state(StateBlobKind::Permanent);
         assert_eq!(main_init(), TPM_SUCCESS);
 
         let mut outputs = ProcessOutputs::new();
@@ -1637,14 +1804,15 @@ mod tests {
         }
 
         impl Storage for MemoryStorage {
-            fn init(&self) -> Result<library::StorageOperation, TpmResult> {
-                Ok(library::StorageOperation::Done)
+            fn initialize(&self) -> Result<(), TpmResult> {
+                Ok(())
             }
 
             fn probe_permanent(&self) -> library::StorageProbe {
-                library::StorageProbe {
-                    exists: self.permall.lock().unwrap().is_some(),
-                    load_supported: true,
+                if self.permall.lock().unwrap().is_some() {
+                    library::StorageProbe::Present
+                } else {
+                    library::StorageProbe::Missing
                 }
             }
 
@@ -1655,26 +1823,18 @@ mod tests {
                 })
             }
 
-            fn can_store(&self) -> bool {
+            fn supports_store(&self) -> bool {
                 true
             }
 
-            fn store(
-                &self,
-                kind: StateBlobKind,
-                data: &[u8],
-            ) -> Result<library::StorageOperation, TpmResult> {
+            fn store(&self, kind: StateBlobKind, data: &[u8]) -> Result<(), TpmResult> {
                 assert_eq!(kind, StateBlobKind::Permanent);
                 *self.permall.lock().unwrap() = Some(data.to_vec());
-                Ok(library::StorageOperation::Done)
+                Ok(())
             }
 
-            fn delete(
-                &self,
-                _kind: StateBlobKind,
-                _must_exist: bool,
-            ) -> Result<library::StorageOperation, TpmResult> {
-                Ok(library::StorageOperation::Done)
+            fn delete(&self, _kind: StateBlobKind, _must_exist: bool) -> Result<(), TpmResult> {
+                Ok(())
             }
         }
 
@@ -1689,14 +1849,14 @@ mod tests {
         assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
 
         let permall: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
-        crate::library::register_storage(Arc::new(MemoryStorage {
+        C_ABI_TPM.register_storage(Arc::new(MemoryStorage {
             permall: Arc::clone(&permall),
         }));
         assert_eq!(main_init(), TPM_SUCCESS, "a first boot manufactures");
         let manufactured = permall.lock().unwrap().clone();
 
         let mut outputs = ProcessOutputs::new();
-        install_allocation_override(Box::new(|| core::ptr::null_mut()));
+        install_allocation_override(Box::new(core::ptr::null_mut));
         assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SIZE);
         clear_allocation_override();
         assert!(outputs.respbuffer.is_null(), "no allocation is published");
@@ -1719,7 +1879,7 @@ mod tests {
             "the failed allocation never reached the TPM: this is the first TPM2_Startup"
         );
         terminate();
-        crate::library::register_external_services(ExternalServices::default());
+        C_ABI_TPM.register_external_services(ExternalServices::default());
         assert_eq!(choose_tpm_version(0), TPM_SUCCESS);
     }
 
@@ -1732,6 +1892,8 @@ mod tests {
         let _serial = GLOBAL_LIBRARY_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(feature = "tpm1")]
+        let state = CAbiStateGuard::hold();
 
         let mut outputs = ProcessOutputs::new();
         assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_FAIL);
@@ -1746,7 +1908,7 @@ mod tests {
         assert_eq!(outputs.resp_size, 0);
         let grown_buffer = outputs.respbuffer;
 
-        crate::library::stage_empty_permanent_state_for_tests();
+        C_ABI_TPM.stage_empty_state(StateBlobKind::Permanent);
         assert_eq!(main_init(), TPM_SUCCESS);
 
         assert_eq!(outputs.call(&UNKNOWN_COMMAND), TPM_SUCCESS);
@@ -1912,6 +2074,8 @@ mod tests {
         terminate();
         assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SUCCESS);
         assert_eq!(outputs.resp_size, 0);
+        #[cfg(feature = "tpm1")]
+        state.restore();
     }
 
     const INITSTATE_BLOB: &[u8] = b"-----BEGIN INITSTATE-----\nQUJD\n-----END INITSTATE-----\0";

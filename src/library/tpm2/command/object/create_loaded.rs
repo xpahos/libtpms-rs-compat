@@ -272,7 +272,7 @@ pub(in crate::library::tpm2::command) fn execute(
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::clock::SteppingClock;
     use crate::library::tpm2::command::core::registry::{self, TPM_CC_CREATE_LOADED};
     use crate::library::tpm2::golden_responses::create_loaded::vector;
@@ -510,7 +510,7 @@ mod tests {
             &input,
             clock,
             |_| Ok(()),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
         assert_eq!(response, vector(label), "{label}");
@@ -554,7 +554,7 @@ mod tests {
             &input,
             &clock,
             |_| Ok(()),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("the query succeeds");
         assert_eq!(
@@ -1109,7 +1109,7 @@ mod tests {
             &input,
             &clock,
             |_| Ok(()),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("startup runs");
         assert_eq!(response[6..], [0, 0, 0, 0], "startup succeeds");
@@ -1123,7 +1123,7 @@ mod tests {
                     &input,
                     &clock,
                     |_| Ok(()),
-                    Cancellation::disabled(),
+                    CancellationToken::disabled(),
                 )
                 .expect("the command runs")
             })
@@ -1405,7 +1405,7 @@ mod tests {
                     &input,
                     &clock,
                     |_| Ok(()),
-                    Cancellation::disabled(),
+                    CancellationToken::disabled(),
                 )
                 .expect("processes");
                 assert_eq!(response, vector(label), "{label}");
@@ -1534,7 +1534,7 @@ mod tests {
                 &input,
                 &clock,
                 |_| Ok(()),
-                Cancellation::disabled(),
+                CancellationToken::disabled(),
             )
             .expect("processes");
             assert_eq!(response[6..10], [0, 0, 0, 0], "the owner parent is created");
@@ -1552,7 +1552,7 @@ mod tests {
                 &input,
                 &clock,
                 |_| Ok(()),
-                Cancellation::disabled(),
+                CancellationToken::disabled(),
             )
             .expect("processes");
             assert_eq!(
@@ -1637,7 +1637,7 @@ mod tests {
                 &input,
                 clock,
                 |_| Ok(()),
-                Cancellation::disabled(),
+                CancellationToken::disabled(),
             )
             .expect("the command processes")
         }

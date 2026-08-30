@@ -297,7 +297,7 @@ mod tests {
                 eh_proof: &[0x22; 64],
             },
             &mut rand,
-            crate::library::cancel::Cancellation::disabled(),
+            crate::library::cancel::CancellationToken::disabled(),
         )
         .expect("the fixture object generates");
         store_created_object(runtime, slot, TPM_RH_OWNER, 1, created)

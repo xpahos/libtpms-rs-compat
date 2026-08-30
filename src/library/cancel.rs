@@ -15,9 +15,9 @@ impl CommandCancellation {
         }
     }
 
-    pub(in crate::library) fn run<T>(&self, command: impl FnOnce(Cancellation<'_>) -> T) -> T {
+    pub(in crate::library) fn run<T>(&self, command: impl FnOnce(CancellationToken<'_>) -> T) -> T {
         self.requested.store(false, Ordering::Relaxed);
-        command(Cancellation {
+        command(CancellationToken {
             requested: &self.requested,
         })
     }
@@ -39,12 +39,12 @@ impl Default for CommandCancellation {
 }
 
 #[derive(Clone, Copy)]
-pub(in crate::library) struct Cancellation<'a> {
+pub(in crate::library) struct CancellationToken<'a> {
     requested: &'a AtomicBool,
 }
 
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
-impl Cancellation<'_> {
+impl CancellationToken<'_> {
     pub(in crate::library) fn check(self) -> Result<(), TpmResult> {
         if self.requested.load(Ordering::Relaxed) {
             Err(TPM_RC_CANCELED)
@@ -54,17 +54,17 @@ impl Cancellation<'_> {
     }
 
     #[cfg(test)]
-    pub(in crate::library) fn disabled() -> Cancellation<'static> {
+    pub(in crate::library) fn disabled() -> CancellationToken<'static> {
         static DISABLED: AtomicBool = AtomicBool::new(false);
-        Cancellation {
+        CancellationToken {
             requested: &DISABLED,
         }
     }
 
     #[cfg(test)]
-    pub(in crate::library) fn requested() -> Cancellation<'static> {
+    pub(in crate::library) fn requested() -> CancellationToken<'static> {
         static REQUESTED: AtomicBool = AtomicBool::new(true);
-        Cancellation {
+        CancellationToken {
             requested: &REQUESTED,
         }
     }
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn fixed_views() {
-        assert_eq!(Cancellation::disabled().check(), Ok(()));
-        assert_eq!(Cancellation::requested().check(), Err(TPM_RC_CANCELED));
+        assert_eq!(CancellationToken::disabled().check(), Ok(()));
+        assert_eq!(CancellationToken::requested().check(), Err(TPM_RC_CANCELED));
     }
 }

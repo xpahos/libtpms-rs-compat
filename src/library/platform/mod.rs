@@ -11,9 +11,9 @@ pub trait Platform: Send + Sync {
     fn physical_presence(&self) -> bool;
 }
 
-pub struct NoPlatform;
+pub struct DefaultPlatform;
 
-impl Platform for NoPlatform {
+impl Platform for DefaultPlatform {
     fn initialize(&self) -> Result<(), TpmResult> {
         Ok(())
     }
@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn no_platform_inert_defaults() {
-        let platform = NoPlatform;
+        let platform = DefaultPlatform;
         assert_eq!(platform.initialize(), Ok(()));
         assert_eq!(platform.locality(), 0);
         assert!(!platform.physical_presence());

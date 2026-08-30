@@ -2296,7 +2296,7 @@ pub(in crate::library::tpm2) fn implemented() -> impl Iterator<Item = &'static C
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::constants::{TPM_RC_COMMAND_CODE, TPM_RC_INITIALIZE};
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::parse_command;
@@ -2896,7 +2896,7 @@ mod tests {
             bytes.extend_from_slice(&descriptor.code.to_be_bytes());
             let input = CommandInput::new(bytes.len() as u32, bytes);
             let parsed = parse_command(&input).expect("the header parses");
-            let code = dispatch(&mut runtime, &parsed, Cancellation::disabled()).code();
+            let code = dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code();
             assert_ne!(code, TPM_RC_COMMAND_CODE, "code {:#x}", descriptor.code);
             assert_ne!(code, TPM_RC_INITIALIZE, "code {:#x}", descriptor.code);
         }

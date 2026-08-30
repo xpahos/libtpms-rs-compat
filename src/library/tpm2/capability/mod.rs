@@ -100,7 +100,7 @@ pub(in crate::library::tpm2) mod test_runtime {
             dispatch(
                 &mut runtime,
                 &parsed,
-                crate::library::cancel::Cancellation::disabled()
+                crate::library::cancel::CancellationToken::disabled()
             )
             .code(),
             0,

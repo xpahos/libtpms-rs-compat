@@ -1,6 +1,4 @@
-use core::ffi::c_int;
-
-use crate::types::{TpmResult, TpmlibTpmProperty, TpmlibTpmVersion};
+use crate::types::TpmResult;
 
 pub const TPM_SUCCESS: TpmResult = 0;
 pub const TPM_FAIL: TpmResult = 9;
@@ -166,16 +164,7 @@ pub(in crate::library) const TPM_RC_RETRY: TpmResult = 0x922;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NV_UNAVAILABLE: TpmResult = 0x923;
 
-pub(in crate::library) const TPMLIB_TPM_VERSION_1_2: TpmlibTpmVersion = 0;
-pub(in crate::library) const TPMLIB_TPM_VERSION_2: TpmlibTpmVersion = 1;
-
-#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
-pub(in crate::library) const TPMPROP_TPM_RSA_KEY_LENGTH_MAX: TpmlibTpmProperty = 1;
-pub(in crate::library) const TPMPROP_TPM_BUFFER_MAX: TpmlibTpmProperty = 2;
-#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
-pub(in crate::library) const TPMPROP_TPM_KEY_HANDLES: TpmlibTpmProperty = 3;
-
-pub const TPM_BUFFER_MAX: c_int = 4096;
+pub const TPM_BUFFER_MAX: u32 = 4096;
 
 #[cfg(all(test, feature = "tpm2"))]
 mod tests {

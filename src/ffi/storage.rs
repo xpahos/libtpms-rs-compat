@@ -3,8 +3,7 @@ use core::ptr;
 
 use crate::ffi::memory::MallocBuffer;
 use crate::library::{
-    StateBlobKind, Storage, StorageLoad, StorageOperation, StorageProbe, TPM_FAIL, TPM_RETRY,
-    TPM_SUCCESS,
+    StateBlobKind, Storage, StorageLoad, StorageProbe, TPM_FAIL, TPM_RETRY, TPM_SUCCESS,
 };
 use crate::types::{TpmBool, TpmResult};
 
@@ -64,25 +63,22 @@ impl CallbackStorage {
 }
 
 impl Storage for CallbackStorage {
-    fn init(&self) -> Result<StorageOperation, TpmResult> {
+    fn initialize(&self) -> Result<(), TpmResult> {
         let Some(init) = self.init else {
-            return Ok(StorageOperation::Unsupported);
+            return Ok(());
         };
         // SAFETY: TPMLIB_RegisterCallbacks copied a function pointer with
         // the exact C ABI signature, which must not unwind. The host must
         // keep its code loaded while the callback is registered.
         match unsafe { init() } {
-            TPM_SUCCESS => Ok(StorageOperation::Done),
+            TPM_SUCCESS => Ok(()),
             code => Err(code),
         }
     }
 
     fn probe_permanent(&self) -> StorageProbe {
         let Some(loaddata) = self.loaddata else {
-            return StorageProbe {
-                exists: false,
-                load_supported: false,
-            };
+            return StorageProbe::Unsupported;
         };
         let mut data: *mut c_uchar = ptr::null_mut();
         let mut length: u32 = 0;
@@ -100,9 +96,9 @@ impl Storage for CallbackStorage {
         // probe never reads the bytes, so an unrepresentable length only
         // means "free and ignore".
         let _ = unsafe { adopt_loaddata_buffer(data, length) };
-        StorageProbe {
-            exists: result != TPM_RETRY,
-            load_supported: true,
+        match result {
+            TPM_RETRY => StorageProbe::Missing,
+            _ => StorageProbe::Present,
         }
     }
 
@@ -138,13 +134,13 @@ impl Storage for CallbackStorage {
         }
     }
 
-    fn can_store(&self) -> bool {
+    fn supports_store(&self) -> bool {
         self.storedata.is_some()
     }
 
-    fn store(&self, kind: StateBlobKind, data: &[u8]) -> Result<StorageOperation, TpmResult> {
+    fn store(&self, kind: StateBlobKind, data: &[u8]) -> Result<(), TpmResult> {
         let Some(storedata) = self.storedata else {
-            return Ok(StorageOperation::Unsupported);
+            return Err(TPM_FAIL);
         };
         let length = u32::try_from(data.len()).map_err(|_| TPM_FAIL)?;
         // SAFETY: same registration and lifetime contract as `init`; the
@@ -153,14 +149,14 @@ impl Storage for CallbackStorage {
         let result =
             unsafe { storedata(data.as_ptr(), length, TPM_NUMBER, state_name(kind).as_ptr()) };
         match result {
-            TPM_SUCCESS => Ok(StorageOperation::Done),
+            TPM_SUCCESS => Ok(()),
             code => Err(code),
         }
     }
 
-    fn delete(&self, kind: StateBlobKind, must_exist: bool) -> Result<StorageOperation, TpmResult> {
+    fn delete(&self, kind: StateBlobKind, must_exist: bool) -> Result<(), TpmResult> {
         let Some(deletename) = self.deletename else {
-            return Ok(StorageOperation::Unsupported);
+            return Err(TPM_FAIL);
         };
         // SAFETY: same registration and lifetime contract as `init`.
         let result = unsafe {
@@ -171,7 +167,7 @@ impl Storage for CallbackStorage {
             )
         };
         match result {
-            TPM_SUCCESS => Ok(StorageOperation::Done),
+            TPM_SUCCESS => Ok(()),
             code => Err(code),
         }
     }
@@ -356,7 +352,7 @@ mod tests {
     #[test]
     fn missing_init_unsupported() {
         let storage = storage_with(crate::types::LibtpmsCallbacks::empty());
-        assert_eq!(storage.init(), Ok(StorageOperation::Unsupported));
+        assert_eq!(storage.initialize(), Ok(()));
     }
 
     #[test]
@@ -365,7 +361,7 @@ mod tests {
             tpm_nvram_init: Some(nvram_init_ok),
             ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(storage.init(), Ok(StorageOperation::Done));
+        assert_eq!(storage.initialize(), Ok(()));
     }
 
     #[test]
@@ -374,7 +370,7 @@ mod tests {
             tpm_nvram_init: Some(nvram_init_fail),
             ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(storage.init(), Err(43));
+        assert_eq!(storage.initialize(), Err(43));
     }
 
     #[test]
@@ -487,11 +483,8 @@ mod tests {
     #[test]
     fn missing_store_unsupported() {
         let storage = storage_with(crate::types::LibtpmsCallbacks::empty());
-        assert_eq!(
-            storage.store(StateBlobKind::Permanent, &[1]),
-            Ok(StorageOperation::Unsupported)
-        );
-        assert!(!storage.can_store());
+        assert_eq!(storage.store(StateBlobKind::Permanent, &[1]), Err(TPM_FAIL));
+        assert!(!storage.supports_store());
     }
 
     #[test]
@@ -502,11 +495,8 @@ mod tests {
             tpm_nvram_storedata: Some(storedata_recording),
             ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert!(storage.can_store());
-        assert_eq!(
-            storage.store(StateBlobKind::SaveState, &[9, 8, 7]),
-            Ok(StorageOperation::Done)
-        );
+        assert!(storage.supports_store());
+        assert_eq!(storage.store(StateBlobKind::SaveState, &[9, 8, 7]), Ok(()));
         assert_eq!(
             *STORE_CALLS.lock().unwrap(),
             [(vec![9, 8, 7], 0, "savestate".to_owned())]
@@ -525,10 +515,7 @@ mod tests {
     #[test]
     fn missing_delete_unsupported() {
         let storage = storage_with(crate::types::LibtpmsCallbacks::empty());
-        assert_eq!(
-            storage.delete(StateBlobKind::Volatile, true),
-            Ok(StorageOperation::Unsupported)
-        );
+        assert_eq!(storage.delete(StateBlobKind::Volatile, true), Err(TPM_FAIL));
     }
 
     #[test]
@@ -539,14 +526,8 @@ mod tests {
             tpm_nvram_deletename: Some(deletename_recording),
             ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(
-            storage.delete(StateBlobKind::Volatile, true),
-            Ok(StorageOperation::Done)
-        );
-        assert_eq!(
-            storage.delete(StateBlobKind::Permanent, false),
-            Ok(StorageOperation::Done)
-        );
+        assert_eq!(storage.delete(StateBlobKind::Volatile, true), Ok(()));
+        assert_eq!(storage.delete(StateBlobKind::Permanent, false), Ok(()));
         assert_eq!(
             *DELETE_CALLS.lock().unwrap(),
             [
@@ -568,13 +549,7 @@ mod tests {
     #[test]
     fn missing_load_probe_unsupported() {
         let probe = storage_with(crate::types::LibtpmsCallbacks::empty()).probe_permanent();
-        assert_eq!(
-            probe,
-            StorageProbe {
-                exists: false,
-                load_supported: false,
-            }
-        );
+        assert_eq!(probe, StorageProbe::Unsupported);
     }
 
     #[test]
@@ -586,13 +561,7 @@ mod tests {
             ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert_eq!(
-            probe,
-            StorageProbe {
-                exists: false,
-                load_supported: true,
-            }
-        );
+        assert_eq!(probe, StorageProbe::Missing);
         assert_eq!(*LOAD_CALLS.lock().unwrap(), [(0, "permall".to_owned())]);
     }
 
@@ -604,13 +573,7 @@ mod tests {
             ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert_eq!(
-            probe,
-            StorageProbe {
-                exists: true,
-                load_supported: true,
-            }
-        );
+        assert_eq!(probe, StorageProbe::Present);
     }
 
     #[test]
@@ -620,13 +583,7 @@ mod tests {
             ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert_eq!(
-            probe,
-            StorageProbe {
-                exists: true,
-                load_supported: true,
-            }
-        );
+        assert_eq!(probe, StorageProbe::Present);
     }
 
     #[test]
@@ -636,13 +593,7 @@ mod tests {
             ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert_eq!(
-            probe,
-            StorageProbe {
-                exists: true,
-                load_supported: true,
-            }
-        );
+        assert_eq!(probe, StorageProbe::Present);
     }
 
     #[test]
@@ -652,12 +603,6 @@ mod tests {
             ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert_eq!(
-            probe,
-            StorageProbe {
-                exists: true,
-                load_supported: true,
-            }
-        );
+        assert_eq!(probe, StorageProbe::Present);
     }
 }

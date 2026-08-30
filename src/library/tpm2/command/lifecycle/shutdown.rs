@@ -144,7 +144,7 @@ fn perform_shutdown(runtime: &mut Tpm2Runtime, shutdown_type: u16) -> Result<(),
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{TPM_CC_SHUTDOWN, TPM_CC_STARTUP};
@@ -245,7 +245,7 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
             .expect("the response serializes")
     }
 

@@ -12,10 +12,6 @@ compile_error!(
 );
 const _: () = {
     assert!(
-        core::mem::size_of::<core::ffi::c_int>() == 4,
-        "the pinned NV layout requires a 4-byte C int"
-    );
-    assert!(
         core::mem::size_of::<core::ffi::c_long>() == 8,
         "the pinned NV layout requires an 8-byte C long (LP64)"
     );
@@ -308,7 +304,6 @@ mod tests {
             assert!(cfg!(target_endian = "little"));
             assert!(cfg!(target_pointer_width = "64"));
         }
-        assert_eq!(core::mem::size_of::<core::ffi::c_int>(), 4);
         assert_eq!(core::mem::size_of::<core::ffi::c_long>(), 8);
         assert_eq!(core::mem::align_of::<u64>(), 8);
         assert_eq!(NATIVE_LITTLE_ENDIAN, 1);

@@ -1,5 +1,5 @@
 use crate::library::CommandInput;
-use crate::library::cancel::Cancellation;
+use crate::library::cancel::CancellationToken;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
 use crate::types::TpmResult;
 
@@ -41,7 +41,7 @@ pub(in crate::library) fn process(
     command: &CommandInput,
     clock: &dyn HostClock,
     commit_nv: impl FnOnce(&Tpm2Runtime) -> Result<(), TpmResult>,
-    cancellation: Cancellation<'_>,
+    cancellation: CancellationToken<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
     if !runtime.power_on {
         return Ok(Vec::new());
@@ -96,7 +96,7 @@ fn serialize(response: Response, buffer_size: u32) -> Result<Vec<u8>, TpmResult>
 mod tests {
     use super::*;
     use crate::library::constants::TPM_SUCCESS;
-    use crate::library::library_state::Library;
+    use crate::library::library_state::Tpm;
     use crate::library::tpm2::runtime::empty_state_runtime;
 
     const UNSUPPORTED_RESPONSE: [u8; 10] =
@@ -128,7 +128,7 @@ mod tests {
             command,
             &fixed_clock(),
             commit_nv,
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
     }
 
@@ -240,7 +240,7 @@ mod tests {
             &input(&INCREMENTAL_SHA256_COMMAND),
             &fixed_clock(),
             |_| Ok(()),
-            Cancellation::requested(),
+            CancellationToken::requested(),
         )
         .unwrap();
         assert_eq!(response, INCREMENTAL_SHA256_RESPONSE);
@@ -519,10 +519,13 @@ mod tests {
 
     #[test]
     fn process_before_init_empty_response() {
-        let library = Library::new();
-        assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+        let library = Tpm::default();
+        assert_eq!(
+            library.set_version(crate::library::TpmVersion::V2_0),
+            TPM_SUCCESS
+        );
         let response = library
-            .process(&startup_command())
+            .process_input(&startup_command())
             .expect("C answers TPM_SUCCESS with an empty response before MainInit");
         assert!(response.is_empty());
     }
@@ -531,14 +534,17 @@ mod tests {
     fn process_after_terminate_empty_response() {
         use crate::library::state_blob::StateBlobKind;
 
-        let library = Library::new();
-        assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+        let library = Tpm::default();
+        assert_eq!(
+            library.set_version(crate::library::TpmVersion::V2_0),
+            TPM_SUCCESS
+        );
         library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         library.terminate();
 
         let response = library
-            .process(&startup_command())
+            .process_input(&startup_command())
             .expect("a terminated library answers like a stopped TPM");
         assert!(response.is_empty());
         assert_eq!(library.tpm2_runtime_locality(), None);
@@ -546,9 +552,9 @@ mod tests {
 
     #[test]
     fn missing_tpm2_selection_process_failure() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.process(&startup_command()),
+            library.process_input(&startup_command()),
             Err(crate::library::constants::TPM_FAIL),
             "the default TPM 1.2 selection routes to the disabled interface"
         );
@@ -583,19 +589,22 @@ mod tests {
             TestPlatform::new().arc()
         }
 
-        fn started_library(platform: Arc<dyn crate::library::platform::Platform>) -> Library {
-            let library = Library::new();
+        fn started_library(platform: Arc<dyn crate::library::platform::Platform>) -> Tpm {
+            let library = Tpm::default();
             library.register_platform(platform);
-            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            assert_eq!(
+                library.set_version(crate::library::TpmVersion::V2_0),
+                TPM_SUCCESS
+            );
             library.stage_empty_state(StateBlobKind::Permanent);
-            assert_eq!(library.main_init(), TPM_SUCCESS);
+            assert_eq!(library.initialize(), TPM_SUCCESS);
             library
         }
 
         #[track_caller]
         fn observed(platform: Arc<dyn crate::library::platform::Platform>) -> Option<bool> {
             let library = started_library(platform);
-            library.process(&unknown_command()).unwrap();
+            library.process_input(&unknown_command()).unwrap();
             let observed = library.tpm2_runtime_physical_presence();
             library.terminate();
             observed
@@ -622,7 +631,7 @@ mod tests {
             calls.clear();
             drop(calls);
             let library = started_library(counted());
-            library.process(&unknown_command()).unwrap();
+            library.process_input(&unknown_command()).unwrap();
             assert_eq!(*CALLS.lock().unwrap(), ["asserted"]);
             assert_eq!(library.tpm2_runtime_physical_presence(), Some(true));
             library.terminate();
@@ -630,12 +639,15 @@ mod tests {
 
         #[test]
         fn locality_presence_input_isolation() {
-            let library = Library::new();
+            let library = Tpm::default();
             library.register_platform(asserted());
-            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            assert_eq!(
+                library.set_version(crate::library::TpmVersion::V2_0),
+                TPM_SUCCESS
+            );
             library.stage_empty_state(StateBlobKind::Permanent);
-            assert_eq!(library.main_init(), TPM_SUCCESS);
-            library.process(&unknown_command()).unwrap();
+            assert_eq!(library.initialize(), TPM_SUCCESS);
+            library.process_input(&unknown_command()).unwrap();
             assert_eq!(library.tpm2_runtime_locality(), Some(0));
             assert_eq!(library.tpm2_runtime_physical_presence(), Some(true));
             library.terminate();
@@ -671,10 +683,13 @@ mod tests {
         fn restored_library(
             snapshot: &str,
             platform: std::sync::Arc<dyn crate::library::platform::Platform>,
-        ) -> Library {
-            let library = Library::new();
+        ) -> Tpm {
+            let library = Tpm::default();
             library.register_platform(platform);
-            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            assert_eq!(
+                library.set_version(crate::library::TpmVersion::V2_0),
+                TPM_SUCCESS
+            );
             library.stage_state_data(
                 StateBlobKind::Permanent,
                 vector(&format!("PERMALL_{snapshot}")).to_vec(),
@@ -683,7 +698,7 @@ mod tests {
                 StateBlobKind::Volatile,
                 vector(&format!("VOLATILE_{snapshot}")).to_vec(),
             );
-            assert_eq!(library.main_init(), TPM_SUCCESS);
+            assert_eq!(library.initialize(), TPM_SUCCESS);
             library
         }
 
@@ -722,9 +737,9 @@ mod tests {
         }
 
         #[track_caller]
-        fn send(library: &Library, bytes: &[u8]) -> Vec<u8> {
+        fn send(library: &Tpm, bytes: &[u8]) -> Vec<u8> {
             library
-                .process(&input(bytes))
+                .process_input(&input(bytes))
                 .expect("the command executes")
         }
 
@@ -964,8 +979,8 @@ mod tests {
 
         static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-        fn locality_library() -> Library {
-            let library = Library::new();
+        fn locality_library() -> Tpm {
+            let library = Tpm::default();
             library.register_platform(
                 TestPlatform::new()
                     .on_locality(|| {
@@ -981,9 +996,12 @@ mod tests {
         fn queried_once_per_command() {
             EVENTS.lock().unwrap().clear();
             let library = locality_library();
-            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            assert_eq!(
+                library.set_version(crate::library::TpmVersion::V2_0),
+                TPM_SUCCESS
+            );
 
-            let response = library.process(&startup_command()).unwrap();
+            let response = library.process_input(&startup_command()).unwrap();
             assert!(response.is_empty());
             assert!(
                 EVENTS.lock().unwrap().is_empty(),
@@ -991,7 +1009,7 @@ mod tests {
             );
 
             library.stage_empty_state(StateBlobKind::Permanent);
-            assert_eq!(library.main_init(), TPM_SUCCESS);
+            assert_eq!(library.initialize(), TPM_SUCCESS);
             assert_eq!(
                 library.tpm2_runtime_locality(),
                 Some(0),
@@ -1000,7 +1018,7 @@ mod tests {
 
             EVENTS.lock().unwrap().clear();
             let response = library
-                .process(&unknown_command())
+                .process_input(&unknown_command())
                 .expect("the callback's weird return code is not the outer result");
             assert_eq!(response, UNSUPPORTED_RESPONSE);
             assert_eq!(
@@ -1014,11 +1032,14 @@ mod tests {
 
         #[test]
         fn missing_callback_locality_zero_default() {
-            let library = Library::new();
-            assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+            let library = Tpm::default();
+            assert_eq!(
+                library.set_version(crate::library::TpmVersion::V2_0),
+                TPM_SUCCESS
+            );
             library.stage_empty_state(StateBlobKind::Permanent);
-            assert_eq!(library.main_init(), TPM_SUCCESS);
-            library.process(&startup_command()).unwrap();
+            assert_eq!(library.initialize(), TPM_SUCCESS);
+            library.process_input(&startup_command()).unwrap();
             assert_eq!(library.tpm2_runtime_locality(), Some(0));
             library.terminate();
         }
@@ -1027,7 +1048,7 @@ mod tests {
 
         #[test]
         fn disabled_interface_no_locality_callback_query() {
-            let library = Library::new();
+            let library = Tpm::default();
             library.register_platform(
                 TestPlatform::new()
                     .on_locality(|| {
@@ -1036,7 +1057,7 @@ mod tests {
                     })
                     .arc(),
             );
-            assert!(library.process(&startup_command()).is_err());
+            assert!(library.process_input(&startup_command()).is_err());
             assert_eq!(*DISABLED_CALLS.lock().unwrap(), 0);
         }
     }
@@ -1045,16 +1066,19 @@ mod tests {
     fn single_command_per_process_call() {
         use crate::library::state_blob::StateBlobKind;
 
-        let library = Library::new();
-        assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
+        let library = Tpm::default();
+        assert_eq!(
+            library.set_version(crate::library::TpmVersion::V2_0),
+            TPM_SUCCESS
+        );
         library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         for round in 0..3 {
             let response = library
-                .process(&unknown_command())
+                .process_input(&unknown_command())
                 .expect("an unsupported command is still an outer success");
             assert_eq!(response, UNSUPPORTED_RESPONSE, "round {round}");
-            let malformed = library.process(&input(&[0xff])).unwrap();
+            let malformed = library.process_input(&input(&[0xff])).unwrap();
             assert_eq!(
                 malformed, INSUFFICIENT_RESPONSE,
                 "round {round}: malformed input"
@@ -1356,9 +1380,9 @@ mod tests {
 
         #[test]
         fn successful_shutdown_storage_backend_propagation() {
+            use crate::library::StateBlobKind;
             use crate::library::storage::test_support::TestStorage;
             use crate::library::tpm2::host_nv_commit;
-            use crate::library::{StateBlobKind, StorageOperation};
             use std::sync::{Arc, Mutex};
 
             let stored_blobs: Arc<Mutex<Vec<(StateBlobKind, Vec<u8>)>>> =
@@ -1366,7 +1390,7 @@ mod tests {
             let recorder = Arc::clone(&stored_blobs);
             let storage = TestStorage::new().on_store(move |kind, data| {
                 recorder.lock().unwrap().push((kind, data.to_vec()));
-                Ok(StorageOperation::Done)
+                Ok(())
             });
             let mut runtime = manufactured_runtime();
             let commit = |runtime: &Tpm2Runtime| host_nv_commit(&storage, runtime);

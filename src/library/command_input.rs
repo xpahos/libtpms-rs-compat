@@ -10,7 +10,7 @@ pub(crate) struct CommandInput {
 
 impl CommandInput {
     pub(crate) fn required_prefix_len(received_size: u32) -> usize {
-        if received_size <= TPM_BUFFER_MAX as u32 {
+        if received_size <= TPM_BUFFER_MAX {
             received_size as usize
         } else {
             TAG_AND_SIZE_LEN

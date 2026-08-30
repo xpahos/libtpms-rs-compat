@@ -770,7 +770,7 @@ mod test_support {
                 commits.set(commits.get() + 1);
                 Ok(())
             },
-            crate::library::cancel::Cancellation::disabled(),
+            crate::library::cancel::CancellationToken::disabled(),
         )
         .expect("the command processes")
     }

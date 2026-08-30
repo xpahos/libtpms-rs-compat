@@ -1,4 +1,4 @@
-use crate::library::cancel::Cancellation;
+use crate::library::cancel::CancellationToken;
 use crate::library::constants::{
     TPM_RC_CANCELED, TPM_RC_CURVE, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY, TPM_RC_KEY_SIZE,
     TPM_RC_NO_RESULT, TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
@@ -221,7 +221,7 @@ pub(super) fn create_object(
     eps_primary: bool,
     secrets: &ObjectSecrets<'_>,
     rand: &mut SeededRand,
-    cancellation: Cancellation<'_>,
+    cancellation: CancellationToken<'_>,
 ) -> Result<CreatedObject, TpmResult> {
     let attributes = public.object_attributes;
     let provided: &[u8] = if attributes & TPMA_OBJECT_SENSITIVE_DATA_ORIGIN != 0 {
@@ -667,7 +667,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"rsa"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         let OwnedPublicId::Rsa(modulus) = &created.public.unique else {
@@ -695,7 +695,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"seed"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_eq!(created.sensitive.seed_value.as_bytes().len(), 32);
@@ -725,7 +725,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"sign"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert!(created.sensitive.seed_value.as_bytes().is_empty());
@@ -741,7 +741,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"ecc"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         let OwnedPublicId::Ecc { x, y } = &created.public.unique else {
@@ -772,7 +772,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"name"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         let marshalled = marshal_public_area(&created.public).unwrap();
@@ -794,7 +794,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"eps"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         let with = create_object(
@@ -804,7 +804,7 @@ mod tests {
             true,
             &secrets(),
             &mut rand(b"eps"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_eq!(
@@ -883,7 +883,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"store"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         let name = created.name.clone();
@@ -911,7 +911,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"eccstore"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         store_created_object(&mut runtime, 1, TPM_RH_NULL, 0, created).expect("stores");

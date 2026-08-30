@@ -652,7 +652,7 @@ pub(in crate::library::tpm2) mod replay {
             &input,
             clock,
             |_| Ok(()),
-            crate::library::cancel::Cancellation::disabled(),
+            crate::library::cancel::CancellationToken::disabled(),
         )
         .expect("the command processes")
     }

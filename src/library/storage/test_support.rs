@@ -3,23 +3,21 @@ use std::sync::Arc;
 use crate::types::TpmResult;
 
 use super::super::state_blob::StateBlobKind;
-use super::{Storage, StorageLoad, StorageOperation, StorageProbe};
+use super::{Storage, StorageLoad, StorageProbe};
 
-type InitHandler = Arc<dyn Fn() -> Result<StorageOperation, TpmResult> + Send + Sync>;
+type InitHandler = Arc<dyn Fn() -> Result<(), TpmResult> + Send + Sync>;
 type ProbeHandler = Arc<dyn Fn() -> StorageProbe + Send + Sync>;
 type LoadHandler = Arc<dyn Fn(StateBlobKind) -> Result<StorageLoad, TpmResult> + Send + Sync>;
 type CanStoreHandler = Arc<dyn Fn() -> bool + Send + Sync>;
-type StoreHandler =
-    Arc<dyn Fn(StateBlobKind, &[u8]) -> Result<StorageOperation, TpmResult> + Send + Sync>;
-type DeleteHandler =
-    Arc<dyn Fn(StateBlobKind, bool) -> Result<StorageOperation, TpmResult> + Send + Sync>;
+type StoreHandler = Arc<dyn Fn(StateBlobKind, &[u8]) -> Result<(), TpmResult> + Send + Sync>;
+type DeleteHandler = Arc<dyn Fn(StateBlobKind, bool) -> Result<(), TpmResult> + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub(crate) struct TestStorage {
     init: Option<InitHandler>,
     probe: Option<ProbeHandler>,
     load: Option<LoadHandler>,
-    can_store: Option<CanStoreHandler>,
+    supports_store: Option<CanStoreHandler>,
     store: Option<StoreHandler>,
     delete: Option<DeleteHandler>,
 }
@@ -32,7 +30,7 @@ impl TestStorage {
 
     pub(crate) fn on_init(
         mut self,
-        handler: impl Fn() -> Result<StorageOperation, TpmResult> + Send + Sync + 'static,
+        handler: impl Fn() -> Result<(), TpmResult> + Send + Sync + 'static,
     ) -> Self {
         self.init = Some(Arc::new(handler));
         self
@@ -58,16 +56,13 @@ impl TestStorage {
         mut self,
         handler: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Self {
-        self.can_store = Some(Arc::new(handler));
+        self.supports_store = Some(Arc::new(handler));
         self
     }
 
     pub(crate) fn on_store(
         mut self,
-        handler: impl Fn(StateBlobKind, &[u8]) -> Result<StorageOperation, TpmResult>
-        + Send
-        + Sync
-        + 'static,
+        handler: impl Fn(StateBlobKind, &[u8]) -> Result<(), TpmResult> + Send + Sync + 'static,
     ) -> Self {
         self.store = Some(Arc::new(handler));
         self
@@ -75,10 +70,7 @@ impl TestStorage {
 
     pub(crate) fn on_delete(
         mut self,
-        handler: impl Fn(StateBlobKind, bool) -> Result<StorageOperation, TpmResult>
-        + Send
-        + Sync
-        + 'static,
+        handler: impl Fn(StateBlobKind, bool) -> Result<(), TpmResult> + Send + Sync + 'static,
     ) -> Self {
         self.delete = Some(Arc::new(handler));
         self
@@ -90,10 +82,10 @@ impl TestStorage {
 }
 
 impl Storage for TestStorage {
-    fn init(&self) -> Result<StorageOperation, TpmResult> {
+    fn initialize(&self) -> Result<(), TpmResult> {
         match &self.init {
             Some(handler) => handler(),
-            None => Ok(StorageOperation::Unsupported),
+            None => Ok(()),
         }
     }
 
@@ -101,23 +93,14 @@ impl Storage for TestStorage {
         if let Some(handler) = &self.probe {
             return handler();
         }
-        let unsupported = StorageProbe {
-            exists: false,
-            load_supported: false,
-        };
+        let unsupported = StorageProbe::Unsupported;
         let Some(load) = &self.load else {
             return unsupported;
         };
         match load(StateBlobKind::Permanent) {
             Ok(StorageLoad::Unsupported) => unsupported,
-            Ok(StorageLoad::Missing) => StorageProbe {
-                exists: false,
-                load_supported: true,
-            },
-            Ok(StorageLoad::Empty | StorageLoad::Data(_)) | Err(_) => StorageProbe {
-                exists: true,
-                load_supported: true,
-            },
+            Ok(StorageLoad::Missing) => StorageProbe::Missing,
+            Ok(StorageLoad::Empty | StorageLoad::Data(_)) | Err(_) => StorageProbe::Present,
         }
     }
 
@@ -128,24 +111,24 @@ impl Storage for TestStorage {
         }
     }
 
-    fn can_store(&self) -> bool {
-        match &self.can_store {
+    fn supports_store(&self) -> bool {
+        match &self.supports_store {
             Some(handler) => handler(),
             None => self.store.is_some(),
         }
     }
 
-    fn store(&self, kind: StateBlobKind, data: &[u8]) -> Result<StorageOperation, TpmResult> {
+    fn store(&self, kind: StateBlobKind, data: &[u8]) -> Result<(), TpmResult> {
         match &self.store {
             Some(handler) => handler(kind, data),
-            None => Ok(StorageOperation::Unsupported),
+            None => Err(crate::library::TPM_FAIL),
         }
     }
 
-    fn delete(&self, kind: StateBlobKind, must_exist: bool) -> Result<StorageOperation, TpmResult> {
+    fn delete(&self, kind: StateBlobKind, must_exist: bool) -> Result<(), TpmResult> {
         match &self.delete {
             Some(handler) => handler(kind, must_exist),
-            None => Ok(StorageOperation::Unsupported),
+            None => Err(crate::library::TPM_FAIL),
         }
     }
 }
@@ -153,53 +136,38 @@ impl Storage for TestStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::TPM_FAIL;
     use std::sync::Mutex;
 
     #[test]
     fn unconfigured_storage_unsupported() {
         let storage = TestStorage::new();
-        assert_eq!(storage.init(), Ok(StorageOperation::Unsupported));
+        assert_eq!(storage.initialize(), Ok(()));
         assert_eq!(
             storage.load(StateBlobKind::Permanent),
             Ok(StorageLoad::Unsupported)
         );
-        assert!(!storage.can_store());
-        assert_eq!(
-            storage.store(StateBlobKind::Permanent, &[1]),
-            Ok(StorageOperation::Unsupported)
-        );
+        assert!(!storage.supports_store());
+        assert_eq!(storage.store(StateBlobKind::Permanent, &[1]), Err(TPM_FAIL));
         assert_eq!(
             storage.delete(StateBlobKind::Permanent, true),
-            Ok(StorageOperation::Unsupported)
+            Err(TPM_FAIL)
         );
-        assert_eq!(
-            storage.probe_permanent(),
-            StorageProbe {
-                exists: false,
-                load_supported: false,
-            }
-        );
+        assert_eq!(storage.probe_permanent(), StorageProbe::Unsupported);
     }
 
     #[test]
     fn probe_load_derivation() {
-        for (outcome, exists, load_supported) in [
-            (Ok(StorageLoad::Unsupported), false, false),
-            (Ok(StorageLoad::Missing), false, true),
-            (Ok(StorageLoad::Empty), true, true),
-            (Ok(StorageLoad::Data(vec![1])), true, true),
-            (Err(77), true, true),
+        for (outcome, probe) in [
+            (Ok(StorageLoad::Unsupported), StorageProbe::Unsupported),
+            (Ok(StorageLoad::Missing), StorageProbe::Missing),
+            (Ok(StorageLoad::Empty), StorageProbe::Present),
+            (Ok(StorageLoad::Data(vec![1])), StorageProbe::Present),
+            (Err(77), StorageProbe::Present),
         ] {
             let handed = outcome.clone();
             let storage = TestStorage::new().on_load(move |_| handed.clone());
-            assert_eq!(
-                storage.probe_permanent(),
-                StorageProbe {
-                    exists,
-                    load_supported,
-                },
-                "{outcome:?}"
-            );
+            assert_eq!(storage.probe_permanent(), probe, "{outcome:?}");
         }
     }
 
@@ -214,25 +182,22 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(format!("store:{kind:?}:{data:?}"));
-                Ok(StorageOperation::Done)
+                Ok(())
             })
             .on_delete(move |kind, must_exist| {
                 delete_log
                     .lock()
                     .unwrap()
                     .push(format!("delete:{kind:?}:{must_exist}"));
-                Ok(StorageOperation::Done)
+                Ok(())
             });
 
-        assert!(storage.can_store(), "a store handler implies can_store");
-        assert_eq!(
-            storage.store(StateBlobKind::Permanent, &[7]),
-            Ok(StorageOperation::Done)
+        assert!(
+            storage.supports_store(),
+            "a store handler implies supports_store"
         );
-        assert_eq!(
-            storage.delete(StateBlobKind::Volatile, true),
-            Ok(StorageOperation::Done)
-        );
+        assert_eq!(storage.store(StateBlobKind::Permanent, &[7]), Ok(()));
+        assert_eq!(storage.delete(StateBlobKind::Volatile, true), Ok(()));
         assert_eq!(
             *log.lock().unwrap(),
             ["store:Permanent:[7]", "delete:Volatile:true"]
@@ -243,17 +208,8 @@ mod tests {
     fn configured_probe_precedence() {
         let storage = TestStorage::new()
             .on_load(|_| Ok(StorageLoad::Missing))
-            .on_probe(|| StorageProbe {
-                exists: true,
-                load_supported: true,
-            });
-        assert_eq!(
-            storage.probe_permanent(),
-            StorageProbe {
-                exists: true,
-                load_supported: true,
-            }
-        );
+            .on_probe(|| StorageProbe::Present);
+        assert_eq!(storage.probe_permanent(), StorageProbe::Present);
         assert_eq!(
             storage.load(StateBlobKind::Permanent),
             Ok(StorageLoad::Missing)
@@ -263,11 +219,11 @@ mod tests {
     #[test]
     fn can_store_independence() {
         let storage = TestStorage::new().on_can_store(|| true);
-        assert!(storage.can_store());
+        assert!(storage.supports_store());
         assert_eq!(
             storage.store(StateBlobKind::Permanent, &[1]),
-            Ok(StorageOperation::Unsupported),
-            "can_store is independent of the store handler"
+            Err(TPM_FAIL),
+            "supports_store is independent of the store handler"
         );
     }
 }

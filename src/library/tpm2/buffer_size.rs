@@ -3,7 +3,7 @@ use crate::library::constants::TPM_BUFFER_MAX;
 const MAX_CONTEXT_SIZE: u32 = 2680;
 
 pub(in crate::library) const MIN_BUFFER_SIZE: u32 = MAX_CONTEXT_SIZE + 128;
-pub(in crate::library) const MAX_BUFFER_SIZE: u32 = TPM_BUFFER_MAX as u32;
+pub(in crate::library) const MAX_BUFFER_SIZE: u32 = TPM_BUFFER_MAX;
 pub(in crate::library) const DEFAULT_BUFFER_SIZE: u32 = MAX_BUFFER_SIZE;
 
 pub(in crate::library) fn clamp_buffer_size(wanted_size: u32) -> u32 {

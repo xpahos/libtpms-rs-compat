@@ -80,7 +80,7 @@ fn parse_parameters(parameters: &[u8]) -> Result<Parameters, TpmResult> {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::parse_command;
     use crate::library::tpm2::command::core::registry::TPM_CC_DICTIONARY_ATTACK_PARAMETERS;
@@ -125,7 +125,7 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        let response = dispatch(runtime, &parsed, Cancellation::disabled());
+        let response = dispatch(runtime, &parsed, CancellationToken::disabled());
         crate::library::tpm2::command::core::header::serialize_response(&response)
             .expect("the response serializes")
     }

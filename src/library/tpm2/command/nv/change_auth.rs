@@ -44,7 +44,7 @@ fn parse_parameters(parameters: &[u8]) -> Result<Vec<u8>, TpmResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_CHANGE_AUTH, find,
     };
@@ -96,7 +96,7 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![INDEX],
             parameters: &change_auth_frame(new_auth),
-            cancellation: Cancellation::disabled(),
+            cancellation: CancellationToken::disabled(),
         };
         execute(runtime, &frame).map(|_| ())
     }
@@ -244,7 +244,7 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![0x0100_0002],
             parameters: &change_auth_frame(&[0xaa; 21]),
-            cancellation: Cancellation::disabled(),
+            cancellation: CancellationToken::disabled(),
         };
         assert_eq!(execute(&mut runtime, &frame).err(), Some(RC_PARAM1_SIZE));
     }
@@ -265,7 +265,7 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![INDEX],
             parameters: &parameters,
-            cancellation: Cancellation::disabled(),
+            cancellation: CancellationToken::disabled(),
         };
         assert_eq!(execute(&mut runtime, &frame).err(), Some(TPM_RC_SIZE));
     }
@@ -359,7 +359,7 @@ mod tests {
                 let frame = CommandFrame {
                     handles: vec![INDEX],
                     parameters: &parameters,
-                    cancellation: Cancellation::disabled(),
+                    cancellation: CancellationToken::disabled(),
                 };
                 let _ = execute(&mut runtime, &frame);
             }

@@ -37,7 +37,7 @@ pub(in crate::library::tpm2) fn vectors() -> Vec<GoldenVector<'static>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use core::cell::RefCell;
 
     use super::*;
@@ -692,7 +692,7 @@ mod tests {
                         .map_err(|_| TPM_FAIL)?;
                 Ok(())
             },
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
         assert_eq!(response, vector(label), "{label}");

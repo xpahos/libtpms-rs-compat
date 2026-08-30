@@ -57,7 +57,7 @@ pub(in crate::library::tpm2::command) fn execute_special(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_UNDEFINE_SPACE,
         TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, find,
@@ -295,7 +295,7 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![PLATFORM_INDEX, TPM_RH_PLATFORM],
             parameters: &[],
-            cancellation: Cancellation::disabled(),
+            cancellation: CancellationToken::disabled(),
         };
         assert_eq!(
             execute_special(&mut runtime, &frame).err(),
@@ -314,7 +314,7 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![PLATFORM_INDEX, TPM_RH_PLATFORM],
             parameters: &[],
-            cancellation: Cancellation::disabled(),
+            cancellation: CancellationToken::disabled(),
         };
         assert!(execute_special(&mut runtime, &frame).is_ok());
         assert!(resolve_index(&runtime, PLATFORM_INDEX).is_none());
@@ -332,7 +332,7 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![PLATFORM_INDEX, TPM_RH_PLATFORM],
             parameters: &[0x00],
-            cancellation: Cancellation::disabled(),
+            cancellation: CancellationToken::disabled(),
         };
         assert_eq!(execute_special(&mut runtime, &frame).err(), Some(RC_SIZE));
     }

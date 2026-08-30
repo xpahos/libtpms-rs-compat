@@ -459,7 +459,7 @@ mod tests {
     use super::fixtures::*;
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_CREATE_PRIMARY;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
@@ -491,7 +491,7 @@ mod tests {
         let response = crate::library::tpm2::command::core::dispatcher::dispatch(
             runtime,
             &parsed,
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         );
         serialize_response(&response).expect("the response fits")
     }
@@ -595,7 +595,7 @@ mod tests {
             serialize_response(&crate::library::tpm2::command::core::dispatcher::dispatch(
                 &mut runtime,
                 &parsed,
-                Cancellation::requested(),
+                CancellationToken::requested(),
             ))
             .expect("the response fits");
         assert_eq!(response_code(&response), TPM_RC_CANCELED_CODE);

@@ -1,15 +1,15 @@
-use crate::types::TpmlibInfoFlags;
+use crate::library::InformationFlags;
 
 use super::profile;
 
-const INFO_TPMSPECIFICATION: u32 = 1;
-const INFO_TPMATTRIBUTES: u32 = 2;
-const INFO_TPMFEATURES: u32 = 4;
-const INFO_RUNTIME_ALGORITHMS: u32 = 8;
-const INFO_RUNTIME_COMMANDS: u32 = 16;
-const INFO_ACTIVE_PROFILE: u32 = 32;
-const INFO_AVAILABLE_PROFILES: u32 = 64;
-const INFO_RUNTIME_ATTRIBUTES: u32 = 128;
+const INFO_TPMSPECIFICATION: InformationFlags = InformationFlags::TPM_SPECIFICATION;
+const INFO_TPMATTRIBUTES: InformationFlags = InformationFlags::TPM_ATTRIBUTES;
+const INFO_TPMFEATURES: InformationFlags = InformationFlags::TPM_FEATURES;
+const INFO_RUNTIME_ALGORITHMS: InformationFlags = InformationFlags::RUNTIME_ALGORITHMS;
+const INFO_RUNTIME_COMMANDS: InformationFlags = InformationFlags::RUNTIME_COMMANDS;
+const INFO_ACTIVE_PROFILE: InformationFlags = InformationFlags::ACTIVE_PROFILE;
+const INFO_AVAILABLE_PROFILES: InformationFlags = InformationFlags::AVAILABLE_PROFILES;
+const INFO_RUNTIME_ATTRIBUTES: InformationFlags = InformationFlags::RUNTIME_ATTRIBUTES;
 
 const TPM_SPECIFICATION: &str = r#""TPMSpecification":{"family":"2.0","level":0,"revision":183}"#;
 
@@ -117,14 +117,13 @@ const AVAILABLE_PROFILES: &str = concat!(
 );
 
 pub fn get_info(
-    flags: TpmlibInfoFlags,
+    flags: InformationFlags,
     active_profile: Option<&str>,
     active_algorithms: Option<&[u8]>,
 ) -> String {
-    let flags = flags as u32;
     let active = active_profile.map(|json| format!("\"ActiveProfile\":{json}"));
     let algorithms = runtime_algorithms(active_algorithms);
-    let selected: [(u32, Option<&str>); 8] = [
+    let selected: [(InformationFlags, Option<&str>); 8] = [
         (INFO_TPMSPECIFICATION, Some(TPM_SPECIFICATION)),
         (INFO_TPMATTRIBUTES, Some(TPM_ATTRIBUTES)),
         (INFO_TPMFEATURES, Some(TPM_FEATURES)),
@@ -136,7 +135,7 @@ pub fn get_info(
     ];
     let sections: Vec<&str> = selected
         .iter()
-        .filter(|(bit, _)| flags & bit != 0)
+        .filter(|(bit, _)| flags.contains(*bit))
         .filter_map(|&(_, section)| section)
         .collect();
     format!("{{{}}}", sections.join(","))
@@ -146,18 +145,18 @@ pub fn get_info(
 mod tests {
     use super::*;
 
-    fn get_info_string(flags: u32) -> String {
-        get_info(flags as TpmlibInfoFlags, None, None)
+    fn get_info_string(flags: InformationFlags) -> String {
+        get_info(flags, None, None)
     }
 
     #[test]
     fn zero_flags_empty_object() {
-        assert_eq!(get_info_string(0), "{}");
+        assert_eq!(get_info_string(InformationFlags::default()), "{}");
     }
 
     #[test]
     fn unknown_flags_ignored() {
-        assert_eq!(get_info_string(1 << 20), "{}");
+        assert_eq!(get_info_string(InformationFlags::from_bits(1 << 20)), "{}");
     }
 
     #[test]
@@ -173,10 +172,10 @@ mod tests {
     fn active_profile_post_init_reporting() {
         const PROFILE: &str = r#"{"Name":"null","StateFormatLevel":1}"#;
         assert_eq!(
-            get_info(INFO_ACTIVE_PROFILE as TpmlibInfoFlags, Some(PROFILE), None),
+            get_info(INFO_ACTIVE_PROFILE, Some(PROFILE), None),
             r#"{"ActiveProfile":{"Name":"null","StateFormatLevel":1}}"#
         );
-        let all = get_info(255 as TpmlibInfoFlags, Some(PROFILE), None);
+        let all = get_info(InformationFlags::from_bits(255), Some(PROFILE), None);
         let attrs = all.find("RuntimeAttributes").unwrap();
         let active = all.find("ActiveProfile").unwrap();
         let available = all.find("AvailableProfiles").unwrap();
@@ -193,7 +192,7 @@ mod tests {
 
     #[test]
     fn section_c_emission_order() {
-        let all = get_info_string(255);
+        let all = get_info_string(InformationFlags::from_bits(255));
         let order = [
             "TPMSpecification",
             "TPMAttributes",
@@ -243,7 +242,7 @@ mod runtime_algorithms_tests {
     }
 
     fn section(profile: Option<&[u8]>) -> String {
-        get_info(INFO_RUNTIME_ALGORITHMS as TpmlibInfoFlags, None, profile)
+        get_info(INFO_RUNTIME_ALGORITHMS, None, profile)
     }
 
     const REDUCED: &[u8] = b"rsa,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,null,oaep,ecdsa,\

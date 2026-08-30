@@ -1,15 +1,13 @@
-use core::ffi::c_int;
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::types::{TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion};
+use crate::types::TpmResult;
 
 use super::cancel::CommandCancellation;
 #[cfg(feature = "tpm2")]
+use super::constants::TPM_SIZE;
+#[cfg(feature = "tpm2")]
 use super::constants::{TPM_BAD_TYPE, TPM_INVALID_POSTINIT};
-use super::constants::{
-    TPM_BUFFER_MAX, TPM_FAIL, TPM_SUCCESS, TPMLIB_TPM_VERSION_1_2, TPMLIB_TPM_VERSION_2,
-    TPMPROP_TPM_BUFFER_MAX,
-};
+use super::constants::{TPM_BUFFER_MAX, TPM_FAIL, TPM_SUCCESS};
 use super::platform::Platform;
 #[cfg(feature = "tpm2")]
 use super::preloaded_state::PreloadedBlob;
@@ -28,13 +26,51 @@ pub enum TpmVersion {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TpmProperty {
+    RsaKeyLengthMax,
+    BufferMax,
+    KeyHandles,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InformationFlags(u32);
+
+impl InformationFlags {
+    pub const TPM_SPECIFICATION: Self = Self(1);
+    pub const TPM_ATTRIBUTES: Self = Self(2);
+    pub const TPM_FEATURES: Self = Self(4);
+    pub const RUNTIME_ALGORITHMS: Self = Self(8);
+    pub const RUNTIME_COMMANDS: Self = Self(16);
+    pub const ACTIVE_PROFILE: Self = Self(32);
+    pub const AVAILABLE_PROFILES: Self = Self(64);
+    pub const RUNTIME_ATTRIBUTES: Self = Self(128);
+
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    #[cfg(feature = "tpm2")]
+    pub(crate) const fn contains(self, flag: Self) -> bool {
+        self.0 & flag.0 != 0
+    }
+}
+
+impl core::ops::BitOr for InformationFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferSizeLimits {
     pub current: u32,
     pub minimum: u32,
     pub maximum: u32,
 }
 
-struct LibraryState {
+struct TpmState {
     selected: TpmVersion,
     version_locked: bool,
     preloaded_state: PreloadedState,
@@ -49,13 +85,13 @@ struct LibraryState {
     entropy_override: Option<tpm2::EntropySource>,
 }
 
-impl LibraryState {
-    fn new() -> Self {
+impl TpmState {
+    fn new(services: ExternalServices) -> Self {
         Self {
-            selected: TpmVersion::V1_2,
+            selected: crate::library::TpmVersion::V1_2,
             version_locked: false,
             preloaded_state: PreloadedState::new(),
-            services: ExternalServices::default(),
+            services,
             #[cfg(feature = "tpm2")]
             tpm2_buffer_size: tpm2::DEFAULT_BUFFER_SIZE,
             #[cfg(feature = "tpm2")]
@@ -67,13 +103,17 @@ impl LibraryState {
         }
     }
 
-    fn choose_tpm_version(&mut self, version: TpmlibTpmVersion) -> TpmResult {
+    fn set_version(&mut self, version: TpmVersion) -> TpmResult {
         if self.version_locked {
             return TPM_FAIL;
         }
         let requested = match version {
-            TPMLIB_TPM_VERSION_1_2 if cfg!(feature = "tpm1") => TpmVersion::V1_2,
-            TPMLIB_TPM_VERSION_2 if cfg!(feature = "tpm2") => TpmVersion::V2_0,
+            crate::library::TpmVersion::V1_2 if cfg!(feature = "tpm1") => {
+                crate::library::TpmVersion::V1_2
+            }
+            crate::library::TpmVersion::V2_0 if cfg!(feature = "tpm2") => {
+                crate::library::TpmVersion::V2_0
+            }
             _ => return TPM_FAIL,
         };
         if self.selected != requested {
@@ -92,8 +132,8 @@ impl LibraryState {
     }
 }
 
-pub struct Library {
-    state: Mutex<LibraryState>,
+pub struct Tpm {
+    state: Mutex<TpmState>,
     #[cfg(feature = "tpm2")]
     runtime: Mutex<Option<tpm2::Tpm2Runtime>>,
     cancellation: CommandCancellation,
@@ -112,15 +152,15 @@ pub(in crate::library) enum EmptyStatePhase {
 }
 
 #[cfg(feature = "tpm2")]
-struct Tpm2Operation<'a> {
+struct Tpm2Access<'a> {
     runtime: MutexGuard<'a, Option<tpm2::Tpm2Runtime>>,
     services: ExternalServices,
 }
 
-impl Library {
-    pub fn new() -> Self {
+impl Tpm {
+    pub fn new(services: ExternalServices) -> Self {
         Self {
-            state: Mutex::new(LibraryState::new()),
+            state: Mutex::new(TpmState::new(services)),
             #[cfg(feature = "tpm2")]
             runtime: Mutex::new(None),
             cancellation: CommandCancellation::new(),
@@ -149,11 +189,7 @@ impl Library {
         }
     }
 
-    pub fn global() -> &'static Self {
-        &LIBRARY
-    }
-
-    fn lock_state(&self) -> MutexGuard<'_, LibraryState> {
+    fn lock_state(&self) -> MutexGuard<'_, TpmState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -163,15 +199,15 @@ impl Library {
     }
 
     #[cfg(feature = "tpm2")]
-    fn tpm2_operation(&self) -> Result<Tpm2Operation<'_>, TpmResult> {
+    fn acquire_tpm2(&self) -> Result<Tpm2Access<'_>, TpmResult> {
         let runtime = self.lock_runtime();
         let state = self.lock_state();
-        if state.selected != TpmVersion::V2_0 {
+        if state.selected != crate::library::TpmVersion::V2_0 {
             return Err(TPM_FAIL);
         }
         let services = state.services.clone();
         drop(state);
-        Ok(Tpm2Operation { runtime, services })
+        Ok(Tpm2Access { runtime, services })
     }
 
     #[cfg(all(test, feature = "tpm2"))]
@@ -190,41 +226,41 @@ impl Library {
         )
     }
 
-    pub fn choose_tpm_version(&self, version: TpmlibTpmVersion) -> TpmResult {
-        self.lock_state().choose_tpm_version(version)
+    pub fn set_version(&self, version: TpmVersion) -> TpmResult {
+        self.lock_state().set_version(version)
     }
 
     #[cfg(feature = "tpm2")]
     pub(crate) fn tpm2_selected(&self) -> bool {
-        self.lock_state().selected == TpmVersion::V2_0
+        self.lock_state().selected == crate::library::TpmVersion::V2_0
     }
 
-    pub fn cancel_command(&self) -> TpmResult {
+    pub fn cancel(&self) -> TpmResult {
         match self.lock_state().selected {
-            TpmVersion::V2_0 => {
+            crate::library::TpmVersion::V2_0 => {
                 self.cancellation.cancel();
                 TPM_SUCCESS
             }
-            TpmVersion::V1_2 => TPM_FAIL,
+            crate::library::TpmVersion::V1_2 => TPM_FAIL,
         }
     }
 
-    pub fn main_init(&self) -> TpmResult {
+    pub fn initialize(&self) -> TpmResult {
         #[cfg(feature = "tpm2")]
         {
             let runtime = self.lock_runtime();
             let mut state = self.lock_state();
             state.version_locked = true;
-            if state.selected != TpmVersion::V2_0 {
+            if state.selected != crate::library::TpmVersion::V2_0 {
                 return TPM_FAIL;
             }
-            let mut op = Tpm2Operation {
+            let mut op = Tpm2Access {
                 runtime,
                 services: state.services.clone(),
             };
             let context = tpm2::Tpm2InitContext {
-                platform: op.services.platform(),
-                storage: op.services.storage(),
+                platform: op.services.platform_ref(),
+                storage: op.services.storage_ref(),
                 preloaded_permanent: state.preloaded_state.get(StateBlobKind::Permanent).clone(),
                 preloaded_volatile: state.preloaded_state.get(StateBlobKind::Volatile).clone(),
                 configured_profile: state.configured_profile.clone(),
@@ -260,8 +296,21 @@ impl Library {
     }
 
     #[cfg(feature = "tpm2")]
-    pub(crate) fn process(&self, command: &super::CommandInput) -> Result<Vec<u8>, TpmResult> {
-        let mut op = self.tpm2_operation()?;
+    pub fn process(&self, command: &[u8]) -> Result<Vec<u8>, TpmResult> {
+        let size = u32::try_from(command.len()).map_err(|_| TPM_SIZE)?;
+        let prefix_len = super::CommandInput::required_prefix_len(size);
+        self.process_input(&super::CommandInput::new(
+            size,
+            command[..prefix_len].to_vec(),
+        ))
+    }
+
+    #[cfg(feature = "tpm2")]
+    pub(crate) fn process_input(
+        &self,
+        command: &super::CommandInput,
+    ) -> Result<Vec<u8>, TpmResult> {
+        let mut op = self.acquire_tpm2()?;
         match op.runtime.as_mut() {
             None => Ok(Vec::new()),
             Some(runtime) => {
@@ -312,7 +361,7 @@ impl Library {
     }
 
     #[cfg(all(test, feature = "tpm2"))]
-    pub(in crate::library) fn stage_empty_state(&self, kind: StateBlobKind) {
+    pub(crate) fn stage_empty_state(&self, kind: StateBlobKind) {
         self.lock_state().preloaded_state.set_empty(kind);
     }
 
@@ -346,7 +395,7 @@ impl Library {
             let mut runtime_slot = self.lock_runtime();
             let displaced = runtime_slot.take();
             let mut state = self.lock_state();
-            if state.selected == TpmVersion::V2_0 {
+            if state.selected == crate::library::TpmVersion::V2_0 {
                 tpm2::terminate();
                 state.configured_profile = None;
             }
@@ -368,7 +417,7 @@ impl Library {
         {
             let runtime_slot = self.lock_runtime();
             let mut state = self.lock_state();
-            if state.selected != TpmVersion::V2_0 {
+            if state.selected != crate::library::TpmVersion::V2_0 {
                 return TPM_FAIL;
             }
             if runtime_slot.is_some() {
@@ -399,7 +448,7 @@ impl Library {
         {
             let mut runtime_slot = self.lock_runtime();
             let mut state = self.lock_state();
-            if state.selected != TpmVersion::V2_0 {
+            if state.selected != crate::library::TpmVersion::V2_0 {
                 return None;
             }
             if wanted_size != 0 {
@@ -432,7 +481,7 @@ impl Library {
 
     #[cfg(feature = "tpm2")]
     fn validate_tpm2_state(&self, mask: StateValidationMask) -> TpmResult {
-        let op = match self.tpm2_operation() {
+        let op = match self.acquire_tpm2() {
             Ok(op) => op,
             Err(code) => return code,
         };
@@ -444,7 +493,7 @@ impl Library {
         let loaded =
             tpm2::load_state_for_validation(op.services.storage_ref(), mask, cached_volatile);
         let mut state = self.lock_state();
-        let result = if state.selected != TpmVersion::V2_0 {
+        let result = if state.selected != crate::library::TpmVersion::V2_0 {
             TPM_FAIL
         } else {
             let outcome = tpm2::finish_validation(
@@ -473,7 +522,7 @@ impl Library {
                     #[cfg(test)]
                     self.fire_empty_state_gate(EmptyStatePhase::AfterRuntimeLock);
                     let mut state = self.lock_state();
-                    if state.selected != TpmVersion::V2_0 {
+                    if state.selected != crate::library::TpmVersion::V2_0 {
                         return TPM_FAIL;
                     }
                     state.preloaded_state.set_empty(kind);
@@ -481,7 +530,7 @@ impl Library {
                 }
                 StateInput::Data(bytes) => bytes,
             };
-            let op = match self.tpm2_operation() {
+            let op = match self.acquire_tpm2() {
                 Ok(op) => op,
                 Err(code) => return code,
             };
@@ -490,7 +539,7 @@ impl Library {
             }
             let outcome = self.validate_state_blob(kind, &bytes, op.services.storage_ref());
             let mut state = self.lock_state();
-            let result = if state.selected != TpmVersion::V2_0 {
+            let result = if state.selected != crate::library::TpmVersion::V2_0 {
                 TPM_FAIL
             } else {
                 if let Some(installed) = outcome.installed {
@@ -563,10 +612,7 @@ impl Library {
     pub fn get_state(&self, kind: StateBlobKind) -> Result<StateOutput, TpmResult> {
         #[cfg(feature = "tpm2")]
         {
-            let op = match self.tpm2_operation() {
-                Ok(op) => op,
-                Err(code) => return Err(code),
-            };
+            let op = self.acquire_tpm2()?;
             if let Some(runtime) = op.runtime.as_ref() {
                 return match kind {
                     StateBlobKind::Permanent => {
@@ -595,7 +641,7 @@ impl Library {
         #[cfg(feature = "tpm2")]
         {
             let runtime_slot = self.lock_runtime();
-            if self.lock_state().selected != TpmVersion::V2_0 {
+            if self.lock_state().selected != crate::library::TpmVersion::V2_0 {
                 return false;
             }
             runtime_slot
@@ -610,7 +656,7 @@ impl Library {
         #[cfg(feature = "tpm2")]
         {
             let runtime_slot = self.lock_runtime();
-            if self.lock_state().selected != TpmVersion::V2_0 {
+            if self.lock_state().selected != crate::library::TpmVersion::V2_0 {
                 return Err(TPM_FAIL);
             }
             runtime_slot
@@ -650,7 +696,7 @@ impl Library {
         #[cfg(feature = "tpm2")]
         {
             let runtime_slot = self.lock_runtime();
-            if self.lock_state().selected != TpmVersion::V2_0 {
+            if self.lock_state().selected != crate::library::TpmVersion::V2_0 {
                 return Err(TPM_FAIL);
             }
             runtime_slot
@@ -665,7 +711,7 @@ impl Library {
     pub fn tis_established_reset(&self) -> TpmResult {
         #[cfg(feature = "tpm2")]
         {
-            let mut op = match self.tpm2_operation() {
+            let mut op = match self.acquire_tpm2() {
                 Ok(op) => op,
                 Err(code) => return code,
             };
@@ -709,7 +755,7 @@ impl Library {
         operation: impl FnOnce(&mut tpm2::Tpm2Runtime) -> TpmResult,
     ) -> TpmResult {
         let mut runtime_slot = self.lock_runtime();
-        if self.lock_state().selected != TpmVersion::V2_0 {
+        if self.lock_state().selected != crate::library::TpmVersion::V2_0 {
             return TPM_FAIL;
         }
         match runtime_slot.as_mut() {
@@ -718,23 +764,23 @@ impl Library {
         }
     }
 
-    pub fn get_tpm_property(&self, prop: TpmlibTpmProperty) -> Option<c_int> {
-        if prop == TPMPROP_TPM_BUFFER_MAX {
+    pub fn get_tpm_property(&self, prop: TpmProperty) -> Option<u32> {
+        if prop == TpmProperty::BufferMax {
             return Some(TPM_BUFFER_MAX);
         }
         match self.lock_state().selected {
             #[cfg(feature = "tpm2")]
-            TpmVersion::V2_0 => tpm2::get_tpm_property(prop),
+            crate::library::TpmVersion::V2_0 => tpm2::get_tpm_property(prop),
             _ => None,
         }
     }
 
     #[cfg_attr(not(feature = "tpm2"), allow(unused_variables))]
-    pub fn get_info(&self, flags: TpmlibInfoFlags) -> Option<String> {
+    pub fn get_info(&self, flags: InformationFlags) -> Option<String> {
         #[cfg(feature = "tpm2")]
         {
             let runtime_slot = self.lock_runtime();
-            if self.lock_state().selected != TpmVersion::V2_0 {
+            if self.lock_state().selected != crate::library::TpmVersion::V2_0 {
                 return None;
             }
             Some(tpm2::get_info(flags, runtime_slot.as_ref()))
@@ -752,13 +798,11 @@ fn host_platform_inputs(platform: &dyn Platform) -> tpm2::PlatformInputs {
     }
 }
 
-impl Default for Library {
+impl Default for Tpm {
     fn default() -> Self {
-        Self::new()
+        Self::new(ExternalServices::default())
     }
 }
-
-static LIBRARY: LazyLock<Library> = LazyLock::new(Library::new);
 
 #[cfg(test)]
 mod tests {
@@ -769,43 +813,93 @@ mod tests {
     use crate::library::preloaded_state::PreloadedBlob;
     use crate::library::state_blob::StateBlobKind;
     #[cfg(feature = "tpm2")]
-    use crate::library::storage::test_support::TestStorage;
+    use crate::library::storage::StorageLoad;
     #[cfg(feature = "tpm2")]
-    use crate::library::storage::{StorageLoad, StorageOperation};
+    use crate::library::storage::test_support::TestStorage;
 
+    #[cfg(feature = "tpm2")]
     #[test]
-    fn unknown_version_failure() {
-        let library = Library::new();
-        assert_eq!(library.choose_tpm_version(2), TPM_FAIL);
-        assert_eq!(library.choose_tpm_version(-1), TPM_FAIL);
-        assert_eq!(library.lock_state().selected, TpmVersion::V1_2);
+    fn independent_instances() {
+        let first = Tpm::default();
+        let second = Tpm::default();
+        assert_eq!(
+            first.set_version(crate::library::TpmVersion::V2_0),
+            TPM_SUCCESS
+        );
+        assert!(first.tpm2_selected());
+        assert!(!second.tpm2_selected());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn explicit_instance_process() {
+        let tpm = Tpm::default();
+        assert_eq!(
+            tpm.set_version(crate::library::TpmVersion::V2_0),
+            TPM_SUCCESS
+        );
+        tpm.stage_empty_state(StateBlobKind::Permanent);
+        assert_eq!(tpm.initialize(), TPM_SUCCESS);
+        let response = tpm
+            .process(&[0x80, 0x01, 0, 0, 0, 12, 0, 0, 1, 0x44, 0, 0])
+            .expect("the response fits");
+        assert_eq!(response.len(), 10);
+        assert_eq!(&response[2..6], &10_u32.to_be_bytes());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn oversized_explicit_instance_process() {
+        const COMMAND_SIZE_RESPONSE: [u8; 10] =
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x42];
+
+        let tpm = Tpm::default();
+        assert_eq!(tpm.set_version(TpmVersion::V2_0), TPM_SUCCESS);
+        tpm.stage_empty_state(StateBlobKind::Permanent);
+        assert_eq!(tpm.initialize(), TPM_SUCCESS);
+
+        let mut command = vec![0u8; crate::library::constants::TPM_BUFFER_MAX as usize + 1];
+        let size = command.len() as u32;
+        command[..2].copy_from_slice(&[0x80, 0x01]);
+        command[2..6].copy_from_slice(&size.to_be_bytes());
+
+        assert_eq!(tpm.process(&command), Ok(COMMAND_SIZE_RESPONSE.to_vec()));
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn tpm2_selection_success() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        assert_eq!(library.lock_state().selected, TpmVersion::V2_0);
+        assert_eq!(
+            library.lock_state().selected,
+            crate::library::TpmVersion::V2_0
+        );
     }
 
     #[cfg(not(feature = "tpm1"))]
     #[test]
     fn tpm12_not_compiled_in_failure() {
-        let library = Library::new();
-        assert_eq!(library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2), TPM_FAIL);
-        assert_eq!(library.lock_state().selected, TpmVersion::V1_2);
+        let library = Tpm::default();
+        assert_eq!(
+            library.set_version(crate::library::TpmVersion::V1_2),
+            TPM_FAIL
+        );
+        assert_eq!(
+            library.lock_state().selected,
+            crate::library::TpmVersion::V1_2
+        );
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn same_version_reselection_preload_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library
@@ -813,7 +907,7 @@ mod tests {
             .preloaded_state
             .set_data(StateBlobKind::Permanent, vec![1, 2, 3]);
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         assert!(
@@ -827,30 +921,33 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn failed_main_init_lock_until_terminate() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        assert_eq!(library.main_init(), TPM_FAIL);
-        assert_eq!(library.choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_FAIL);
+        assert_eq!(library.initialize(), TPM_FAIL);
+        assert_eq!(
+            library.set_version(crate::library::TpmVersion::V2_0),
+            TPM_FAIL
+        );
         library.terminate();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
     }
 
     #[test]
     fn repeated_main_init_acceptance() {
-        let library = Library::new();
-        assert_eq!(library.main_init(), TPM_FAIL);
-        assert_eq!(library.main_init(), TPM_FAIL);
+        let library = Tpm::default();
+        assert_eq!(library.initialize(), TPM_FAIL);
+        assert_eq!(library.initialize(), TPM_FAIL);
     }
 
     #[test]
     fn terminate_without_init_preload_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         library
             .lock_state()
             .preloaded_state
@@ -868,63 +965,56 @@ mod tests {
 
     #[test]
     fn buffer_max_query_before_version_dispatch() {
-        let library = Library::new();
-        assert_eq!(library.get_tpm_property(TPMPROP_TPM_BUFFER_MAX), Some(4096));
+        let library = Tpm::default();
+        assert_eq!(library.get_tpm_property(TpmProperty::BufferMax), Some(4096));
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn tpm2_property_reference_build_parity() {
-        use crate::library::constants::{TPMPROP_TPM_KEY_HANDLES, TPMPROP_TPM_RSA_KEY_LENGTH_MAX};
-
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         assert_eq!(
-            library.get_tpm_property(TPMPROP_TPM_RSA_KEY_LENGTH_MAX),
+            library.get_tpm_property(TpmProperty::RsaKeyLengthMax),
             Some(3072)
         );
-        assert_eq!(library.get_tpm_property(TPMPROP_TPM_KEY_HANDLES), Some(3));
-        for prop in 4..=15 {
-            assert_eq!(library.get_tpm_property(prop), None, "prop {prop}");
-        }
+        assert_eq!(library.get_tpm_property(TpmProperty::KeyHandles), Some(3));
     }
 
     #[cfg(not(feature = "tpm1"))]
     #[test]
     fn disabled_version_no_properties_or_info() {
-        use crate::library::constants::TPMPROP_TPM_RSA_KEY_LENGTH_MAX;
-
-        let library = Library::new();
-        assert_eq!(
-            library.get_tpm_property(TPMPROP_TPM_RSA_KEY_LENGTH_MAX),
-            None
-        );
-        assert!(library.get_info(0).is_none());
+        let library = Tpm::default();
+        assert_eq!(library.get_tpm_property(TpmProperty::RsaKeyLengthMax), None);
+        assert!(library.get_info(InformationFlags::default()).is_none());
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn get_info_tpm2_dispatch() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        assert_eq!(library.get_info(0).as_deref(), Some("{}"));
+        assert_eq!(
+            library.get_info(InformationFlags::default()).as_deref(),
+            Some("{}")
+        );
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn main_init_failure_no_runtime() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        assert_eq!(library.main_init(), TPM_FAIL);
+        assert_eq!(library.initialize(), TPM_FAIL);
         assert!(!library.runtime_is_initialized());
         assert!(!library.was_manufactured());
         library.terminate();
@@ -932,13 +1022,13 @@ mod tests {
 
     #[test]
     fn volatile_store_no_running_tpm_failure() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(library.volatile_all_store(), Err(TPM_FAIL));
 
         #[cfg(feature = "tpm2")]
         {
             assert_eq!(
-                library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+                library.set_version(crate::library::TpmVersion::V2_0),
                 TPM_SUCCESS
             );
             assert_eq!(library.volatile_all_store(), Err(TPM_FAIL));
@@ -946,10 +1036,10 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn tpm2_library() -> Library {
-        let library = Library::new();
+    fn tpm2_library() -> Tpm {
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library
@@ -957,7 +1047,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[track_caller]
-    fn buffer_size(library: &Library, wanted_size: u32) -> u32 {
+    fn buffer_size(library: &Tpm, wanted_size: u32) -> u32 {
         let limits = library
             .set_buffer_size(wanted_size)
             .expect("TPM 2 is selected");
@@ -994,7 +1084,7 @@ mod tests {
         let library = tpm2_library();
         let untouched = tpm2_library();
         library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(library.tpm2_runtime_buffer_size(), Some(4096));
 
         assert_eq!(buffer_size(&library, 3000), 3000);
@@ -1012,7 +1102,7 @@ mod tests {
         library.terminate();
         assert_eq!(buffer_size(&library, 0), 3000, "terminate keeps the value");
         library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(
             library.tpm2_runtime_buffer_size(),
             Some(3000),
@@ -1035,8 +1125,8 @@ mod tests {
         }
 
         #[track_caller]
-        fn response_code(library: &Library, size: u32) -> u32 {
-            let response = library.process(&unsupported_command(size)).unwrap();
+        fn response_code(library: &Tpm, size: u32) -> u32 {
+            let response = library.process_input(&unsupported_command(size)).unwrap();
             u32::from_be_bytes(response[6..10].try_into().unwrap())
         }
 
@@ -1044,7 +1134,7 @@ mod tests {
 
         let library = tpm2_library();
         library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
 
         assert_eq!(response_code(&library, 4096), COMMAND_CODE);
         assert_eq!(buffer_size(&library, 2808), 2808);
@@ -1068,14 +1158,14 @@ mod tests {
         const MAX_RESPONSE_SIZE: u32 = 0x11f;
 
         #[track_caller]
-        fn reported(library: &Library, property: u32) -> u32 {
+        fn reported(library: &Tpm, property: u32) -> u32 {
             let mut bytes = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x16];
             bytes.extend_from_slice(&0x0000_017au32.to_be_bytes());
             bytes.extend_from_slice(&6u32.to_be_bytes());
             bytes.extend_from_slice(&property.to_be_bytes());
             bytes.extend_from_slice(&1u32.to_be_bytes());
             let input = crate::library::CommandInput::new(bytes.len() as u32, bytes);
-            let response = library.process(&input).unwrap();
+            let response = library.process_input(&input).unwrap();
             assert_eq!(&response[6..10], &[0, 0, 0, 0], "TPM_RC_SUCCESS");
             assert_eq!(&response[19..23], &property.to_be_bytes());
             u32::from_be_bytes(response[23..27].try_into().unwrap())
@@ -1087,14 +1177,14 @@ mod tests {
         *BACKEND_PERMALL.lock().unwrap() = None;
         *BACKEND_STORES.lock().unwrap() = 0;
         let library = manufacture_library();
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         let startup = crate::library::CommandInput::new(
             12,
             vec![
                 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
             ],
         );
-        library.process(&startup).unwrap();
+        library.process_input(&startup).unwrap();
 
         assert_eq!(reported(&library, MAX_COMMAND_SIZE), 4096);
         assert_eq!(reported(&library, MAX_RESPONSE_SIZE), 4096);
@@ -1102,16 +1192,16 @@ mod tests {
         assert_eq!(reported(&library, MAX_COMMAND_SIZE), 2808);
         assert_eq!(reported(&library, MAX_RESPONSE_SIZE), 2808);
         assert_eq!(
-            library.get_tpm_property(TPMPROP_TPM_BUFFER_MAX),
+            library.get_tpm_property(TpmProperty::BufferMax),
             Some(4096),
-            "TPMPROP_TPM_BUFFER_MAX stays the compile-time maximum"
+            "TpmProperty::BufferMax stays the compile-time maximum"
         );
         library.terminate();
     }
 
     #[test]
     fn set_buffer_size_no_tpm2_selection_empty_report() {
-        let library = Library::new();
+        let library = Tpm::default();
         for wanted_size in [0u32, 1, 2808, 4096, u32::MAX] {
             assert_eq!(library.set_buffer_size(wanted_size), None);
         }
@@ -1130,34 +1220,37 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn native_storage_independence() {
-        let library = Library::new();
+        let library = Tpm::default();
         library.register_storage(TestStorage::new().on_can_store(|| true).arc());
-        assert!(library.lock_state().services.storage().can_store());
+        assert!(library.lock_state().services.storage_ref().supports_store());
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn native_storage_platform_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         library.register_external_services(ExternalServices::new(
             locality_platform(3),
             Arc::new(crate::library::storage::NoStorage),
         ));
         library.register_storage(TestStorage::new().on_can_store(|| true).arc());
         let state = library.lock_state();
-        assert_eq!(state.services.platform().locality(), 3);
-        assert!(state.services.storage().can_store());
+        assert_eq!(state.services.platform_ref().locality(), 3);
+        assert!(state.services.storage_ref().supports_store());
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn native_platform_storage_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         library.register_storage(TestStorage::new().on_can_store(|| true).arc());
         library.register_platform(locality_platform(4));
         let state = library.lock_state();
-        assert_eq!(state.services.platform().locality(), 4);
-        assert!(state.services.storage().can_store(), "the storage survives");
+        assert_eq!(state.services.platform_ref().locality(), 4);
+        assert!(
+            state.services.storage_ref().supports_store(),
+            "the storage survives"
+        );
     }
 
     #[cfg(feature = "tpm2")]
@@ -1165,7 +1258,7 @@ mod tests {
     fn platform_execution_outside_state_lock() {
         let library = Arc::new(tpm2_library());
         library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
 
         let seen: Arc<Mutex<Vec<(&'static str, bool)>>> = Arc::new(Mutex::new(Vec::new()));
         let locality_seen = Arc::clone(&seen);
@@ -1193,7 +1286,7 @@ mod tests {
         );
 
         library
-            .process(&startup_clear())
+            .process_input(&startup_clear())
             .expect("the response fits");
         assert_eq!(
             *seen.lock().unwrap(),
@@ -1216,7 +1309,7 @@ mod tests {
             .set_empty(StateBlobKind::Permanent);
 
         for attempt in 0..2 {
-            assert_eq!(library.main_init(), 42, "attempt {attempt}");
+            assert_eq!(library.initialize(), 42, "attempt {attempt}");
             assert!(!library.runtime_is_initialized(), "attempt {attempt}");
             assert_eq!(
                 *library
@@ -1228,9 +1321,9 @@ mod tests {
             );
         }
 
-        library.register_platform(Arc::new(crate::library::platform::NoPlatform));
+        library.register_platform(Arc::new(crate::library::platform::DefaultPlatform));
         assert_eq!(
-            library.main_init(),
+            library.initialize(),
             TPM_SUCCESS,
             "a working platform initializes the same library"
         );
@@ -1240,23 +1333,23 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn external_service_replacement() {
-        let library = Library::new();
+        let library = Tpm::default();
         library.register_external_services(ExternalServices::new(
             locality_platform(3),
             TestStorage::new().on_can_store(|| true).arc(),
         ));
         library.register_external_services(no_services());
         let state = library.lock_state();
-        assert_eq!(state.services.platform().locality(), 0);
-        assert!(!state.services.storage().can_store());
+        assert_eq!(state.services.platform_ref().locality(), 0);
+        assert!(!state.services.storage_ref().supports_store());
     }
 
     #[cfg(all(feature = "tpm1", feature = "tpm2"))]
     #[test]
     fn version_switch_preloaded_state_clear() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library
@@ -1268,7 +1361,7 @@ mod tests {
             .preloaded_state
             .set_empty(StateBlobKind::Volatile);
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+            library.set_version(crate::library::TpmVersion::V1_2),
             TPM_SUCCESS
         );
         let state = library.lock_state();
@@ -1280,16 +1373,16 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn preloaded_empty_no_manufacture_init_and_consumption() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library
             .lock_state()
             .preloaded_state
             .set_empty(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(
             *library
                 .lock_state()
@@ -1306,9 +1399,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn failed_preloaded_empty_init_staged_entry_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library
@@ -1320,7 +1413,7 @@ mod tests {
             .preloaded_state
             .set_data(StateBlobKind::Volatile, vec![0xd0, 0x0d]);
         assert_eq!(
-            library.main_init(),
+            library.initialize(),
             crate::library::constants::TPM_RC_FAILURE
         );
         assert_eq!(
@@ -1344,11 +1437,11 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn valid_permanent_state_init_staged_blob_consumption() {
-        const INFO_ACTIVE_PROFILE: crate::types::TpmlibInfoFlags = 32;
+        const INFO_ACTIVE_PROFILE: InformationFlags = InformationFlags::ACTIVE_PROFILE;
 
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         let blob = crate::library::tpm2::valid_permanent_state_fixture();
@@ -1361,7 +1454,7 @@ mod tests {
             Some("{}"),
             "no active profile before a successful MainInit"
         );
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(
             *library
                 .lock_state()
@@ -1398,13 +1491,13 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn backend_loaded_permanent_state_initialization() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library.register_storage(fixture_backend_storage().arc());
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(library.runtime_is_initialized());
         assert!(!library.was_manufactured());
         library.terminate();
@@ -1413,9 +1506,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn commit_phase_failure_preloaded_state_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         let blob = crate::library::tpm2::commit_failing_permanent_state_fixture();
@@ -1424,7 +1517,7 @@ mod tests {
             .preloaded_state
             .set_data(StateBlobKind::Permanent, blob.clone());
         for attempt in 0..2 {
-            assert_eq!(library.main_init(), TPM_FAIL, "attempt {attempt}");
+            assert_eq!(library.initialize(), TPM_FAIL, "attempt {attempt}");
             assert_eq!(
                 *library
                     .lock_state()
@@ -1440,9 +1533,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn repeated_main_init_after_success_library_semantics() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         let blob = crate::library::tpm2::valid_permanent_state_fixture();
@@ -1450,10 +1543,10 @@ mod tests {
             .lock_state()
             .preloaded_state
             .set_data(StateBlobKind::Permanent, blob);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(library.runtime_is_initialized());
         assert_eq!(
-            library.main_init(),
+            library.initialize(),
             TPM_FAIL,
             "no staged state and no backend: the manufacture boundary"
         );
@@ -1466,9 +1559,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn successful_main_init_staged_entry_consumption() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         let blob = crate::library::tpm2::valid_permanent_state_fixture();
@@ -1480,7 +1573,7 @@ mod tests {
             .lock_state()
             .preloaded_state
             .set_empty(StateBlobKind::Volatile);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         let state = library.lock_state();
         assert_eq!(
             *state.preloaded_state.get(StateBlobKind::Permanent),
@@ -1496,11 +1589,11 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn volatile_boundary_failure_staged_blob_preservation() {
-        const INFO_ACTIVE_PROFILE: crate::types::TpmlibInfoFlags = 32;
+        const INFO_ACTIVE_PROFILE: InformationFlags = InformationFlags::ACTIVE_PROFILE;
 
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         let permanent = crate::library::tpm2::valid_permanent_state_fixture();
@@ -1515,7 +1608,7 @@ mod tests {
             .set_data(StateBlobKind::Volatile, volatile.clone());
         for attempt in 0..2 {
             assert_eq!(
-                library.main_init(),
+                library.initialize(),
                 crate::library::constants::TPM_RC_FAILURE,
                 "attempt {attempt}"
             );
@@ -1543,9 +1636,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn bad_volatile_digest_staged_blob_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         let permanent = crate::library::tpm2::valid_permanent_state_fixture();
@@ -1562,7 +1655,7 @@ mod tests {
             .set_data(StateBlobKind::Volatile, volatile.clone());
         for attempt in 0..2 {
             assert_eq!(
-                library.main_init(),
+                library.initialize(),
                 crate::library::constants::TPM_RC_FAILURE,
                 "attempt {attempt}"
             );
@@ -1585,9 +1678,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn valid_volatile_state_restore_and_consumption() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         let permanent = crate::library::tpm2::valid_permanent_state_fixture();
@@ -1601,7 +1694,7 @@ mod tests {
                 .lock_state()
                 .preloaded_state
                 .set_data(StateBlobKind::Volatile, volatile.clone());
-            assert_eq!(library.main_init(), TPM_SUCCESS, "round {round}");
+            assert_eq!(library.initialize(), TPM_SUCCESS, "round {round}");
             let state = library.lock_state();
             assert_eq!(
                 *state.preloaded_state.get(StateBlobKind::Permanent),
@@ -1645,11 +1738,11 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn backend_store(kind: StateBlobKind, data: &[u8]) -> Result<StorageOperation, TpmResult> {
+    fn backend_store(kind: StateBlobKind, data: &[u8]) -> Result<(), TpmResult> {
         assert_eq!(kind, StateBlobKind::Permanent);
         *BACKEND_PERMALL.lock().unwrap() = Some(data.to_vec());
         *BACKEND_STORES.lock().unwrap() += 1;
-        Ok(StorageOperation::Done)
+        Ok(())
     }
 
     #[cfg(feature = "tpm2")]
@@ -1674,10 +1767,10 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn manufacture_library() -> Library {
-        let library = Library::new();
+    fn manufacture_library() -> Tpm {
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library.register_storage(manufacture_storage().arc());
@@ -1686,7 +1779,7 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    const INFO_ACTIVE_PROFILE: crate::types::TpmlibInfoFlags = 32;
+    const INFO_ACTIVE_PROFILE: InformationFlags = InformationFlags::ACTIVE_PROFILE;
 
     #[cfg(feature = "tpm2")]
     #[test]
@@ -1704,7 +1797,7 @@ mod tests {
             Some("{}"),
             "no ActiveProfile before a successful MainInit"
         );
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(
             library.was_manufactured(),
             "TPMLIB_WasManufactured after a first-boot Manufacture"
@@ -1723,7 +1816,7 @@ mod tests {
             !library.was_manufactured(),
             "termination drops the manufactured runtime"
         );
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(
             !library.was_manufactured(),
             "a restored-state MainInit never reports was_manufactured"
@@ -1750,7 +1843,7 @@ mod tests {
         *BACKEND_PERMALL.lock().unwrap() = None;
         *BACKEND_STORES.lock().unwrap() = 0;
         let library = manufacture_library();
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
 
         let startup = crate::library::CommandInput::new(
             12,
@@ -1759,7 +1852,7 @@ mod tests {
             ],
         );
         let stores_before = *BACKEND_STORES.lock().unwrap();
-        let response = library.process(&startup).unwrap();
+        let response = library.process_input(&startup).unwrap();
         assert_eq!(
             response,
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00],
@@ -1772,7 +1865,7 @@ mod tests {
         );
         assert!(BACKEND_PERMALL.lock().unwrap().is_some());
 
-        let response = library.process(&startup).unwrap();
+        let response = library.process_input(&startup).unwrap();
         assert_eq!(
             response,
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x00],
@@ -1788,7 +1881,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     struct DropProbe {
-        library: Arc<Library>,
+        library: Arc<Tpm>,
         seen: Arc<Mutex<Vec<(bool, bool)>>>,
     }
 
@@ -1800,7 +1893,7 @@ mod tests {
                 self.library.runtime_is_unlocked(),
             );
             self.library
-                .register_platform(Arc::new(crate::library::platform::NoPlatform));
+                .register_platform(Arc::new(crate::library::platform::DefaultPlatform));
             self.seen
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -1825,7 +1918,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     fn probe_platform(
-        library: &Arc<Library>,
+        library: &Arc<Tpm>,
         seen: &Arc<Mutex<Vec<(bool, bool)>>>,
     ) -> Arc<dyn Platform> {
         Arc::new(DropProbe {
@@ -1835,10 +1928,7 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn probe_storage(
-        library: &Arc<Library>,
-        seen: &Arc<Mutex<Vec<(bool, bool)>>>,
-    ) -> Arc<dyn Storage> {
+    fn probe_storage(library: &Arc<Tpm>, seen: &Arc<Mutex<Vec<(bool, bool)>>>) -> Arc<dyn Storage> {
         let probe = DropProbe {
             library: Arc::clone(library),
             seen: Arc::clone(seen),
@@ -1854,19 +1944,19 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn displaced_platform_drop_order() {
-        let library = Arc::new(Library::new());
+        let library = Arc::new(Tpm::default());
         let seen = Arc::new(Mutex::new(Vec::new()));
         library.register_platform(probe_platform(&library, &seen));
         assert!(seen.lock().unwrap().is_empty(), "still registered");
 
-        library.register_platform(Arc::new(crate::library::platform::NoPlatform));
+        library.register_platform(Arc::new(crate::library::platform::DefaultPlatform));
         assert_eq!(*seen.lock().unwrap(), [(true, true)]);
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn displaced_storage_drop_order() {
-        let library = Arc::new(Library::new());
+        let library = Arc::new(Tpm::default());
         let seen = Arc::new(Mutex::new(Vec::new()));
         library.register_storage(probe_storage(&library, &seen));
         assert!(seen.lock().unwrap().is_empty(), "still registered");
@@ -1878,7 +1968,7 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn displaced_services_drop_order() {
-        let library = Arc::new(Library::new());
+        let library = Arc::new(Tpm::default());
         let seen = Arc::new(Mutex::new(Vec::new()));
         library.register_external_services(ExternalServices::new(
             probe_platform(&library, &seen),
@@ -1913,17 +2003,17 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn running_library() -> Arc<Library> {
+    fn running_library() -> Arc<Tpm> {
         *BACKEND_PERMALL.lock().unwrap() = None;
         *BACKEND_STORES.lock().unwrap() = 0;
         let library = Arc::new(manufacture_library());
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         library
     }
 
     #[cfg(feature = "tpm2")]
     struct ParkedCommand {
-        library: Arc<Library>,
+        library: Arc<Tpm>,
         entered: std::sync::mpsc::Receiver<()>,
         release: std::sync::mpsc::SyncSender<()>,
         commit_done: Arc<std::sync::atomic::AtomicBool>,
@@ -2011,11 +2101,11 @@ mod tests {
         let library = &parked.library;
 
         let (first, second_saw_commit, second) = std::thread::scope(|scope| {
-            let first = scope.spawn(|| library.process(&startup_clear()));
+            let first = scope.spawn(|| library.process_input(&startup_clear()));
             parked.await_parked();
             let commit_done = Arc::clone(&parked.commit_done);
             let second = scope.spawn(move || {
-                let response = library.process(&shutdown_state());
+                let response = library.process_input(&shutdown_state());
                 (
                     commit_done.load(std::sync::atomic::Ordering::SeqCst),
                     response,
@@ -2062,7 +2152,7 @@ mod tests {
         let library = &parked.library;
 
         let (response, terminated_after_commit) = std::thread::scope(|scope| {
-            let command = scope.spawn(|| library.process(&startup_clear()));
+            let command = scope.spawn(|| library.process_input(&startup_clear()));
             parked.await_parked();
             let commit_done = Arc::clone(&parked.commit_done);
             let terminator = scope.spawn(move || {
@@ -2088,7 +2178,7 @@ mod tests {
         );
         assert!(!library.runtime_is_initialized());
         assert_eq!(
-            library.process(&startup_clear()),
+            library.process_input(&startup_clear()),
             Ok(Vec::new()),
             "the terminated library answers like a stopped TPM"
         );
@@ -2104,7 +2194,7 @@ mod tests {
         let library = &parked.library;
 
         let (response, read_after_commit, read) = std::thread::scope(|scope| {
-            let command = scope.spawn(|| library.process(&startup_clear()));
+            let command = scope.spawn(|| library.process_input(&startup_clear()));
             parked.await_parked();
             let commit_done = Arc::clone(&parked.commit_done);
             let reader = scope.spawn(move || {
@@ -2148,7 +2238,7 @@ mod tests {
         let library = &parked.library;
 
         let (response, validated_after_commit, result) = std::thread::scope(|scope| {
-            let command = scope.spawn(|| library.process(&startup_clear()));
+            let command = scope.spawn(|| library.process_input(&startup_clear()));
             parked.await_parked();
             let commit_done = Arc::clone(&parked.commit_done);
             let validator = scope.spawn(move || {
@@ -2202,7 +2292,7 @@ mod tests {
         }));
 
         let (response, staged_after_commit, staged) = std::thread::scope(|scope| {
-            let command = scope.spawn(|| library.process(&startup_clear()));
+            let command = scope.spawn(|| library.process_input(&startup_clear()));
             parked.await_parked();
             let commit_done = Arc::clone(&parked.commit_done);
             let stager = scope.spawn(move || {
@@ -2271,7 +2361,7 @@ mod tests {
                 .recv_timeout(PARK_TIMEOUT)
                 .expect("timed out waiting for the empty-state update to hold the runtime");
             assert_eq!(
-                library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+                library.set_version(crate::library::TpmVersion::V1_2),
                 TPM_SUCCESS
             );
             release_tx.send(()).expect("the stager resumes");
@@ -2302,10 +2392,10 @@ mod tests {
         let library = &parked.library;
 
         let response = std::thread::scope(|scope| {
-            let command = scope.spawn(|| library.process(&startup_clear()));
+            let command = scope.spawn(|| library.process_input(&startup_clear()));
             parked.await_parked();
             assert_eq!(
-                library.cancel_command(),
+                library.cancel(),
                 TPM_SUCCESS,
                 "CancelCommand never touches the runtime mutex"
             );
@@ -2413,7 +2503,7 @@ mod tests {
         );
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            library.process(&startup_clear())
+            library.process_input(&startup_clear())
         }));
         assert!(outcome.is_err(), "the callback panic reaches the caller");
         assert_eq!(
@@ -2449,7 +2539,7 @@ mod tests {
         );
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            library.process(&startup_clear())
+            library.process_input(&startup_clear())
         }));
         assert!(outcome.is_err(), "the callback panic reaches the caller");
         assert_eq!(
@@ -2487,7 +2577,7 @@ mod tests {
         );
 
         let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| library.main_init()));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| library.initialize()));
         assert!(outcome.is_err(), "the callback panic reaches the caller");
         assert_eq!(
             *seen.lock().unwrap(),
@@ -2518,12 +2608,12 @@ mod tests {
                 .on_init(move || {
                     let _ = &probe;
                     swap.register_storage(manufacture_storage().arc());
-                    Ok(StorageOperation::Done)
+                    Ok(())
                 })
                 .arc(),
         );
 
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(
             *seen.lock().unwrap(),
             [(true, true)],
@@ -2554,7 +2644,7 @@ mod tests {
                 .on_store(move |kind, _| {
                     assert_eq!(kind, StateBlobKind::Permanent);
                     recorder.lock().unwrap().push(format!("storage:{name}"));
-                    Ok(StorageOperation::Done)
+                    Ok(())
                 })
                 .arc();
             ExternalServices::new(platform, storage)
@@ -2568,7 +2658,7 @@ mod tests {
             TestStorage::new()
                 .on_store(move |_, _| {
                     recorder.lock().unwrap().push("storage:a".to_owned());
-                    Ok(StorageOperation::Done)
+                    Ok(())
                 })
                 .arc()
         };
@@ -2610,15 +2700,15 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner);
         let library = started_library();
 
-        assert_eq!(library.cancel_command(), TPM_SUCCESS);
+        assert_eq!(library.cancel(), TPM_SUCCESS);
         assert!(library.cancel_is_requested());
         library.terminate();
         assert_eq!(
-            library.cancel_command(),
+            library.cancel(),
             TPM_SUCCESS,
             "still dispatched to TPM 2.0 after Terminate"
         );
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(
             response_code(&execute(&library, &startup_clear())),
             0,
@@ -2639,7 +2729,7 @@ mod tests {
         let seen: Arc<Mutex<Vec<(&'static str, bool)>>> = Arc::new(Mutex::new(Vec::new()));
         let observed = |what: &'static str,
                         seen: &Arc<Mutex<Vec<(&'static str, bool)>>>,
-                        library: &Arc<Library>| {
+                        library: &Arc<Tpm>| {
             let entry = (what, library.state_is_unlocked());
             seen.lock().unwrap().push(entry);
         };
@@ -2650,12 +2740,12 @@ mod tests {
         library.register_storage(
             TestStorage::new()
                 .on_can_store(move || {
-                    observed("can_store", &can_store_seen, &can_store_library);
+                    observed("supports_store", &can_store_seen, &can_store_library);
                     true
                 })
                 .on_store(move |_, _| {
                     observed("store", &store_seen, &store_library);
-                    Ok(StorageOperation::Done)
+                    Ok(())
                 })
                 .arc(),
         );
@@ -2663,7 +2753,7 @@ mod tests {
         assert_eq!(response_code(&execute(&library, &startup_clear())), 0);
         assert_eq!(
             *seen.lock().unwrap(),
-            [("can_store", true), ("store", true)],
+            [("supports_store", true), ("store", true)],
             "the commit calls storage with the state mutex free"
         );
         library.terminate();
@@ -2702,7 +2792,7 @@ mod tests {
             TestStorage::new()
                 .on_store(move |_, _| {
                     *counter.lock().unwrap() += 1;
-                    Ok(StorageOperation::Done)
+                    Ok(())
                 })
                 .arc(),
         );
@@ -2750,11 +2840,11 @@ mod tests {
                         TestStorage::new()
                             .on_store(move |_, _| {
                                 *counter.lock().unwrap() += 1;
-                                Ok(StorageOperation::Done)
+                                Ok(())
                             })
                             .arc(),
                     );
-                    Ok(StorageOperation::Done)
+                    Ok(())
                 })
                 .arc(),
         );
@@ -2790,16 +2880,16 @@ mod tests {
         *BACKEND_PERMALL.lock().unwrap() = None;
         *BACKEND_STORES.lock().unwrap() = 0;
         let library = manufacture_library();
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(library.was_manufactured());
         library.terminate();
         *BACKEND_PERMALL.lock().unwrap() = None;
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library.lock_state().entropy_override = Some(deterministic_entropy);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(library.was_manufactured(), "a clean re-manufacture");
         assert_eq!(*BACKEND_STORES.lock().unwrap(), 2);
         library.terminate();
@@ -2839,7 +2929,7 @@ mod tests {
             Some(&profile[..])
         );
 
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(library.was_manufactured());
         let info = library.get_info(INFO_ACTIVE_PROFILE).unwrap();
         assert!(
@@ -2878,7 +2968,7 @@ mod tests {
 
     #[test]
     fn set_profile_no_tpm2_selection_failure() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(library.set_profile(Some(br#"{"Name":"null"}"#)), TPM_FAIL);
         assert_eq!(library.set_profile(None), TPM_FAIL);
     }
@@ -2901,7 +2991,7 @@ mod tests {
             .set_data(StateBlobKind::Volatile, vec![0xd0, 0x0d]);
 
         for attempt in 0..2 {
-            assert_eq!(library.main_init(), TPM_FAIL, "attempt {attempt}");
+            assert_eq!(library.initialize(), TPM_FAIL, "attempt {attempt}");
             assert!(!library.runtime_is_initialized(), "attempt {attempt}");
             let state = library.lock_state();
             assert_eq!(
@@ -2933,16 +3023,16 @@ mod tests {
     fn main_init_failure_preload_preservation() {
         use crate::library::constants::TPM_RC_INSUFFICIENT;
 
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library
             .lock_state()
             .preloaded_state
             .set_data(StateBlobKind::Permanent, vec![4, 5, 6]);
-        assert_eq!(library.main_init(), TPM_RC_INSUFFICIENT);
+        assert_eq!(library.initialize(), TPM_RC_INSUFFICIENT);
         assert_eq!(
             *library
                 .lock_state()
@@ -2957,7 +3047,7 @@ mod tests {
 
     #[test]
     fn tis_call_no_tpm2_selection_failure() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(library.tis_established_get(), Err(TPM_FAIL));
         assert_eq!(library.tis_established_reset(), TPM_FAIL);
         assert_eq!(library.tis_hash_start(), TPM_FAIL);
@@ -2968,9 +3058,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn tis_call_uninitialized_runtime_failure() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         assert_eq!(library.tis_established_get(), Err(TPM_FAIL));
@@ -3001,7 +3091,7 @@ mod tests {
         *BACKEND_PERMALL.lock().unwrap() = None;
         *BACKEND_STORES.lock().unwrap() = 0;
         let library = manufacture_library();
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
 
         assert_eq!(library.tis_established_get(), Ok(false));
         assert_eq!(library.tis_hash_data(&[1]), TPM_SUCCESS, "no-op data");
@@ -3045,9 +3135,9 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn restored_volatile_state_established_flag_preservation() {
-        let library = Library::new();
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         library.lock_state().preloaded_state.set_data(
@@ -3058,7 +3148,7 @@ mod tests {
             StateBlobKind::Volatile,
             crate::library::tpm2::valid_volatile_state_fixture(),
         );
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(
             library.tis_established_get(),
             Ok(true),
@@ -3076,7 +3166,7 @@ mod tests {
 
     #[test]
     fn state_transfer_no_tpm2_selection_failure() {
-        let library = Library::new();
+        let library = Tpm::default();
         for kind in [
             StateBlobKind::Permanent,
             StateBlobKind::Volatile,
@@ -3203,7 +3293,11 @@ mod tests {
         );
         drop(state);
         assert!(!library.runtime_is_initialized());
-        assert_eq!(library.main_init(), TPM_SUCCESS, "the pair really restores");
+        assert_eq!(
+            library.initialize(),
+            TPM_SUCCESS,
+            "the pair really restores"
+        );
         library.terminate();
     }
 
@@ -3282,7 +3376,7 @@ mod tests {
             fixture_backend_storage()
                 .on_init(|| {
                     record_event("init".to_owned());
-                    Ok(StorageOperation::Done)
+                    Ok(())
                 })
                 .arc(),
         );
@@ -3300,7 +3394,7 @@ mod tests {
     fn active_runtime_state_rejection_empty_state_acceptance() {
         let library = tpm2_library();
         library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
 
         let permanent = crate::library::tpm2::valid_permanent_state_fixture();
         assert_eq!(
@@ -3352,7 +3446,7 @@ mod tests {
             StateBlobKind::Permanent,
             crate::library::tpm2::valid_permanent_state_fixture(),
         );
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
 
         let permanent = library
             .get_state(StateBlobKind::Permanent)
@@ -3451,7 +3545,7 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn recording_init(outcome: Result<StorageOperation, TpmResult>) -> TestStorage {
+    fn recording_init(outcome: Result<(), TpmResult>) -> TestStorage {
         TestStorage::new().on_init(move || {
             record_event("init".to_owned());
             outcome
@@ -3478,7 +3572,7 @@ mod tests {
         NVRAM_EVENTS.lock().unwrap().clear();
         let library = tpm2_library();
         library.register_storage(
-            recording_load(recording_init(Ok(StorageOperation::Done)), |_| {
+            recording_load(recording_init(Ok(())), |_| {
                 Ok(StorageLoad::Data(vec![0xa5, 0x5a]))
             })
             .arc(),
@@ -3544,16 +3638,10 @@ mod tests {
             "a failed initialization stops before the load"
         );
 
-        library.register_storage(
-            recording_load(recording_init(Ok(StorageOperation::Done)), |_| Err(0x1357)).arc(),
-        );
+        library.register_storage(recording_load(recording_init(Ok(())), |_| Err(0x1357)).arc());
         assert_eq!(library.get_state(StateBlobKind::Permanent), Err(0x1357));
 
-        library.register_storage(
-            recording_init(Ok(StorageOperation::Done))
-                .on_load(backend_load)
-                .arc(),
-        );
+        library.register_storage(recording_init(Ok(())).on_load(backend_load).arc());
         *BACKEND_PERMALL.lock().unwrap() = None;
         assert_eq!(
             library.get_state(StateBlobKind::Permanent),
@@ -3561,7 +3649,7 @@ mod tests {
             "an absent blob is reported with the callback's own code"
         );
 
-        library.register_storage(recording_init(Ok(StorageOperation::Done)).arc());
+        library.register_storage(recording_init(Ok(())).arc());
         assert_eq!(
             library.get_state(StateBlobKind::Permanent),
             Err(TPM_FAIL),
@@ -3631,28 +3719,28 @@ mod tests {
                 .lock_state()
                 .preloaded_state
                 .set_data(StateBlobKind::Volatile, blob);
-            assert_eq!(library.main_init(), TPM_RC_FAILURE);
+            assert_eq!(library.initialize(), TPM_RC_FAILURE);
         }
     }
 
-    const VALIDATE_PERMANENT: c_int = 1;
-    const VALIDATE_VOLATILE: c_int = 2;
-    const VALIDATE_SAVE_STATE: c_int = 4;
+    const VALIDATE_PERMANENT: u32 = 1;
+    const VALIDATE_VOLATILE: u32 = 2;
+    const VALIDATE_SAVE_STATE: u32 = 4;
 
-    fn validation_mask(bits: c_int) -> StateValidationMask {
-        StateValidationMask::from_c(bits)
+    fn validation_mask(bits: u32) -> StateValidationMask {
+        StateValidationMask::from_bits(bits)
     }
 
     #[test]
     fn validation_no_tpm2_selection_failure() {
-        let library = Library::new();
+        let library = Tpm::default();
         for bits in [
             0,
             VALIDATE_PERMANENT,
             VALIDATE_VOLATILE,
             VALIDATE_SAVE_STATE,
             VALIDATE_PERMANENT | VALIDATE_VOLATILE | VALIDATE_SAVE_STATE,
-            -1,
+            u32::MAX,
         ] {
             assert_eq!(
                 library.validate_state(validation_mask(bits)),
@@ -3677,15 +3765,12 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     fn state_backend_storage() -> TestStorage {
-        recording_load(
-            recording_init(Ok(StorageOperation::Done)),
-            state_backend_load,
-        )
+        recording_load(recording_init(Ok(())), state_backend_load)
     }
 
     #[cfg(feature = "tpm2")]
     struct ValidationFixture {
-        library: Library,
+        library: Tpm,
         _serial: std::sync::MutexGuard<'static, ()>,
     }
 
@@ -3742,7 +3827,7 @@ mod tests {
             NVRAM_EVENTS.lock().unwrap().clear();
         }
 
-        fn validate(&self, bits: c_int) -> TpmResult {
+        fn validate(&self, bits: u32) -> TpmResult {
             self.library.validate_state(validation_mask(bits))
         }
     }
@@ -3772,7 +3857,7 @@ mod tests {
     fn unknown_bits_no_validation() {
         let fixture = ValidationFixture::new();
         fixture.with_backend();
-        for bits in [8, 16, 1 << 30, i32::MIN] {
+        for bits in [8, 16, 1 << 30, 1 << 31] {
             fixture.forget_events();
             assert_eq!(fixture.validate(bits), TPM_SUCCESS, "mask {bits}");
             assert_eq!(fixture.events(), ["init".to_owned()], "mask {bits}");
@@ -3891,7 +3976,7 @@ mod tests {
         );
 
         fixture.library.register_storage(
-            recording_load(recording_init(Ok(StorageOperation::Done)), |_| {
+            recording_load(recording_init(Ok(())), |_| {
                 Ok(StorageLoad::Data(Vec::new()))
             })
             .arc(),
@@ -4080,9 +4165,9 @@ mod tests {
     #[test]
     fn volatile_load_failure_swallow_permanent_propagation() {
         let mut fixture = ValidationFixture::new();
-        fixture.library.register_storage(
-            recording_load(recording_init(Ok(StorageOperation::Done)), |_| Err(0x1357)).arc(),
-        );
+        fixture
+            .library
+            .register_storage(recording_load(recording_init(Ok(())), |_| Err(0x1357)).arc());
         assert_eq!(fixture.validate(VALIDATE_PERMANENT), 0x1357);
         assert_eq!(fixture.validate(VALIDATE_SAVE_STATE), 0x1357);
 
@@ -4196,11 +4281,11 @@ mod tests {
             *state.preloaded_state.get(StateBlobKind::Volatile),
             PreloadedBlob::Data(volatile)
         );
-        assert_eq!(state.selected, TpmVersion::V2_0);
+        assert_eq!(state.selected, crate::library::TpmVersion::V2_0);
         assert_eq!(state.tpm2_buffer_size, 3000);
         assert_eq!(state.configured_profile.as_deref(), Some(&profile[..]));
         assert!(!state.version_locked);
-        assert!(state.services.storage().can_store());
+        assert!(state.services.storage_ref().supports_store());
         assert!(
             state.installed_permanent.is_some(),
             "the decoded permanent state is installed, as upstream unmarshals it into its NV image"
@@ -4648,7 +4733,7 @@ mod tests {
         let fixture = ValidationFixture::new();
         fixture.with_backend();
         *BACKEND_PERMALL.lock().unwrap() = Some(fixture.permall());
-        assert_eq!(fixture.library.main_init(), TPM_SUCCESS);
+        assert_eq!(fixture.library.initialize(), TPM_SUCCESS);
         let running = fixture
             .library
             .volatile_all_store()
@@ -4695,11 +4780,15 @@ mod tests {
         assert_eq!(fixture.validate(VALIDATE_VOLATILE), TPM_SUCCESS);
 
         assert_eq!(
-            fixture.library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+            fixture
+                .library
+                .set_version(crate::library::TpmVersion::V1_2),
             TPM_SUCCESS
         );
         assert_eq!(
-            fixture.library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            fixture
+                .library
+                .set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
         assert!(fixture.library.lock_state().installed_permanent.is_none());
@@ -4748,7 +4837,7 @@ mod tests {
         fixture.with_backend();
         *BACKEND_PERMALL.lock().unwrap() =
             Some(crate::library::tpm2::valid_permanent_state_fixture());
-        assert_eq!(fixture.library.main_init(), TPM_SUCCESS);
+        assert_eq!(fixture.library.initialize(), TPM_SUCCESS);
         let locality = fixture.library.tpm2_runtime_locality();
 
         assert_eq!(fixture.validate(VALIDATE_PERMANENT), TPM_SUCCESS);
@@ -4842,20 +4931,20 @@ mod tests {
     #[cfg(feature = "tpm2")]
     fn gated_init(storage: TestStorage) -> TestStorage {
         storage.on_init(|| match gate::park() {
-            gate::Park::Parked | gate::Park::PassedThrough => Ok(StorageOperation::Done),
+            gate::Park::Parked | gate::Park::PassedThrough => Ok(()),
             gate::Park::TimedOut => Err(TPM_FAIL),
         })
     }
 
     #[cfg(feature = "tpm2")]
-    fn gated_library() -> Library {
+    fn gated_library() -> Tpm {
         let library = tpm2_library();
         library.register_storage(gated_init(fixture_backend_storage()).arc());
         library
     }
 
     #[cfg(feature = "tpm2")]
-    fn stage_volatile_while(library: &Library, interfere: impl FnOnce(&Library)) -> TpmResult {
+    fn stage_volatile_while(library: &Tpm, interfere: impl FnOnce(&Tpm)) -> TpmResult {
         let volatile = crate::library::tpm2::valid_volatile_state_fixture();
         let result = std::thread::scope(|scope| {
             let staging = scope
@@ -4896,7 +4985,7 @@ mod tests {
         gate::reset();
         let library = gated_library();
         let result = stage_volatile_while(&library, |library| {
-            library.lock_state().selected = TpmVersion::V1_2;
+            library.lock_state().selected = crate::library::TpmVersion::V1_2;
         });
         assert_eq!(result, TPM_FAIL);
         assert_eq!(
@@ -4909,7 +4998,7 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn validate_state_while(library: &Library, interfere: impl FnOnce(&Library)) -> TpmResult {
+    fn validate_state_while(library: &Tpm, interfere: impl FnOnce(&Tpm)) -> TpmResult {
         let result = std::thread::scope(|scope| {
             let validation =
                 scope.spawn(|| library.validate_state(validation_mask(VALIDATE_PERMANENT)));
@@ -4956,7 +5045,7 @@ mod tests {
         gate::reset();
         let library = gated_library();
         let result = validate_state_while(&library, |library| {
-            library.lock_state().selected = TpmVersion::V1_2;
+            library.lock_state().selected = crate::library::TpmVersion::V1_2;
         });
         assert_eq!(
             result, TPM_FAIL,
@@ -4972,20 +5061,20 @@ mod tests {
             StateBlobKind::Permanent,
             crate::library::tpm2::valid_permanent_state_fixture(),
         );
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         library.terminate();
         library.lock_state().preloaded_state.set_data(
             StateBlobKind::Permanent,
             crate::library::tpm2::valid_permanent_state_fixture(),
         );
         assert_eq!(
-            library.main_init(),
+            library.initialize(),
             TPM_SUCCESS,
             "the lifecycle is released by every attempt"
         );
         library.terminate();
         assert_eq!(
-            library.main_init(),
+            library.initialize(),
             TPM_FAIL,
             "no staged state and no backend, not a lifecycle rejection"
         );
@@ -5018,7 +5107,7 @@ mod tests {
         );
 
         assert_eq!(
-            library.main_init(),
+            library.initialize(),
             TPM_RC_FAILURE,
             "restoring the same blob still reaches the failure boundary"
         );
@@ -5026,10 +5115,10 @@ mod tests {
     }
 
     #[test]
-    fn cancel_command_no_tpm2_selection_failure() {
-        let library = Library::new();
+    fn cancel_no_tpm2_selection_failure() {
+        let library = Tpm::default();
         assert_eq!(
-            library.cancel_command(),
+            library.cancel(),
             TPM_FAIL,
             "TPM 1.2 and the disabled interface answer TPM_FAIL"
         );
@@ -5038,26 +5127,26 @@ mod tests {
 
     #[cfg(feature = "tpm1")]
     #[test]
-    fn cancel_command_tpm1_selection_failure() {
-        let library = Library::new();
+    fn cancel_tpm1_selection_failure() {
+        let library = Tpm::default();
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+            library.set_version(crate::library::TpmVersion::V1_2),
             TPM_SUCCESS
         );
-        assert_eq!(library.cancel_command(), TPM_FAIL);
+        assert_eq!(library.cancel(), TPM_FAIL);
         assert!(!library.cancel_is_requested());
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
     fn tpm2_reselection_cancel_availability() {
-        let library = Library::new();
-        assert_eq!(library.cancel_command(), TPM_FAIL);
+        let library = Tpm::default();
+        assert_eq!(library.cancel(), TPM_FAIL);
         assert_eq!(
-            library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+            library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        assert_eq!(library.cancel_command(), TPM_SUCCESS);
+        assert_eq!(library.cancel(), TPM_SUCCESS);
     }
 
     #[cfg(feature = "tpm2")]
@@ -5103,8 +5192,8 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[track_caller]
-    fn execute(library: &Library, command: &crate::library::CommandInput) -> Vec<u8> {
-        library.process(command).expect("the response fits")
+    fn execute(library: &Tpm, command: &crate::library::CommandInput) -> Vec<u8> {
+        library.process_input(command).expect("the response fits")
     }
 
     #[cfg(feature = "tpm2")]
@@ -5129,11 +5218,11 @@ mod tests {
     const TPM_ALG_OAEP: u16 = 0x0017;
 
     #[cfg(feature = "tpm2")]
-    fn started_library() -> Library {
+    fn started_library() -> Tpm {
         *BACKEND_PERMALL.lock().unwrap() = None;
         *BACKEND_STORES.lock().unwrap() = 0;
         let library = manufacture_library();
-        assert_eq!(library.main_init(), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
         assert_eq!(response_code(&execute(&library, &startup_clear())), 0);
         library
     }
@@ -5146,7 +5235,7 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner);
         let library = started_library();
 
-        assert_eq!(library.cancel_command(), TPM_SUCCESS);
+        assert_eq!(library.cancel(), TPM_SUCCESS);
         assert!(library.cancel_is_requested());
         let response = execute(&library, &incremental_self_test(&[TPM_ALG_SHA1]));
         assert_eq!(response_code(&response), 0, "{response:02x?}");
@@ -5169,7 +5258,7 @@ mod tests {
         library.park_self_test_on_gate();
         let worker_library = Arc::clone(&library);
         let worker = std::thread::spawn(move || {
-            worker_library.process(&incremental_self_test(&[TPM_ALG_SHA1, TPM_ALG_SHA256]))
+            worker_library.process_input(&incremental_self_test(&[TPM_ALG_SHA1, TPM_ALG_SHA256]))
         });
 
         gate.wait_until_entered();
@@ -5178,7 +5267,7 @@ mod tests {
             "the command start cleared the pin"
         );
         assert_eq!(
-            library.cancel_command(),
+            library.cancel(),
             TPM_SUCCESS,
             "cancellation does not block on the command's mutex"
         );
@@ -5233,13 +5322,13 @@ mod tests {
         let canceller_library = Arc::clone(&library);
         let canceller = std::thread::spawn(move || {
             for _ in 0..4096 {
-                assert_eq!(canceller_library.cancel_command(), TPM_SUCCESS);
+                assert_eq!(canceller_library.cancel(), TPM_SUCCESS);
             }
         });
 
         for _ in 0..8 {
             library.terminate();
-            assert_eq!(library.main_init(), TPM_SUCCESS);
+            assert_eq!(library.initialize(), TPM_SUCCESS);
         }
         canceller.join().expect("the canceller thread finished");
 
@@ -5256,24 +5345,24 @@ mod tests {
         let canceller_library = Arc::clone(&library);
         let canceller = std::thread::spawn(move || {
             for _ in 0..4096 {
-                let code = canceller_library.cancel_command();
+                let code = canceller_library.cancel();
                 assert!(code == TPM_SUCCESS || code == TPM_FAIL, "{code}");
             }
         });
 
         for _ in 0..256 {
             assert_eq!(
-                library.choose_tpm_version(TPMLIB_TPM_VERSION_1_2),
+                library.set_version(crate::library::TpmVersion::V1_2),
                 TPM_SUCCESS
             );
             assert_eq!(
-                library.choose_tpm_version(TPMLIB_TPM_VERSION_2),
+                library.set_version(crate::library::TpmVersion::V2_0),
                 TPM_SUCCESS
             );
         }
         canceller.join().expect("the canceller finished");
         assert_eq!(
-            library.cancel_command(),
+            library.cancel(),
             TPM_SUCCESS,
             "the racing selections leave a consistent TPM 2.0 selection"
         );

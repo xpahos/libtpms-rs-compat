@@ -143,7 +143,7 @@ pub(in crate::library::tpm2::command) fn execute(
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::clock::SteppingClock;
     use crate::library::tpm2::command::core::registry::{self, HandleKind, TPM_CC_CREATE};
     use crate::library::tpm2::golden_responses::create::vector;
@@ -341,7 +341,7 @@ mod tests {
             &input,
             clock,
             |_| Ok(()),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("the command processes")
     }

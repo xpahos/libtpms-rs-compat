@@ -50,19 +50,16 @@ mod ticket;
 mod tis;
 mod volatile;
 
-use core::ffi::c_int;
+use crate::types::TpmResult;
+#[cfg(test)]
 use std::sync::Arc;
 
-use crate::types::{TpmResult, TpmlibInfoFlags, TpmlibTpmProperty};
-
-use super::constants::{
-    TPM_FAIL, TPM_RC_FAILURE, TPM_RETRY, TPM_SUCCESS, TPMPROP_TPM_KEY_HANDLES,
-    TPMPROP_TPM_RSA_KEY_LENGTH_MAX,
-};
+use super::constants::{TPM_FAIL, TPM_RC_FAILURE, TPM_RETRY, TPM_SUCCESS};
+use super::library_state::{InformationFlags, TpmProperty};
 use super::platform::Platform;
 use super::preloaded_state::PreloadedBlob;
 use super::state_blob::{StateBlobKind, StateValidationMask};
-use super::storage::{Storage, StorageLoad, StorageOperation, StorageProbe};
+use super::storage::{Storage, StorageLoad, StorageProbe};
 use marshal::{BlobReader, BlockSkipError, skip_optional_block};
 use pcr::PcrSelection;
 use persistent::{PersistentAllEnvelope, PersistentAllError, StateSection};
@@ -102,7 +99,7 @@ pub(super) fn pending_self_test_algorithms(runtime: &Tpm2Runtime) -> Vec<u16> {
     runtime.self_test.pending_algorithms()
 }
 
-pub fn get_info(flags: TpmlibInfoFlags, runtime: Option<&Tpm2Runtime>) -> String {
+pub fn get_info(flags: InformationFlags, runtime: Option<&Tpm2Runtime>) -> String {
     info::get_info(
         flags,
         runtime.and_then(|runtime| {
@@ -120,21 +117,21 @@ pub(super) fn user_profile_is_valid(profile: &[u8]) -> bool {
     profile::validate_user_profile(Some(profile)).is_ok()
 }
 
-pub const MAX_RSA_KEY_BITS: c_int = 3072;
+pub const MAX_RSA_KEY_BITS: u32 = 3072;
 
-pub const MAX_HANDLE_NUM: c_int = 3;
+pub const MAX_HANDLE_NUM: u32 = 3;
 
-pub fn get_tpm_property(prop: TpmlibTpmProperty) -> Option<c_int> {
+pub fn get_tpm_property(prop: TpmProperty) -> Option<u32> {
     match prop {
-        TPMPROP_TPM_RSA_KEY_LENGTH_MAX => Some(MAX_RSA_KEY_BITS),
-        TPMPROP_TPM_KEY_HANDLES => Some(MAX_HANDLE_NUM),
+        TpmProperty::RsaKeyLengthMax => Some(MAX_RSA_KEY_BITS),
+        TpmProperty::KeyHandles => Some(MAX_HANDLE_NUM),
         _ => None,
     }
 }
 
 pub(super) struct Tpm2InitContext<'a> {
-    pub(super) platform: Arc<dyn Platform>,
-    pub(super) storage: Arc<dyn Storage>,
+    pub(super) platform: &'a dyn Platform,
+    pub(super) storage: &'a dyn Storage,
     pub(super) preloaded_permanent: PreloadedBlob,
     pub(super) preloaded_volatile: PreloadedBlob,
     pub(super) configured_profile: Option<Vec<u8>>,
@@ -157,8 +154,10 @@ fn select_permanent_state_source(
     match preloaded {
         PreloadedBlob::Empty => PermanentStateSource::PreloadedEmpty,
         PreloadedBlob::Data(blob) => PermanentStateSource::PreloadedData(blob),
-        PreloadedBlob::Missing if probe.exists => PermanentStateSource::Backend,
-        PreloadedBlob::Missing => PermanentStateSource::Manufacture,
+        PreloadedBlob::Missing => match probe {
+            StorageProbe::Present => PermanentStateSource::Backend,
+            StorageProbe::Missing | StorageProbe::Unsupported => PermanentStateSource::Manufacture,
+        },
     }
 }
 
@@ -340,7 +339,7 @@ pub(super) fn host_nv_commit(
 ) -> Result<(), TpmResult> {
     // TODO: Implement the NVChip fallback after command processing and host
     // persistence are complete.
-    if !storage.can_store() {
+    if !storage.supports_store() {
         return Ok(());
     }
     let Some(state) = runtime.state.as_ref() else {
@@ -356,14 +355,14 @@ fn nv_commit(storage: &dyn Storage, runtime: &Tpm2Runtime) {
 
 pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Tpm2Runtime, TpmResult> {
     let entropy = context.entropy;
-    let storage = context.storage.as_ref();
+    let storage = context.storage;
 
     context.platform.initialize()?;
 
-    storage.init()?;
+    storage.initialize()?;
 
     let probe = storage.probe_permanent();
-    let load_supported = probe.load_supported;
+    let load_supported = probe != StorageProbe::Unsupported;
 
     let mut runtime = match select_permanent_state_source(context.preloaded_permanent, probe) {
         PermanentStateSource::Manufacture => {
@@ -374,7 +373,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Tpm2Runtime, Tpm
             }
             match storage.load(StateBlobKind::Permanent)? {
                 StorageLoad::Missing => {
-                    if !storage.can_store() {
+                    if !storage.supports_store() {
                         return Err(TPM_FAIL);
                     }
                 }
@@ -397,7 +396,7 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Tpm2Runtime, Tpm
                         .map_err(|_| TPM_RC_FAILURE)?
                 }
                 StorageLoad::Missing => {
-                    if !storage.can_store() {
+                    if !storage.supports_store() {
                         return Err(TPM_FAIL);
                     }
                     runtime::manufactured_zeroed_nv_runtime(&manufactured)
@@ -471,9 +470,7 @@ pub(super) fn load_state_from_backend(
     storage: &dyn Storage,
     kind: StateBlobKind,
 ) -> Result<Vec<u8>, TpmResult> {
-    if storage.init()? == StorageOperation::Unsupported {
-        return Err(TPM_FAIL);
-    }
+    storage.initialize()?;
     match storage.load(kind)? {
         StorageLoad::Data(blob) => Ok(blob),
         StorageLoad::Empty => Ok(Vec::new()),
@@ -544,7 +541,7 @@ pub(super) fn load_state_for_validation(
     mask: StateValidationMask,
     cached_volatile: PreloadedBlob,
 ) -> ValidationLoad {
-    if let Err(code) = storage.init() {
+    if let Err(code) = storage.initialize() {
         return ValidationLoad::complete(code);
     }
 
@@ -967,7 +964,7 @@ mod tests {
     use crate::library::constants::{
         TPM_RC_BAD_PARAMETER, TPM_RC_BAD_TAG, TPM_RC_BAD_VERSION, TPM_RC_INSUFFICIENT,
     };
-    use crate::library::platform::NoPlatform;
+    use crate::library::platform::DefaultPlatform;
     use crate::library::platform::test_support::TestPlatform;
     use crate::library::storage::NoStorage;
     use crate::library::storage::test_support::TestStorage;
@@ -1101,13 +1098,13 @@ mod tests {
     }
 
     fn no_platform() -> Arc<dyn Platform> {
-        Arc::new(NoPlatform)
+        Arc::new(DefaultPlatform)
     }
 
     fn recording_init(storage: TestStorage) -> TestStorage {
         storage.on_init(|| {
             push_event("nvram".into());
-            Ok(StorageOperation::Done)
+            Ok(())
         })
     }
 
@@ -1171,9 +1168,11 @@ mod tests {
         preloaded_volatile: PreloadedBlob,
         configured_profile: Option<&[u8]>,
     ) -> Tpm2InitContext<'static> {
+        let platform: &'static Arc<dyn Platform> = Box::leak(Box::new(platform));
+        let storage: &'static Arc<dyn Storage> = Box::leak(Box::new(storage));
         Tpm2InitContext {
-            platform,
-            storage,
+            platform: platform.as_ref(),
+            storage: storage.as_ref(),
             preloaded_permanent,
             preloaded_volatile,
             configured_profile: configured_profile.map(<[u8]>::to_vec),
@@ -1204,9 +1203,10 @@ mod tests {
     }
 
     fn probe(exists: bool, load_supported: bool) -> StorageProbe {
-        StorageProbe {
-            exists,
-            load_supported,
+        match (exists, load_supported) {
+            (true, _) => StorageProbe::Present,
+            (false, true) => StorageProbe::Missing,
+            (false, false) => StorageProbe::Unsupported,
         }
     }
 
@@ -1291,7 +1291,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((format!("{kind:?}"), data.to_vec()));
-            Ok(StorageOperation::Done)
+            Ok(())
         })
     }
 
@@ -3178,8 +3178,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let host = recording_clock();
         let runtime = main_init(Tpm2InitContext {
-            platform: no_platform(),
-            storage: no_storage(),
+            platform: Box::leak(Box::new(no_platform())).as_ref(),
+            storage: Box::leak(Box::new(no_storage())).as_ref(),
             preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             preloaded_volatile: PreloadedBlob::Data(valid_volatile_state_fixture()),
             configured_profile: None,
@@ -3217,8 +3217,8 @@ mod tests {
         .bytes();
         let host = recording_clock();
         let runtime = main_init(Tpm2InitContext {
-            platform: no_platform(),
-            storage: no_storage(),
+            platform: Box::leak(Box::new(no_platform())).as_ref(),
+            storage: Box::leak(Box::new(no_storage())).as_ref(),
             preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             preloaded_volatile: PreloadedBlob::Data(blob),
             configured_profile: None,
@@ -3365,8 +3365,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let run = |host: &clock::RecordingClock| {
             main_init(Tpm2InitContext {
-                platform: no_platform(),
-                storage: no_storage(),
+                platform: Box::leak(Box::new(no_platform())).as_ref(),
+                storage: Box::leak(Box::new(no_storage())).as_ref(),
                 preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
                 preloaded_volatile: PreloadedBlob::Data(valid_volatile_state_fixture()),
                 configured_profile: None,
@@ -3655,7 +3655,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push((format!("{kind:?}"), data.to_vec()));
-                Ok(StorageOperation::Done)
+                Ok(())
             })
             .arc()
     }
@@ -3968,8 +3968,8 @@ mod tests {
         for attempt in 0..2 {
             reset_manufacture_backend();
             let error = main_init(Tpm2InitContext {
-                platform: manufacture_platform(),
-                storage: manufacture_storage(),
+                platform: Box::leak(Box::new(manufacture_platform())).as_ref(),
+                storage: Box::leak(Box::new(manufacture_storage())).as_ref(),
                 preloaded_permanent: PreloadedBlob::Missing,
                 preloaded_volatile: PreloadedBlob::Missing,
                 configured_profile: None,

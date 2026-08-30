@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn canceled_commit_no_allocation() {
-        use crate::library::cancel::Cancellation;
+        use crate::library::cancel::CancellationToken;
         use crate::library::tpm2::command::core::test_support::dispatch_bytes_with;
         const CANCELED: u32 = 0x0000_0909;
         let (s2, y2) = commit_operand();
@@ -1085,7 +1085,8 @@ mod tests {
             let mut runtime = ready_with(&[ecdaa_key()]);
             let commitment = commit_state(&runtime);
 
-            let response = dispatch_bytes_with(&mut runtime, &packet, Cancellation::requested());
+            let response =
+                dispatch_bytes_with(&mut runtime, &packet, CancellationToken::requested());
             assert_eq!(response_code(&response), CANCELED, "{label}");
             assert_eq!(response.len(), 10, "{label} publishes no points");
             assert!(!runtime.failure_mode, "{label} is not fatal");
@@ -1104,14 +1105,15 @@ mod tests {
 
     #[test]
     fn single_point_commit_no_cancel_checkpoint() {
-        use crate::library::cancel::Cancellation;
+        use crate::library::cancel::CancellationToken;
         use crate::library::tpm2::command::core::test_support::dispatch_bytes_with;
         let mut runtime = ready_with(&[ecdaa_key()]);
         for packet in [
             commit_packet(&raw_point2b(&[], &[]), &[], &[]),
             commit_packet(&point2b(&generator_multiple(2)), &[], &[]),
         ] {
-            let response = dispatch_bytes_with(&mut runtime, &packet, Cancellation::requested());
+            let response =
+                dispatch_bytes_with(&mut runtime, &packet, CancellationToken::requested());
             assert_eq!(
                 response_code(&response),
                 0,

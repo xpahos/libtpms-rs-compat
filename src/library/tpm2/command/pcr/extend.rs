@@ -143,7 +143,7 @@ pub(in crate::library::tpm2::command) fn commit_extend(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -158,7 +158,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
     }
     use super::*;
@@ -254,7 +254,7 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
             .expect("the response serializes")
     }
 
@@ -1464,8 +1464,11 @@ mod tests {
                 let mut runtime = started_runtime();
                 let input = CommandInput::new(mutated.len() as u32, mutated);
                 let parsed = parse_command(&input).expect("the header parses");
-                let _ =
-                    serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()));
+                let _ = serialize_response(&dispatch(
+                    &mut runtime,
+                    &parsed,
+                    CancellationToken::disabled(),
+                ));
             }
         }
     }
@@ -1480,9 +1483,12 @@ mod tests {
             truncated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
             let input = CommandInput::new(truncated.len() as u32, truncated);
             let parsed = parse_command(&input).expect("the header parses");
-            let response =
-                serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()))
-                    .unwrap();
+            let response = serialize_response(&dispatch(
+                &mut runtime,
+                &parsed,
+                CancellationToken::disabled(),
+            ))
+            .unwrap();
             assert_ne!(&response[6..10], &RC_SUCCESS.to_be_bytes(), "length {len}");
             assert_unchanged(&runtime, &before);
         }

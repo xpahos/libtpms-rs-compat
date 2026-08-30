@@ -38,7 +38,7 @@ fn parse_full_test(parameters: &[u8]) -> Result<bool, TpmResult> {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INITIALIZE};
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
@@ -124,14 +124,14 @@ mod tests {
 
     #[track_caller]
     fn run(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        run_with(runtime, bytes, Cancellation::disabled())
+        run_with(runtime, bytes, CancellationToken::disabled())
     }
 
     #[track_caller]
     fn run_with(
         runtime: &mut Tpm2Runtime,
         bytes: &[u8],
-        cancellation: Cancellation<'_>,
+        cancellation: CancellationToken<'_>,
     ) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
@@ -147,7 +147,7 @@ mod tests {
     fn run_code(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> u32 {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        dispatch(runtime, &parsed, Cancellation::disabled()).code()
+        dispatch(runtime, &parsed, CancellationToken::disabled()).code()
     }
 
     #[derive(Debug, Eq, PartialEq)]
@@ -181,7 +181,7 @@ mod tests {
             let mut runtime = started_runtime();
             let snapshot_before = snapshot(&runtime);
             assert_eq!(
-                run_with(&mut runtime, &command, Cancellation::requested()),
+                run_with(&mut runtime, &command, CancellationToken::requested()),
                 SUCCESS_RESPONSE,
                 "TPM2_SelfTest runs against g_toTest and is never cancelable"
             );
@@ -195,7 +195,11 @@ mod tests {
     fn raised_pin_failing_test_unchanged() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(always_fails);
-        let response = run_with(&mut runtime, &FULL_TEST_COMMAND, Cancellation::requested());
+        let response = run_with(
+            &mut runtime,
+            &FULL_TEST_COMMAND,
+            CancellationToken::requested(),
+        );
         assert_eq!(response_code_of(&response), TPM_RC_FAILURE);
         assert!(runtime.failure_mode);
     }
@@ -754,7 +758,7 @@ mod tests {
                     let _ = serialize_response(&dispatch(
                         &mut runtime,
                         &parsed,
-                        Cancellation::disabled(),
+                        CancellationToken::disabled(),
                     ));
                 }
             }

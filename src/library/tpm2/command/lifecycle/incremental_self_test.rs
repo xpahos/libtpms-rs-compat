@@ -62,7 +62,7 @@ fn marshal_to_do_list(algorithms: &[u16]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::constants::TPM_RC_INITIALIZE;
     use crate::library::tpm2::algorithm::{
         TPM_ALG_AES, TPM_ALG_ECC, TPM_ALG_ERROR, TPM_ALG_RSA, TPM_ALG_SHA1, TPM_ALG_SHA256,
@@ -163,14 +163,14 @@ mod tests {
 
     #[track_caller]
     fn run(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        run_with(runtime, bytes, Cancellation::disabled())
+        run_with(runtime, bytes, CancellationToken::disabled())
     }
 
     #[track_caller]
     fn run_with(
         runtime: &mut Tpm2Runtime,
         bytes: &[u8],
-        cancellation: Cancellation<'_>,
+        cancellation: CancellationToken<'_>,
     ) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
@@ -179,14 +179,14 @@ mod tests {
 
     #[track_caller]
     fn run_code(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> u32 {
-        run_code_with(runtime, bytes, Cancellation::disabled())
+        run_code_with(runtime, bytes, CancellationToken::disabled())
     }
 
     #[track_caller]
     fn run_code_with(
         runtime: &mut Tpm2Runtime,
         bytes: &[u8],
-        cancellation: Cancellation<'_>,
+        cancellation: CancellationToken<'_>,
     ) -> u32 {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
@@ -195,14 +195,14 @@ mod tests {
 
     #[track_caller]
     fn to_do_list(runtime: &mut Tpm2Runtime, algorithms: &[u16]) -> Vec<u16> {
-        to_do_list_with(runtime, algorithms, Cancellation::disabled())
+        to_do_list_with(runtime, algorithms, CancellationToken::disabled())
     }
 
     #[track_caller]
     fn to_do_list_with(
         runtime: &mut Tpm2Runtime,
         algorithms: &[u16],
-        cancellation: Cancellation<'_>,
+        cancellation: CancellationToken<'_>,
     ) -> Vec<u16> {
         let response = run_with(runtime, &framed(0x8001, &to_test(algorithms)), cancellation);
         assert_eq!(
@@ -252,7 +252,7 @@ mod tests {
         let response = run_with(
             &mut runtime,
             &framed(0x8001, &to_test(&[algorithm])),
-            Cancellation::requested(),
+            CancellationToken::requested(),
         );
         assert_eq!(
             &response[6..10],
@@ -298,7 +298,7 @@ mod tests {
             to_do_list_with(
                 &mut runtime,
                 &[TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_AES],
-                Cancellation::requested(),
+                CancellationToken::requested(),
             ),
             [TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP, TPM_ALG_ECDH]
         );
@@ -313,7 +313,7 @@ mod tests {
             run_code_with(
                 &mut runtime,
                 &framed(0x8001, &to_test(&[TPM_ALG_ERROR])),
-                Cancellation::requested(),
+                CancellationToken::requested(),
             ),
             VALUE_PARAMETER_1
         );
@@ -325,7 +325,7 @@ mod tests {
             run_code_with(
                 &mut runtime,
                 &framed(0x8001, &to_test(&[TPM_ALG_SHA256])),
-                Cancellation::requested(),
+                CancellationToken::requested(),
             ),
             FAILURE,
             "a genuine self-test failure is unaffected by the pin"
@@ -1309,7 +1309,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                     let _ = serialize_response(&dispatch(
                         &mut runtime,
                         &parsed,
-                        Cancellation::disabled(),
+                        CancellationToken::disabled(),
                     ));
                 }
             }

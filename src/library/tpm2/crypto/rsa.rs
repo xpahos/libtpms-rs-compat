@@ -1,6 +1,6 @@
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
-use crate::library::cancel::Cancellation;
+use crate::library::cancel::CancellationToken;
 use crate::types::TpmResult;
 
 use super::super::self_test::LazySelfTest;
@@ -388,7 +388,7 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
     exponent: u32,
     is_signing_key: bool,
     rand: &mut SeededRand,
-    cancellation: Cancellation<'_>,
+    cancellation: CancellationToken<'_>,
 ) -> Result<RsaKeyMaterial, RsaKeyError> {
     let mut effective_exponent = exponent;
     if effective_exponent == 0 {
@@ -915,7 +915,7 @@ mod tests {
                 0,
                 false,
                 &mut rand(b"cancel"),
-                Cancellation::requested()
+                CancellationToken::requested()
             )
             .err(),
             Some(RsaKeyError::Canceled)
@@ -930,7 +930,7 @@ mod tests {
                 4,
                 false,
                 &mut rand(b"cancel"),
-                Cancellation::requested()
+                CancellationToken::requested()
             )
             .err(),
             Some(RsaKeyError::Range),
@@ -942,7 +942,7 @@ mod tests {
                 0,
                 false,
                 &mut rand(b"cancel"),
-                Cancellation::requested()
+                CancellationToken::requested()
             )
             .err(),
             Some(RsaKeyError::Value)
@@ -967,7 +967,7 @@ mod tests {
             0,
             true,
             &mut rand(b"public-op"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         let modulus = BigUint::from_be_bytes(&key.modulus);
@@ -1049,7 +1049,7 @@ mod tests {
                     exponent,
                     false,
                     &mut rand(b"e"),
-                    Cancellation::disabled()
+                    CancellationToken::disabled()
                 )
                 .err(),
                 Some(RsaKeyError::Range),
@@ -1067,7 +1067,7 @@ mod tests {
                     exponent,
                     false,
                     &mut rand(b"e"),
-                    Cancellation::disabled()
+                    CancellationToken::disabled()
                 )
                 .err(),
                 Some(RsaKeyError::Range),
@@ -1085,7 +1085,7 @@ mod tests {
                     0,
                     false,
                     &mut rand(b"size"),
-                    Cancellation::disabled()
+                    CancellationToken::disabled()
                 )
                 .err(),
                 Some(RsaKeyError::Value),
@@ -1142,7 +1142,7 @@ mod tests {
             0,
             false,
             &mut rand(b"rsa2048"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_key_is_consistent(&key, 2048, RSA_DEFAULT_PUBLIC_EXPONENT);
@@ -1150,17 +1150,35 @@ mod tests {
 
     #[test]
     fn signing_key_trial_decryption_success() {
-        let key = generate_rsa_key(1024, 0, true, &mut rand(b"sign"), Cancellation::disabled())
-            .expect("a key");
+        let key = generate_rsa_key(
+            1024,
+            0,
+            true,
+            &mut rand(b"sign"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
         assert_key_is_consistent(&key, 1024, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
     fn key_generation_determinism() {
-        let first = generate_rsa_key(1024, 0, false, &mut rand(b"same"), Cancellation::disabled())
-            .expect("a key");
-        let second = generate_rsa_key(1024, 0, false, &mut rand(b"same"), Cancellation::disabled())
-            .expect("a key");
+        let first = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"same"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
+        let second = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"same"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
         assert_eq!(first.modulus, second.modulus);
         assert_eq!(first.prime, second.prime);
         assert_eq!(first.q, second.q);
@@ -1171,10 +1189,22 @@ mod tests {
 
     #[test]
     fn generator_state_key_distinction() {
-        let first = generate_rsa_key(1024, 0, false, &mut rand(b"one"), Cancellation::disabled())
-            .expect("a key");
-        let second = generate_rsa_key(1024, 0, false, &mut rand(b"two"), Cancellation::disabled())
-            .expect("a key");
+        let first = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"one"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
+        let second = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"two"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
         assert_ne!(first.modulus, second.modulus);
     }
 
@@ -1185,7 +1215,7 @@ mod tests {
             0,
             false,
             &mut rand(b"level"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         let old = generate_rsa_key(
@@ -1193,7 +1223,7 @@ mod tests {
             0,
             false,
             &mut original_rand(b"level"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_ne!(new.modulus, old.modulus);
@@ -1202,15 +1232,20 @@ mod tests {
 
     #[test]
     fn signing_key_extra_generator_consumption() {
-        let signing =
-            generate_rsa_key(1024, 0, true, &mut rand(b"drain"), Cancellation::disabled())
-                .expect("a key");
+        let signing = generate_rsa_key(
+            1024,
+            0,
+            true,
+            &mut rand(b"drain"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
         let decryption = generate_rsa_key(
             1024,
             0,
             false,
             &mut rand(b"drain"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_eq!(
@@ -1219,14 +1254,20 @@ mod tests {
         );
         let mut signing_state = rand(b"drain");
         let mut decryption_state = rand(b"drain");
-        generate_rsa_key(1024, 0, true, &mut signing_state, Cancellation::disabled())
-            .expect("a key");
+        generate_rsa_key(
+            1024,
+            0,
+            true,
+            &mut signing_state,
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
         generate_rsa_key(
             1024,
             0,
             false,
             &mut decryption_state,
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_ne!(
@@ -1238,15 +1279,20 @@ mod tests {
 
     #[test]
     fn explicit_default_exponent_match() {
-        let implicit =
-            generate_rsa_key(1024, 0, false, &mut rand(b"exp"), Cancellation::disabled())
-                .expect("a key");
+        let implicit = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"exp"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
         let explicit = generate_rsa_key(
             1024,
             65537,
             false,
             &mut rand(b"exp"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_eq!(implicit.modulus, explicit.modulus);
@@ -1259,7 +1305,7 @@ mod tests {
             65539,
             false,
             &mut rand(b"bigexp"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_key_is_consistent(&key, 1024, 65539);
@@ -1275,7 +1321,7 @@ mod tests {
             0,
             false,
             &mut rand(b"ek3072"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
@@ -1288,7 +1334,7 @@ mod tests {
             0,
             true,
             &mut rand(b"sign3072"),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("a key");
         assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
@@ -1297,8 +1343,14 @@ mod tests {
     #[test]
     fn rsa3072_per_seed_key_consistency() {
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
-            let key = generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
-                .expect("a key");
+            let key = generate_rsa_key(
+                3072,
+                0,
+                false,
+                &mut rand(label),
+                CancellationToken::disabled(),
+            )
+            .expect("a key");
             assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
             let p = BigUint::from_be_bytes(&key.prime);
             let difference = if p > key.q {
@@ -1319,7 +1371,13 @@ mod tests {
         let mut lengths = Vec::new();
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
             let (key, counters) = work::measure(|| {
-                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
+                generate_rsa_key(
+                    3072,
+                    0,
+                    false,
+                    &mut rand(label),
+                    CancellationToken::disabled(),
+                )
             });
             key.expect("a key");
             lengths.push(counters.sieved_candidates);
@@ -1341,12 +1399,24 @@ mod tests {
     fn rsa3072_key_generation_determinism() {
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
             let (first, left) = work::measure(|| {
-                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
-                    .expect("a key")
+                generate_rsa_key(
+                    3072,
+                    0,
+                    false,
+                    &mut rand(label),
+                    CancellationToken::disabled(),
+                )
+                .expect("a key")
             });
             let (second, right) = work::measure(|| {
-                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
-                    .expect("a key")
+                generate_rsa_key(
+                    3072,
+                    0,
+                    false,
+                    &mut rand(label),
+                    CancellationToken::disabled(),
+                )
+                .expect("a key")
             });
             let name = core::str::from_utf8(label).unwrap();
             assert_eq!(first.modulus, second.modulus, "{name} modulus");
@@ -1364,9 +1434,15 @@ mod tests {
         let mut moduli = Vec::new();
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
             moduli.push(
-                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
-                    .expect("a key")
-                    .modulus,
+                generate_rsa_key(
+                    3072,
+                    0,
+                    false,
+                    &mut rand(label),
+                    CancellationToken::disabled(),
+                )
+                .expect("a key")
+                .modulus,
             );
         }
         moduli.sort_unstable();
@@ -1385,7 +1461,13 @@ mod tests {
         ];
         for (label, multiplications, candidates, generator_bytes) in expected {
             let (key, counters) = work::measure(|| {
-                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
+                generate_rsa_key(
+                    3072,
+                    0,
+                    false,
+                    &mut rand(label),
+                    CancellationToken::disabled(),
+                )
             });
             key.expect("a key");
             let name = core::str::from_utf8(label).unwrap();
@@ -1409,7 +1491,7 @@ mod tests {
                 0,
                 false,
                 &mut rand(b"rsa2048"),
-                Cancellation::disabled(),
+                CancellationToken::disabled(),
             )
         });
         let key = key.expect("a key");
@@ -1432,7 +1514,7 @@ mod tests {
                     0,
                     false,
                     &mut rand(b"budget"),
-                    Cancellation::disabled(),
+                    CancellationToken::disabled(),
                 )
             });
             key.expect("a key");
@@ -1457,7 +1539,7 @@ mod tests {
                     exponent,
                     false,
                     &mut rand(b"bad"),
-                    Cancellation::disabled(),
+                    CancellationToken::disabled(),
                 )
             });
             assert_eq!(result.err(), Some(error), "keyBits {key_bits}");
@@ -1467,8 +1549,14 @@ mod tests {
 
     #[test]
     fn private_op_public_op_inversion() {
-        let key = generate_rsa_key(1024, 0, false, &mut rand(b"crt"), Cancellation::disabled())
-            .expect("a key");
+        let key = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"crt"),
+            CancellationToken::disabled(),
+        )
+        .expect("a key");
         let modulus = BigUint::from_be_bytes(&key.modulus);
         let mut z = PrivateExponent {
             p: BigUint::from_be_bytes(&key.prime),

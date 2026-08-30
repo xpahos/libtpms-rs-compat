@@ -407,7 +407,7 @@ fn nv_counter_avail(state: &OwnedPersistentState, live: &LiveState) -> u32 {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::{dispatch, parse_command};
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::persistent::{
@@ -436,7 +436,7 @@ mod tests {
         let input = CommandInput::new(bytes.len() as u32, core::mem::take(&mut bytes));
         let parsed = parse_command(&input).expect("the header parses");
         assert_eq!(
-            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code(),
             0,
             "Startup succeeds"
         );

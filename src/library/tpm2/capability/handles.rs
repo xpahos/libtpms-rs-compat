@@ -273,7 +273,7 @@ mod tests {
     use super::test_state::*;
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::{dispatch, parse_command};
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::validate_user_profile;
@@ -299,7 +299,7 @@ mod tests {
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).expect("the header parses");
         assert_eq!(
-            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code(),
             0,
             "Startup succeeds"
         );

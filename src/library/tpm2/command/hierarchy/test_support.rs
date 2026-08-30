@@ -1,5 +1,5 @@
 use crate::library::CommandInput;
-use crate::library::cancel::Cancellation;
+use crate::library::cancel::CancellationToken;
 use crate::library::tpm2::clock::SteppingClock;
 pub(super) use crate::library::tpm2::command::core::test_support::{command, framed};
 use crate::library::tpm2::crypto::Hasher;
@@ -523,7 +523,7 @@ pub(super) fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: &[u8
         &input,
         clock,
         |_| Ok(()),
-        Cancellation::disabled(),
+        CancellationToken::disabled(),
     )
     .expect("the command processes")
 }
@@ -545,7 +545,7 @@ pub(super) fn exec_counting(
             commits.set(commits.get() + 1);
             Ok(())
         },
-        Cancellation::disabled(),
+        CancellationToken::disabled(),
     )
     .expect("the command processes")
 }

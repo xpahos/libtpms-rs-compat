@@ -1403,7 +1403,7 @@ mod tests {
         serialize_response(&crate::library::tpm2::command::core::dispatcher::dispatch(
             runtime,
             &parsed,
-            crate::library::cancel::Cancellation::disabled(),
+            crate::library::cancel::CancellationToken::disabled(),
         ))
         .expect("the response serializes")
     }

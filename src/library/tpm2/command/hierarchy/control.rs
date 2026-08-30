@@ -130,7 +130,7 @@ fn apply_state(runtime: &mut Tpm2Runtime, enable: u32, state: bool) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_HIERARCHY_CONTROL, find,
     };
@@ -771,7 +771,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
-                        Cancellation::disabled(),
+                        CancellationToken::disabled(),
                     );
                 }
             }

@@ -160,7 +160,7 @@ fn flush_owner_nv_indexes(runtime: &mut Tpm2Runtime) -> Result<(), TpmResult> {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_CLEAR, find,
     };
@@ -638,7 +638,7 @@ mod tests {
             &input,
             &clock,
             |_| Err(crate::library::constants::TPM_RC_FAILURE),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("the command processes");
         assert_eq!(response, error_response(0x101));
@@ -694,7 +694,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
-                        Cancellation::disabled(),
+                        CancellationToken::disabled(),
                     );
                 }
             }

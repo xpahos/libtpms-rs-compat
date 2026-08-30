@@ -1,9 +1,3 @@
-use crate::types::TpmlibStateType;
-
-const TPMLIB_STATE_PERMANENT: TpmlibStateType = 1;
-const TPMLIB_STATE_VOLATILE: TpmlibStateType = 2;
-const TPMLIB_STATE_SAVE_STATE: TpmlibStateType = 4;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StateBlobKind {
     Permanent,
@@ -11,53 +5,37 @@ pub enum StateBlobKind {
     SaveState,
 }
 
-impl StateBlobKind {
-    pub fn from_c(value: TpmlibStateType) -> Option<Self> {
-        match value {
-            TPMLIB_STATE_PERMANENT => Some(Self::Permanent),
-            TPMLIB_STATE_VOLATILE => Some(Self::Volatile),
-            TPMLIB_STATE_SAVE_STATE => Some(Self::SaveState),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct StateValidationMask {
-    permanent: bool,
-    volatile: bool,
-    save_state: bool,
-}
+pub struct StateValidationMask(u32);
 
 impl StateValidationMask {
-    pub const NONE: Self = Self {
-        permanent: false,
-        volatile: false,
-        save_state: false,
-    };
+    pub const NONE: Self = Self(0);
+    pub const PERMANENT: Self = Self(1);
+    pub const VOLATILE: Self = Self(2);
+    pub const SAVE_STATE: Self = Self(4);
 
-    pub const fn from_c(value: TpmlibStateType) -> Self {
-        Self {
-            permanent: value & TPMLIB_STATE_PERMANENT != 0,
-            volatile: value & TPMLIB_STATE_VOLATILE != 0,
-            save_state: value & TPMLIB_STATE_SAVE_STATE != 0,
-        }
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits & 7)
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     pub const fn permanent(self) -> bool {
-        self.permanent
+        self.0 & Self::PERMANENT.0 != 0
     }
 
     pub const fn volatile(self) -> bool {
-        self.volatile
+        self.0 & Self::VOLATILE.0 != 0
     }
 
     pub const fn save_state(self) -> bool {
-        self.save_state
+        self.0 & Self::SAVE_STATE.0 != 0
     }
 
     pub const fn selects_permanent_blob(self) -> bool {
-        self.permanent || self.save_state
+        self.permanent() || self.save_state()
     }
 }
 
@@ -77,29 +55,15 @@ pub enum StateOutput {
 mod tests {
     use super::*;
 
-    #[test]
-    fn kind_exact_c_value_mapping() {
-        assert_eq!(StateBlobKind::from_c(1), Some(StateBlobKind::Permanent));
-        assert_eq!(StateBlobKind::from_c(2), Some(StateBlobKind::Volatile));
-        assert_eq!(StateBlobKind::from_c(4), Some(StateBlobKind::SaveState));
-    }
-
-    #[test]
-    fn kind_invalid_value_rejection() {
-        for value in [0, 3, -1, -4, 5, 6, 7, 8, i32::MAX, i32::MIN] {
-            assert_eq!(StateBlobKind::from_c(value), None, "value {value}");
-        }
-    }
-
-    fn mask(value: TpmlibStateType) -> (bool, bool, bool) {
-        let mask = StateValidationMask::from_c(value);
+    fn mask(value: u32) -> (bool, bool, bool) {
+        let mask = StateValidationMask::from_bits(value);
         (mask.permanent(), mask.volatile(), mask.save_state())
     }
 
     #[test]
     fn zero_mask_empty_selection() {
         assert_eq!(mask(0), (false, false, false));
-        assert_eq!(StateValidationMask::from_c(0), StateValidationMask::NONE);
+        assert_eq!(StateValidationMask::from_bits(0), StateValidationMask::NONE);
         assert_eq!(StateValidationMask::default(), StateValidationMask::NONE);
         assert!(!StateValidationMask::NONE.selects_permanent_blob());
     }
@@ -121,29 +85,28 @@ mod tests {
 
     #[test]
     fn unknown_bits_ignored() {
-        for value in [8, 16, 0x4000, i32::MIN, 1 << 30] {
+        for value in [8_u32, 16, 0x4000, 1 << 30] {
             assert_eq!(
-                StateValidationMask::from_c(value),
+                StateValidationMask::from_bits(value),
                 StateValidationMask::NONE,
                 "value {value}"
             );
         }
         assert_eq!(mask(8 | 1), (true, false, false));
         assert_eq!(mask(16 | 2), (false, true, false));
-        assert_eq!(mask(i32::MIN | 4), (false, false, true));
-        assert_eq!(mask(-1), (true, true, true));
-        assert_eq!(mask(i32::MAX), (true, true, true));
+        assert_eq!(mask(1 << 30 | 4), (false, false, true));
+        assert_eq!(mask(u32::MAX), (true, true, true));
     }
 
     #[test]
     fn save_state_bit_permanent_blob_selection() {
         for (value, what) in [(4, "the save-state bit"), (1, "the permanent bit")] {
             assert!(
-                StateValidationMask::from_c(value).selects_permanent_blob(),
+                StateValidationMask::from_bits(value).selects_permanent_blob(),
                 "{what}: TPM2_ValidateState tests st & (PERMANENT | SAVE_STATE) together"
             );
         }
-        assert!(!StateValidationMask::from_c(2).selects_permanent_blob());
+        assert!(!StateValidationMask::from_bits(2).selects_permanent_blob());
     }
 
     #[test]

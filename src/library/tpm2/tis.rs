@@ -197,7 +197,7 @@ pub(in crate::library) fn established_reset(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -212,7 +212,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
     }
     use super::*;

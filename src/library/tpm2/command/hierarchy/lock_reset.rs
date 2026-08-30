@@ -30,7 +30,7 @@ pub(in crate::library::tpm2::command) fn execute(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_DICTIONARY_ATTACK_LOCK_RESET, find,
     };
@@ -317,7 +317,7 @@ mod tests {
             &input,
             &clock,
             |_| Err(crate::library::constants::TPM_RC_FAILURE),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("the command processes");
         assert_eq!(response, error_response(0x101));
@@ -341,7 +341,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
-                        Cancellation::disabled(),
+                        CancellationToken::disabled(),
                     );
                 }
             }

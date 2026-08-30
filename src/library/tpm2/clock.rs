@@ -353,7 +353,7 @@ impl HostClock for RecordingClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::cancel::Cancellation;
+    use crate::library::cancel::CancellationToken;
 
     const REALTIME: u64 = 1_700_000_100_000;
     const MONOTONIC: u64 = 4_000_000;
@@ -688,7 +688,7 @@ mod tests {
             &input,
             host,
             |_| Ok(()),
-            Cancellation::disabled(),
+            CancellationToken::disabled(),
         )
         .expect("processes")
     }

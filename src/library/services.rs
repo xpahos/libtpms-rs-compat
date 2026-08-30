@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::platform::{NoPlatform, Platform};
+use super::platform::{DefaultPlatform, Platform};
 use super::storage::{NoStorage, Storage};
 
 #[derive(Clone)]
@@ -13,14 +13,6 @@ pub struct ExternalServices {
 impl ExternalServices {
     pub fn new(platform: Arc<dyn Platform>, storage: Arc<dyn Storage>) -> Self {
         Self { platform, storage }
-    }
-
-    pub(in crate::library) fn platform(&self) -> Arc<dyn Platform> {
-        Arc::clone(&self.platform)
-    }
-
-    pub(in crate::library) fn storage(&self) -> Arc<dyn Storage> {
-        Arc::clone(&self.storage)
     }
 
     pub(in crate::library) fn platform_ref(&self) -> &dyn Platform {
@@ -50,7 +42,7 @@ impl ExternalServices {
 
 impl Default for ExternalServices {
     fn default() -> Self {
-        Self::new(Arc::new(NoPlatform), Arc::new(NoStorage))
+        Self::new(Arc::new(DefaultPlatform), Arc::new(NoStorage))
     }
 }
 
@@ -63,8 +55,8 @@ mod tests {
     #[test]
     fn default_services_inertness() {
         let services = ExternalServices::default();
-        assert_eq!(services.platform().locality(), 0);
-        assert!(!services.storage().can_store());
+        assert_eq!(services.platform_ref().locality(), 0);
+        assert!(!services.storage_ref().supports_store());
     }
 
     #[test]
@@ -72,12 +64,19 @@ mod tests {
         let mut services = ExternalServices::default();
         let previous = services.replace_platform(TestPlatform::at_locality(3).arc());
         assert_eq!(previous.locality(), 0, "the displaced platform is returned");
-        assert_eq!(services.platform().locality(), 3);
-        assert!(!services.storage().can_store());
+        assert_eq!(services.platform_ref().locality(), 3);
+        assert!(!services.storage_ref().supports_store());
 
         let previous = services.replace_storage(TestStorage::new().on_can_store(|| true).arc());
-        assert!(!previous.can_store(), "the displaced storage is returned");
-        assert_eq!(services.platform().locality(), 3, "the platform survives");
-        assert!(services.storage().can_store());
+        assert!(
+            !previous.supports_store(),
+            "the displaced storage is returned"
+        );
+        assert_eq!(
+            services.platform_ref().locality(),
+            3,
+            "the platform survives"
+        );
+        assert!(services.storage_ref().supports_store());
     }
 }
