@@ -77,9 +77,7 @@ mod tests {
             .collect()
     }
 
-    fn started_event_sequence(
-        clock: &crate::library::tpm2::clock::SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    fn started_event_sequence(clock: &crate::library::tpm2::clock::SteppingClock) -> Tpm2Runtime {
         let mut runtime = base_runtime(clock);
         exec(
             &mut runtime,
@@ -97,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         assert_eq!(TPM_CC_EVENT_SEQUENCE_COMPLETE, 0x0000_0185);
         let descriptor = registry::find(TPM_CC_EVENT_SEQUENCE_COMPLETE).expect("registered");
         assert_eq!(descriptor.attributes, 0x0540_0185);
@@ -125,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         let mut params = 2u32.to_be_bytes().to_vec();
@@ -140,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
@@ -155,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_event_extends_every_allocated_bank() {
+    fn completed_event_all_bank_extension() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         exec(&mut runtime, &clock, "N_PCR10_BEFORE", pcr_read(10));
@@ -180,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_pcr_handle_returns_the_digests_without_extending() {
+    fn null_pcr_handle_digests_no_extension() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         exec(
@@ -194,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tcb_group_pcr_is_extended_like_the_reference() {
+    fn tcb_group_pcr_extension_reference_match() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         exec(
@@ -207,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn the_locality_gate_matches_the_reference() {
+    fn locality_gate_reference_match() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -244,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn a_state_saved_pcr_is_extended_like_the_reference() {
+    fn state_saved_pcr_extension_reference_match() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -263,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_pcr_handles_are_rejected_before_the_sequence_is_touched() {
+    fn invalid_pcr_handle_rejection_sequence_untouched() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         exec(
@@ -288,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_limits_match_the_reference() {
+    fn buffer_limit_reference_parity() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         exec(
@@ -324,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hash_sequence_is_refused_with_the_second_handle_index() {
+    fn hash_sequence_rejection_second_handle_index() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -355,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinary_object_is_refused_with_the_second_handle_index() {
+    fn ordinary_object_rejection_second_handle_index() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -373,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn both_handles_need_their_own_authorization_session() {
+    fn per_handle_authorization_session_requirement() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         let mut payload = RH_NULL.to_be_bytes().to_vec();
@@ -399,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_handle_area_reports_the_second_handle_index() {
+    fn truncated_handle_area_second_handle_index() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -415,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn an_extra_update_changes_every_returned_digest() {
+    fn extra_update_digest_change() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         exec(
@@ -433,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_bank_still_reports_every_compiled_digest() {
+    fn disabled_bank_compiled_digest_report() {
         let clock = fresh_clock();
         let mut runtime = minimal_runtime(&clock);
         exec(
@@ -453,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         let valid = event_sequence_complete(10, 0x8000_0000, b"ab");

@@ -428,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn both_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let save = registry::find(CC_SAVE).expect("TPM2_ContextSave is registered");
         assert_eq!(save.attributes, 0x0200_0162);
         assert_eq!(save.decrypt_size, 0);
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn the_context_handle_kind_accepts_objects_and_sessions_only() {
+    fn context_handle_kind_object_session_only() {
         let kind = registry::find(CC_SAVE).unwrap().handles[0].kind;
         for handle in [0x8000_0000u32, 0x8000_0002, 0x0200_0000, 0x0300_0000] {
             assert!(kind.accepts(handle), "handle {handle:#x}");
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(&mut runtime, &clock, "CCATTR_0161", cap_cc(0x0161));
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_an_external_object_context_matches_the_oracle() {
+    fn external_object_context_save_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         let public = rsa_sign_public(&external_modulus());
@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_a_primary_object_context_matches_the_oracle() {
+    fn primary_object_context_save_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         exec(
@@ -515,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_a_loaded_child_context_matches_the_oracle() {
+    fn loaded_child_context_save_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_LOAD", &clock);
         exec(
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_a_sequence_object_context_matches_the_oracle() {
+    fn sequence_object_context_save_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_session_contexts_matches_the_oracle() {
+    fn session_context_save_oracle_match() {
         for (session_type, handle, label) in [
             (0x00u8, 0x0200_0000u32, "CTXSAVE_HMAC_SESSION"),
             (0x01, 0x0300_0000, "CTXSAVE_POLICY_SESSION"),
@@ -563,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_the_same_session_twice_matches_the_oracle() {
+    fn repeated_session_save_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec_raw(&mut runtime, &clock, start_auth_session(0x00));
@@ -582,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn context_save_rejections_match_the_oracle() {
+    fn context_save_rejection_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         for (label, command) in [
@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn context_load_rejections_match_the_oracle() {
+    fn context_load_rejection_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         for (label, command) in [
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn an_object_context_round_trips_and_replays() {
+    fn object_context_round_trip_replay() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_PRIMARY", &clock);
         let context = saved_context("CTXSAVE_PRIMARY");
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupted_object_contexts_match_the_oracle() {
+    fn corrupted_object_context_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_PRIMARY", &clock);
         let context = saved_context("CTXSAVE_PRIMARY");
@@ -751,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_context_round_trips_and_refuses_a_replay() {
+    fn session_context_round_trip_replay_rejection() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_HMAC", &clock);
         let context = saved_context("CTXSAVE_HMAC_SESSION");
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_session_contexts_restore_their_policy_state() {
+    fn policy_session_context_state_restoration() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_POLICY", &clock);
         exec(
@@ -814,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_context_cannot_be_reinterpreted_or_corrupted() {
+    fn session_context_reinterpretation_corruption_rejection() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_HMAC", &clock);
         let context = saved_context("CTXSAVE_HMAC_SESSION");
@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn no_context_blob_prefix_or_mutation_panics() {
+    fn context_blob_prefix_and_mutation_panic_safety() {
         let clock = clock();
         let context = saved_context("CTXSAVE_HMAC_SESSION");
         for length in 0..context.len().min(64) {
@@ -923,7 +923,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn saving_a_session_frees_its_slot_and_advances_the_counter() {
+    fn session_save_slot_release_and_counter_advance() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec_raw(&mut runtime, &clock, start_hmac_session(0x5a));
@@ -937,7 +937,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn a_saved_session_survives_a_state_round_trip() {
+    fn saved_session_state_round_trip() {
         use crate::library::tpm2::persistent::persistent_all_store;
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{
@@ -982,7 +982,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn a_rejected_context_load_leaves_session_tracking_untouched() {
+    fn rejected_load_session_tracking_unchanged() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_HMAC", &clock);
         let before_array = context_array(&runtime);
@@ -1003,7 +1003,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn a_rejected_context_save_leaves_the_session_loaded() {
+    fn rejected_save_loaded_session_preservation() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec_raw(&mut runtime, &clock, start_hmac_session(0x5a));
@@ -1022,7 +1022,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn flushing_a_saved_session_clears_its_context_slot() {
+    fn saved_session_flush_context_slot_clearing() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_HMAC", &clock);
         assert_eq!(runtime.live.oldest_saved_session, 0);
@@ -1038,7 +1038,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn a_failed_object_context_load_occupies_no_slot() {
+    fn failed_object_load_no_slot_occupation() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CTXSAVE_PRIMARY", &clock);
         let mut corrupted = saved_context("CTXSAVE_PRIMARY");
@@ -1066,7 +1066,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn an_object_context_round_trip_reproduces_the_saved_object() {
+    fn object_round_trip_saved_object_match() {
         use crate::library::tpm2::nv::any_object_image;
         use crate::library::tpm2::volatile::CURRENT_OBJECT_VERSION;
 
@@ -1090,7 +1090,7 @@ mod tracking_tests {
     }
 
     #[test]
-    fn a_context_load_never_panics_on_a_truncated_command() {
+    fn truncated_command_load_panic_safety() {
         let clock = clock();
         let context = saved_context("CTXSAVE_PRIMARY");
         for length in 0..40 {

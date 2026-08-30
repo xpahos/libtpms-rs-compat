@@ -143,6 +143,7 @@ pub(in crate::library::tpm2::command) fn commit_extend(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -157,6 +158,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -240,7 +242,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -252,11 +254,12 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex("80010000000c0000014400 00")),
@@ -417,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_extend_before_startup_returns_initialize() {
+    fn pcr_extend_pre_startup_initialize_rejection() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -436,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn one_valid_empty_password_session_succeeds() {
+    fn single_empty_password_session_success() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &authorized_extend(10, &digest_list(&[]))),
@@ -445,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_password_authorization_emits_the_exact_five_byte_response() {
+    fn password_authorization_five_byte_response() {
         let mut runtime = started_runtime();
         let response = dispatch_bytes(&mut runtime, &authorized_extend(10, &digest_list(&[])));
         assert_eq!(response.len(), 19);
@@ -469,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_area_is_auth_missing() {
+    fn missing_auth_area_auth_missing() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -483,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_empty_password_against_an_empty_auth_value_fails() {
+    fn nonempty_password_empty_auth_failure() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let auth = password_session(TPM_RS_PW, &[], 0x00, b"wrong");
@@ -499,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn a_password_of_only_trailing_zeros_matches_the_empty_auth_value() {
+    fn trailing_zero_password_empty_auth_match() {
         let mut runtime = started_runtime();
         for password in [&[0x00][..], &[0x00, 0x00][..], &[0x00; 32][..]] {
             let auth = password_session(TPM_RS_PW, &[], 0x00, password);
@@ -516,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_authorization_areas_match_the_oracle_codes() {
+    fn malformed_authorization_area_oracle_code_parity() {
         let declared_password_size = |size: u16| {
             let mut session = password_session(TPM_RS_PW, &[], 0x00, &[0xaa; 8]);
             session[7..9].copy_from_slice(&size.to_be_bytes());
@@ -590,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_second_session_is_reported_against_that_session() {
+    fn truncated_second_session_decoration() {
         let mut auth = empty_password_session();
         auth.extend_from_slice(&empty_password_session());
         for len in 10..auth.len() {
@@ -610,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_password_field_is_reported_against_the_first_session() {
+    fn truncated_password_first_session_decoration() {
         let full = password_session(TPM_RS_PW, &[], 0x00, b"abcd");
         for len in 9..full.len() {
             let mut runtime = started_runtime();
@@ -628,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn extra_password_sessions_have_no_handle_to_authorize() {
+    fn extra_password_session_no_handle() {
         let mut auth = empty_password_session();
         auth.extend_from_slice(&empty_password_session());
         let mut runtime = started_runtime();
@@ -644,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_without_handles_rejects_a_password_session() {
+    fn handleless_command_password_session_rejection() {
         let mut runtime = started_runtime();
         let mut command = hex("80020000002100 00017e");
         command.extend_from_slice(&(empty_password_session().len() as u32).to_be_bytes());
@@ -658,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_authorization_leaves_the_runtime_unchanged() {
+    fn auth_failure_runtime_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let auth = password_session(TPM_RS_PW, &[], 0x00, b"wrong");
@@ -673,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_extend_consumes_no_runtime_session_slots() {
+    fn pcr_extend_zero_session_slot_consumption() {
         let mut runtime = started_runtime();
         let free_before = runtime.live.free_session_slots;
         for round in 0..4 {
@@ -694,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_digest_entries_succeed_without_touching_a_bank() {
+    fn zero_digest_entry_success_no_bank_update() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -705,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_hash_algorithm_is_accepted() {
+    fn supported_hash_acceptance() {
         for (hash_alg, expected) in [
             (TPM_ALG_SHA1, EXTEND_AA_SHA1),
             (TPM_ALG_SHA256, EXTEND_AA_SHA256),
@@ -732,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_algorithms_update_their_banks_independently() {
+    fn multiple_algorithm_independent_bank_updates() {
         let mut runtime = started_runtime();
         let parameters = digest_list(&[
             (TPM_ALG_SHA1, vec![0xaa; 20]),
@@ -753,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_algorithms_extend_the_same_bank_sequentially() {
+    fn duplicate_algorithm_sequential_same_bank_extension() {
         let mut runtime = started_runtime();
         let parameters = digest_list(&[
             (TPM_ALG_SHA256, vec![0xaa; 32]),
@@ -776,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn a_count_above_hash_count_is_a_size_error_without_allocating() {
+    fn excess_digest_count_size_error() {
         for count in [5u32, 100, 0x00ff_ffff, u32::MAX] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -790,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_hash_algorithms_are_rejected() {
+    fn unsupported_hash_rejection() {
         for hash_alg in [0x0000u16, 0x0005, 0x0010, 0x0012, 0x0027, 0xffff] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -807,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_hash_algorithm_is_rejected() {
+    fn profile_disabled_hash_rejection() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().profile.algorithms =
             b"sha1,sha256,sha384,hmac,null".to_vec();
@@ -830,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn every_truncated_parameter_prefix_is_reported_against_the_digest_list() {
+    fn truncated_parameter_digest_list_decoration() {
         for hash_alg in [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512] {
             let full = one_digest(hash_alg, 0xaa);
             for len in 0..full.len() {
@@ -847,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_return_size() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let mut parameters = one_digest(TPM_ALG_SHA256, 0xaa);
@@ -860,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_parsing_leaves_the_runtime_unchanged() {
+    fn parse_failure_runtime_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         for parameters in [
@@ -875,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn every_implemented_pcr_handle_is_accepted() {
+    fn implemented_handle_acceptance() {
         for pcr in 0..IMPLEMENTATION_PCR as u32 {
             let mut runtime = started_runtime();
             runtime.locality = 2;
@@ -888,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_handles_are_rejected_with_the_handle_decoration() {
+    fn out_of_range_handle_rejection() {
         for handle in [
             IMPLEMENTATION_PCR as u32,
             100,
@@ -914,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_handle_is_reported_with_the_handle_decoration() {
+    fn truncated_handle_decoration() {
         for len in 0..4usize {
             let mut runtime = started_runtime();
             let mut command = hex("8002 00000000 00000182");
@@ -930,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_handle_is_authorized_but_extends_nothing() {
+    fn null_handle_no_extend() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -945,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_handle_still_validates_its_parameters_and_password() {
+    fn null_handle_parameter_password_validation() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -967,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_handle_ignores_the_command_locality() {
+    fn null_handle_locality_exemption() {
         for locality in 0..5u8 {
             let mut runtime = started_runtime();
             runtime.locality = locality;
@@ -983,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unallocated_bank_is_left_alone_and_does_not_move_the_counter() {
+    fn unallocated_bank_unchanged_no_counter_advance() {
         let mut runtime = started_runtime();
         runtime.live_pcr_allocated = Some(OwnedPcrAllocation {
             selections: vec![OwnedPcrSelection {
@@ -1004,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unallocated_bank_does_not_block_an_allocated_one() {
+    fn unallocated_allocated_bank_isolation() {
         let mut runtime = started_runtime();
         runtime.live_pcr_allocated = Some(OwnedPcrAllocation {
             selections: vec![OwnedPcrSelection {
@@ -1030,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn do_not_increment_pcrs_preserve_the_counter() {
+    fn non_incrementing_pcr_counter_preservation() {
         for pcr in [16u32, 21, 22, 23] {
             let mut runtime = started_runtime();
             runtime.locality = 2;
@@ -1057,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_zero_increments_the_counter_like_upstream() {
+    fn pcr_zero_counter_increment_upstream_parity() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -1070,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dynamic_pcr_extends_from_its_all_ones_reset_value() {
+    fn dynamic_pcr_all_ones_reset_base() {
         let mut runtime = started_runtime();
         runtime.locality = 2;
         assert_eq!(bank(&runtime, 17, SHA256_SLOT), vec![0xffu8; 32]);
@@ -1088,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn the_locality_matrix_matches_the_upstream_platform_table() {
+    fn locality_matrix_upstream_match() {
         const EXTEND_LOCALITY: [u8; IMPLEMENTATION_PCR] = [
             0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f,
             0x1f, 0x1f, 0x1f, 0x1c, 0x1c, 0x0c, 0x0e, 0x04, 0x04, 0x1f,
@@ -1123,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upstream_locality_groups_are_covered_end_to_end() {
+    fn upstream_locality_group_coverage() {
         for (pcrs, allowed) in [
             (vec![0u32, 8, 15, 16, 23], vec![0u8, 1, 2, 3, 4]),
             (vec![17, 18], vec![2, 3, 4]),
@@ -1151,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disallowed_locality_is_rejected_before_the_orderly_check() {
+    fn disallowed_locality_pre_orderly_rejection() {
         let mut runtime = started_runtime();
         runtime.locality = 1;
         make_orderly(&mut runtime, 0x0001);
@@ -1169,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_internal_bank_fails_without_panicking() {
+    fn malformed_bank_panic_safety() {
         let mut runtime = started_runtime();
         runtime.live.pcrs[10].banks[SHA256_SLOT] = None;
         assert_eq!(
@@ -1196,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_bank_slot_is_an_internal_failure_rather_than_a_panic() {
+    fn invalid_bank_slot_internal_failure() {
         let runtime = started_runtime();
         let digests = [DigestValue {
             slot: PCR_SLOT_BANKS.len(),
@@ -1219,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_state_reset_fails_without_panicking() {
+    fn missing_state_reset_panic_safety() {
         let mut runtime = started_runtime();
         runtime.live.state_reset = None;
         assert_eq!(
@@ -1232,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn a_counter_at_its_maximum_fails_without_panicking() {
+    fn counter_max_panic_safety() {
         let mut runtime = started_runtime();
         runtime.live.state_reset.as_mut().unwrap().pcr_counter = u32::MAX;
         let before = snapshot(&runtime);
@@ -1248,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn a_state_saved_pcr_clears_the_orderly_state_and_schedules_an_nv_commit() {
+    fn state_saved_pcr_orderly_clear_nv_commit() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, 0x0001);
         let nv_before = runtime.nv_memory.clone();
@@ -1269,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn a_state_saved_pcr_records_the_da_used_orderly_value() {
+    fn state_saved_pcr_da_used_marker() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, 0x0001);
         runtime.live.da_used = true;
@@ -1288,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn a_state_saved_pcr_needs_nv_to_clear_an_orderly_state() {
+    fn state_saved_pcr_orderly_clear_nv_requirement() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, 0x0001);
         runtime.nv_available = false;
@@ -1305,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_state_saved_pcr_never_touches_the_orderly_state_or_nv() {
+    fn non_state_saved_pcr_orderly_nv_untouched() {
         for pcr in [16u32, 17, 20, 23] {
             let mut runtime = started_runtime();
             runtime.locality = 2;
@@ -1330,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_orderly_state_saved_pcr_schedules_no_nv_commit() {
+    fn non_orderly_state_saved_pcr_no_nv_commit() {
         let mut runtime = started_runtime();
         assert_eq!(
             runtime.state.as_ref().unwrap().persistent.orderly_state,
@@ -1353,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_persistent_change_reaches_the_nv_commit_callback() {
+    fn persistent_change_only_nv_commit() {
         let mut runtime = started_runtime();
         let command = authorized_extend(10, &one_digest(TPM_ALG_SHA256, 0xaa));
         let input = CommandInput::new(command.len() as u32, command);
@@ -1389,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upstream_libtpms_pcr10_extend_flow_matches_byte_for_byte() {
+    fn libtpms_pcr10_flow_byte_match() {
         let mut runtime = started_runtime();
 
         let extend = upstream_extend_request(b"1234");
@@ -1412,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upstream_swtpm_pcr10_extend_flow_matches_byte_for_byte() {
+    fn swtpm_pcr10_flow_byte_match() {
         let mut runtime = started_runtime();
 
         let extend = upstream_extend_request(b"hello");
@@ -1433,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pcr_read_counter_reflects_every_extend() {
+    fn update_counter_advance_per_extend() {
         let mut runtime = started_runtime();
         for round in 1..=3u32 {
             assert_eq!(
@@ -1452,7 +1455,7 @@ mod tests {
     }
 
     #[test]
-    fn bit_flips_do_not_panic() {
+    fn bit_flip_panic_safety() {
         let valid = authorized_extend(10, &one_digest(TPM_ALG_SHA256, 0xaa));
         for index in 6..valid.len() {
             for flip in [0x01u8, 0x80, 0xff] {
@@ -1461,13 +1464,14 @@ mod tests {
                 let mut runtime = started_runtime();
                 let input = CommandInput::new(mutated.len() as u32, mutated);
                 let parsed = parse_command(&input).expect("the header parses");
-                let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                let _ =
+                    serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()));
             }
         }
     }
 
     #[test]
-    fn every_truncated_prefix_of_a_valid_command_is_rejected_safely() {
+    fn truncated_prefix_rejection_safety() {
         let valid = authorized_extend(10, &one_digest(TPM_ALG_SHA256, 0xaa));
         for len in 10..valid.len() {
             let mut runtime = started_runtime();
@@ -1476,7 +1480,9 @@ mod tests {
             truncated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
             let input = CommandInput::new(truncated.len() as u32, truncated);
             let parsed = parse_command(&input).expect("the header parses");
-            let response = serialize_response(&dispatch(&mut runtime, &parsed)).unwrap();
+            let response =
+                serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()))
+                    .unwrap();
             assert_ne!(&response[6..10], &RC_SUCCESS.to_be_bytes(), "length {len}");
             assert_unchanged(&runtime, &before);
         }

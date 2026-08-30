@@ -94,7 +94,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_preloaded_state_has_three_missing_entries() {
+    fn new_state_three_missing_entries() {
         let preloaded = PreloadedState::new();
         for kind in [
             StateBlobKind::Permanent,
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn preloaded_blob_variants_are_distinct() {
+    fn blob_variant_distinction() {
         assert_ne!(PreloadedBlob::Missing, PreloadedBlob::Empty);
         assert_ne!(PreloadedBlob::Empty, PreloadedBlob::Data(vec![0]));
         assert_ne!(PreloadedBlob::Missing, PreloadedBlob::Data(vec![0]));
@@ -124,14 +124,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_blob_counts_as_preloaded_state() {
+    fn empty_blob_preloaded_state_classification() {
         let mut preloaded = PreloadedState::new();
         preloaded.set_empty(StateBlobKind::Permanent);
         assert!(preloaded.is_present(StateBlobKind::Permanent));
     }
 
     #[test]
-    fn data_blob_counts_as_preloaded_state() {
+    fn data_blob_preloaded_state_classification() {
         let mut preloaded = PreloadedState::new();
         preloaded.set_data(StateBlobKind::Permanent, vec![1]);
         assert!(preloaded.is_present(StateBlobKind::Permanent));
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn clearing_one_entry_leaves_the_others() {
+    fn single_entry_clearing_isolation() {
         let mut preloaded = PreloadedState::new();
         preloaded.set_data(StateBlobKind::Permanent, vec![1]);
         preloaded.set_empty(StateBlobKind::Volatile);
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_all_resets_every_entry_to_missing() {
+    fn clear_all_full_missing_reset() {
         let mut preloaded = PreloadedState::new();
         preloaded.set_data(StateBlobKind::Permanent, vec![1]);
         preloaded.set_empty(StateBlobKind::Volatile);
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn take_transfers_ownership_and_resets_to_missing() {
+    fn take_ownership_transfer_and_missing_reset() {
         let mut preloaded = PreloadedState::new();
         preloaded.set_data(StateBlobKind::SaveState, vec![9, 9]);
         assert_eq!(

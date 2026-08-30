@@ -151,17 +151,17 @@ mod tests {
     }
 
     #[test]
-    fn no_flags_yields_empty_object() {
+    fn zero_flags_empty_object() {
         assert_eq!(get_info_string(0), "{}");
     }
 
     #[test]
-    fn unknown_flags_are_ignored() {
+    fn unknown_flags_ignored() {
         assert_eq!(get_info_string(1 << 20), "{}");
     }
 
     #[test]
-    fn active_profile_is_omitted_before_main_init() {
+    fn active_profile_pre_init_omission() {
         assert_eq!(get_info_string(INFO_ACTIVE_PROFILE), "{}");
         assert_eq!(
             get_info_string(INFO_TPMSPECIFICATION | INFO_ACTIVE_PROFILE),
@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn active_profile_is_reported_after_main_init() {
+    fn active_profile_post_init_reporting() {
         const PROFILE: &str = r#"{"Name":"null","StateFormatLevel":1}"#;
         assert_eq!(
             get_info(INFO_ACTIVE_PROFILE as TpmlibInfoFlags, Some(PROFILE), None),
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn tpmspecification_matches_reference() {
+    fn tpmspecification_reference_parity() {
         assert_eq!(
             get_info_string(INFO_TPMSPECIFICATION),
             r#"{"TPMSpecification":{"family":"2.0","level":0,"revision":183}}"#
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn sections_use_c_emission_order() {
+    fn section_c_emission_order() {
         let all = get_info_string(255);
         let order = [
             "TPMSpecification",
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_names_are_listed_in_table_order() {
+    fn profile_name_table_order() {
         let profiles = get_info_string(INFO_AVAILABLE_PROFILES);
         let default_pos = profiles.find(r#""Name":"default-v1""#).unwrap();
         let null_pos = profiles.find(r#""Name":"null""#).unwrap();
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_sections_report_pre_init_state() {
+    fn runtime_section_pre_init_state_report() {
         let algos = get_info_string(INFO_RUNTIME_ALGORITHMS);
         assert!(algos.contains(r#""Enabled":"""#));
         assert!(algos.contains(r#""Implemented":"rsa,rsa-min-size=1024,"#));
@@ -250,7 +250,7 @@ mod runtime_algorithms_tests {
 ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-nist-p256,ecc-nist-p384,symcipher,cfb";
 
     #[test]
-    fn the_implemented_and_can_be_disabled_lists_are_profile_independent() {
+    fn implemented_and_disableable_list_profile_independence() {
         let pre_init = section(None);
         for profile in [DEFAULT_ALGORITHMS_PROFILE, REDUCED] {
             let info = section(Some(profile));
@@ -263,7 +263,7 @@ ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-nist-p256,ecc-nist-p384,symciphe
     }
 
     #[test]
-    fn the_section_reports_the_active_profile() {
+    fn section_active_profile_report() {
         let info = section(Some(DEFAULT_ALGORITHMS_PROFILE));
         assert_eq!(field(&info, "Disabled"), "");
         assert!(field(&info, "Enabled").starts_with("rsa,rsa-min-size=1024,tdes,"));
@@ -284,7 +284,7 @@ ctr,ofb,cbc,ecb"
     }
 
     #[test]
-    fn a_profile_without_tdes_reports_exactly_tdes_as_disabled() {
+    fn tdes_disabled_profile_exact_report() {
         let profile: Vec<u8> = DEFAULT_ALGORITHMS_PROFILE
             .split(|&byte| byte == b',')
             .filter(|token| *token != b"tdes")
@@ -294,7 +294,7 @@ ctr,ofb,cbc,ecb"
     }
 
     #[test]
-    fn a_profile_with_several_disabled_algorithms_lists_them_in_table_order() {
+    fn multiple_disabled_algorithms_table_order() {
         let dropped: [&[u8]; 3] = [b"camellia", b"sha1", b"cbc"];
         let profile: Vec<u8> = DEFAULT_ALGORITHMS_PROFILE
             .split(|&byte| byte == b',')
@@ -309,7 +309,7 @@ ctr,ofb,cbc,ecb"
     }
 
     #[test]
-    fn the_section_keeps_its_key_order_and_stays_valid_json() {
+    fn section_key_order_and_json_validity() {
         for profile in [None, Some(DEFAULT_ALGORITHMS_PROFILE), Some(REDUCED)] {
             let info = section(profile);
             assert!(info.starts_with("{\"RuntimeAlgorithms\":{\"Implemented\":\""));
@@ -327,7 +327,7 @@ ctr,ofb,cbc,ecb"
     }
 
     #[test]
-    fn the_section_is_stable_across_calls() {
+    fn section_stability_across_calls() {
         let first = section(Some(REDUCED));
         for _ in 0..4 {
             assert_eq!(section(Some(REDUCED)), first);

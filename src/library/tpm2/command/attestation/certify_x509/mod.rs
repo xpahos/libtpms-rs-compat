@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn ready() -> Box<Tpm2Runtime> {
+    fn ready() -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_READY"))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector("VOLATILE_READY"))
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn with_keys(templates: &[(u32, Vec<u8>)]) -> Box<Tpm2Runtime> {
+    fn with_keys(templates: &[(u32, Vec<u8>)]) -> Tpm2Runtime {
         let mut runtime = ready();
         for (hierarchy, template) in templates {
             run_ok(
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn two_signers() -> Box<Tpm2Runtime> {
+    fn two_signers() -> Tpm2Runtime {
         let mut runtime = ready();
         assert_eq!(
             run(
@@ -778,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0197");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_CERTIFY_X509, 0x0000_0197);
@@ -808,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn the_neighbouring_command_codes_answer_the_oracle_capabilities() {
+    fn neighbour_command_codes_capability_oracle_match() {
         for (record, expected) in [
             ("CCATTR_0196", 0x0400_0197u32),
             ("CCATTR_0197", 0x0400_0197),
@@ -824,12 +824,12 @@ mod tests {
     }
 
     #[test]
-    fn the_signing_keys_match_the_oracle() {
+    fn signing_keys_oracle_match() {
         let _ = two_signers();
     }
 
     #[test]
-    fn an_rsa_signer_certifies_an_ecc_object_like_the_oracle() {
+    fn rsa_signer_ecc_object_oracle_match() {
         assert_exact(
             "X509_RSA_SIGNS_ECC",
             &signer_pair(),
@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_signer_certifies_itself_like_the_oracle() {
+    fn rsa_signer_self_certification_oracle_match() {
         assert_exact(
             "X509_RSA_SIGNS_RSA",
             &signer_pair(),
@@ -847,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_supplied_algorithm_identifier_is_used_verbatim() {
+    fn caller_algorithm_identifier_verbatim_use() {
         for (record, algid) in [
             ("X509_CALLER_ALGID", &RSA_ALGID[..]),
             ("X509_CALLER_ALGID_UNRELATED", &ECDSA_ALGID[..]),
@@ -874,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_scheme_that_matches_the_key_is_accepted() {
+    fn explicit_matching_scheme_acceptance() {
         assert_exact(
             "X509_EXPLICIT_SCHEME",
             &signer_pair(),
@@ -889,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_attribute_extension_is_optional() {
+    fn optional_object_attribute_extension() {
         assert_exact(
             "X509_ONLY_KEY_USAGE",
             &signer_pair(),
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn non_repudiation_is_accepted_when_the_object_is_fixed_to_the_tpm() {
+    fn non_repudiation_fixed_tpm_acceptance() {
         assert_exact(
             "X509_NONREPUDIATION",
             &signer_pair(),
@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sha384_signer_truncates_the_serial_number() {
+    fn sha384_signer_serial_number_truncation() {
         let templates = vec![
             (
                 TPM_RH_OWNER,
@@ -964,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn a_certified_storage_key_may_carry_key_encipherment() {
+    fn storage_key_key_encipherment_acceptance() {
         assert_exact(
             "X509_STORAGE_OBJECT",
             &[
@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn a_certified_decryption_key_may_carry_data_encipherment() {
+    fn decryption_key_data_encipherment_acceptance() {
         assert_exact(
             "X509_DECRYPT_OBJECT",
             &[
@@ -1008,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn a_keyed_hash_signer_answers_an_hmac_signature() {
+    fn keyed_hash_signer_hmac_signature() {
         assert_exact(
             "X509_HMAC_SIGNER_ALGID",
             &[
@@ -1032,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reconstructed_certificate_hashes_to_the_returned_digest() {
+    fn reconstructed_certificate_digest_match() {
         let caller = vec![
             x509_name("Issuer"),
             x509_validity(),
@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_signer_certifies_like_the_oracle() {
+    fn ecc_signer_oracle_match() {
         for (record, object, sign) in [
             ("X509_ECC_SIGNS_RSA", KEY0, KEY1),
             ("X509_ECC_SIGNS_ECC", KEY1, KEY1),
@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsassa_signature_verifies_against_the_signing_key() {
+    fn rsassa_signature_verification() {
         use crate::library::tpm2::crypto::{BigUint, Hasher};
         use crate::library::tpm2::object_create::resolve_any_object;
         use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedPublicId};
@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn a_probabilistic_signature_scheme_signs_the_same_certificate() {
+    fn pss_signature_same_certificate() {
         for (record, hash_alg) in [
             ("X509_PSS_SHA256", ALG_SHA256),
             ("X509_PSS_SHA1", ALG_SHA1),
@@ -1273,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rejected_requests_match_the_oracle() {
+    fn rejected_requests_oracle_match() {
         let good = default_body();
         let cases: Vec<(&str, Vec<u8>)> = vec![
             (
@@ -1642,7 +1642,7 @@ mod tests {
     }
 
     #[test]
-    fn an_incompatible_signing_key_or_object_matches_the_oracle() {
+    fn incompatible_key_object_oracle_match() {
         let good = default_body();
         let mut runtime = with_keys(&[
             (TPM_RH_OWNER, keyedhash_template(ALG_HMAC, ALG_SHA256)),
@@ -1710,7 +1710,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_audited_like_the_oracle() {
+    fn command_audit_oracle_match() {
         let mut runtime = with_keys(&signer_pair());
         let mut parameters = sig_scheme(ALG_NULL, 0);
         parameters.extend_from_slice(&1u32.to_be_bytes());
@@ -1751,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_certification_leaves_no_trace() {
+    fn rejected_certification_state_unchanged() {
         let mut runtime = with_keys(&signer_pair());
         run_ok(
             &mut runtime,
@@ -1790,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_certificate_mutations_do_not_panic() {
+    fn partial_certificate_mutation_panic_safety() {
         let full = default_body();
         let mut runtime = with_keys(&signer_pair());
         for index in 0..full.len() {
@@ -1806,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn leading_parameter_mutations_do_not_panic() {
+    fn leading_parameter_mutation_panic_safety() {
         let mut full = tpm2b(&[]);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         full.extend_from_slice(&tpm2b(&default_body()));
@@ -1880,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn every_primitive_hash_test_is_pending_before_the_first_certification() {
+    fn hash_self_tests_pending_pre_certification() {
         let runtime = with_keys(&signer_pair());
         assert_eq!(
             pending_self_tests(&runtime),
@@ -1897,7 +1897,7 @@ mod tests {
     }
 
     #[test]
-    fn the_serial_number_hash_is_tested_before_the_certificate_hash() {
+    fn serial_number_hash_before_certificate_hash() {
         let mut runtime = with_keys(&split_hash_signer());
         arm_self_tests(&mut runtime, None);
         run_ok(
@@ -1923,7 +1923,7 @@ mod tests {
     }
 
     #[test]
-    fn one_hash_algorithm_runs_its_primitive_test_once() {
+    fn shared_hash_algorithm_single_primitive_test() {
         let mut runtime = with_keys(&signer_pair());
         arm_self_tests(&mut runtime, None);
         run_ok(
@@ -1940,7 +1940,7 @@ mod tests {
     }
 
     #[test]
-    fn a_settled_name_algorithm_leaves_only_the_signature_hash() {
+    fn settled_name_alg_signature_hash_only() {
         let mut runtime = with_keys(&split_hash_signer());
         runtime
             .self_test
@@ -1956,7 +1956,7 @@ mod tests {
     }
 
     #[test]
-    fn a_settled_signature_hash_leaves_only_the_name_algorithm() {
+    fn settled_signature_hash_name_alg_only() {
         let mut runtime = with_keys(&split_hash_signer());
         runtime
             .self_test
@@ -1972,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_serial_number_hash_test_stops_the_command() {
+    fn serial_number_hash_test_failure_command_stop() {
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::self_test::SelfTestFailure;
 
@@ -2030,7 +2030,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_certificate_hash_test_stops_the_command_after_the_serial_number() {
+    fn certificate_hash_test_failure_post_serial_stop() {
         use crate::library::tpm2::self_test::SelfTestFailure;
 
         let mut runtime = with_keys(&split_hash_signer());
@@ -2074,7 +2074,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_request_settles_no_hash_self_test() {
+    fn rejected_request_no_self_test_settlement() {
         let good = default_body();
         let rejected: Vec<Vec<u8>> = vec![
             certify_command(TPM_RH_NULL, KEY0, &good),
@@ -2129,7 +2129,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_usage_wider_than_thirty_two_bits_reaches_the_extension_check() {
+    fn wide_key_usage_extension_check_rejection() {
         let mut runtime = with_keys(&signer_pair());
         let response = run(
             &mut runtime,
@@ -2151,7 +2151,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_zero_valued_key_usage_is_accepted_like_the_reference() {
+    fn wide_zero_key_usage_acceptance() {
         let mut runtime = with_keys(&signer_pair());
         for content in [
             &[0x00u8; 5][..],
@@ -2179,7 +2179,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_object_attribute_bit_string_is_an_attribute_mismatch() {
+    fn wide_object_attribute_bit_string_mismatch() {
         let mut runtime = with_keys(&signer_pair());
         let response = run(
             &mut runtime,
@@ -2197,7 +2197,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_bit_strings_in_a_partial_certificate_never_panic() {
+    fn partial_certificate_wide_bit_string_panic_safety() {
         let patterns: [fn(usize) -> u8; 3] = [
             |_| 0x00,
             |_| 0xff,
@@ -2245,7 +2245,7 @@ mod tests {
     }
 
     #[test]
-    fn a_certification_never_touches_nv_or_the_object_table() {
+    fn nv_and_object_table_preservation() {
         let mut runtime = with_keys(&signer_pair());
         run_ok(
             &mut runtime,
@@ -2277,7 +2277,7 @@ mod tests {
     const SESSION_HANDLE: u32 = 0x0200_0000;
 
     #[track_caller]
-    fn session_runtime() -> Box<Tpm2Runtime> {
+    fn session_runtime() -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_X509_SESSION_READY"))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector("VOLATILE_X509_SESSION_READY"))
@@ -2317,7 +2317,7 @@ mod tests {
     }
 
     #[test]
-    fn the_session_is_created_with_the_oracle_layout() {
+    fn session_creation_oracle_layout() {
         let mut runtime = with_keys(&signer_pair());
         let start = {
             let mut parameters = tpm2b(&SESSION_NONCE_CALLER);
@@ -2344,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_tagged_certification_matches_the_oracle() {
+    fn session_tagged_certification_oracle_match() {
         for (record, attributes) in [
             ("X509_PLAIN_SESSION", 0x01u8),
             ("X509_ENCRYPTED_REQUEST", 0x21),
@@ -2361,7 +2361,7 @@ mod tests {
     }
 
     #[test]
-    fn an_encrypted_reserved_parameter_is_decrypted_before_its_size_is_checked() {
+    fn encrypted_reserved_param_decrypt_before_size_check() {
         use crate::library::tpm2::crypto::{kdfa, sym_cfb_encrypt};
 
         let stream = kdfa(
@@ -2389,7 +2389,7 @@ mod tests {
     }
 
     #[test]
-    fn the_encrypted_response_carries_the_same_certificate() {
+    fn encrypted_response_same_certificate() {
         use crate::library::tpm2::crypto::{kdfa, sym_cfb_decrypt};
 
         let plain = added_to_certificate(vector("X509_PLAIN_SESSION"));
@@ -2418,7 +2418,7 @@ mod tests {
     }
 
     #[test]
-    fn the_validation_order_matches_the_oracle() {
+    fn validation_order_oracle_match() {
         let good = default_body();
         let malformed_sequence = der(0x31, &[0x00]);
         let short_outer = {
@@ -2514,7 +2514,7 @@ mod tests {
     }
 
     #[test]
-    fn the_fixture_covers_every_certification_shape() {
+    fn fixture_shape_coverage() {
         let names: Vec<&str> = vectors().into_iter().map(|record| record.name).collect();
         assert!(
             names

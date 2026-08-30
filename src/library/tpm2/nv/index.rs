@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn default_fixture_decodes() {
+    fn default_fixture_decoding() {
         let data = NvIndexFixture {
             auth_policy: vec![0x11; 32],
             auth_value: vec![0x22; 20],
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_handles_are_rc_value() {
+    fn out_of_range_handle_rc_value_error() {
         for handle in [0x0000_0001u32, 0x00ff_ffff, 0x0200_0000, 0x8100_0000] {
             let data = NvIndexFixture {
                 nv_index: handle,
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_name_alg_is_rc_hash() {
+    fn invalid_name_alg_rc_hash_error() {
         for alg in [0x0000u16, 0x0010, 0x0012, 0xffff] {
             let data = NvIndexFixture {
                 name_alg: alg,
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_attribute_bits_are_rejected() {
+    fn reserved_attribute_bit_rejection() {
         let data = NvIndexFixture {
             attributes: 0x0010_0000,
             ..NvIndexFixture::default()
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_data_size_is_rc_size() {
+    fn oversized_data_size_rc_size_error() {
         for size in [2049u16, u16::MAX] {
             let data = NvIndexFixture {
                 data_size: size,
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_at_every_boundary_is_insufficient() {
+    fn boundary_truncation_insufficient_error() {
         let full = NvIndexFixture {
             auth_policy: vec![0x33; 8],
             auth_value: vec![0x44; 8],
@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn index_entry_byte_mutations_do_not_panic() {
+    fn index_entry_byte_mutation_panic_safety() {
         let full = NvIndexFixture::default().bytes();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0xff] {

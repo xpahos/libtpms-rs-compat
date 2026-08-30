@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn profile_runtime(algorithms: &str, attributes: &str) -> Box<Tpm2Runtime> {
+    fn profile_runtime(algorithms: &str, attributes: &str) -> Tpm2Runtime {
         use crate::library::tpm2::manufacture::manufacture_state;
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -330,18 +330,18 @@ mod tests {
     const QUALIFY: [u8; 8] = [0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7];
 
     #[track_caller]
-    fn oracle_runtime() -> (Box<Tpm2Runtime>, u32) {
+    fn oracle_runtime() -> (Tpm2Runtime, u32) {
         let (runtime, endorsement, _) = oracle_runtime_with_owner(false);
         (runtime, endorsement)
     }
 
     #[track_caller]
-    fn oracle_runtime_with_owner(with_owner: bool) -> (Box<Tpm2Runtime>, u32, u32) {
+    fn oracle_runtime_with_owner(with_owner: bool) -> (Tpm2Runtime, u32, u32) {
         oracle_runtime_before_da_transition(with_owner)
     }
 
     #[track_caller]
-    fn oracle_runtime_before_da_transition(with_owner: bool) -> (Box<Tpm2Runtime>, u32, u32) {
+    fn oracle_runtime_before_da_transition(with_owner: bool) -> (Tpm2Runtime, u32, u32) {
         let mut runtime = restore_permanent_blob_for_test(&certify_vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
         assert_eq!(
@@ -393,7 +393,7 @@ mod tests {
         );
     }
 
-    fn certify_runtime() -> Box<Tpm2Runtime> {
+    fn certify_runtime() -> Tpm2Runtime {
         let mut runtime = started_runtime();
         mark_da_cycle_used(&mut runtime);
         runtime.nv_update_pending = false;
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn the_test_support_enters_the_complete_post_transition_state() {
+    fn test_support_post_transition_state() {
         use crate::library::tpm2::nv::build_nv_image;
 
         let (mut oracle, endorsement) = oracle_runtime();
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = certify_vector("CCATTR_0184");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         assert_eq!(TPM_CC_NV_CERTIFY, 0x0000_0184);
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handles_carry_the_upstream_roles() {
+    fn handle_upstream_roles() {
         let descriptor = find(TPM_CC_NV_CERTIFY).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 3);
         assert!(descriptor.handles[0].user_auth);
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_list_advertises_nv_certify() {
+    fn capability_list_advertisement() {
         use crate::library::tpm2::capability::commands::implemented;
         let page = implemented(TPM_CC_NV_CERTIFY, 1);
         assert_eq!(page.entries, [0x0600_0184]);
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_content_certification_matches_the_oracle() {
+    fn direct_content_certification_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_ENDORSEMENT"));
         assert_eq!(
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn a_certified_window_matches_the_oracle() {
+    fn certified_window_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_WINDOW"));
         assert_eq!(
@@ -586,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn certification_without_qualifying_data_matches_the_oracle() {
+    fn certification_without_qualifying_data_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_NO_QUALIFYING"));
         assert_eq!(
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn digest_certification_matches_the_oracle() {
+    fn digest_certification_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_DIGEST"));
         let response = certify(
@@ -630,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn digest_certification_without_qualifying_data_matches_the_oracle() {
+    fn digest_certification_without_qualifying_data_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(
             &mut runtime,
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn a_storage_hierarchy_signer_obfuscates_the_clock_and_firmware_values() {
+    fn storage_signer_clock_firmware_obfuscation() {
         let (mut runtime, endorsement, owner) = oracle_runtime_with_owner(true);
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_OWNER_SIGNER"));
         let response = certify(
@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn the_index_may_authorize_its_own_certification() {
+    fn index_self_authorization() {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_INDEX_AUTH"));
         assert_eq!(
@@ -727,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_scheme_that_matches_the_key_is_accepted() {
+    fn matching_explicit_scheme_acceptance() {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_EXPLICIT_SCHEME"));
         assert_eq!(
@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scheme_that_disagrees_with_the_key_is_a_scheme_error() {
+    fn mismatched_scheme_error() {
         let (mut runtime, endorsement) = oracle_runtime();
         assert_eq!(
             certify(
@@ -794,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn the_range_and_size_errors_match_the_oracle() {
+    fn range_size_errors_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
         assert_eq!(
             certify(
@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_size_within_a_large_index_is_a_value_error() {
+    fn oversized_size_large_index_value_error() {
         let (mut runtime, endorsement) = oracle_runtime();
         define(
             &mut runtime,
@@ -897,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_errors_match_the_oracle() {
+    fn authorization_errors_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
         assert_eq!(
             certify(
@@ -958,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn an_uninitialized_index_cannot_be_certified() {
+    fn uninitialized_index_rejection() {
         let (mut runtime, endorsement) = oracle_runtime();
         define(
             &mut runtime,
@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_locked_index_cannot_be_certified() {
+    fn read_locked_index_rejection() {
         let (mut runtime, endorsement) = oracle_runtime();
         assert_eq!(
             response_code(&dispatch_bytes(
@@ -1050,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn the_permanent_state_around_certification_matches_the_oracle() {
+    fn permanent_state_oracle_match() {
         let (mut runtime, endorsement, _) = oracle_runtime_before_da_transition(false);
         assert_matches_oracle(
             &runtime,
@@ -1083,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_signing_key_produces_a_null_signature() {
+    fn null_signing_key_null_signature() {
         let (mut runtime, _) = oracle_runtime();
         let response = certify(
             &mut runtime,
@@ -1112,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_that_cannot_sign_is_a_key_error() {
+    fn non_signing_key_error() {
         let mut runtime = certify_runtime();
         define(
             &mut runtime,
@@ -1141,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_a_default_scheme_needs_an_explicit_one() {
+    fn missing_default_scheme_explicit_requirement() {
         let mut runtime = certify_runtime();
         define(
             &mut runtime,
@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsassa_signature_verifies_against_the_public_key() {
+    fn rsassa_signature_verification() {
         use crate::library::tpm2::crypto::BigUint;
         let (mut runtime, endorsement) = oracle_runtime();
         let modulus = {
@@ -1352,7 +1352,7 @@ mod tests {
     }
 
     #[test]
-    fn every_ecc_scheme_reaches_the_oracle_return_code() {
+    fn ecc_scheme_oracle_return_codes() {
         let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1401,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn an_sm2_curve_key_signs_with_the_sm2_scheme() {
+    fn sm2_curve_scheme_signing() {
         let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1426,7 +1426,7 @@ mod tests {
     }
 
     #[test]
-    fn a_keyed_hash_key_signs_with_hmac() {
+    fn keyed_hash_hmac_signing() {
         let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1454,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecc_signatures_satisfy_their_signing_equations() {
+    fn ecc_signature_equation_validity() {
         use crate::library::tpm2::crypto::{BigUint, curve_parameters};
         let mut runtime = certify_runtime();
         ready_index(&mut runtime);
@@ -1524,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn a_committed_ecdaa_signature_consumes_its_commitment() {
+    fn ecdaa_commitment_consumption() {
         let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1563,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn an_anonymous_scheme_drops_the_signer_and_qualifying_data() {
+    fn anonymous_scheme_signer_qualifying_data_omission() {
         let mut runtime = certify_runtime();
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1588,7 +1588,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_scheme_or_hash_is_reported_against_the_scheme_parameter() {
+    fn disabled_scheme_hash_scheme_parameter_error() {
         for (dropped, scheme, hash_alg, expected) in [
             (
                 "ecschnorr",
@@ -1624,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn an_enabled_scheme_and_hash_still_certify() {
+    fn enabled_scheme_hash_success() {
         let mut runtime = profile_runtime(&all_algorithms(), "");
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1649,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha1_signing_restriction_matches_the_oracle() {
+    fn sha1_signing_restriction_oracle_match() {
         let mut runtime = profile_runtime(&all_algorithms(), "no-sha1-signing");
         ready_index(&mut runtime);
         let (ecc, _) = create_primary(
@@ -1709,7 +1709,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha1_hmac_creation_restriction_matches_the_oracle() {
+    fn sha1_hmac_creation_restriction_oracle_match() {
         let mut runtime = profile_runtime(&all_algorithms(), "no-sha1-hmac-creation");
         ready_index(&mut runtime);
         let (ecc, _) = create_primary(
@@ -1755,7 +1755,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_signature_leaves_the_signing_state_untouched() {
+    fn rejected_signature_state_preservation() {
         let mut runtime = profile_runtime(&without("ecschnorr"), "no-sha1-signing");
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1822,7 +1822,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsapss_signature_verifies_against_the_public_key() {
+    fn rsapss_signature_verification() {
         use crate::library::tpm2::crypto::{BigUint, mgf1};
         let mut runtime = certify_runtime();
         ready_index(&mut runtime);
@@ -1923,7 +1923,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn commitable_ecc_runtime(attributes: &str) -> (Box<Tpm2Runtime>, u32) {
+    fn commitable_ecc_runtime(attributes: &str) -> (Tpm2Runtime, u32) {
         let mut runtime = profile_runtime(&all_algorithms(), attributes);
         ready_index(&mut runtime);
         let (key, _) = create_primary(
@@ -1943,7 +1943,7 @@ mod tests {
     }
 
     #[test]
-    fn a_certification_that_cannot_clear_the_orderly_state_leaves_no_trace() {
+    fn orderly_clear_failure_no_trace() {
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
         let before = snapshot(&runtime);
         let signing_before = signing_snapshot(&runtime);
@@ -2000,7 +2000,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reseed_due_signature_draw_follows_the_live_drbg_policy() {
+    fn reseed_due_draw_live_drbg_policy() {
         use crate::library::tpm2::crypto::CTR_DRBG_MAX_REQUESTS_PER_RESEED;
 
         fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
@@ -2068,7 +2068,7 @@ mod tests {
     }
 
     #[test]
-    fn the_production_outcome_publication_precedes_an_ordinary_signing_error() {
+    fn outcome_publication_before_signing_error() {
         const INJECTED_SIGNING_ERROR: TpmResult = 0x0195;
 
         let mut runtime = profile_runtime(&all_algorithms(), "drbg-continous-test");
@@ -2108,7 +2108,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_after_signing_keeps_the_published_signing_state() {
+    fn nv_unavailable_after_signing_state_preservation() {
         const NO_DA_SIGN_KEY_ATTRS: u32 = SIGN_KEY_ATTRS | 0x0400;
 
         let (mut runtime, _) = commitable_ecc_runtime("drbg-continous-test");
@@ -2147,7 +2147,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_orderly_commit_keeps_the_signing_state_and_rolls_back_nv() {
+    fn orderly_commit_failure_signing_state_nv_rollback() {
         use crate::library::tpm2::nv::build_nv_image;
 
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
@@ -2186,7 +2186,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_after_a_split_signature_keeps_the_consumed_commitment() {
+    fn nv_unavailable_split_signature_commitment_consumption() {
         const NO_DA_SIGN_KEY_ATTRS: u32 = SIGN_KEY_ATTRS | 0x0400;
 
         let (mut runtime, _) = commitable_ecc_runtime("drbg-continous-test");
@@ -2239,7 +2239,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_orderly_commit_after_a_split_signature_keeps_the_consumed_commitment() {
+    fn orderly_commit_failure_split_signature_commitment_consumption() {
         use crate::library::tpm2::nv::build_nv_image;
 
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
@@ -2292,7 +2292,7 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_test_failure_during_signing_is_fatal_and_publishes_nothing() {
+    fn continuous_test_failure_fatal_no_publication() {
         use crate::library::tpm2::crypto::Drbg;
         use crate::library::tpm2::failure_mode::FailureLocation;
 
@@ -2343,7 +2343,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_certification_publishes_the_signing_state() {
+    fn success_signing_state_publication() {
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
         let before = signing_snapshot(&runtime);
         assert_eq!(
@@ -2403,7 +2403,7 @@ mod tests {
     }
 
     #[test]
-    fn certification_clears_the_orderly_state() {
+    fn certification_orderly_state_clearing() {
         let (mut runtime, endorsement) = oracle_runtime();
         runtime.state.as_mut().unwrap().persistent.orderly_state = 0;
         assert_eq!(
@@ -2428,7 +2428,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_certification_leaves_no_trace() {
+    fn failure_no_trace() {
         let (mut runtime, endorsement) = oracle_runtime();
         assert_eq!(
             response_code(&certify(
@@ -2482,7 +2482,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_area_is_auth_missing() {
+    fn missing_authorization_area_auth_missing() {
         let (mut runtime, endorsement) = oracle_runtime();
         let mut payload = endorsement.to_be_bytes().to_vec();
         payload.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
@@ -2498,7 +2498,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_sign_handle_is_reported_against_its_own_index() {
+    fn invalid_sign_handle_indexed_error() {
         let (mut runtime, _) = oracle_runtime();
         assert_eq!(
             response_code(&certify(
@@ -2517,7 +2517,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let (mut runtime, endorsement) = oracle_runtime();
         let mut parameters = certify_parameters(&QUALIFY, 0x0010, 0, 32, 0);
         parameters.push(0x00);
@@ -2536,7 +2536,7 @@ mod tests {
     }
 
     #[test]
-    fn certify_parameter_mutations_do_not_panic() {
+    fn certify_parameter_mutation_panic_safety() {
         let full = certify_parameters(&QUALIFY, TPM_ALG_RSASSA, TPM_ALG_SHA256, 32, 0);
         let (mut runtime, endorsement) = oracle_runtime();
         for index in 0..full.len() {

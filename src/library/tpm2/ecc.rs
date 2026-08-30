@@ -572,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn a_well_formed_point_round_trips_through_the_reader_and_writer() {
+    fn point_marshal_round_trip() {
         let encoded = point_bytes(&[0x11; 32], &[0x22; 32]);
         let point = parse(&encoded).expect("a well-formed point parses");
         assert_eq!(point.x, [0x11; 32]);
@@ -583,19 +583,19 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_point_marshals_as_two_empty_parameters() {
+    fn empty_point_two_empty_parameters() {
         let mut writer = BlobWriter::new();
         write_ecc_point(&mut writer, &EccPoint::empty()).expect("an empty point marshals");
         assert_eq!(writer.into_bytes(), [0x00, 0x04, 0x00, 0x00, 0x00, 0x00]);
     }
 
     #[test]
-    fn a_zero_sized_point_is_a_size_error() {
+    fn zero_sized_point_size_error() {
         assert_eq!(parse(&[0x00, 0x00]), Err(TPM_RC_SIZE));
     }
 
     #[test]
-    fn a_truncated_point_is_reported_as_insufficient_or_size() {
+    fn truncated_point_insufficient_or_size_error() {
         let encoded = point_bytes(&[0x11; 32], &[0x22; 32]);
         for length in 0..encoded.len() {
             let error = parse(&encoded[..length]).expect_err("a truncated point is refused");
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_size_that_disagrees_with_the_coordinates_is_refused() {
+    fn declared_size_coordinate_mismatch_rejection() {
         let mut encoded = point_bytes(&[0x11; 8], &[0x22; 8]);
         encoded[0..2].copy_from_slice(&23u16.to_be_bytes());
         encoded.push(0x00);
@@ -618,13 +618,13 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_coordinate_is_a_size_error() {
+    fn oversized_coordinate_size_error() {
         let encoded = point_bytes(&[0x11; MAX_ECC_KEY_BYTES + 1], &[0x22; 4]);
         assert_eq!(parse(&encoded), Err(TPM_RC_SIZE));
     }
 
     #[test]
-    fn trailing_bytes_stay_available_to_the_caller() {
+    fn trailing_byte_caller_availability() {
         let mut encoded = point_bytes(&[0x11; 4], &[0x22; 4]);
         encoded.extend_from_slice(&[0xaa, 0xbb]);
         let mut reader = TemplateReader::new(&encoded);
@@ -633,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn every_generator_is_reported_on_its_own_curve() {
+    fn generator_on_curve_all_curves() {
         for curve_id in ALL_CURVES {
             assert!(is_compiled_curve(curve_id));
             assert!(point_is_on_curve(curve_id, &generator(curve_id)));
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn a_point_off_the_curve_is_rejected() {
+    fn off_curve_point_rejection() {
         let mut point = generator(P256);
         point.y[31] ^= 0x01;
         assert!(!point_is_on_curve(P256, &point));
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_point_uses_the_fixed_curve_width() {
+    fn generated_point_fixed_curve_width() {
         for curve_id in ALL_CURVES {
             let width = usize::from(curve_key_size_bits(curve_id).expect("a curve")).div_ceil(8);
             let point = point_multiply(curve_id, None, &scalar(curve_id, 5)).expect("a point");
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn multiplying_an_off_curve_point_is_an_ecc_point_error() {
+    fn off_curve_multiply_point_error() {
         let mut point = generator(P256);
         point.x[0] ^= 0xff;
         assert_eq!(
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_scalar_has_no_result() {
+    fn zero_scalar_no_result() {
         assert_eq!(
             point_multiply(P256, None, &scalar(P256, 0)),
             Err(TPM_RC_NO_RESULT)
@@ -681,12 +681,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_curve_has_no_multiply() {
+    fn unsupported_curve_no_multiply() {
         assert_eq!(point_multiply(0x0007, None, &[0x01]), Err(TPM_RC_VALUE));
     }
 
     #[test]
-    fn diffie_hellman_agrees_in_both_directions() {
+    fn diffie_hellman_bidirectional_agreement() {
         for curve_id in ALL_CURVES {
             let a = scalar(curve_id, 0x1234_5678);
             let b = scalar(curve_id, 0x0fed_cba9);
@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn the_curve_detail_matches_the_vendored_metadata() {
+    fn curve_detail_vendored_metadata_match() {
         let detail = algorithm_detail(P256).expect("NIST P256 has parameters");
         assert_eq!(&detail[..2], &0x0003u16.to_be_bytes());
         assert_eq!(&detail[2..4], &256u16.to_be_bytes());
@@ -712,14 +712,14 @@ mod tests {
     }
 
     #[test]
-    fn the_p384_detail_uses_the_sha384_key_derivation() {
+    fn p384_detail_sha384_kdf() {
         let detail = algorithm_detail(P384).expect("NIST P384 has parameters");
         assert_eq!(&detail[4..6], &TPM_ALG_KDF1_SP800_56A.to_be_bytes());
         assert_eq!(&detail[6..8], &TPM_ALG_SHA384.to_be_bytes());
     }
 
     #[test]
-    fn the_barreto_naehrig_detail_has_no_key_derivation_and_a_single_zero_a() {
+    fn bn_detail_no_kdf_single_zero_a() {
         let detail = algorithm_detail(BN256).expect("BN P256 has parameters");
         assert_eq!(&detail[4..6], &TPM_ALG_NULL.to_be_bytes());
         assert_eq!(&detail[6..8], &TPM_ALG_NULL.to_be_bytes());
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn the_p521_parameters_are_padded_to_the_prime_width() {
+    fn p521_parameter_prime_width_padding() {
         let detail = algorithm_detail(P521).expect("NIST P521 has parameters");
         let prime_length = usize::from(u16::from_be_bytes([detail[10], detail[11]]));
         assert_eq!(prime_length, 66);
@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_curve_has_a_detail_and_unknown_ones_do_not() {
+    fn curve_detail_compiled_only_presence() {
         for curve_id in ALL_CURVES {
             assert!(algorithm_detail(curve_id).is_some(), "{curve_id:#06x}");
         }
@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scheme_selection_follows_the_key_when_the_request_is_null() {
+    fn null_request_key_scheme_selection() {
         let key = kdf2(TPM_ALG_SHA256);
         assert_eq!(select_kdf_scheme(key, null_scheme()), Some(key));
         assert_eq!(select_kdf_scheme(key, key), Some(key));
@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_conflicting_with_the_key_scheme_is_refused() {
+    fn conflicting_scheme_rejection() {
         let key = kdf2(TPM_ALG_SHA256);
         assert_eq!(select_kdf_scheme(key, kdf2(TPM_ALG_SHA384)), None);
         let other = Scheme {
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn an_encryption_round_trip_recovers_the_plain_text() {
+    fn encryption_round_trip() {
         for length in [0usize, 1, 32, 255, MAX_ECC_MESSAGE] {
             let private = scalar(P256, 0x5eed_1234);
             let public = point_multiply(P256, None, &private).expect("a public point");
@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn every_curve_supports_an_encryption_round_trip() {
+    fn encryption_round_trip_curve_coverage() {
         for curve_id in ALL_CURVES {
             let private = scalar(curve_id, 0x99);
             let public = point_multiply(curve_id, None, &private).expect("a public point");
@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn a_modified_ciphertext_never_returns_plain_text() {
+    fn modified_ciphertext_no_plaintext() {
         let private = scalar(P256, 0x5eed_1234);
         let public = point_multiply(P256, None, &private).expect("a public point");
         let message = b"authenticated".to_vec();
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scheme_other_than_kdf2_is_refused_by_both_directions() {
+    fn non_kdf2_scheme_rejection_both_directions() {
         let private = scalar(P256, 0x11);
         let public = point_multiply(P256, None, &private).expect("a public point");
         let scheme = Scheme {
@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn encryption_is_deterministic_in_the_generator_state() {
+    fn encryption_generator_state_determinism() {
         let private = scalar(P256, 0x77);
         let public = point_multiply(P256, None, &private).expect("a public point");
         let first = crypt_ecc_encrypt(
@@ -973,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commit_computation_selects_its_outputs_from_the_supplied_points() {
+    fn commit_output_point_selection() {
         let private = scalar(P256, 0x2222);
         let r = BigUint::from_u64(0x3333);
         let point = generator(P256);
@@ -1023,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_operand_off_the_curve_is_a_value_error() {
+    fn commit_off_curve_operand_value_error() {
         let mut point = generator(P256);
         point.x[0] ^= 0xff;
         assert_eq!(
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_value_outside_the_order_is_a_value_error() {
+    fn commit_value_above_order_value_error() {
         let curve = curve_parameters(P256).expect("a compiled curve");
         assert_eq!(
             commit_compute(
@@ -1056,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn two_phase_ecdh_produces_both_shared_points() {
+    fn two_phase_ecdh_dual_shared_point_output() {
         let ds_a = scalar(P256, 0x0a0a);
         let de_a = BigUint::from_u64(0x0b0b);
         let qs_b = point_multiply(P256, None, &scalar(P256, 0x0c0c)).expect("a point");
@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn two_phase_sm2_produces_one_point_and_leaves_the_second_empty() {
+    fn two_phase_sm2_single_point_output() {
         let ds_a = scalar(SM2P256, 0x1111);
         let de_a = BigUint::from_u64(0x2222);
         let qs_b = point_multiply(SM2P256, None, &scalar(SM2P256, 0x3333)).expect("a point");
@@ -1089,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn two_phase_ecmqv_reaches_the_vendored_divide_by_zero() {
+    fn two_phase_ecmqv_vendored_divide_by_zero() {
         let ds_a = scalar(P256, 0x1111);
         let de_a = BigUint::from_u64(0x2222);
         let point = generator(P256);
@@ -1099,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_two_phase_scheme_is_a_scheme_error() {
+    fn two_phase_unsupported_scheme_error() {
         let point = generator(P256);
         assert_eq!(
             two_phase_key_exchange(
@@ -1124,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn a_coordinate_above_the_prime_is_reduced_like_the_vendored_initializer() {
+    fn above_prime_coordinate_vendored_reduction() {
         let peer = multiple_of_generator(2);
         let scalar = scalar(P256, 0x1234);
         let expected = point_multiply(P256, Some(&peer), &scalar).expect("the shared point");
@@ -1155,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn a_coordinate_equal_to_the_prime_reduces_to_zero_and_leaves_the_curve() {
+    fn prime_coordinate_zero_reduction_off_curve() {
         let curve = curve_parameters(P256).expect("NIST P256");
         let peer = multiple_of_generator(2);
         let point = EccPoint {
@@ -1170,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_field_ciphertext_point_still_recovers_the_plain_text() {
+    fn out_of_field_ciphertext_point_decryption_success() {
         let private = scalar(P256, 0x5eed_1234);
         let public = point_multiply(P256, None, &private).expect("a public point");
         let message = b"aliased".to_vec();
@@ -1203,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn the_integrity_check_rejects_a_mismatch_at_any_position() {
+    fn integrity_mismatch_rejection_any_position() {
         let private = scalar(P256, 0x0f0f);
         let public = point_multiply(P256, None, &private).expect("a public point");
         let message = message_of(48);
@@ -1264,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn the_self_test_gates_follow_the_vendored_call_order() {
+    fn self_test_gate_vendored_call_order() {
         let private = scalar(P256, 0x2222);
         let public = point_multiply(P256, None, &private).expect("a public point");
         let mut gates = Vec::new();
@@ -1307,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_self_test_gate_stops_before_the_operation_it_guards() {
+    fn failing_self_test_gate_pre_operation_stop() {
         let private = scalar(P256, 0x3333);
         let public = point_multiply(P256, None, &private).expect("a public point");
         const INJECTED: TpmResult = 0x0101;
@@ -1329,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commit_computation_polls_the_cancel_flag_at_the_vendored_boundaries() {
+    fn commit_cancel_poll_vendored_boundaries() {
         let private = scalar(P256, 0x4444);
         let r = BigUint::from_u64(0x5555);
         let point = multiple_of_generator(2);
@@ -1357,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signaled_cancel_flag_stops_the_commit_computation() {
+    fn signaled_cancel_commit_stop() {
         let private = scalar(P256, 0x6666);
         let r = BigUint::from_u64(0x7777);
         let point = multiple_of_generator(2);
@@ -1378,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn the_second_checkpoint_only_fires_once_the_first_one_passed() {
+    fn second_checkpoint_after_first_pass_only() {
         let private = scalar(P256, 0x8888);
         let r = BigUint::from_u64(0x9999);
         let point = multiple_of_generator(2);
@@ -1395,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upstream_mask_keeps_the_words_the_vendored_shift_leaves() {
+    fn upstream_mask_word_granularity() {
         let value = BigUint::from_be_bytes(&[0xff; 32]);
         assert_eq!(upstream_mask_bits(&value, 0), BigUint::zero());
         assert_eq!(
@@ -1416,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn the_associated_value_sets_the_bit_above_the_masked_remainder() {
+    fn associated_value_bit_above_mask() {
         let value = BigUint::from_be_bytes(&[0xff; 32]);
         assert_eq!(
             associated_value(&value, 8),

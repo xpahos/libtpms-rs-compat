@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn both_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let load = registry::find(TPM_CC_LOAD).expect("TPM2_Load is registered");
         assert_eq!(load.attributes, 0x1200_0157);
         assert_eq!(load.decrypt_size, 2);
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(&mut runtime, &clock, "CCATTR_0157", cap_cc(0x0157));
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn public_only_external_keys_match_the_oracle() {
+    fn public_only_external_key_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         let public = rsa_sign_public(&external_modulus());
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn the_external_qualified_name_is_the_name() {
+    fn external_qualified_name_identity() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         let public = rsa_sign_public(&external_modulus());
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn external_rejections_match_the_oracle() {
+    fn external_rejection_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         let public = rsa_sign_public(&external_modulus());
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn an_external_sealed_object_matches_the_oracle() {
+    fn external_sealed_object_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn loading_a_created_child_matches_the_oracle() {
+    fn created_child_load_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         let (aes_private, aes_public) = created_child("CREATE_AES_CHILD");
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn load_rejections_match_the_oracle() {
+    fn load_rejection_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         let (_, aes_public) = created_child("CREATE_AES_CHILD");
@@ -537,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reference_state_after_loading_is_reproduced() {
+    fn post_load_reference_state_reproduction() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         let (aes_private, aes_public) = created_child("CREATE_AES_CHILD");
@@ -593,7 +593,7 @@ mod encryption_tests {
     }
 
     #[test]
-    fn the_encrypting_session_is_created_as_the_oracle_reports_it() {
+    fn encrypting_session_creation_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         let (private, public) = created_child("CREATE_SEALED_CHILD");
@@ -606,7 +606,7 @@ mod encryption_tests {
     }
 
     #[test]
-    fn command_and_response_parameters_are_encrypted_like_the_oracle() {
+    fn parameter_encryption_oracle_match() {
         let clock = clock();
         let (aes_private, aes_public) = created_child("CREATE_AES_CHILD");
         let mut load_parameters = tpm2b(&aes_private);

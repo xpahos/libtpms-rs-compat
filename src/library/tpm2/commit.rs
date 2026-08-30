@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn the_index_mask_covers_every_bit_of_the_committed_array() {
+    fn index_mask_full_array_coverage() {
         assert_eq!(COMMIT_ARRAY_SIZE, 16);
         assert_eq!(COMMIT_INDEX_MASK, 127);
         for count in [0u16, 1, 127] {
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn committing_returns_the_old_counter_and_sets_its_bit() {
+    fn commit_old_counter_return_and_bit_set() {
         let mut state = state();
         for expected in 0..4u16 {
             assert!(!state.is_set(expected));
@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn a_consumed_commitment_can_not_be_resolved_again() {
+    fn consumed_commitment_resolution_rejection() {
         let mut state = state();
         let count = state.commit();
         assert_eq!(state.counter_for(count), Some(0));
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unallocated_counter_never_resolves() {
+    fn unallocated_counter_no_resolution() {
         let mut state = state();
         state.commit();
         for count in [1u16, 2, 64, 127, 128, 0xffff] {
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upper_bits_of_the_counter_are_checked_against_the_request() {
+    fn counter_upper_bits_request_check() {
         let mut state = state();
         state.counter = 0x0001_0000;
         let count = state.commit();
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bitmap_holds_one_hundred_twenty_eight_live_commitments() {
+    fn bitmap_128_live_commitment_capacity() {
         let mut state = state();
         let mut counts = Vec::new();
         for _ in 0..128 {
@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn the_counter_wraps_without_panicking() {
+    fn counter_wrap_panic_safety() {
         let mut state = state();
         state.counter = u64::MAX;
         assert_eq!(state.commit(), 0xffff);
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_value_is_deterministic_and_below_the_order() {
+    fn generated_value_determinism_and_order_bound() {
         let curve = curve_parameters(0x0003).expect("NIST P256");
         let state = state();
         let first = state
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn the_name_and_the_counter_both_change_the_generated_value() {
+    fn name_and_counter_generated_value_dependence() {
         let curve = curve_parameters(0x0003).expect("NIST P256");
         let mut state = state();
         let base = state.generate_r(&curve, b"", None).expect("a value");
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn a_counted_generation_needs_a_live_commitment() {
+    fn counted_generation_live_commitment_requirement() {
         let curve = curve_parameters(0x0003).expect("NIST P256");
         let mut state = state();
         assert!(state.generate_r(&curve, b"", Some(0)).is_none());
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_curve_produces_a_commit_value() {
+    fn compiled_curve_commit_value_coverage() {
         let state = state();
         for curve_id in [
             0x0001u16, 0x0002, 0x0003, 0x0004, 0x0005, 0x0010, 0x0011, 0x0020,

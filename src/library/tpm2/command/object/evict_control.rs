@@ -268,6 +268,7 @@ fn remove_persistent(runtime: &mut Tpm2Runtime, entry: usize) -> Result<(), TpmR
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -282,6 +283,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -358,7 +360,8 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     fn startup_command() -> Vec<u8> {
@@ -374,7 +377,7 @@ mod tests {
         runtime.nv_update_pending = false;
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -383,14 +386,14 @@ mod tests {
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         start(&mut runtime);
         runtime
     }
 
     #[track_caller]
-    fn oracle_runtime() -> Box<Tpm2Runtime> {
+    fn oracle_runtime() -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL"))
             .expect("the oracle permanent state restores");
         start(&mut runtime);
@@ -632,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_code_and_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         assert_eq!(TPM_CC_EVICT_CONTROL, 0x0000_0120);
         let descriptor = find(TPM_CC_EVICT_CONTROL).expect("a registered command");
         assert_eq!(descriptor.attributes, 0x0440_0120);
@@ -656,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_provision_handle_requires_user_authorization() {
+    fn user_authorization_provision_handle_only() {
         let descriptor = find(TPM_CC_EVICT_CONTROL).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 2);
         assert!(descriptor.handles[0].user_auth);
@@ -666,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn the_provision_handle_takes_only_owner_and_platform() {
+    fn provision_handle_owner_platform_only() {
         let kind = find(TPM_CC_EVICT_CONTROL).unwrap().handles[0].kind;
         assert!(kind.accepts(TPM_RH_OWNER));
         assert!(kind.accepts(TPM_RH_PLATFORM));
@@ -687,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_handle_takes_the_transient_and_persistent_ranges() {
+    fn object_handle_transient_persistent_ranges() {
         let kind = find(TPM_CC_EVICT_CONTROL).unwrap().handles[1].kind;
         for handle in [0x8000_0000, 0x8000_0002, PERSISTENT_FIRST, PERSISTENT_LAST] {
             assert!(kind.accepts(handle), "handle {handle:#010x}");
@@ -707,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn evict_control_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             evict(&mut runtime, TPM_RH_OWNER, 0x8000_0000, OWNER_HANDLE),
@@ -721,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_truncated_handle_is_reported_with_its_own_index() {
+    fn truncated_handle_indexed_error() {
         let mut runtime = started_runtime();
         for (payload, expected) in [
             (&[][..], RC_HANDLE1_INSUFFICIENT),
@@ -742,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn every_auth_handle_outside_owner_and_platform_is_rejected() {
+    fn invalid_auth_handle_rejection() {
         let mut runtime = started_runtime();
         for handle in [
             TPM_RH_ENDORSEMENT,
@@ -765,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn every_object_handle_outside_the_object_ranges_is_rejected() {
+    fn out_of_range_object_handle_rejection() {
         let mut runtime = started_runtime();
         for handle in [
             TPM_RH_OWNER,
@@ -784,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unloaded_transient_object_is_a_reference_error() {
+    fn unloaded_transient_reference_error() {
         let mut runtime = started_runtime();
         for slot in 0..3u32 {
             assert_eq!(
@@ -796,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn an_undefined_persistent_object_is_an_indexed_handle_error() {
+    fn undefined_persistent_indexed_handle_error() {
         let mut runtime = started_runtime();
         for handle in [
             PERSISTENT_FIRST,
@@ -835,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_object_is_deleted_while_a_transient_slot_is_free() {
+    fn deletion_with_free_transient_slot() {
         let mut runtime = started_runtime();
         persist_and_fill_the_object_table(&mut runtime);
         free_object_slot(&mut runtime, MAX_LOADED_OBJECTS - 1);
@@ -854,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_object_table_refuses_to_load_an_evict_object() {
+    fn full_object_table_load_failure() {
         let mut runtime = started_runtime();
         persist_and_fill_the_object_table(&mut runtime);
         let before = snapshot(&runtime);
@@ -876,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_object_table_wins_over_an_undefined_evict_object() {
+    fn full_table_over_undefined_evict_precedence() {
         let mut runtime = started_runtime();
         persist_and_fill_the_object_table(&mut runtime);
         let before = snapshot(&runtime);
@@ -896,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_hierarchy_wins_over_a_full_object_table() {
+    fn disabled_hierarchy_over_full_table_precedence() {
         let mut runtime = started_runtime();
         persist_and_fill_the_object_table(&mut runtime);
         runtime.live.state_clear.as_mut().unwrap().sh_enable = false;
@@ -911,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_table_error_codes_match_the_libtpms_oracle() {
+    fn object_table_error_code_oracle_match() {
         let mut runtime = started_runtime();
         persist_and_fill_the_object_table(&mut runtime);
         for object in [OWNER_HANDLE, 0x8100_0005] {
@@ -934,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_load_status_is_checked_before_the_authorization_area() {
+    fn object_load_check_before_auth_order() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -947,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_without_an_authorization_area_is_auth_missing() {
+    fn missing_auth_area_error() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         let before = snapshot(&runtime);
@@ -962,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_area_framing_matches_the_oracle() {
+    fn auth_area_framing_oracle_match() {
         let mut runtime = started_runtime();
         storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -984,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn the_owner_and_platform_passwords_are_enforced() {
+    fn owner_platform_password_enforcement() {
         for (auth, password, persistent) in [
             (TPM_RH_OWNER, &b"own"[..], OWNER_HANDLE),
             (TPM_RH_PLATFORM, &b"plat"[..], PLATFORM_HANDLE),
@@ -1027,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_truncated_persistent_handle_is_a_first_parameter_error() {
+    fn truncated_persistent_handle_first_parameter_error() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         for parameters in [&[][..], &[0x81][..], &[0x81, 0x00, 0x00][..]] {
@@ -1043,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_handle_outside_the_persistent_range_is_a_value_error() {
+    fn out_of_range_persistent_handle_value_error() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         for handle in [
@@ -1064,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_size_error() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         for extra in [&[0xee][..], &[0x00][..], &[0xff; 16][..]] {
@@ -1084,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn an_owner_primary_becomes_persistent_and_the_transient_copy_survives() {
+    fn owner_primary_persistence_transient_copy_preservation() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         let live_before = runtime.live.objects[0].clone();
@@ -1153,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_three_thousand_seventy_two_bit_persistent_object_survives_a_state_round_trip() {
+    fn rsa3072_persistent_state_round_trip() {
         let mut runtime = oracle_runtime();
         let (object, modulus) = rsa_primary(&mut runtime, 3072);
         assert_eq!(modulus.len(), 384);
@@ -1198,7 +1201,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_rsa_object_grows_with_the_key_size() {
+    fn persistent_rsa_size_scaling() {
         let mut owner = oracle_runtime();
         let (small, small_modulus) = rsa_primary(&mut owner, 2048);
         assert_eq!(small_modulus.len(), 256);
@@ -1225,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_primary_becomes_persistent_in_the_platform_range() {
+    fn platform_primary_platform_range_persistence() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_PLATFORM);
         assert_eq!(
@@ -1236,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn an_endorsement_primary_is_persisted_with_owner_authorization() {
+    fn endorsement_primary_owner_auth_persistence() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_ENDORSEMENT);
         assert_eq!(
@@ -1252,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn the_two_hierarchies_never_persist_each_others_objects() {
+    fn cross_hierarchy_persistence_rejection() {
         let mut runtime = started_runtime();
         let owner = storage_primary(&mut runtime, TPM_RH_OWNER);
         let platform = storage_primary(&mut runtime, TPM_RH_PLATFORM);
@@ -1272,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn each_hierarchy_is_confined_to_its_own_persistent_range() {
+    fn per_hierarchy_persistent_range_confinement() {
         let mut runtime = started_runtime();
         let owner = storage_primary(&mut runtime, TPM_RH_OWNER);
         for handle in [PLATFORM_PERSISTENT, PLATFORM_HANDLE + 1, PERSISTENT_LAST] {
@@ -1294,7 +1297,7 @@ mod tests {
     }
 
     #[test]
-    fn temporary_and_st_clear_objects_are_never_persisted() {
+    fn temporary_st_clear_persistence_rejection() {
         let mut runtime = started_runtime();
         let temporary = storage_primary(&mut runtime, TPM_RH_NULL);
         let st_clear = create_primary(
@@ -1316,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_only_object_is_never_persisted() {
+    fn public_only_persistence_rejection() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         runtime.live.objects[0].attributes |= ATTR_PUBLIC_ONLY;
@@ -1329,7 +1332,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_handle_already_in_use_is_nv_defined() {
+    fn occupied_persistent_handle_nv_defined_error() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -1352,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn a_handle_taken_by_an_nv_index_is_nv_defined() {
+    fn nv_index_handle_collision_nv_defined_error() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         push_nvram(&mut runtime, [nv_index_entry(OWNER_HANDLE)]);
@@ -1366,7 +1369,7 @@ mod tests {
     }
 
     #[test]
-    fn an_object_that_does_not_fit_the_dynamic_region_is_an_nv_space_error() {
+    fn oversized_object_nv_space_error() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         push_nvram_without_capacity(&mut runtime, USER_NVRAM_CAPACITY - 100);
@@ -1397,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_command_without_touching_the_state() {
+    fn unavailable_nv_rejection_state_unchanged() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         runtime.nv_available = false;
@@ -1410,7 +1413,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_also_refuses_a_deletion() {
+    fn unavailable_nv_deletion_rejection() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -1427,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_nv_is_reported_after_the_parameter_and_hierarchy_checks() {
+    fn unavailable_nv_check_order() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         runtime.nv_available = false;
@@ -1443,7 +1446,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_object_is_removed_by_its_own_handle() {
+    fn self_handle_persistent_deletion() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -1469,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deletion_needs_the_matching_persistent_handle() {
+    fn deletion_handle_match_requirement() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -1488,7 +1491,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_authorization_deletes_any_evict_object_but_owner_stops_at_the_platform_range() {
+    fn platform_auth_full_deletion_owner_range_limit() {
         let mut runtime = started_runtime();
         let owner = storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -1515,7 +1518,7 @@ mod tests {
     }
 
     #[test]
-    fn an_endorsement_evict_object_is_removable_with_the_hierarchy_disabled() {
+    fn disabled_endorsement_evict_deletion_success() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_ENDORSEMENT);
         assert_eq!(
@@ -1532,7 +1535,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_storage_hierarchy_hides_an_owner_evict_object() {
+    fn disabled_storage_hierarchy_owner_evict_hidden() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -1553,7 +1556,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_platform_hierarchy_hides_a_platform_evict_object() {
+    fn disabled_platform_hierarchy_platform_evict_hidden() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_PLATFORM);
         assert_eq!(
@@ -1579,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_one_entry_leaves_every_other_entry_alone() {
+    fn single_entry_deletion_isolation() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         push_nvram(&mut runtime, [nv_index_entry(0x0100_0001)]);
@@ -1612,7 +1615,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_nv_image_leaves_no_partial_mutation() {
+    fn nv_image_failure_no_partial_mutation() {
         for delete in [false, true] {
             let mut runtime = started_runtime();
             let object = storage_primary(&mut runtime, TPM_RH_OWNER);
@@ -1645,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_command_requests_exactly_one_nv_commit() {
+    fn success_single_nv_commit() {
         let commits = core::cell::Cell::new(0u32);
         let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
             commits.set(commits.get() + 1);
@@ -1680,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_command_requests_no_nv_commit() {
+    fn failure_no_nv_commit() {
         let commits = core::cell::Cell::new(0u32);
         let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
             commits.set(commits.get() + 1);
@@ -1703,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orderly_state_survives_the_command() {
+    fn orderly_state_preservation() {
         for orderly_state in [0x0001u16, 0xfffe, 0xffff] {
             let mut runtime = started_runtime();
             let object = storage_primary(&mut runtime, TPM_RH_OWNER);
@@ -1721,7 +1724,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_object_is_visible_through_get_capability() {
+    fn persistent_object_get_capability_visibility() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         let query = hex("8001000000160000017a 00000001 81000000 00000008");
@@ -1752,7 +1755,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_object_survives_a_permanent_state_round_trip() {
+    fn persistent_object_permanent_state_round_trip() {
         let mut runtime = started_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_OWNER);
         assert_eq!(
@@ -1782,7 +1785,7 @@ mod tests {
     }
 
     #[test]
-    fn the_oracle_permanent_state_survives_startup_unchanged() {
+    fn oracle_permanent_state_startup_unchanged() {
         let runtime = restore_permanent_blob_for_test(vector("PERMALL")).expect("restores");
         assert_eq!(
             persistent_all_store(runtime.state()).expect("the state serializes"),
@@ -1822,7 +1825,7 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_oracle_sequence_reproduces_the_libtpms_permanent_state() {
+    fn oracle_sequence_permanent_state_match() {
         let mut runtime = oracle_runtime();
         assert_matches_oracle(&runtime, "PERMALL_STARTED", "startup");
 
@@ -1887,7 +1890,7 @@ mod tests {
     }
 
     #[test]
-    fn the_swtpm_setup_request_answers_the_oracle_bytes() {
+    fn swtpm_setup_request_oracle_match() {
         let mut runtime = oracle_runtime();
         let object = storage_primary(&mut runtime, TPM_RH_ENDORSEMENT);
         let request =
@@ -1904,7 +1907,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_bit_flip_panic_safety() {
         let valid = evict_command(TPM_RH_OWNER, 0x8000_0000, OWNER_HANDLE);
         for len in 0..=valid.len() {
             for index in 0..len {
@@ -1917,14 +1920,18 @@ mod tests {
                     };
                     let mut runtime = started_runtime();
                     storage_primary(&mut runtime, TPM_RH_OWNER);
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                    let _ = serialize_response(&dispatch(
+                        &mut runtime,
+                        &parsed,
+                        Cancellation::disabled(),
+                    ));
                 }
             }
         }
     }
 
     #[test]
-    fn a_runtime_without_decoded_state_never_panics() {
+    fn undecoded_state_panic_safety() {
         use crate::library::tpm2::live::power_on_state_clear;
         use crate::library::tpm2::runtime::empty_state_runtime;
 

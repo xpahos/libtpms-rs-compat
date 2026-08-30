@@ -67,14 +67,14 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_algorithm_selects_a_hasher() {
+    fn compiled_algorithm_hasher_selection() {
         for (hash_alg, _) in COMPILED_HASHES {
             assert!(Hasher::new(hash_alg).is_some(), "alg {hash_alg:#06x}");
         }
     }
 
     #[test]
-    fn a_hasher_reports_the_algorithm_it_was_selected_with() {
+    fn hasher_algorithm_report() {
         for (hash_alg, _) in COMPILED_HASHES {
             let hasher = Hasher::new(hash_alg).expect("a compiled algorithm");
             assert_eq!(hasher.hash_alg(), hash_alg);
@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn uncompiled_algorithms_select_no_hasher() {
+    fn uncompiled_algorithm_no_hasher_selection() {
         for hash_alg in [
             TPM_ALG_NULL,
             TPM_ALG_AES,
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn every_digest_has_the_size_of_its_algorithm() {
+    fn digest_size_algorithm_match() {
         for (hash_alg, size) in COMPILED_HASHES {
             let hasher = Hasher::new(hash_alg).expect("a compiled algorithm");
             assert_eq!(hasher.finalize().len(), size, "alg {hash_alg:#06x}");
@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_message_digests_match_the_published_vectors() {
+    fn empty_message_digest_published_vector_match() {
         const EMPTY: [(u16, &str); 4] = [
             (TPM_ALG_SHA1, "da39a3ee5e6b4b0d3255bfef95601890afd80709"),
             (
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn the_abc_digests_match_the_published_vectors() {
+    fn abc_digest_published_vector_match() {
         const ABC: [(u16, &str); 4] = [
             (TPM_ALG_SHA1, "a9993e364706816aba3e25717850c26c9cd0d89d"),
             (
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_updates_hash_the_concatenation() {
+    fn incremental_update_concatenation_equivalence() {
         let message: Vec<u8> = (0..300u32).map(|index| index as u8).collect();
         for (hash_alg, _) in COMPILED_HASHES {
             let mut whole = Hasher::new(hash_alg).expect("a compiled algorithm");
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_updates_do_not_change_the_digest() {
+    fn empty_update_digest_preservation() {
         for (hash_alg, _) in COMPILED_HASHES {
             let mut padded = Hasher::new(hash_alg).expect("a compiled algorithm");
             padded.update(&[]);
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn the_compiled_table_is_free_of_duplicates() {
+    fn compiled_table_no_duplicates() {
         for (index, &(hash_alg, _)) in COMPILED_HASHES.iter().enumerate() {
             assert!(
                 !COMPILED_HASHES[index + 1..]

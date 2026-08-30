@@ -57,6 +57,7 @@ pub(in crate::library::tpm2::command) fn execute_special(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_UNDEFINE_SPACE,
         TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, find,
@@ -118,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn the_undefine_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (code, oracle, pp) in [
             (TPM_CC_NV_UNDEFINE_SPACE, nv_vector("CCATTR_0122"), true),
             (
@@ -144,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn the_undefine_handles_carry_the_upstream_roles() {
+    fn handle_upstream_roles() {
         let descriptor = find(TPM_CC_NV_UNDEFINE_SPACE).unwrap();
         assert_eq!(descriptor.handles.len(), 2);
         assert!(descriptor.handles[0].user_auth);
@@ -166,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn an_owner_index_is_deleted_and_the_others_survive() {
+    fn owner_index_deletion_others_preserved() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -188,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn an_undefined_index_is_reported_against_its_own_handle() {
+    fn undefined_index_own_handle_blame() {
         let mut runtime = started_runtime();
         assert_eq!(
             undefine(&mut runtime, TPM_RH_OWNER, INDEX),
@@ -201,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn the_owner_may_not_delete_a_platform_created_index() {
+    fn owner_platform_index_deletion_rejection() {
         let mut runtime = started_runtime();
         define(&mut runtime, TPM_RH_PLATFORM, &platform_public(0));
         assert_eq!(
@@ -220,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_may_delete_an_owner_created_index() {
+    fn platform_owner_index_deletion_success() {
         let mut runtime = started_runtime();
         define(&mut runtime, TPM_RH_OWNER, &nv_public(INDEX, READ_WRITE, 8));
         assert_eq!(
@@ -230,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_delete_index_refuses_the_ordinary_undefine() {
+    fn policy_delete_index_ordinary_undefine_rejection() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -249,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn undefine_special_needs_a_policy_session_for_the_index() {
+    fn undefine_special_policy_session_requirement() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         define(
@@ -288,12 +289,13 @@ mod tests {
     }
 
     #[test]
-    fn undefine_special_rejects_an_index_without_policy_delete() {
+    fn undefine_special_missing_policy_delete_rejection() {
         let mut runtime = started_runtime();
         define(&mut runtime, TPM_RH_PLATFORM, &platform_public(0));
         let frame = CommandFrame {
             handles: vec![PLATFORM_INDEX, TPM_RH_PLATFORM],
             parameters: &[],
+            cancellation: Cancellation::disabled(),
         };
         assert_eq!(
             execute_special(&mut runtime, &frame).err(),
@@ -302,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn undefine_special_deletes_a_policy_delete_index() {
+    fn undefine_special_policy_delete_index_deletion() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -312,6 +314,7 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![PLATFORM_INDEX, TPM_RH_PLATFORM],
             parameters: &[],
+            cancellation: Cancellation::disabled(),
         };
         assert!(execute_special(&mut runtime, &frame).is_ok());
         assert!(resolve_index(&runtime, PLATFORM_INDEX).is_none());
@@ -319,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn undefine_special_rejects_trailing_parameters() {
+    fn undefine_special_trailing_parameter_rejection() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -329,12 +332,13 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![PLATFORM_INDEX, TPM_RH_PLATFORM],
             parameters: &[0x00],
+            cancellation: Cancellation::disabled(),
         };
         assert_eq!(execute_special(&mut runtime, &frame).err(), Some(RC_SIZE));
     }
 
     #[test]
-    fn deleting_an_orderly_index_frees_its_ram_slot() {
+    fn orderly_index_deletion_ram_slot_release() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -364,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_written_counter_raises_the_max_counter() {
+    fn written_counter_deletion_max_counter_update() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -393,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_size_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, TPM_RH_OWNER, &nv_public(INDEX, READ_WRITE, 8));
         assert_eq!(
@@ -411,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_deletion_leaves_no_trace() {
+    fn failed_deletion_no_trace() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -430,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deleted_index_stays_deleted_across_a_state_round_trip() {
+    fn deletion_state_round_trip_persistence() {
         use crate::library::tpm2::persistent::persistent_all_store;
         use crate::library::tpm2::restore_permanent_blob_for_test;
 

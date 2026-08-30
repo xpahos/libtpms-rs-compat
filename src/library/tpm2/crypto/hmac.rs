@@ -66,7 +66,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_algorithm_selects_a_state() {
+    fn compiled_algorithm_state_selection() {
         for (hash_alg, size) in COMPILED_HASHES {
             let state = HmacState::new(hash_alg, b"key").expect("a compiled algorithm");
             assert_eq!(state.finalize().len(), size, "alg {hash_alg:#06x}");
@@ -74,7 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn uncompiled_algorithms_select_no_state() {
+    fn uncompiled_algorithm_no_state_selection() {
         for hash_alg in [TPM_ALG_NULL, TPM_ALG_AES, 0x0000, 0x0012, 0xffff] {
             assert!(
                 HmacState::new(hash_alg, b"key").is_none(),
@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rfc_4231_test_case_2_vectors_are_reproduced() {
+    fn rfc_4231_case_2_vector_reproduction() {
         let key = b"Jefe";
         let data = b"what do ya want for nothing?";
         assert_eq!(
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rfc_2202_sha1_test_case_2_vector_is_reproduced() {
+    fn rfc_2202_sha1_case_2_vector_reproduction() {
         assert_eq!(
             hex(&mac_of(
                 TPM_ALG_SHA1,
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_longer_than_the_block_size_is_reduced_like_rfc_4231_test_case_6() {
+    fn long_key_reduction_rfc_4231_case_6() {
         assert_eq!(
             hex(&mac_of(
                 TPM_ALG_SHA256,
@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_key_is_accepted() {
+    fn empty_key_acceptance() {
         for (hash_alg, size) in COMPILED_HASHES {
             assert_eq!(
                 mac_of(hash_alg, &[], b"message").len(),
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_updates_authenticate_the_concatenation() {
+    fn incremental_update_concatenation_equivalence() {
         let message: Vec<u8> = (0..300u32).map(|index| index as u8).collect();
         for (hash_alg, _) in COMPILED_HASHES {
             let mut split = HmacState::new(hash_alg, b"secret").expect("a compiled algorithm");
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn a_different_key_changes_the_mac() {
+    fn different_key_distinct_mac() {
         for (hash_alg, _) in COMPILED_HASHES {
             assert_ne!(
                 mac_of(hash_alg, &[0x11; 64], b"message"),
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha512_vector_matches_an_independently_fixed_value() {
+    fn sha512_vector_independent_fixed_value_match() {
         assert_eq!(
             mac_of(TPM_ALG_SHA512, &[0x0b; 20], b"Hi There"),
             unhex(

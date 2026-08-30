@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_ram_image_parses() {
+    fn empty_ram_image_parse_success() {
         let data = with_tail().bytes();
         let parsed = parse_index_orderly_ram(&data).unwrap();
         assert!(parsed.entries.is_empty());
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_entries_decode_in_wire_order() {
+    fn valid_entry_wire_order_decode() {
         let data = IndexOrderlyRamFixture {
             entries: vec![
                 IndexOrderlyRamFixture::entry(0x0100_0001, 0x0000_0001, &[0xaa; 8]),
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_entry_size_is_recorded_raw_and_never_trusted() {
+    fn declared_entry_size_raw_untrusted_record() {
         let data = IndexOrderlyRamFixture {
             entries: vec![(0xffff_ffff, 0x0100_0003, 0, 2, vec![0x01, 0x02])],
             ..with_tail()
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn maximum_capacity_image_is_accepted() {
+    fn maximum_capacity_image_acceptance() {
         let data = IndexOrderlyRamFixture {
             entries: vec![IndexOrderlyRamFixture::entry(0x0100_0004, 0, &[0x33; 488])],
             ..with_tail()
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_beyond_capacity_is_a_size_error() {
+    fn entry_beyond_capacity_size_error() {
         let data = IndexOrderlyRamFixture {
             entries: vec![IndexOrderlyRamFixture::entry(0x0100_0005, 0, &[0x44; 501])],
             ..IndexOrderlyRamFixture::default()
@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn accumulated_entries_beyond_capacity_are_a_size_error() {
+    fn accumulated_entries_beyond_capacity_size_error() {
         let data = IndexOrderlyRamFixture {
             entries: vec![
                 IndexOrderlyRamFixture::entry(0x0100_0006, 0, &[0x55; 250]),
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn source_filled_to_the_brim_ends_without_a_terminator() {
+    fn brim_filled_source_no_terminator() {
         let data = IndexOrderlyRamFixture {
             sourceside_size: 20,
             entries: vec![IndexOrderlyRamFixture::entry(0x0100_0008, 0, &[0x77; 8])],
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn small_sourceside_size_reads_no_entries() {
+    fn small_sourceside_size_no_entry_reads() {
         let data = IndexOrderlyRamFixture {
             sourceside_size: 11,
             terminator: false,
@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn huge_sourceside_size_neither_allocates_nor_overreads() {
+    fn huge_sourceside_size_no_allocation_no_overread() {
         let data = IndexOrderlyRamFixture {
             sourceside_size: u32::MAX,
             ..with_tail()
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_attribute_bits_are_rejected() {
+    fn reserved_attribute_bits_rejection() {
         for attributes in [0x0000_0100u32, 0x0010_0000, 0x01f0_0300] {
             let data = IndexOrderlyRamFixture {
                 entries: vec![IndexOrderlyRamFixture::entry(0x0100_0009, attributes, &[])],
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_at_every_boundary_is_insufficient() {
+    fn truncation_all_boundaries_insufficiency() {
         let full = IndexOrderlyRamFixture {
             entries: vec![IndexOrderlyRamFixture::entry(0x0100_000a, 1, &[0x88; 5])],
             ..IndexOrderlyRamFixture::default()
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_ram_byte_mutations_do_not_panic() {
+    fn orderly_ram_byte_mutation_panic_safety() {
         let full = IndexOrderlyRamFixture {
             entries: vec![IndexOrderlyRamFixture::entry(0x0100_000b, 1, &[0x99; 5])],
             ..IndexOrderlyRamFixture::default()

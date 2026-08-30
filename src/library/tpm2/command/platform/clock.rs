@@ -101,7 +101,7 @@ mod tests {
     const COARSE_FASTER: u8 = 0x03;
 
     #[test]
-    fn the_three_commands_are_registered_with_the_reference_attributes() {
+    fn registration_reference_attributes() {
         for (code, attributes, record, handles, decrypt) in [
             (
                 TPM_CC_CLOCK_SET,
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_commands_need_a_started_tpm() {
+    fn pre_startup_rejection() {
         let clock = replay_clock();
         for (label, bytes) in [
             ("LIFECYCLE_READ_CLOCK", read_clock()),
@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn read_clock_reports_the_reference_time_info() {
+    fn read_clock_reference_time_info() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         expect(&mut runtime, &clock, "RCLK_BASE", &read_clock());
@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn read_clock_rejects_trailing_bytes_and_an_unusable_session() {
+    fn read_clock_trailing_byte_and_unusable_session_rejection() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         expect(
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn read_clock_never_reports_a_safe_clock_while_nv_is_unavailable() {
+    fn read_clock_nv_unavailable_no_safe_flag() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         runtime.live.orderly.clock_safe = 1;
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn clock_set_replays_the_reference_section() {
+    fn clock_set_reference_section_replay() {
         let clock = replay_clock();
         let host = Host::at("READY");
         let mut runtime = ready(&clock);
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reference_clock_set_error_codes_are_the_documented_values() {
+    fn clock_set_error_code_reference_match() {
         for (label, code) in [
             ("CS_FORWARD", RC_SUCCESS),
             ("CS_SAME", RC_SUCCESS),
@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_clock_set_changes_nothing() {
+    fn clock_set_failure_unchanged() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         exec(
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_is_reported_after_the_value_check() {
+    fn nv_unavailable_post_value_check_order() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         runtime.nv_available = false;
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_interface_is_checked_before_the_value_and_the_nv_state() {
+    fn handle_check_precedence() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         runtime.nv_available = false;
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn clock_set_marks_the_clock_safe_when_it_crosses_the_update_interval() {
+    fn clock_set_update_interval_crossing_safe_flag() {
         let clock = replay_clock();
         let host = Host::at("READY");
         let mut runtime = ready(&clock);
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn every_clock_adjustment_value_answers_like_the_reference() {
+    fn clock_adjust_value_reference_match() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         for (label, adjust) in [
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_rate_authorization_and_parsing_errors_match_the_reference() {
+    fn clock_rate_error_reference_match() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         let before = snapshot(&runtime);
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn the_adjustment_rate_changes_how_fast_the_reported_clock_runs() {
+    fn adjustment_rate_clock_speed_effect() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         expect(&mut runtime, &clock, "RATE_READ_START", &read_clock());
@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_adjustment_rate_saturates_at_the_platform_limit() {
+    fn adjustment_rate_platform_limit_saturation() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         expect(&mut runtime, &clock, "RATE_CLAMP_READ_START", &read_clock());
@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn the_adjustment_rate_survives_a_volatile_state_round_trip() {
+    fn adjustment_rate_volatile_round_trip() {
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{VolatileDecodeBoundary, attach_volatile_blob};
 
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shutdown_and_restart_returns_the_adjustment_rate_to_nominal() {
+    fn restart_adjustment_rate_nominal_reset() {
         let clock = replay_clock();
         let host = Host::at("READY");
         let mut runtime = ready(&clock);
@@ -745,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         for valid in [
             clock_set(TPM_RH_PLATFORM, 0x10000, &[]),

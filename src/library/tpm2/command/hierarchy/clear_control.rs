@@ -58,6 +58,7 @@ fn parse_parameters(parameters: &[u8]) -> Result<bool, TpmResult> {
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_CLEAR_CONTROL, find,
     };
@@ -73,7 +74,7 @@ mod tests {
     };
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn upstream_attribute_registration() {
         let descriptor = find(TPM_CC_CLEAR_CONTROL).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0240_0127);
         assert!(descriptor.physical_presence);
@@ -91,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_handle_takes_only_lockout_and_platform() {
+    fn authorization_handle_lockout_and_platform_only() {
         let kind = find(TPM_CC_CLEAR_CONTROL).unwrap().handles[0].kind;
         for handle in [TPM_RH_LOCKOUT, TPM_RH_PLATFORM] {
             assert!(kind.accepts(handle), "handle {handle:#x}");
@@ -113,12 +114,12 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_command_attributes_match_the_reference() {
+    fn reported_command_attributes_reference_match() {
         replay(&[("CCATTR_0127", cap_command_attributes(TPM_CC_CLEAR_CONTROL))]);
     }
 
     #[test]
-    fn the_disable_clear_lifecycle_matches_the_reference() {
+    fn disable_clear_lifecycle_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         assert!(!runtime.state().persistent.disable_clear);
@@ -181,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_and_parameter_errors_match_the_reference() {
+    fn handle_and_parameter_error_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -238,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_authorization_may_only_set_disable_clear() {
+    fn lockout_authorization_disable_clear_set_only() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let response = exec(&mut runtime, &clock, &clear_control(TPM_RH_LOCKOUT, 0, &[]));
@@ -247,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_never_clears_the_orderly_state() {
+    fn orderly_state_preservation() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         exec(&mut runtime, &clock, &shutdown(1));
@@ -274,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn disable_clear_survives_a_permanent_state_round_trip() {
+    fn disable_clear_permanent_state_round_trip() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         expect(
@@ -294,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_command_without_touching_the_state() {
+    fn unavailable_nv_rejection_state_unchanged() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         runtime.nv_available = false;
@@ -320,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn every_accepted_request_commits_exactly_one_nv_update() {
+    fn accepted_request_single_nv_update_commit() {
         assert_eq!(commits_for(&clear_control(TPM_RH_PLATFORM, 1, &[])), 1);
         assert_eq!(
             commits_for(&clear_control(TPM_RH_PLATFORM, 0, &[])),
@@ -332,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = clear_control(TPM_RH_PLATFORM, 1, &[]);
         for len in 0..=valid.len() {
@@ -348,6 +349,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
+                        Cancellation::disabled(),
                     );
                 }
             }

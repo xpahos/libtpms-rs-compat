@@ -994,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_attribute_bits_match_the_published_table() {
+    fn object_attribute_bits_table_match() {
         assert_eq!(TPMA_OBJECT_FIXED_TPM, 0x0000_0002);
         assert_eq!(TPMA_OBJECT_ST_CLEAR, 0x0000_0004);
         assert_eq!(TPMA_OBJECT_FIXED_PARENT, 0x0000_0010);
@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsa_storage_template_round_trips_through_the_marshaller() {
+    fn rsa_storage_template_round_trip() {
         let bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         let public = parse(&bytes).expect("a valid template");
         assert_eq!(public.object_type, TPM_ALG_RSA);
@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecc_storage_template_round_trips_through_the_marshaller() {
+    fn ecc_storage_template_round_trip() {
         let bytes = ecc_storage_template(0x0004, TPM_ALG_SHA384);
         let public = parse(&bytes).expect("a valid template");
         assert_eq!(public.object_type, TPM_ALG_ECC);
@@ -1027,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_a_template_is_insufficient() {
+    fn strict_prefix_insufficiency() {
         let bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         for length in 0..bytes.len() {
             assert_eq!(
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_object_type_is_a_type_error() {
+    fn unsupported_object_type_error() {
         for object_type in [0x0000u16, 0x0004, 0x0010, 0x0024, 0xffff] {
             let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
             bytes[0..2].copy_from_slice(&object_type.to_be_bytes());
@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_name_algorithm_is_a_hash_error() {
+    fn unsupported_name_algorithm_hash_error() {
         for name_alg in [0x0000u16, 0x0005, 0x0010, 0x0012, 0xffff] {
             let bytes = rsa_storage_template(2048, name_alg);
             assert_eq!(
@@ -1061,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_name_algorithm_is_accepted_only_when_allowed() {
+    fn null_name_algorithm_conditional_acceptance() {
         let bytes = rsa_storage_template(2048, TPM_ALG_NULL);
         assert_eq!(parse(&bytes).unwrap_err(), TPM_RC_HASH);
         let mut reader = TemplateReader::new(&bytes);
@@ -1069,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_object_attribute_bits_are_rejected() {
+    fn reserved_attribute_bits_rejection() {
         for bit in [0u32, 3, 12, 15, 20, 31] {
             let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
             let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) | (1 << bit);
@@ -1083,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_auth_policy_is_a_size_error() {
+    fn oversized_auth_policy_size_error() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         bytes[8..10].copy_from_slice(&(DIGEST_SIZE as u16 + 1).to_be_bytes());
         bytes.splice(10..10, core::iter::repeat_n(0u8, DIGEST_SIZE + 1));
@@ -1091,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_rsa_key_size_is_a_value_error() {
+    fn unsupported_rsa_key_size_value_error() {
         for key_bits in [0u16, 512, 1536, 4096, 0xffff] {
             let bytes = rsa_storage_template(key_bits, TPM_ALG_SHA256);
             assert_eq!(parse(&bytes).unwrap_err(), TPM_RC_VALUE, "bits {key_bits}");
@@ -1099,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_curve_is_a_curve_error() {
+    fn unsupported_curve_error() {
         for curve_id in [0x0000u16, 0x0006, 0x0012, 0xffff] {
             let bytes = ecc_storage_template(curve_id, TPM_ALG_SHA384);
             assert_eq!(
@@ -1111,14 +1111,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_symmetric_algorithm_is_a_symmetric_error() {
+    fn unsupported_symmetric_algorithm_error() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         bytes[10..12].copy_from_slice(&0x0099u16.to_be_bytes());
         assert_eq!(parse(&bytes).unwrap_err(), TPM_RC_SYMMETRIC);
     }
 
     #[test]
-    fn an_unsupported_symmetric_key_size_is_a_value_error() {
+    fn unsupported_symmetric_key_size_value_error() {
         for key_bits in [0u16, 64, 129, 512] {
             let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
             bytes[12..14].copy_from_slice(&key_bits.to_be_bytes());
@@ -1127,28 +1127,28 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_symmetric_mode_is_a_mode_error() {
+    fn unsupported_symmetric_mode_error() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         bytes[14..16].copy_from_slice(&0x0099u16.to_be_bytes());
         assert_eq!(parse(&bytes).unwrap_err(), TPM_RC_MODE);
     }
 
     #[test]
-    fn an_unsupported_rsa_scheme_is_a_value_error() {
+    fn unsupported_rsa_scheme_value_error() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         bytes[16..18].copy_from_slice(&0x0099u16.to_be_bytes());
         assert_eq!(parse(&bytes).unwrap_err(), TPM_RC_VALUE);
     }
 
     #[test]
-    fn an_unsupported_ecc_scheme_is_a_scheme_error() {
+    fn unsupported_ecc_scheme_error() {
         let mut bytes = ecc_storage_template(0x0004, TPM_ALG_SHA384);
         bytes[16..18].copy_from_slice(&0x0099u16.to_be_bytes());
         assert_eq!(parse(&bytes).unwrap_err(), TPM_RC_SCHEME);
     }
 
     #[test]
-    fn an_unsupported_key_derivation_function_is_a_kdf_error() {
+    fn unsupported_kdf_error() {
         let mut bytes = ecc_storage_template(0x0004, TPM_ALG_SHA384);
         let position = bytes.len() - 6;
         bytes[position..position + 2].copy_from_slice(&0x0099u16.to_be_bytes());
@@ -1156,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_profile_algorithm_is_rejected_like_an_unknown_one() {
+    fn disabled_profile_algorithm_unknown_equivalence() {
         let restricted = AlgorithmPolicy {
             profile_algorithms: b"rsa,sha256,aes,cfb,null",
             state_format: StateFormatLimit::CURRENT,
@@ -1170,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn the_computed_name_is_the_algorithm_followed_by_the_template_digest() {
+    fn computed_name_algorithm_and_digest_layout() {
         let bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         let public = parse(&bytes).unwrap();
         let name = object_name(&public).unwrap();
@@ -1182,7 +1182,7 @@ mod tests {
     }
 
     #[test]
-    fn the_name_length_follows_the_name_algorithm() {
+    fn name_length_per_name_algorithm() {
         for (name_alg, size) in [
             (TPM_ALG_SHA1, 20usize),
             (TPM_ALG_SHA256, 32),
@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn a_storage_template_passes_the_creation_checks() {
+    fn storage_template_creation_check_success() {
         let public = parse(&rsa_storage_template(2048, TPM_ALG_SHA256)).unwrap();
         assert_eq!(create_checks(None, &public, 0), Ok(()));
         let public = parse(&ecc_storage_template(0x0004, TPM_ALG_SHA384)).unwrap();
@@ -1204,7 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn an_asymmetric_key_without_sensitive_data_origin_is_an_attributes_error() {
+    fn asymmetric_key_missing_sensitive_data_origin_attributes_error() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap())
             & !TPMA_OBJECT_SENSITIVE_DATA_ORIGIN;
@@ -1215,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_tpm_and_fixed_parent_must_agree_for_a_primary_object() {
+    fn primary_object_fixed_tpm_fixed_parent_agreement() {
         for attribute in [TPMA_OBJECT_FIXED_TPM, TPMA_OBJECT_FIXED_PARENT] {
             let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
             let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) & !attribute;
@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restricted_key_with_both_sign_and_decrypt_is_an_attributes_error() {
+    fn restricted_sign_and_decrypt_attributes_error() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) | TPMA_OBJECT_SIGN;
         bytes[4..8].copy_from_slice(&attributes.to_be_bytes());
@@ -1235,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_tpm_key_may_not_ask_for_encrypted_duplication() {
+    fn fixed_tpm_encrypted_duplication_rejection() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         let attributes =
             u32::from_be_bytes(bytes[4..8].try_into().unwrap()) | TPMA_OBJECT_ENCRYPTED_DUPLICATION;
@@ -1245,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn firmware_and_svn_limited_objects_are_not_supported() {
+    fn firmware_and_svn_limited_objects_unsupported() {
         for attribute in [TPMA_OBJECT_FIRMWARE_LIMITED, TPMA_OBJECT_SVN_LIMITED] {
             let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
             let attributes = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) | attribute;
@@ -1256,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auth_policy_of_the_wrong_length_is_a_size_error() {
+    fn wrong_length_auth_policy_size_error() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         bytes[8..10].copy_from_slice(&20u16.to_be_bytes());
         bytes.splice(10..10, core::iter::repeat_n(0xaau8, 20));
@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restricted_decryption_key_needs_symmetric_algorithms() {
+    fn restricted_decrypt_key_symmetric_requirement() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         bytes.splice(10..16, TPM_ALG_NULL.to_be_bytes().iter().copied());
         let public = parse(&bytes).unwrap();
@@ -1274,7 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unrestricted_signing_key_must_not_carry_symmetric_algorithms() {
+    fn unrestricted_signing_key_symmetric_rejection() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         let attributes = (u32::from_be_bytes(bytes[4..8].try_into().unwrap())
             & !(TPMA_OBJECT_RESTRICTED | TPMA_OBJECT_DECRYPT))
@@ -1285,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signing_key_with_a_signing_scheme_needs_a_hash() {
+    fn signing_scheme_hash_requirement() {
         let mut bytes = rsa_storage_template(2048, TPM_ALG_SHA256);
         let attributes = (u32::from_be_bytes(bytes[4..8].try_into().unwrap())
             & !(TPMA_OBJECT_RESTRICTED | TPMA_OBJECT_DECRYPT))
@@ -1297,7 +1297,7 @@ mod tests {
     }
 
     #[test]
-    fn the_adjusted_auth_value_is_padded_to_the_name_algorithm_digest() {
+    fn auth_value_digest_size_padding() {
         assert_eq!(
             adjusted_auth_value(&[], TPM_ALG_SHA256).unwrap(),
             vec![0u8; 32]
@@ -1311,7 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auth_value_longer_than_the_digest_is_a_size_error() {
+    fn overlong_auth_value_size_error() {
         assert_eq!(
             adjusted_auth_value(&[0xaa; 33], TPM_ALG_SHA256),
             Err(TPM_RC_SIZE)
@@ -1325,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_zeros_do_not_count_towards_the_auth_value_length() {
+    fn trailing_zero_auth_value_length_exclusion() {
         let mut oversized = vec![0u8; 40];
         oversized[..20].copy_from_slice(&[0x11; 20]);
         assert_eq!(
@@ -1337,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecc_key_size_follows_the_curve() {
+    fn ecc_key_size_curve_dependence() {
         assert_eq!(ecc_key_size_bytes(0x0003), Some(32));
         assert_eq!(ecc_key_size_bytes(0x0004), Some(48));
         assert_eq!(ecc_key_size_bytes(0x0005), Some(66));
@@ -1345,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn the_maximum_symmetric_key_size_matches_upstream() {
+    fn max_symmetric_key_size_upstream_match() {
         assert_eq!(MAX_SYMMETRIC_KEY_BYTES, 32);
     }
 }

@@ -84,7 +84,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_attribute_bit_positions_match_the_vendored_tpma_nv() {
+    fn attribute_bit_position_tpma_nv_match() {
         assert_eq!(TPMA_NV_PPWRITE, 0x0000_0001);
         assert_eq!(TPMA_NV_OWNERWRITE, 0x0000_0002);
         assert_eq!(TPMA_NV_AUTHWRITE, 0x0000_0004);
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reserved_mask_covers_exactly_the_unassigned_bits() {
+    fn reserved_mask_unassigned_bit_coverage() {
         const ASSIGNED: u32 = TPMA_NV_PPWRITE
             | TPMA_NV_OWNERWRITE
             | TPMA_NV_AUTHWRITE
@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn the_index_type_is_read_from_bits_four_through_seven() {
+    fn index_type_nibble_extraction() {
         for nt in 0..16u32 {
             assert_eq!(nv_index_type(nt << TPMA_NV_TPM_NT_SHIFT), nt);
             assert_eq!(
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn each_index_type_predicate_matches_only_its_own_type() {
+    fn index_type_predicate_exclusivity() {
         let predicates: [(u32, fn(u32) -> bool); 6] = [
             (TPM_NT_ORDINARY, is_ordinary_index),
             (TPM_NT_COUNTER, is_counter_index),
@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn the_index_type_values_match_the_vendored_tpm_nt() {
+    fn index_type_value_tpm_nt_match() {
         assert_eq!(TPM_NT_ORDINARY, 0);
         assert_eq!(TPM_NT_COUNTER, 1);
         assert_eq!(TPM_NT_BITS, 2);
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_always_clears_the_read_lock() {
+    fn startup_read_lock_clearing() {
         for reset in [false, true] {
             assert_eq!(startup_attributes(TPMA_NV_READLOCKED, reset), 0);
             assert_eq!(
@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_stclear_indexes_lose_written_on_every_startup() {
+    fn clear_stclear_index_startup_written_loss() {
         for reset in [false, true] {
             assert_eq!(
                 startup_attributes(TPMA_NV_CLEAR_STCLEAR | TPMA_NV_WRITTEN, reset),
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_indexes_lose_written_only_on_a_reset() {
+    fn orderly_index_written_loss_reset_only() {
         assert_eq!(
             startup_attributes(TPMA_NV_ORDERLY | TPMA_NV_WRITTEN, true),
             TPMA_NV_ORDERLY
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn counters_never_lose_written_at_startup() {
+    fn counter_written_startup_preservation() {
         let counter = TPM_NT_COUNTER << TPMA_NV_TPM_NT_SHIFT;
         for extra in [TPMA_NV_CLEAR_STCLEAR, TPMA_NV_ORDERLY] {
             for reset in [false, true] {
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_written_writedefine_index_keeps_its_write_lock() {
+    fn written_writedefine_write_lock_preservation() {
         assert_eq!(
             startup_attributes(
                 TPMA_NV_WRITEDEFINE | TPMA_NV_WRITTEN | TPMA_NV_WRITELOCKED,
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orderly_counter_mask_matches_the_vendored_profile() {
+    fn orderly_counter_mask_profile_match() {
         assert_eq!(MAX_ORDERLY_COUNT, 255);
     }
 }

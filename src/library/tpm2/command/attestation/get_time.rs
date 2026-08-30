@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn time_runtime() -> Box<Tpm2Runtime> {
+    fn time_runtime() -> Tpm2Runtime {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_014C");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_GET_TIME, 0x0000_014c);
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signed_time_attestation_matches_the_oracle() {
+    fn signed_attestation_oracle_match() {
         assert_get_time(
             "GETTIME_SIGNED",
             TPM_RH_ENDORSEMENT,
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_signer_answers_a_null_signature() {
+    fn null_signer_null_signature() {
         assert_get_time(
             "GETTIME_NULL_SIGNER",
             TPM_RH_ENDORSEMENT,
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attested_time_carries_the_unmasked_clock_and_firmware_version() {
+    fn attested_time_unmasked_clock_firmware() {
         let signed = attested_bytes(vector("GETTIME_SIGNED"));
         let (attest_type, _, _, at) = attest_prefix(&signed);
         assert_eq!(attest_type, 0x8019, "TPM_ST_ATTEST_TIME");
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_endorsement_hierarchy_may_authorize_the_attestation() {
+    fn attestation_authorization_endorsement_hierarchy_only() {
         let mut runtime = time_runtime();
         for (record, privacy) in [
             ("GETTIME_OWNER_PRIVACY", TPM_RH_OWNER),
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_size_error() {
         let mut runtime = time_runtime();
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn an_advanced_clock_is_reported_by_the_attestation() {
+    fn advanced_clock_attestation_report() {
         let advanced = attested_bytes(vector("GETTIME_AFTER_ADVANCE"));
         let base = attested_bytes(vector("GETTIME_SIGNED"));
         let advanced_body = attested_body(&advanced);
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_attestation_leaves_no_trace() {
+    fn failed_attestation_state_unchanged() {
         let mut runtime = time_runtime();
         run_ok(
             &mut runtime,
@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = time_runtime();

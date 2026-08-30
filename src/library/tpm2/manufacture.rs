@@ -223,14 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn entropy_request_pattern_matches_upstream() {
+    fn entropy_request_pattern_upstream_parity() {
         ENTROPY_REQUESTS.lock().unwrap().clear();
         manufacture_state(null_profile(), recording_entropy).expect("manufacture succeeds");
         assert_eq!(*ENTROPY_REQUESTS.lock().unwrap(), [0, 48]);
     }
 
     #[test]
-    fn secrets_and_drbg_state_match_the_vendored_oracle() {
+    fn secrets_and_drbg_state_oracle_parity() {
         let record = vector_record(false);
         let state =
             manufacture_state(null_profile(), deterministic_entropy).expect("manufacture succeeds");
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_nonce_draw_advances_the_drbg_before_hierarchy_generation() {
+    fn commit_nonce_draw_pre_hierarchy_drbg_advance() {
         let record = vector_record(false);
         assert_ne!(record.ep_seed, record.commit_nonce);
         let state =
@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn continuous_test_profile_preserves_the_oracle_last_value() {
+    fn continuous_test_profile_oracle_last_value_preservation() {
         let record = vector_record(true);
         let state = manufacture_state(continuous_test_profile(), deterministic_entropy)
             .expect("manufacture succeeds");
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_length_reset_failure_is_ignored() {
+    fn zero_length_reset_failure_tolerance() {
         let state = manufacture_state(null_profile(), zero_length_failing_entropy)
             .expect("manufacture succeeds despite the failed reset");
         assert_eq!(
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn entropy_failure_is_transactional_and_retryable() {
+    fn entropy_failure_transactional_retry() {
         assert_eq!(
             manufacture_state(null_profile(), failing_entropy)
                 .map(|_| ())
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn manufactured_debug_output_contains_no_secret_bytes() {
+    fn manufactured_debug_output_secret_byte_absence() {
         let record = vector_record(false);
         let state =
             manufacture_state(null_profile(), deterministic_entropy).expect("manufacture succeeds");

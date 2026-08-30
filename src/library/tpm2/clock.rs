@@ -353,6 +353,7 @@ impl HostClock for RecordingClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::cancel::Cancellation;
 
     const REALTIME: u64 = 1_700_000_100_000;
     const MONOTONIC: u64 = 4_000_000;
@@ -374,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_versions_rebase_every_value_to_now() {
+    fn realtime_version_rebase_to_now() {
         let host = recording();
         let mut clock = RuntimeClock::POWER_ON_RESET;
         adjust_post_resume(&mut clock, 1_600_000_000_000, true, &host);
@@ -391,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_negation_wraps_like_the_c_unsigned_negation() {
+    fn realtime_negation_c_unsigned_wrap_parity() {
         let host = RecordingClock::new(10, u64::MAX);
         let mut clock = RuntimeClock::POWER_ON_RESET;
         adjust_post_resume(&mut clock, 0, true, &host);
@@ -399,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_monotonic_adjustment_is_sample_minus_current() {
+    fn v4_monotonic_adjustment_sample_minus_current() {
         let host = recording();
         let mut clock = RuntimeClock::POWER_ON_RESET;
         apply_tail(&mut clock, &TAIL, &host);
@@ -410,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_monotonic_adjustment_wraps_negative_when_current_is_ahead() {
+    fn v4_monotonic_adjustment_negative_wrap_current_ahead() {
         let host = RecordingClock::new(REALTIME, TAIL.host_monotonic_sample + 250);
         let mut clock = RuntimeClock::POWER_ON_RESET;
         apply_tail(&mut clock, &TAIL, &host);
@@ -418,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_nonnegative_realtime_delta_extends_suspended_time() {
+    fn v4_nonnegative_realtime_delta_suspended_time_extension() {
         let host = recording();
         let mut clock = RuntimeClock::POWER_ON_RESET;
         apply_tail(&mut clock, &TAIL, &host);
@@ -437,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_negative_realtime_delta_leaves_suspended_time_unchanged() {
+    fn v4_negative_realtime_delta_suspended_time_unchanged() {
         let host = recording();
         let mut clock = RuntimeClock::POWER_ON_RESET;
         apply_tail(&mut clock, &TAIL, &host);
@@ -447,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_wrapped_positive_timediff_is_applied_like_c() {
+    fn v4_wrapped_positive_timediff_c_match() {
         let host = RecordingClock::new(0, MONOTONIC);
         let mut clock = RuntimeClock::POWER_ON_RESET;
         apply_tail(&mut clock, &TAIL, &host);
@@ -457,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_stream_without_tail_rebases_over_the_reset_baseline() {
+    fn v4_tailless_stream_reset_baseline_rebase() {
         let host = RecordingClock::new(REALTIME, MONOTONIC);
         let mut clock = RuntimeClock::POWER_ON_RESET;
         adjust_post_resume(&mut clock, REALTIME - 42, false, &host);
@@ -474,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn rebase_is_deterministic_for_identical_inputs() {
+    fn rebase_identical_input_determinism() {
         let derive = || {
             let host = recording();
             let mut clock = RuntimeClock::POWER_ON_RESET;
@@ -489,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tpm_timer_accumulates_host_monotonic_time() {
+    fn tpm_timer_host_monotonic_accumulation() {
         let host = SteppingClock::new(1_000_000, 500_000);
         let mut clock = RuntimeClock::POWER_ON_RESET;
         let mut timer = TpmTimer::POWER_ON_RESET;
@@ -502,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn a_backwards_host_clock_never_rewinds_the_tpm_timer() {
+    fn backwards_host_clock_no_timer_rewind() {
         let host = SteppingClock::new(1_000_000, 500_000);
         let mut clock = RuntimeClock::POWER_ON_RESET;
         let mut timer = TpmTimer::POWER_ON_RESET;
@@ -526,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn extreme_timer_states_never_panic() {
+    fn extreme_timer_state_panic_safety() {
         let host = SteppingClock::new(u64::MAX - 10, u64::MAX - 10);
         let mut clock = RuntimeClock {
             host_monotonic_adjust_ms: i64::MAX,
@@ -548,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn consume_reset_reports_the_flag_exactly_once() {
+    fn consume_reset_single_flag_report() {
         let mut timer = TpmTimer::POWER_ON_RESET;
         assert!(timer.consume_reset());
         assert!(!timer.consume_reset());
@@ -579,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn no_change_never_touches_a_restored_adjustment_rate() {
+    fn clock_no_change_restored_rate_preservation() {
         for start in [0u32, 1, LOWER_LIMIT, CLOCK_NOMINAL, UPPER_LIMIT, u32::MAX] {
             assert_eq!(
                 adjusted(start, ClockAdjust::NoChange),
@@ -590,21 +591,21 @@ mod tests {
     }
 
     #[test]
-    fn a_faster_adjustment_from_zero_wraps_before_the_clamp() {
+    fn faster_adjustment_zero_wrap_before_clamp() {
         for (adjust, _) in FASTER {
             assert_eq!(adjusted(0, adjust), UPPER_LIMIT, "{adjust:?}");
         }
     }
 
     #[test]
-    fn a_slower_adjustment_from_the_maximum_wraps_before_the_clamp() {
+    fn slower_adjustment_maximum_wrap_before_clamp() {
         for (adjust, _) in SLOWER {
             assert_eq!(adjusted(u32::MAX, adjust), LOWER_LIMIT, "{adjust:?}");
         }
     }
 
     #[test]
-    fn an_in_range_adjustment_moves_by_exactly_one_step() {
+    fn in_range_adjustment_single_step() {
         for (adjust, step) in SLOWER {
             assert_eq!(
                 adjusted(CLOCK_NOMINAL, adjust),
@@ -622,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_adjustments_saturate_at_the_platform_limits() {
+    fn repeated_adjustment_platform_limit_saturation() {
         for (adjust, step) in SLOWER {
             let mut timer = TpmTimer::POWER_ON_RESET;
             for _ in 0..(CLOCK_ADJUST_LIMIT / step + 2) {
@@ -642,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn the_encoded_adjustment_values_match_the_vendored_constants() {
+    fn encoded_adjustment_vendored_constant_match() {
         for (encoded, expected) in [
             (0xfdu8, ClockAdjust::CoarseSlower),
             (0xfe, ClockAdjust::MediumSlower),
@@ -667,7 +668,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         use crate::library::tpm2::manufacture::manufacture_state;
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -687,6 +688,7 @@ mod tests {
             &input,
             host,
             |_| Ok(()),
+            Cancellation::disabled(),
         )
         .expect("processes")
     }
@@ -701,14 +703,14 @@ mod tests {
     }
 
     #[test]
-    fn fresh_power_on_starts_with_the_timer_stopped() {
+    fn fresh_power_on_stopped_timer_state() {
         assert!(TpmTimer::POWER_ON_RESET.timer_stopped);
         assert!(TpmTimer::POWER_ON_RESET.timer_reset);
         assert!(manufactured_runtime().timer.timer_stopped);
     }
 
     #[test]
-    fn startup_rolls_the_time_epoch_exactly_once() {
+    fn startup_single_time_epoch_roll() {
         let host = SteppingClock::new(1_600_000_000_000, 5_000_000);
         let mut runtime = manufactured_runtime();
         time_power_on(&mut runtime, &host);
@@ -731,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn volatile_state_saved_after_startup_records_a_running_timer() {
+    fn post_startup_volatile_save_running_timer() {
         use crate::library::tpm2::volatile::capture_volatile_state;
 
         let host = SteppingClock::new(1_600_000_000_000, 5_000_000);
@@ -744,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_running_timer_rolls_no_epoch() {
+    fn restored_running_timer_no_epoch_roll() {
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{VolatileDecodeBoundary, attach_volatile_blob};
 
@@ -773,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_stopped_timer_rolls_exactly_one_epoch() {
+    fn restored_stopped_timer_single_epoch_roll() {
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{VolatileDecodeBoundary, attach_volatile_blob};
 
@@ -808,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn an_epoch_persistence_failure_rolls_back_every_field() {
+    fn epoch_persistence_failure_full_rollback() {
         use crate::library::tpm2::persistent::OwnedSecret;
 
         let host = SteppingClock::new(1_600_000_000_000, 5_000_000);
@@ -859,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn a_startup_epoch_persistence_failure_rolls_back_without_consuming_the_flag() {
+    fn startup_epoch_persistence_failure_rollback_flag_preservation() {
         use crate::library::tpm2::persistent::OwnedSecret;
 
         let host = SteppingClock::new(1_600_000_000_000, 5_000_000);
@@ -875,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn a_backwards_host_clock_rolls_no_epoch_and_recovers_nothing_early() {
+    fn backwards_host_clock_no_epoch_roll_no_early_recovery() {
         let host = SteppingClock::new(1_600_000_000_000, 5_000_000);
         let mut runtime = manufactured_runtime();
         time_power_on(&mut runtime, &host);
@@ -911,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn os_clock_reads_both_host_clocks() {
+    fn os_clock_dual_host_clock_read() {
         let os = OsClock;
         let (first_realtime, first_monotonic) = (os.realtime_ms(), os.monotonic_ms());
         assert!(first_realtime > 0);

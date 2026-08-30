@@ -93,7 +93,7 @@ mod tests {
         clock()
     }
 
-    fn runtime_at(snapshot: &str, clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn runtime_at(snapshot: &str, clock: &SteppingClock) -> Tpm2Runtime {
         runtime_from(
             vector(&format!("PERMALL_{snapshot}")),
             vector(&format!("VOLATILE_{snapshot}")),
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = registry::find(CC_TEST_PARMS).expect("registered");
         assert_eq!(descriptor.attributes, 0x0000_018a);
         assert_eq!(descriptor.decrypt_size, 0);
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("BASE", &clock);
         exec(
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn keyed_hash_parameters_follow_the_reference() {
+    fn keyed_hash_parameter_reference_parity() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("BASE", &clock);
         for (label, parms) in [
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn symmetric_parameters_follow_the_reference() {
+    fn symmetric_parameter_reference_parity() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("BASE", &clock);
         for (name, algorithm, sizes) in [
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn rsa_parameters_follow_the_reference() {
+    fn rsa_parameter_reference_parity() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("BASE", &clock);
         for bits in [1024u16, 2048, 3072] {
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn ecc_parameters_follow_the_reference() {
+    fn ecc_parameter_reference_parity() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("BASE", &clock);
         for (name, curve) in [
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_reports_the_indexed_errors() {
+    fn malformed_input_indexed_errors() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("BASE", &clock);
         for (label, parms) in [
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reduced_profile_rejects_the_disabled_algorithms() {
+    fn reduced_profile_disabled_algorithm_rejection() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("MINIMAL_BASE", &clock);
         for (label, parms) in [
@@ -525,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lower_state_format_level_restricts_the_key_sizes() {
+    fn lower_state_format_level_key_size_restriction() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("LEVEL3_BASE", &clock);
         for (label, parms) in [
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("BASE", &clock);
         let valid = test_parms(&rsa(

@@ -160,6 +160,7 @@ fn flush_owner_nv_indexes(runtime: &mut Tpm2Runtime) -> Result<(), TpmResult> {
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_CLEAR, find,
     };
@@ -183,7 +184,7 @@ mod tests {
     };
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
-    fn provisioned(clock: &crate::library::tpm2::clock::SteppingClock) -> Box<Tpm2Runtime> {
+    fn provisioned(clock: &crate::library::tpm2::clock::SteppingClock) -> Tpm2Runtime {
         let mut runtime = oracle_runtime(clock);
         expect(
             &mut runtime,
@@ -275,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn registration_upstream_attributes() {
         let descriptor = find(TPM_CC_CLEAR).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x02c0_0126);
         assert!(descriptor.physical_presence);
@@ -293,12 +294,12 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_command_attributes_match_the_reference() {
+    fn command_attributes_reference_match() {
         replay(&[("CCATTR_0126", cap_command_attributes(TPM_CC_CLEAR))]);
     }
 
     #[test]
-    fn the_handle_and_parameter_errors_match_the_reference() {
+    fn handle_parameter_error_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -327,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_authorization_clears_the_tpm() {
+    fn lockout_authorization_clear_success() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         for (label, bytes) in [
@@ -339,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_clear_changes_nothing_and_draws_no_randomness() {
+    fn disabled_clear_unchanged_no_drbg_draw() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         expect(
@@ -367,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn the_full_clear_matches_the_reference_and_the_expected_state() {
+    fn full_clear_reference_state_match() {
         let clock = replay_clock();
         let mut runtime = provisioned(&clock);
 
@@ -532,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cleared_state_survives_a_permanent_state_round_trip() {
+    fn cleared_state_permanent_round_trip() {
         let clock = replay_clock();
         let mut runtime = provisioned(&clock);
         expect(
@@ -566,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_clear_clears_the_orderly_state() {
+    fn orderly_state_clear() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         exec(&mut runtime, &clock, &shutdown(1));
@@ -589,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_command_before_the_disable_check() {
+    fn unavailable_nv_pre_disable_check_rejection() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         expect(
@@ -610,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_clear_draws_three_secrets_and_commits_once() {
+    fn three_secret_draws_single_commit() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = runtime.live.orderly.drbg_state.reseed_counter;
@@ -626,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_host_commit_fails_the_tpm() {
+    fn host_commit_failure_mode() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let bytes = clear(TPM_RH_PLATFORM, &[]);
@@ -637,6 +638,7 @@ mod tests {
             &input,
             &clock,
             |_| Err(crate::library::constants::TPM_RC_FAILURE),
+            Cancellation::disabled(),
         )
         .expect("the command processes");
         assert_eq!(response, error_response(0x101));
@@ -644,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_nv_image_keeps_the_consumed_draws_and_rolls_back_the_rest() {
+    fn nv_image_failure_draw_consumption_rollback() {
         use crate::library::tpm2::nv::build_nv_image;
 
         let clock = replay_clock();
@@ -676,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = clear(TPM_RH_PLATFORM, &[]);
         for len in 0..=valid.len() {
@@ -692,6 +694,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
+                        Cancellation::disabled(),
                     );
                 }
             }

@@ -129,7 +129,7 @@ mod tests {
     use crate::library::tpm2::command::core::registry::implemented;
 
     #[test]
-    fn the_table_is_strictly_sorted() {
+    fn table_strict_sort_order() {
         assert!(
             UPSTREAM_IMPLEMENTED
                 .windows(2)
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn every_ported_command_is_also_implemented_upstream() {
+    fn ported_command_upstream_coverage() {
         for descriptor in implemented() {
             assert!(
                 upstream_implements(descriptor.code),
@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_compiled_out_of_the_reference_are_absent() {
+    fn compiled_out_command_absence() {
         for code in [
             0x0000_012f,
             0x0000_0141,
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_gaps_and_out_of_range_codes_are_absent() {
+    fn reserved_gap_out_of_range_absence() {
         for code in [
             0x0000_0000,
             0x0000_011e,

@@ -267,7 +267,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     ];
 
     #[test]
-    fn the_table_is_strictly_sorted_and_unique() {
+    fn table_sorted_unique() {
         let ids: Vec<u16> = S_ALGORITHMS.iter().map(|entry| entry.algorithm).collect();
         assert!(
             ids.windows(2).all(|pair| pair[0] < pair[1]),
@@ -276,7 +276,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn the_null_profile_reports_the_oracle_algorithm_list() {
+    fn null_profile_oracle_algorithm_list() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, 0, 1000);
         assert!(!page.more_data);
         let reported: Vec<(u16, u32)> = page
@@ -288,7 +288,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn the_starting_algorithm_is_inclusive() {
+    fn starting_algorithm_inclusive_boundary() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, TPM_ALG_RSA, 1);
         assert_eq!(
             page.entries,
@@ -301,14 +301,14 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn a_start_inside_a_gap_skips_to_the_next_entry() {
+    fn gap_start_next_entry_skip() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, TPM_ALG_SHA512 + 1, 1);
         assert_eq!(page.entries[0].algorithm, TPM_ALG_RSASSA);
         assert!(page.more_data);
     }
 
     #[test]
-    fn the_upper_boundary_returns_the_last_entry_without_more_data() {
+    fn upper_boundary_last_entry_no_more_data() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, TPM_ALG_ECB, 10);
         assert_eq!(
             page.entries,
@@ -321,14 +321,14 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn a_start_above_the_last_entry_is_empty_without_more_data() {
+    fn start_above_last_entry_empty_no_more_data() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, TPM_ALG_ECB + 1, 10);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
-    fn count_zero_reports_more_data_only_when_entries_remain() {
+    fn count_zero_more_data_remaining_entries_only() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, 0, 0);
         assert!(page.entries.is_empty());
         assert!(page.more_data);
@@ -339,14 +339,14 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn oversized_counts_return_the_full_list() {
+    fn oversized_count_full_list_result() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, 0, u32::MAX);
         assert_eq!(page.entries.len(), ORACLE_ALGORITHMS.len());
         assert!(!page.more_data);
     }
 
     #[test]
-    fn an_exact_count_consumes_the_list_without_more_data() {
+    fn exact_count_list_consumption_no_more_data() {
         let page = implemented(NULL_PROFILE_ALGORITHMS, 0, ORACLE_ALGORITHMS.len() as u32);
         assert_eq!(page.entries.len(), ORACLE_ALGORITHMS.len());
         assert!(!page.more_data);
@@ -361,7 +361,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn profile_filtering_removes_disabled_algorithms() {
+    fn profile_filtering_disabled_algorithm_removal() {
         let profile = b"rsa,sha1,hmac,aes,sha256,rsassa,ecc,symcipher,cfb";
         let page = implemented(profile, 0, 1000);
         let ids: Vec<u16> = page
@@ -387,7 +387,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn min_size_tokens_do_not_enable_their_base_algorithm() {
+    fn min_size_token_no_base_algorithm_enablement() {
         let page = implemented(b"rsa-min-size=1024,sha256", 0, 1000);
         let ids: Vec<u16> = page
             .entries
@@ -398,7 +398,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn filtering_interacts_with_more_data() {
+    fn filtering_more_data_interaction() {
         let page = implemented(b"rsa,sha256", 0, 1);
         assert_eq!(page.entries[0].algorithm, TPM_ALG_RSA);
         assert!(page.more_data);
@@ -409,7 +409,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn the_enabled_iterator_reports_the_profile_filtered_table_in_table_order() {
+    fn enabled_iterator_profile_filter_table_order() {
         let ids: Vec<u16> = enabled_algorithms(NULL_PROFILE_ALGORITHMS).collect();
         let expected: Vec<u16> = ORACLE_ALGORITHMS.iter().map(|entry| entry.0).collect();
         assert_eq!(ids, expected);
@@ -419,13 +419,13 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn the_enabled_iterator_reports_nothing_for_an_empty_or_unknown_profile() {
+    fn enabled_iterator_empty_or_unknown_profile_no_output() {
         assert_eq!(enabled_algorithms(b"").count(), 0);
         assert_eq!(enabled_algorithms(b"nosuchalgorithm,sha25").count(), 0);
     }
 
     #[test]
-    fn the_enabled_iterator_agrees_with_the_reported_capability_page() {
+    fn enabled_iterator_capability_page_match() {
         for profile in [
             NULL_PROFILE_ALGORITHMS,
             b"rsa,sha1,hmac,aes,sha256,rsassa,ecc,symcipher,cfb",
@@ -442,7 +442,7 @@ cmac,ctr,ofb,cbc,cfb,ecb";
     }
 
     #[test]
-    fn the_capacity_constant_matches_the_upstream_padded_struct_size() {
+    fn capacity_constant_upstream_struct_size_match() {
         assert_eq!(MAX_CAP_ALGS, 127);
     }
 }

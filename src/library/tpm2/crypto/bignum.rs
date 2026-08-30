@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_encoding_and_zero_bytes_are_both_zero() {
+    fn empty_encoding_zero_bytes_equivalence() {
         assert!(BigUint::from_be_bytes(&[]).is_zero());
         assert!(BigUint::from_be_bytes(&[0; 32]).is_zero());
         assert_eq!(BigUint::zero().bit_len(), 0);
@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn big_endian_round_trips_preserve_leading_zeros_on_output() {
+    fn big_endian_round_trip_leading_zero_preservation() {
         let value = BigUint::from_be_bytes(&[0x01, 0x23, 0x45, 0x67, 0x89]);
         assert_eq!(
             value.to_be_bytes(5).unwrap(),
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn a_multi_limb_value_round_trips_through_big_endian_bytes() {
+    fn multi_limb_big_endian_round_trip() {
         let bytes: Vec<u8> = (1..=48u8).collect();
         let value = BigUint::from_be_bytes(&bytes);
         assert_eq!(value.bit_len(), 8 * 48 - 7);
@@ -679,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn bit_length_matches_the_position_of_the_highest_set_bit() {
+    fn bit_length_highest_set_bit_position() {
         for bits in 1..200usize {
             let value = BigUint::from_u64(1).shl(bits - 1);
             assert_eq!(value.bit_len(), bits, "bit {bits}");
@@ -689,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn addition_and_subtraction_agree_with_native_arithmetic() {
+    fn add_sub_native_arithmetic_match() {
         let cases = [
             (0u128, 0u128),
             (1, 0),
@@ -710,14 +710,14 @@ mod tests {
     }
 
     #[test]
-    fn subtracting_a_larger_value_has_no_result() {
+    fn underflow_subtraction_no_result() {
         assert_eq!(BigUint::zero().sub(&BigUint::from_u64(1)), None);
         assert_eq!(BigUint::from_u64(5).sub_u64(6), None);
         assert_eq!(BigUint::from_u64(5).sub_u64(5).unwrap(), BigUint::zero());
     }
 
     #[test]
-    fn multiplication_agrees_with_native_arithmetic() {
+    fn multiplication_native_arithmetic_match() {
         for (left, right) in [
             (0u128, 12345u128),
             (1, 1),
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn shifting_left_then_right_is_the_identity() {
+    fn shift_left_right_identity() {
         let value = BigUint::from_be_bytes(&(1..=40u8).collect::<Vec<u8>>());
         for bits in [0usize, 1, 7, 63, 64, 65, 130, 320] {
             assert_eq!(value.shl(bits).shr(bits), value, "shift {bits}");
@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn shifting_right_past_the_value_gives_zero() {
+    fn right_shift_overshoot_zero_result() {
         let value = BigUint::from_u64(0xffff_ffff_ffff_ffff);
         assert!(value.shr(64).is_zero());
         assert!(value.shr(1000).is_zero());
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn division_agrees_with_native_arithmetic_for_single_limb_divisors() {
+    fn division_single_limb_divisor_native_match() {
         for divisor in [1u64, 2, 3, 105, u32::MAX as u64, u64::MAX] {
             let dividend = big(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
             let (quotient, remainder) = dividend.div_rem(&BigUint::from_u64(divisor)).unwrap();
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn division_reconstructs_the_dividend_for_multi_limb_divisors() {
+    fn multi_limb_divisor_dividend_reconstruction() {
         let dividend = BigUint::from_be_bytes(&(1..=64u8).collect::<Vec<u8>>());
         for length in [9usize, 16, 17, 31, 32, 33, 63] {
             let divisor = BigUint::from_be_bytes(
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn division_by_a_larger_divisor_leaves_the_dividend() {
+    fn larger_divisor_dividend_preservation() {
         let dividend = BigUint::from_u64(7);
         let divisor = BigUint::from_be_bytes(&[1; 32]);
         let (quotient, remainder) = dividend.div_rem(&divisor).unwrap();
@@ -785,13 +785,13 @@ mod tests {
     }
 
     #[test]
-    fn division_by_zero_has_no_result() {
+    fn zero_divisor_no_result() {
         assert_eq!(BigUint::from_u64(5).div_rem(&BigUint::zero()), None);
         assert_eq!(BigUint::from_u64(5).rem(&BigUint::zero()), None);
     }
 
     #[test]
-    fn the_word_remainder_matches_the_full_division() {
+    fn word_remainder_full_division_match() {
         let value = BigUint::from_be_bytes(&(7..=70u8).collect::<Vec<u8>>());
         for modulus in [1u64, 2, 3, 5, 7, 105, 65537, u32::MAX as u64] {
             let expected = value.rem(&BigUint::from_u64(modulus)).unwrap().low_u64();
@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn masking_keeps_only_the_requested_low_bits() {
+    fn mask_low_bits_selection() {
         let value = BigUint::from_be_bytes(&[0xff; 32]);
         for bits in [1usize, 7, 8, 63, 64, 65, 127, 128, 255, 256] {
             let mut masked = value.clone();
@@ -817,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn masking_beyond_the_value_leaves_it_untouched() {
+    fn oversized_mask_value_unchanged() {
         let value = BigUint::from_u64(0x1234);
         let mut masked = value.clone();
         masked.mask_bits(4096);
@@ -825,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn modular_exponentiation_agrees_with_a_reference_for_odd_moduli() {
+    fn modular_exponentiation_odd_modulus_reference_match() {
         let modulus = BigUint::from_u64(0xffff_fffb);
         for (base, exponent) in [(2u64, 10u64), (3, 65537), (0xdead_beef, 0x1234_5678)] {
             let expected = {
@@ -849,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn modular_exponentiation_handles_even_moduli() {
+    fn modular_exponentiation_even_modulus_support() {
         let modulus = BigUint::from_u64(1024);
         let actual = BigUint::from_u64(3)
             .mod_exp(&BigUint::from_u64(100), &modulus)
@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn fermats_little_theorem_holds_for_a_large_prime() {
+    fn fermat_little_theorem_large_prime() {
         let prime = mersenne_521();
         assert_eq!(prime.bit_len(), 521);
         let exponent = prime.sub_u64(1).unwrap();
@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn montgomery_multiplication_agrees_with_the_division_based_product() {
+    fn montgomery_multiplication_division_product_match() {
         let modulus = mersenne_521();
         let montgomery = Montgomery::new(&modulus).expect("an odd modulus");
         let left = BigUint::from_be_bytes(&(1..=65u8).collect::<Vec<u8>>())
@@ -912,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn the_montgomery_kernel_reduces_every_product_below_the_modulus() {
+    fn montgomery_kernel_product_reduction() {
         for length in [1usize, 2, 3, 8, 17, 24] {
             let modulus = BigUint::from_be_bytes(
                 &(0..length * 8)
@@ -959,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn a_prime_sized_exponentiation_stays_below_the_binary_ladder_cost() {
+    fn prime_sized_exponentiation_sub_ladder_cost() {
         use crate::library::tpm2::crypto::work;
         let modulus = BigUint::from_be_bytes(
             &(0..192u16)
@@ -984,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_exponent_keeps_the_binary_ladder_cost() {
+    fn short_exponent_binary_ladder_cost() {
         use crate::library::tpm2::crypto::work;
         let modulus = BigUint::from_be_bytes(
             &(0..192u16)
@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn the_window_width_grows_with_the_exponent_length() {
+    fn window_width_exponent_length_growth() {
         assert_eq!(window_width(0), 1);
         assert_eq!(window_width(63), 1);
         assert_eq!(window_width(64), 3);
@@ -1016,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn every_exponent_length_agrees_with_the_binary_ladder() {
+    fn exponent_length_binary_ladder_match() {
         let modulus = BigUint::from_be_bytes(
             &(0..40u8)
                 .map(|index| index.wrapping_mul(61) | 0x81)
@@ -1052,14 +1052,14 @@ mod tests {
     }
 
     #[test]
-    fn an_even_modulus_has_no_montgomery_form() {
+    fn even_modulus_no_montgomery_form() {
         assert!(Montgomery::new(&BigUint::from_u64(1024)).is_none());
         assert!(Montgomery::new(&BigUint::zero()).is_none());
         assert!(Montgomery::new(&BigUint::from_u64(1025)).is_some());
     }
 
     #[test]
-    fn the_modular_inverse_multiplies_back_to_one() {
+    fn modular_inverse_product_one() {
         let modulus = BigUint::from_be_bytes(&[
             0xd5, 0x51, 0x33, 0x9d, 0x1a, 0x3b, 0x5e, 0x9f, 0x7a, 0xc1, 0x4b, 0x2d, 0x0e, 0x77,
             0x91, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f,
@@ -1078,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn a_value_sharing_a_factor_with_the_modulus_has_no_inverse() {
+    fn shared_factor_no_inverse() {
         let modulus = BigUint::from_u64(105);
         assert_eq!(BigUint::from_u64(15).mod_inverse(&modulus), None);
         assert_eq!(BigUint::from_u64(0).mod_inverse(&modulus), None);
@@ -1086,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn the_inverse_of_one_is_one_and_a_unit_modulus_has_no_inverse() {
+    fn inverse_one_and_unit_modulus_boundary() {
         let modulus = BigUint::from_u64(97);
         assert_eq!(
             BigUint::from_u64(1).mod_inverse(&modulus),
@@ -1099,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn modular_addition_and_subtraction_wrap_within_the_modulus() {
+    fn modular_add_sub_modulus_wrap() {
         let modulus = BigUint::from_u64(97);
         assert_eq!(
             BigUint::from_u64(90)
@@ -1122,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn the_high_word_helpers_read_and_replace_the_top_thirty_two_bits() {
+    fn high_word_top32_read_replace() {
         let mut value = BigUint::from_be_bytes(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
         assert_eq!(value.high_u32(), 0x1122_3344);
         value.replace_high_u32(0xdead_beef);
@@ -1133,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn the_limb_count_tracks_the_normalized_magnitude() {
+    fn limb_count_normalized_magnitude() {
         assert_eq!(BigUint::zero().limb_count(), 0);
         assert_eq!(BigUint::from_u64(1).limb_count(), 1);
         assert_eq!(BigUint::from_u64(u64::MAX).limb_count(), 1);
@@ -1142,7 +1142,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_the_low_bit_makes_any_value_odd() {
+    fn low_bit_set_odd_result() {
         let mut value = BigUint::zero();
         value.set_low_bit();
         assert_eq!(value, BigUint::from_u64(1));
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn comparison_orders_by_magnitude_whatever_the_encoding_length() {
+    fn comparison_magnitude_order_encoding_independence() {
         let padded = BigUint::from_be_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 5]);
         assert_eq!(
             padded.cmp(&BigUint::from_u64(5)),
@@ -1164,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn the_montgomery_constant_inverts_the_low_limb() {
+    fn montgomery_constant_low_limb_inverse() {
         for value in [1u64, 3, 5, 0xffff_ffff_ffff_ffff, 0x0123_4567_89ab_cdef] {
             assert_eq!(inverse_mod_2_64(value).wrapping_mul(value), 1, "{value}");
         }

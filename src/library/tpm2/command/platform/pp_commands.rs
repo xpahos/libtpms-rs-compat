@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_reference_attributes() {
+    fn command_registration_reference_attributes() {
         let descriptor = find(TPM_CC_PP_COMMANDS).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0240_012d);
         assert_eq!(
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn only_pp_commands_carries_the_required_attribute() {
+    fn required_attribute_pp_commands_only() {
         let required: Vec<u32> = implemented()
             .filter(|descriptor| descriptor.physical_presence_required)
             .map(|descriptor| descriptor.code)
@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_the_reference_allows_in_the_list_is_registered() {
+    fn reference_allowed_command_registration() {
         const PP_COMMANDS: [u32; 19] = [
             0x0000_011f,
             0x0000_0120,
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_needs_a_started_tpm() {
+    fn started_tpm_requirement() {
         let clock = replay_clock();
         let mut runtime = manufactured(&clock);
         expect(
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bitmap_mutations_replay_the_reference_section() {
+    fn bitmap_mutation_reference_replay() {
         let clock = replay_clock();
         let host = Host::at("READY");
         let mut runtime = ready(&clock);
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn the_input_and_authorization_errors_match_the_reference() {
+    fn input_authorization_error_reference_match() {
         let clock = replay_clock();
         let host = Host::at("AFTER_PP_COMMANDS");
         host.set_physical_presence(true);
@@ -621,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bitmap_survives_a_restart_and_still_gates_dispatch() {
+    fn bitmap_restart_preservation_dispatch_gate() {
         let clock = replay_clock();
         let host = Host::at("AFTER_PP_COMMANDS");
         host.set_physical_presence(true);
@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_leaves_the_bitmap_alone() {
+    fn unavailable_nv_bitmap_unchanged() {
         let clock = replay_clock();
         let host = Host::at("READY");
         host.set_physical_presence(true);
@@ -695,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn the_physical_presence_gate_is_checked_before_the_lists_are_parsed() {
+    fn physical_presence_gate_pre_parse_check() {
         let clock = replay_clock();
         let host = Host::at("READY");
         let mut runtime = ready(&clock);
@@ -723,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_the_profile_disables_is_never_added_to_the_bitmap() {
+    fn profile_disabled_command_bitmap_exclusion() {
         let clock = replay_clock();
         let host = Host::at("READY");
         host.set_physical_presence(true);
@@ -755,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = pp_commands(
             TPM_RH_PLATFORM,

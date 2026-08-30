@@ -185,19 +185,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn u16_is_read_big_endian() {
+    fn u16_big_endian_read() {
         let mut reader = BlobReader::new(&[0x12, 0x34]);
         assert_eq!(reader.read_u16(), Ok(0x1234));
     }
 
     #[test]
-    fn u32_is_read_big_endian() {
+    fn u32_big_endian_read() {
         let mut reader = BlobReader::new(&[0xab, 0x36, 0x47, 0x23]);
         assert_eq!(reader.read_u32(), Ok(0xab36_4723));
     }
 
     #[test]
-    fn reads_advance_the_cursor() {
+    fn read_cursor_advancement() {
         let mut reader = BlobReader::new(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         assert_eq!(reader.position(), 0);
         assert_eq!(reader.read_u8(), Ok(0x01));
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_end_reads_succeed() {
+    fn exact_end_read_success() {
         let mut reader = BlobReader::new(&[0x00, 0x01]);
         assert_eq!(reader.read_u16(), Ok(1));
         assert_eq!(reader.remaining(), &[] as &[u8]);
@@ -220,12 +220,12 @@ mod tests {
     }
 
     #[test]
-    fn truncated_u8_fails_without_panicking() {
+    fn truncated_u8_failure_panic_safety() {
         assert_eq!(BlobReader::new(&[]).read_u8(), Err(Truncated));
     }
 
     #[test]
-    fn truncated_u16_fails_and_consumes_nothing() {
+    fn truncated_u16_failure_no_consumption() {
         let mut reader = BlobReader::new(&[0xff]);
         assert_eq!(reader.read_u16(), Err(Truncated));
         assert_eq!(reader.remaining(), &[0xff]);
@@ -233,14 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn truncated_u32_fails_and_consumes_nothing() {
+    fn truncated_u32_failure_no_consumption() {
         let mut reader = BlobReader::new(&[0x01, 0x02, 0x03]);
         assert_eq!(reader.read_u32(), Err(Truncated));
         assert_eq!(reader.remaining(), &[0x01, 0x02, 0x03]);
     }
 
     #[test]
-    fn oversized_take_fails_and_consumes_nothing() {
+    fn oversized_take_failure_no_consumption() {
         let mut reader = BlobReader::new(&[0x01, 0x02]);
         assert_eq!(reader.take(3), Err(Truncated));
         assert_eq!(reader.remaining(), &[0x01, 0x02]);
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_length_take_yields_empty_slice() {
+    fn zero_length_take_empty_slice() {
         let mut reader = BlobReader::new(&[0x01]);
         assert_eq!(reader.take(0), Ok(&[] as &[u8]));
         assert_eq!(reader.remaining(), &[0x01]);
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn take_borrows_the_original_bytes() {
+    fn take_original_byte_borrowing() {
         let data = [0x01, 0x02, 0x03];
         let mut reader = BlobReader::new(&data);
         let taken = reader.take(2).unwrap();
@@ -265,20 +265,20 @@ mod tests {
     }
 
     #[test]
-    fn u64_is_read_big_endian() {
+    fn u64_big_endian_read() {
         let mut reader = BlobReader::new(&[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]);
         assert_eq!(reader.read_u64(), Ok(0x0123_4567_89ab_cdef));
     }
 
     #[test]
-    fn exact_end_u64_succeeds() {
+    fn exact_end_u64_success() {
         let mut reader = BlobReader::new(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]);
         assert_eq!(reader.read_u64(), Ok(1));
         assert_eq!(reader.remaining(), &[] as &[u8]);
     }
 
     #[test]
-    fn truncated_u64_fails_and_consumes_nothing() {
+    fn truncated_u64_failure_no_consumption() {
         for len in 0..8usize {
             let data = vec![0x5a; len];
             let mut reader = BlobReader::new(&data);
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_and_noncanonical_bools_decode_like_upstream() {
+    fn canonical_and_noncanonical_bool_decoding_upstream_parity() {
         assert_eq!(BlobReader::new(&[0x00]).read_bool(), Ok(false));
         for byte in [0x01u8, 0x02, 0x80, 0xff] {
             assert_eq!(
@@ -302,21 +302,21 @@ mod tests {
     }
 
     #[test]
-    fn zero_length_tpm2b_yields_an_empty_borrowed_slice() {
+    fn zero_length_tpm2b_empty_borrowed_slice() {
         let mut reader = BlobReader::new(&[0x00, 0x00, 0x77]);
         assert_eq!(reader.read_tpm2b(64), Ok(&[] as &[u8]));
         assert_eq!(reader.remaining(), &[0x77]);
     }
 
     #[test]
-    fn nonempty_tpm2b_is_read_in_full() {
+    fn nonempty_tpm2b_full_read() {
         let mut reader = BlobReader::new(&[0x00, 0x03, 0xaa, 0xbb, 0xcc, 0xdd]);
         assert_eq!(reader.read_tpm2b(64).unwrap(), &[0xaa, 0xbb, 0xcc]);
         assert_eq!(reader.remaining(), &[0xdd]);
     }
 
     #[test]
-    fn exact_maximum_length_tpm2b_is_accepted() {
+    fn exact_maximum_tpm2b_acceptance() {
         let mut data = vec![0x00, 0x04];
         data.extend_from_slice(&[0x11; 4]);
         let mut reader = BlobReader::new(&data);
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn tpm2b_maximum_plus_one_is_a_size_error() {
+    fn tpm2b_maximum_plus_one_size_error() {
         let mut data = vec![0x00, 0x05];
         data.extend_from_slice(&[0x11; 5]);
         let mut reader = BlobReader::new(&data);
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_tpm2b_length_field_consumes_nothing() {
+    fn truncated_tpm2b_length_field_no_consumption() {
         for data in [&[] as &[u8], &[0x00]] {
             let mut reader = BlobReader::new(data);
             assert_eq!(reader.read_tpm2b(64), Err(Tpm2bError::Truncated));
@@ -349,13 +349,13 @@ mod tests {
     }
 
     #[test]
-    fn truncated_tpm2b_contents_are_distinct_from_oversized() {
+    fn truncated_oversized_tpm2b_distinction() {
         let mut reader = BlobReader::new(&[0x00, 0x04, 0x11, 0x22]);
         assert_eq!(reader.read_tpm2b(64), Err(Tpm2bError::Truncated));
     }
 
     #[test]
-    fn oversized_tpm2b_length_neither_allocates_nor_indexes() {
+    fn oversized_tpm2b_length_no_allocation_or_indexing() {
         let mut reader = BlobReader::new(&[0xff, 0xff]);
         assert_eq!(
             reader.read_tpm2b(4),
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn tpm2b_bytes_borrow_the_original_input() {
+    fn tpm2b_original_input_borrowing() {
         let data = [0x00, 0x02, 0xa1, 0xa2];
         let mut reader = BlobReader::new(&data);
         let bytes = reader.read_tpm2b(64).unwrap();
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn short_blob_reads_are_rejected() {
+    fn short_blob_read_rejection() {
         for len in 0..8usize {
             let data = vec![0xa5; len];
             let mut reader = BlobReader::new(&data);
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_writer_is_empty() {
+    fn new_writer_empty_state() {
         let writer = BlobWriter::new();
         assert_eq!(writer.len(), 0);
         assert!(writer.is_empty());
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn with_capacity_does_not_change_the_logical_length() {
+    fn writer_with_capacity_logical_length_unchanged() {
         let mut writer = BlobWriter::with_capacity(64);
         assert_eq!(writer.len(), 0);
         assert!(writer.is_empty());
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn with_capacity_does_not_cap_the_output() {
+    fn writer_with_capacity_no_output_cap() {
         let mut writer = BlobWriter::with_capacity(1);
         writer.write_bytes(&[0x5a; 4096]);
         assert_eq!(writer.len(), 4096);
@@ -420,28 +420,28 @@ mod tests {
     }
 
     #[test]
-    fn u8_is_written_verbatim() {
+    fn u8_verbatim_write() {
         let mut writer = BlobWriter::new();
         writer.write_u8(0x9f);
         assert_eq!(writer.as_slice(), &[0x9f]);
     }
 
     #[test]
-    fn u16_is_written_big_endian() {
+    fn u16_big_endian_write() {
         let mut writer = BlobWriter::new();
         writer.write_u16(0x1234);
         assert_eq!(writer.as_slice(), &[0x12, 0x34]);
     }
 
     #[test]
-    fn u32_is_written_big_endian() {
+    fn u32_big_endian_write() {
         let mut writer = BlobWriter::new();
         writer.write_u32(0xab36_4723);
         assert_eq!(writer.as_slice(), &[0xab, 0x36, 0x47, 0x23]);
     }
 
     #[test]
-    fn sequential_writes_preserve_order() {
+    fn sequential_write_order_preservation() {
         let mut writer = BlobWriter::new();
         writer.write_u8(0x01);
         writer.write_u16(0x0203);
@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn write_bytes_appends_verbatim() {
+    fn write_bytes_verbatim_append() {
         let mut writer = BlobWriter::new();
         writer.write_bytes(&[0xaa, 0xbb]);
         writer.write_bytes(&[0xcc]);
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn writing_an_empty_slice_is_a_no_op() {
+    fn empty_slice_write_no_op() {
         let mut writer = BlobWriter::new();
         writer.write_bytes(&[]);
         assert!(writer.is_empty());
@@ -472,21 +472,21 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_tpm2b_encodes_as_a_zero_length() {
+    fn empty_tpm2b_zero_length_encoding() {
         let mut writer = BlobWriter::new();
         assert_eq!(writer.write_tpm2b(&[]), Ok(()));
         assert_eq!(writer.as_slice(), &[0x00, 0x00]);
     }
 
     #[test]
-    fn a_nonempty_tpm2b_carries_its_length_prefix() {
+    fn nonempty_tpm2b_length_prefix() {
         let mut writer = BlobWriter::new();
         assert_eq!(writer.write_tpm2b(&[0xa1, 0xa2, 0xa3]), Ok(()));
         assert_eq!(writer.as_slice(), &[0x00, 0x03, 0xa1, 0xa2, 0xa3]);
     }
 
     #[test]
-    fn a_tpm2b_of_exactly_u16_max_bytes_is_accepted() {
+    fn u16_max_tpm2b_acceptance() {
         let payload = vec![0x5a; usize::from(u16::MAX)];
         let mut writer = BlobWriter::new();
         assert_eq!(writer.write_tpm2b(&payload), Ok(()));
@@ -496,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tpm2b_above_u16_max_is_rejected() {
+    fn above_u16_max_tpm2b_rejection() {
         let payload = vec![0x5a; usize::from(u16::MAX) + 1];
         let mut writer = BlobWriter::new();
         assert_eq!(
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_tpm2b_write_leaves_earlier_bytes_untouched() {
+    fn failed_tpm2b_write_earlier_bytes_unchanged() {
         let mut writer = BlobWriter::new();
         writer.write_u32(0xdead_beef);
         assert!(
@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_block_consumes_only_the_framing() {
+    fn absent_block_framing_only_consumption() {
         let mut reader = BlobReader::new(&[0x00, 0x00, 0x00, 0xaa]);
         assert_eq!(
             skip_optional_block(&mut reader, false),
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_block_ignores_a_nonzero_length_field() {
+    fn absent_block_nonzero_length_field_ignored() {
         let mut reader = BlobReader::new(&[0x00, 0x00, 0x10, 0xaa]);
         assert_eq!(
             skip_optional_block(&mut reader, false),
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn present_zero_length_block_is_skipped() {
+    fn present_zero_length_block_skip() {
         let mut reader = BlobReader::new(&[0x01, 0x00, 0x00, 0xbb]);
         assert_eq!(
             skip_optional_block(&mut reader, false),
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn present_nonempty_block_is_skipped_in_full() {
+    fn present_nonempty_block_full_skip() {
         let mut reader = BlobReader::new(&[0x01, 0x00, 0x03, 0x11, 0x22, 0x33, 0xcc]);
         assert_eq!(
             skip_optional_block(&mut reader, false),
@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn noncanonical_nonzero_boolean_is_true() {
+    fn noncanonical_nonzero_boolean_true_decode() {
         for boolean in [0x01u8, 0x02, 0x80, 0xff] {
             let data = [boolean, 0x00, 0x01, 0x99, 0xdd];
             let mut reader = BlobReader::new(&data);
@@ -576,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn needed_present_block_leaves_the_payload_unread() {
+    fn needed_present_block_payload_unread() {
         let mut reader = BlobReader::new(&[0x01, 0x00, 0x02, 0x11, 0x22]);
         assert_eq!(
             skip_optional_block(&mut reader, true),
@@ -586,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn needed_present_block_preserves_a_misleading_declared_size() {
+    fn needed_present_block_misleading_declared_size_preservation() {
         let mut reader = BlobReader::new(&[0x01, 0xff, 0xff, 0x11]);
         assert_eq!(
             skip_optional_block(&mut reader, true),
@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn needed_missing_block_is_an_error() {
+    fn needed_missing_block_error() {
         let mut reader = BlobReader::new(&[0x00, 0x00, 0x00]);
         assert_eq!(
             skip_optional_block(&mut reader, true),
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_block_framing_fails() {
+    fn truncated_block_framing_failure() {
         let mut reader = BlobReader::new(&[]);
         assert_eq!(
             skip_optional_block(&mut reader, false),
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn block_size_beyond_input_fails_without_advancing_past_the_end() {
+    fn block_size_beyond_input_failure_cursor_preservation() {
         let data = [0x01, 0x00, 0x04, 0x11, 0x22];
         let mut reader = BlobReader::new(&data);
         assert_eq!(

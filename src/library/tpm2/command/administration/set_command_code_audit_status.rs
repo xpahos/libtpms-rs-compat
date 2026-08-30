@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn audit_runtime() -> Box<Tpm2Runtime> {
+    fn audit_runtime() -> Tpm2Runtime {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0140");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, 0x0000_0140);
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_a_command_records_the_reference_state() {
+    fn command_addition_reference_state_record() {
         let mut runtime = audit_runtime();
         assert!(!is_required(&runtime, CC_GET_RANDOM));
         assert_eq!(
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn clearing_a_command_records_the_reference_state() {
+    fn command_clearing_reference_state_record() {
         let mut runtime = audit_runtime();
         run_ok(
             &mut runtime,
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn the_audit_algorithm_may_be_changed_on_its_own() {
+    fn standalone_audit_algorithm_change() {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn an_algorithm_change_may_not_carry_a_command_list() {
+    fn algorithm_change_command_list_rejection() {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_audit_algorithm_is_a_hash_error() {
+    fn unsupported_audit_algorithm_hash_error() {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lists_that_change_nothing_leave_the_state_alone() {
+    fn audit_no_op_state_preservation() {
         for (record, permall, set_list, clear_list) in [
             (
                 "AUDIT_STATUS_UNREMOVABLE",
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_lists_change_no_command_bit() {
+    fn empty_list_command_bit_preservation() {
         let mut runtime = audit_runtime();
         let before = audit_bitmap(&runtime).expect("the bitmap reads");
         assert_eq!(
@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicated_command_is_set_once() {
+    fn duplicated_command_single_set() {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn the_x509_certification_command_joins_the_audit_bitmap() {
+    fn x509_certification_command_audit_bitmap_inclusion() {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn both_provision_hierarchies_may_authorize_the_change() {
+    fn provision_hierarchy_dual_authorization() {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parameter_limits_match_the_oracle() {
+    fn parameter_limits_oracle_match() {
         let mut runtime = audit_runtime();
         let mut trailing = audit_status(TPM_RH_OWNER, ALG_NULL, &[], &[]);
         trailing.push(0x00);
@@ -503,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_change() {
+    fn unavailable_nv_change_rejection() {
         let mut runtime = audit_runtime();
         runtime.nv_available = false;
         let before = crate::library::tpm2::persistent::persistent_all_store(runtime.state())
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_host_commit_rolls_the_change_back() {
+    fn failed_host_commit_rollback() {
         use crate::library::tpm2::nv::build_nv_image;
         let mut runtime = audit_runtime();
         runtime
@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let mut full = ALG_SHA256.to_be_bytes().to_vec();
         full.extend_from_slice(&1u32.to_be_bytes());
         full.extend_from_slice(&CC_GET_RANDOM.to_be_bytes());

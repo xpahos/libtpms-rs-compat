@@ -206,6 +206,7 @@ fn marshal_response(allocation_success: u8, size_needed: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -220,6 +221,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -286,7 +288,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -298,7 +300,8 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     fn startup_command() -> Vec<u8> {
@@ -306,7 +309,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command()),
@@ -501,7 +504,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn rebooted_runtime(runtime: &Tpm2Runtime) -> Box<Tpm2Runtime> {
+    fn rebooted_runtime(runtime: &Tpm2Runtime) -> Tpm2Runtime {
         let restored = reload(runtime.state());
         let mut rebooted = commit_restored_state(restored).expect("the persisted state restores");
         rebooted.entropy = deterministic_entropy;
@@ -509,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_allocate_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &allocate(&params(&[]))),
@@ -523,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_platform_password_authorization_succeeds() {
+    fn valid_platform_password_authorization_success() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -535,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_platform_hierarchy_is_accepted() {
+    fn platform_hierarchy_only() {
         for handle in [
             TPM_RH_OWNER,
             TPM_RH_ENDORSEMENT,
@@ -563,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_handle_is_insufficient_for_the_first_handle() {
+    fn truncated_handle_insufficient_first_handle() {
         for payload in [&[][..], &[0x40][..], &[0x40, 0x00, 0x00][..]] {
             let mut runtime = started_runtime();
             let mut bytes = hex("8002");
@@ -579,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_without_an_authorization_area_is_auth_missing() {
+    fn missing_auth_area_auth_missing() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let bytes = command(
@@ -595,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn an_incorrect_platform_password_is_a_bad_auth_for_the_first_session() {
+    fn wrong_platform_password_bad_auth_first_session() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let bytes = command(
@@ -612,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_platform_password_authorizes_the_command() {
+    fn configured_platform_password_authorization() {
         let mut runtime = started_runtime();
         runtime
             .live
@@ -638,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn every_truncated_selection_list_is_insufficient_for_the_first_parameter() {
+    fn truncated_selection_list_insufficient_first_parameter() {
         let full = params(&[(TPM_ALG_SHA256, [0xff, 0xff, 0xff])]);
         for len in 0..full.len() {
             let mut runtime = started_runtime();
@@ -653,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn a_count_above_hash_count_is_a_size_error_without_reading_an_entry() {
+    fn count_above_hash_count_size_error_no_entry_read() {
         for count in [5u32, 100, u32::MAX] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -667,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_hash_algorithms_are_a_hash_error() {
+    fn unsupported_hash_algorithm_hash_error() {
         for alg in [0x0000u16, 0x0010, 0x0012, 0x0027, 0xffff] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -681,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_bad_hash_is_reported_with_the_first_parameter_index() {
+    fn later_bad_hash_first_parameter_index() {
         let mut runtime = started_runtime();
         let mut parameters = 2u32.to_be_bytes().to_vec();
         parameters.extend_from_slice(&sel(TPM_ALG_SHA256, [0xff, 0xff, 0xff]));
@@ -693,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_sizeof_select_is_a_value_error() {
+    fn sizeof_select_out_of_range_value_error() {
         for (size, bitmap_len) in [(0u8, 0usize), (1, 1), (2, 2), (4, 4), (255, 3)] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -711,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_an_undecorated_size_error() {
+    fn trailing_parameter_bytes_undecorated_size_error() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let mut parameters = params(&[(TPM_ALG_SHA256, [0xff, 0xff, 0xff])]);
@@ -724,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_bit_flip_panic_safety() {
         let valid = allocate(&params(&[
             (TPM_ALG_SHA256, [0xff, 0xff, 0xff]),
             (TPM_ALG_SHA1, [0x00, 0x00, 0x00]),
@@ -738,14 +741,18 @@ mod tests {
                     let mut runtime = started_runtime();
                     let input = CommandInput::new(mutated.len() as u32, mutated);
                     let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                    let _ = serialize_response(&dispatch(
+                        &mut runtime,
+                        &parsed,
+                        Cancellation::disabled(),
+                    ));
                 }
             }
         }
     }
 
     #[test]
-    fn an_empty_selection_list_keeps_every_bank_and_reports_the_full_size() {
+    fn empty_selection_list_bank_preservation_full_size() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &allocate(&params(&[]))),
@@ -755,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn omitted_banks_preserve_their_allocation() {
+    fn omitted_bank_allocation_preservation() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -777,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn a_supplied_bank_replaces_its_allocation_in_place() {
+    fn supplied_bank_in_place_replacement() {
         let mut runtime = started_runtime();
         dispatch_bytes(
             &mut runtime,
@@ -791,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicated_bank_keeps_only_its_last_occurrence() {
+    fn duplicated_bank_last_occurrence_precedence() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -817,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn an_allocation_without_the_hcrtm_pcr_is_improper() {
+    fn missing_hcrtm_pcr_improper() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -836,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn an_allocation_without_the_drtm_pcr_is_improper() {
+    fn missing_drtm_pcr_improper() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -855,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn an_allocation_with_no_pcr_at_all_is_improper() {
+    fn empty_allocation_improper() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -874,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hcrtm_and_drtm_pcrs_may_live_in_different_banks() {
+    fn hcrtm_drtm_split_banks_acceptance() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -892,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha256_only_allocation_matches_the_oracle_bytes() {
+    fn sha256_only_allocation_oracle_match() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -909,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn two_active_banks_report_the_sum_of_both_bank_sizes() {
+    fn two_active_bank_size_sum_reporting() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -927,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn size_needed_counts_one_digest_per_selected_bit() {
+    fn size_needed_per_selected_bit_digest_count() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -945,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn max_pcr_and_size_available_are_build_constants() {
+    fn max_pcr_size_available_build_constants() {
         assert_eq!(MAX_PCR, ORACLE_MAX_PCR);
         assert_eq!(SIZE_AVAILABLE, ORACLE_SIZE_AVAILABLE);
         assert_eq!(
@@ -955,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn the_output_is_the_four_declared_fields_in_order() {
+    fn response_field_order() {
         assert_eq!(
             marshal_response(YES, 0x0102_0304),
             hex("01 00000018 01020304 00000f60")
@@ -963,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_allocation_starts_from_the_still_active_one() {
+    fn second_allocation_active_base() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -989,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn a_requested_bank_missing_from_the_allocation_is_an_internal_failure() {
+    fn requested_bank_missing_internal_failure() {
         let mut runtime = started_runtime();
         runtime
             .state
@@ -1012,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_still_reports_the_old_allocation_in_the_same_boot() {
+    fn same_boot_capability_old_allocation() {
         let mut runtime = started_runtime();
         let before = dispatch_bytes(&mut runtime, &cap_pcrs_command());
         assert_eq!(
@@ -1038,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn the_persistent_state_carries_the_requested_allocation() {
+    fn persistent_state_requested_allocation() {
         let mut runtime = started_runtime();
         dispatch_bytes(
             &mut runtime,
@@ -1063,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_reconfiguration_rejects_only_a_state_shutdown() {
+    fn pending_reconfiguration_state_shutdown_rejection() {
         let mut runtime = started_runtime();
         dispatch_bytes(
             &mut runtime,
@@ -1082,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_allocation_becomes_active_after_a_reload_and_startup() {
+    fn new_allocation_active_after_reload_startup() {
         let mut runtime = started_runtime();
         dispatch_bytes(
             &mut runtime,
@@ -1120,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pcr_values_are_rebuilt_for_the_new_allocation() {
+    fn pcr_value_rebuild_new_allocation() {
         let mut runtime = started_runtime();
         dispatch_bytes(
             &mut runtime,
@@ -1157,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_is_reported_before_any_state_changes() {
+    fn nv_unavailable_report_before_state_change() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime);
@@ -1172,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_request_is_reported_even_without_nv() {
+    fn malformed_request_report_no_nv() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         assert_eq!(
@@ -1183,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unbuildable_nv_image_leaves_every_allocation_untouched() {
+    fn unbuildable_nv_image_allocation_unchanged() {
         let mut runtime = started_runtime();
         let extra = runtime.state().persistent.pcr_allocated.selections[1].clone();
         runtime
@@ -1206,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_allocation_requests_exactly_one_nv_commit() {
+    fn successful_allocation_single_nv_commit() {
         let commits = core::cell::Cell::new(0u32);
         let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
             commits.set(commits.get() + 1);
@@ -1230,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_allocation_requests_no_nv_commit() {
+    fn failed_allocation_no_nv_commit() {
         let commits = core::cell::Cell::new(0u32);
         let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
             commits.set(commits.get() + 1);
@@ -1257,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_host_commit_fails_the_tpm_like_every_other_nv_command() {
+    fn host_commit_failure_tpm_failure_mode() {
         let mut runtime = started_runtime();
         let bytes = allocate(&params(&[(TPM_ALG_SHA256, [0xff, 0xff, 0xff])]));
         let input = CommandInput::new(bytes.len() as u32, bytes);
@@ -1269,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_that_disables_sha1_rejects_a_sha1_request() {
+    fn sha1_disabled_profile_rejection() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().profile.algorithms =
             b"sha256,sha384,sha512,aes,null".to_vec();
@@ -1297,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_that_disables_sha512_rejects_a_sha512_request() {
+    fn sha512_disabled_profile_rejection() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().profile.algorithms =
             b"sha1,sha256,sha384,aes,null".to_vec();
@@ -1323,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_persistent_allocation_is_the_base_of_the_merge() {
+    fn restored_persistent_allocation_merge_base() {
         let mut runtime = started_runtime();
         dispatch_bytes(
             &mut runtime,
@@ -1350,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_shadow_allocation_is_preferred_over_the_persistent_one() {
+    fn restored_shadow_allocation_precedence() {
         let mut runtime = started_runtime();
         runtime.live_pcr_allocated = Some(OwnedPcrAllocation {
             selections: vec![
@@ -1404,7 +1411,7 @@ mod tests {
          00000003 000b03ffffff 000c03000000 000d03000000";
 
     #[test]
-    fn the_swtpm_setup_sha256_request_matches_the_oracle_response() {
+    fn swtpm_setup_sha256_oracle_match() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex(SWTPM_SETUP_SHA256)),
@@ -1429,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn the_swtpm_setup_two_bank_request_matches_the_oracle_response() {
+    fn swtpm_setup_two_bank_oracle_match() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex(SWTPM_SETUP_SHA256_SHA384)),
@@ -1447,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn the_swtpm_setup_request_under_a_sha1_disabled_profile_matches_the_oracle() {
+    fn swtpm_setup_sha1_disabled_profile_oracle_match() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().profile.algorithms =
             b"sha256,sha384,sha512,aes,null".to_vec();
@@ -1474,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bank_the_profile_makes_unavailable_cannot_be_requested_at_all() {
+    fn profile_unavailable_bank_request_rejection() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().profile.algorithms =
             b"sha256,sha384,sha512,aes,null".to_vec();
@@ -1494,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn the_allocation_survives_a_serialize_and_reload_round_trip() {
+    fn allocation_serialize_reload_round_trip() {
         let mut runtime = started_runtime();
         dispatch_bytes(
             &mut runtime,

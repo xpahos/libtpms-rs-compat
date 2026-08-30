@@ -222,12 +222,12 @@ macro_rules! golden_fixture {
             use crate::library::tpm2::golden_responses;
 
             #[test]
-            fn fixture_records_are_sorted_and_unique() {
+            fn record_sort_uniqueness() {
                 golden_responses::assert_fixture_integrity(&super::super::$fixture);
             }
 
             #[test]
-            fn fixture_lookup_finds_only_known_names() {
+            fn fixture_lookup_known_names_only() {
                 let fixture = &super::super::$fixture;
                 for absent in ["NOT_A_VECTOR", "NO_SUCH_VECTOR", ""] {
                     assert!(fixture.find(absent).is_none(), "{absent}");
@@ -243,7 +243,7 @@ macro_rules! golden_fixture {
             }
 
             #[test]
-            fn reader_uses_expected_magic_and_file() {
+            fn reader_expected_magic_and_file() {
                 let fixture = &super::super::$fixture;
                 assert_eq!(fixture.magic(), $magic);
                 assert_eq!(fixture.bytes(), include_bytes!($file).as_slice());
@@ -278,13 +278,13 @@ mod tests {
     }
 
     #[test]
-    fn well_formed_fixture_parses() {
+    fn well_formed_fixture_parse_success() {
         let data = fixture();
         assert_eq!(parse(MAGIC, &data).expect("the fixture parses"), expected());
     }
 
     #[test]
-    fn invalid_magic_is_rejected() {
+    fn invalid_magic_rejection() {
         for offset in 0..MAGIC_LENGTH {
             let mut broken = fixture();
             broken[offset] ^= 0xff;
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_version_is_rejected() {
+    fn unsupported_version_rejection() {
         for version in [0u16, VERSION + 1, VERSION + 2, u16::MAX] {
             let data = synthesize(MAGIC, version, RECORDS.len() as u16, &RECORDS);
             assert!(parse(MAGIC, &data).is_none(), "version {version}");
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_record_count_is_rejected() {
+    fn wrong_record_count_rejection() {
         for declared in [0u16, 1, 2, 4, u16::MAX] {
             let data = synthesize(MAGIC, VERSION, declared, &RECORDS);
             assert!(parse(MAGIC, &data).is_none(), "record count {declared}");
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_record_names_and_order_are_rejected() {
+    fn invalid_record_name_order_rejection() {
         let payload: &[u8] = &[0xaa];
         for (what, count, records) in [
             ("an empty name", 1u16, vec![("", payload)]),
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_fields_are_rejected() {
+    fn truncated_field_rejection() {
         let data = fixture();
         let name_length = usize::from(data[HEADER_LENGTH]);
         for cut in [
@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_lengths_are_rejected() {
+    fn oversized_length_rejection() {
         let data = fixture();
         let name_length = usize::from(data[HEADER_LENGTH]);
         let payload_length_at = HEADER_LENGTH + 1 + name_length;
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_bytes_are_rejected() {
+    fn trailing_byte_rejection() {
         for trailer in [vec![0x00], vec![0xff; 16]] {
             let mut extended = fixture();
             extended.extend_from_slice(&trailer);
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_truncations_are_rejected() {
+    fn fixture_truncation_rejection() {
         let data = fixture();
         for length in 0..data.len() {
             assert!(
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_repacking_is_stable() {
+    fn fixture_repacking_stability() {
         let data = fixture();
         let vectors = parse(MAGIC, &data).expect("the fixture parses");
         let records: Vec<(&str, &[u8])> = vectors

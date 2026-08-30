@@ -115,7 +115,7 @@ mod tests {
     ];
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn registration_upstream_attributes() {
         assert_eq!(TPM_CC_HASH_SEQUENCE_START, 0x0000_0186);
         let descriptor = registry::find(TPM_CC_HASH_SEQUENCE_START).expect("registered");
         assert_eq!(descriptor.attributes, 0x1000_0186);
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn a_started_sequence_takes_the_first_free_transient_slot() {
+    fn sequence_first_free_slot_allocation() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_algorithm_starts_and_completes_a_sequence() {
+    fn per_compiled_algorithm_sequence_start_and_completion() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         for (label, hash_alg) in ALL_ALGORITHMS {
@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_algorithm_starts_an_event_sequence() {
+    fn null_algorithm_event_sequence() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_algorithms_report_the_indexed_hash_error() {
+    fn unsupported_algorithm_indexed_hash_error() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         for (label, hash_alg) in [
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_disabled_algorithms_report_the_indexed_hash_error() {
+    fn profile_disabled_algorithm_indexed_hash_error() {
         let clock = clock();
         let mut runtime = minimal_runtime(&clock);
         exec(
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_value_size_is_bounded_by_the_digest_size() {
+    fn auth_value_digest_size_bound() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_report_the_indexed_parse_errors() {
+    fn malformed_parameter_indexed_parse_errors() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         for (label, params) in [
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_object_slots_report_object_memory() {
+    fn exhausted_object_slots_object_memory_error() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         for (label, hash_alg) in [
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn a_flushed_slot_is_reused_by_the_next_start() {
+    fn flushed_slot_reuse() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         for (label, hash_alg) in [
@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         let valid = hash_sequence_start(b"a", TPM_ALG_SHA256);
@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_descriptor_accepts_no_handles() {
+    fn registry_descriptor_zero_handles() {
         let descriptor = registry::find(TPM_CC_HASH_SEQUENCE_START).expect("registered");
         assert!(descriptor.handles.is_empty());
         assert!(matches!(

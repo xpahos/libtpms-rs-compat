@@ -120,6 +120,7 @@ pub(super) fn hash_algorithm_allowed(profile_algorithms: &[u8], hash_alg: u16) -
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_SET_PRIMARY_POLICY, find,
     };
@@ -140,7 +141,7 @@ mod tests {
     const TPM_ALG_ECB: u16 = 0x0044;
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = find(TPM_CC_SET_PRIMARY_POLICY).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0240_012e);
         assert!(descriptor.physical_presence);
@@ -161,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_handle_takes_only_the_four_hierarchy_policies() {
+    fn authorization_handle_four_hierarchies_only() {
         let kind = find(TPM_CC_SET_PRIMARY_POLICY).unwrap().handles[0].kind;
         for handle in [
             TPM_RH_OWNER,
@@ -187,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_command_attributes_match_the_reference() {
+    fn reported_attributes_reference_match() {
         replay(&[(
             "CCATTR_012E",
             cap_command_attributes(TPM_CC_SET_PRIMARY_POLICY),
@@ -195,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn every_hierarchy_policy_is_set_and_cleared_like_the_reference() {
+    fn hierarchy_policy_set_clear_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         for (label, handle) in [
@@ -264,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_one_hierarchy_leaves_the_others_alone() {
+    fn single_hierarchy_set_isolation() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = policies(&runtime);
@@ -284,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_and_parameter_errors_match_the_reference() {
+    fn handle_parameter_errors_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -402,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_platform_policy_clears_the_orderly_state() {
+    fn platform_policy_only_orderly_state_clear() {
         for (label, startup_label, handle, orderly) in [
             (
                 "SPP_ORDERLY_PLATFORM",
@@ -437,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_policy_takes_effect_immediately_and_survives_a_round_trip() {
+    fn new_policy_immediate_effect_round_trip() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         for handle in [TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT] {
@@ -458,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_policy_lives_in_the_volatile_state_only() {
+    fn platform_policy_volatile_state_only() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         expect(
@@ -483,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_command_after_the_size_check() {
+    fn unavailable_nv_rejection_after_size_check() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         runtime.nv_available = false;
@@ -509,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_persistent_hierarchy_commits_an_nv_update() {
+    fn persistent_hierarchy_only_nv_update_commit() {
         assert_eq!(
             commits_for(&set_primary_policy(
                 TPM_RH_OWNER,
@@ -536,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = set_primary_policy(TPM_RH_OWNER, &DIGEST, TPM_ALG_SHA256, &[]);
         for len in 0..=valid.len() {
@@ -552,6 +553,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
+                        Cancellation::disabled(),
                     );
                 }
             }

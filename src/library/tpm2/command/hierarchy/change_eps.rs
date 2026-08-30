@@ -83,6 +83,7 @@ fn change_endorsement_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmR
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -97,6 +98,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -167,7 +169,7 @@ mod tests {
         panic!("the entropy-bad latch must short-circuit the platform callback");
     }
 
-    fn manufactured_runtime(profile: Option<&[u8]>) -> Box<Tpm2Runtime> {
+    fn manufactured_runtime(profile: Option<&[u8]>) -> Tpm2Runtime {
         let profile = validate_user_profile(profile).expect("the profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -179,7 +181,8 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     fn startup_command() -> Vec<u8> {
@@ -187,7 +190,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn started_runtime_with(profile: Option<&[u8]>) -> Box<Tpm2Runtime> {
+    fn started_runtime_with(profile: Option<&[u8]>) -> Tpm2Runtime {
         let mut runtime = manufactured_runtime(profile);
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command()),
@@ -198,7 +201,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         started_runtime_with(None)
     }
 
@@ -425,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn change_eps_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime(None);
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
@@ -439,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn the_swtpm_setup_request_answers_the_oracle_bytes() {
+    fn swtpm_setup_request_oracle_match() {
         let mut runtime = started_runtime();
         let request = hex("8002 0000001b 00000124 4000000c
              00000009 40000009 0000 00 0000");
@@ -451,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_truncated_platform_handle_is_a_first_handle_insufficient_error() {
+    fn truncated_platform_handle_insufficient_error() {
         let mut runtime = started_runtime();
         for payload in [
             &[][..],
@@ -472,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn every_handle_other_than_the_platform_hierarchy_is_rejected() {
+    fn non_platform_handle_rejection() {
         let mut runtime = started_runtime();
         for handle in [
             TPM_RH_OWNER,
@@ -497,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_without_an_authorization_area_is_auth_missing() {
+    fn missing_authorization_area_auth_missing() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -508,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_area_framing_matches_the_oracle() {
+    fn authorization_area_framing_oracle_match() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -526,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_password_authorizes_a_freshly_started_tpm() {
+    fn empty_password_fresh_tpm_authorization() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
@@ -535,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_password_is_enforced() {
+    fn platform_password_enforcement() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -564,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_password_never_reaches_the_state() {
+    fn wrong_password_state_preservation() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -578,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn any_command_parameter_is_a_size_error() {
+    fn nonempty_parameter_size_error() {
         let mut runtime = started_runtime();
         for parameters in [&[0xee][..], &[0x00][..], &[0, 0, 0, 0][..], &[0xff; 16][..]] {
             let before = snapshot(&runtime);
@@ -595,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_command_without_touching_the_state() {
+    fn unavailable_nv_rejection_state_preservation() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime);
@@ -607,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_nv_is_reported_after_the_parameter_check() {
+    fn unavailable_nv_parameter_check_order() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         assert_eq!(
@@ -621,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn the_endorsement_seed_and_proof_are_regenerated() {
+    fn endorsement_seed_proof_regeneration() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(before.ep_seed.len(), PRIMARY_SEED_SIZE);
@@ -646,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn every_other_hierarchy_seed_and_proof_survives() {
+    fn other_hierarchy_seed_and_proof_survival() {
         let mut runtime = started_runtime();
         let secrets = |runtime: &Tpm2Runtime| {
             let persistent = &runtime.state().persistent;
@@ -670,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn the_endorsement_seed_compat_level_follows_the_active_profile() {
+    fn endorsement_seed_compat_level_profile_match() {
         for profile in [None, Some(DEFAULT_V1_PROFILE)] {
             let mut runtime = started_runtime_with(profile);
             runtime
@@ -693,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn the_endorsement_authorization_and_policy_are_reset() {
+    fn endorsement_auth_policy_reset() {
         let mut runtime = started_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -713,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reset_endorsement_authorization_takes_effect_immediately() {
+    fn reset_authorization_immediate_effect() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -746,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn the_endorsement_hierarchy_is_enabled() {
+    fn endorsement_hierarchy_enablement() {
         let mut runtime = started_runtime();
         runtime.live.state_clear.as_mut().unwrap().eh_enable = false;
         assert_eq!(
@@ -760,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_endorsement_objects_are_flushed_and_other_hierarchies_are_kept() {
+    fn endorsement_object_flush_other_hierarchy_preservation() {
         let mut runtime = started_runtime();
         runtime.live.objects[0] = occupied_object(ATTR_EPS_HIERARCHY);
         runtime.live.objects[1] = occupied_object(ATTR_SPS_HIERARCHY);
@@ -783,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unoccupied_endorsement_slot_is_left_alone() {
+    fn unoccupied_endorsement_slot_unchanged() {
         let mut runtime = started_runtime();
         runtime.live.objects[0] = unoccupied_object(ATTR_EPS_HIERARCHY);
         assert_eq!(
@@ -795,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_endorsement_objects_survive_the_marshalled_object_format() {
+    fn persistent_endorsement_object_marshalled_format_survival() {
         let mut runtime = started_runtime_with(Some(DEFAULT_V1_PROFILE));
         push_nvram(
             &mut runtime,
@@ -830,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tpm_without_endorsement_entries_keeps_its_nv_list_intact() {
+    fn missing_endorsement_entries_nv_list_preservation() {
         let mut runtime = started_runtime_with(Some(DEFAULT_V1_PROFILE));
         push_nvram(
             &mut runtime,
@@ -855,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orderly_tpm_records_the_cleared_orderly_state() {
+    fn orderly_tpm_orderly_state_clear() {
         for (da_used, expected) in [(false, SU_NONE_VALUE), (true, SU_DA_USED_VALUE)] {
             let mut runtime = started_runtime();
             runtime.state.as_mut().unwrap().persistent.orderly_state = 0x0001;
@@ -873,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_orderly_tpm_keeps_its_orderly_state() {
+    fn non_orderly_tpm_orderly_state_preservation() {
         for orderly_state in [SU_NONE_VALUE, SU_DA_USED_VALUE] {
             let mut runtime = started_runtime();
             runtime.state.as_mut().unwrap().persistent.orderly_state = orderly_state;
@@ -886,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_keeps_the_old_secrets_and_succeeds() {
+    fn entropy_failure_old_secrets_success() {
         let mut runtime = started_runtime();
         runtime.entropy = failing_entropy;
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
@@ -926,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_latched_runtime_keeps_the_old_secrets_without_invoking_the_callback() {
+    fn pre_latched_runtime_old_secrets_no_callback() {
         let mut runtime = started_runtime();
         runtime.entropy_bad = true;
         runtime.entropy = unreachable_entropy;
@@ -948,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_after_the_first_draw_keeps_only_the_old_proof() {
+    fn entropy_failure_after_first_draw_old_proof_only() {
         let mut runtime = started_runtime();
         runtime.entropy = failing_entropy;
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED - 1;
@@ -973,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_drbg_leaves_no_partial_mutation() {
+    fn dead_drbg_no_partial_mutation() {
         let mut runtime = started_runtime();
         runtime.live.orderly.drbg_state.drbg_magic = DRBG_MAGIC ^ 0xffff_ffff;
         let before = snapshot(&runtime);
@@ -992,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_draw_continuous_test_failure_restores_the_pre_command_drbg() {
+    fn second_draw_continuous_test_failure_drbg_restoration() {
         use crate::library::tpm2::crypto::{DRBG_SEED_SIZE, Drbg};
         use crate::library::tpm2::failure_mode::FailureLocation;
         use aes::cipher::{BlockDecrypt, KeyInit};
@@ -1108,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_nv_image_keeps_the_consumed_draws_and_rolls_back_the_rest() {
+    fn failed_nv_image_draw_consumption_rollback() {
         let mut runtime = started_runtime_with(Some(DEFAULT_V1_PROFILE));
         push_nvram(
             &mut runtime,
@@ -1170,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_capacity_check_keeps_the_consumed_draws_and_rolls_back_the_rest() {
+    fn failed_capacity_check_draw_consumption_rollback() {
         let mut runtime = started_runtime_with(Some(DEFAULT_V1_PROFILE));
         push_nvram(
             &mut runtime,
@@ -1226,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_change_advances_the_drbg_exactly_twice() {
+    fn success_drbg_two_draws() {
         let mut runtime = started_runtime();
         let before = drbg(&runtime);
 
@@ -1258,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_endorsement_seed_survives_a_permanent_state_round_trip() {
+    fn new_seed_permanent_state_round_trip() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
@@ -1286,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn rewriting_the_state_keeps_the_permanent_blob_size() {
+    fn state_rewrite_blob_size_preservation() {
         let mut runtime = started_runtime();
         let before = persistent_all_store(runtime.state())
             .expect("the state serializes")
@@ -1306,7 +1309,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_change_requests_exactly_one_nv_commit() {
+    fn success_single_nv_commit() {
         let commits = core::cell::Cell::new(0u32);
         let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
             commits.set(commits.get() + 1);
@@ -1330,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_change_requests_no_nv_commit() {
+    fn failure_no_nv_commit() {
         let commits = core::cell::Cell::new(0u32);
         let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
             commits.set(commits.get() + 1);
@@ -1352,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_host_commit_fails_the_tpm_like_every_other_nv_command() {
+    fn host_commit_failure_tpm_failure_mode() {
         let mut runtime = started_runtime();
         let bytes = change_eps();
         let input = CommandInput::new(bytes.len() as u32, bytes);
@@ -1364,7 +1367,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_decoded_state_never_panics() {
+    fn undecoded_state_panic_safety() {
         use crate::library::tpm2::runtime::empty_state_runtime;
 
         let mut runtime = empty_state_runtime();
@@ -1377,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let valid = change_eps();
         for len in 0..=valid.len() {
             for index in 0..len {
@@ -1389,7 +1392,11 @@ mod tests {
                         continue;
                     };
                     let mut runtime = started_runtime();
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                    let _ = serialize_response(&dispatch(
+                        &mut runtime,
+                        &parsed,
+                        Cancellation::disabled(),
+                    ));
                 }
             }
         }

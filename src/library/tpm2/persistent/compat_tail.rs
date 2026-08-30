@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_order_parity() {
         let fixture = [
             0x01, 0x00, 0x15, 0x00, 0x00, 0x00, 0x01, 0x00, 0x0b, 0x03, 0xa1, 0xa2, 0xa3, 0x01,
             0x00, 0x06, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x56, 0x65, 0x78,
@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_has_no_framing_and_keeps_the_defaults() {
+    fn version_1_no_framing_default_preservation() {
         let input = [0x01, 0x00, 0x05, 0x44];
         let parsed = parse(&input, 1).unwrap();
         assert!(parsed.shadow_pcr_allocated.is_none());
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_absent_outer_block_keeps_the_defaults() {
+    fn version_2_absent_outer_block_default_preservation() {
         let data = CompatTailFixture {
             outer_has_block: Some(0),
             tail: ORDERLY_SENTINEL.to_vec(),
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_present_outer_block_is_skipped_by_its_declared_size() {
+    fn version_2_outer_block_declared_size_skip() {
         let data = CompatTailFixture {
             seed_levels: [0xff; 3],
             tail: ORDERLY_SENTINEL.to_vec(),
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn outer_block_is_required_for_versions_3_and_newer() {
+    fn outer_block_requirement_version_3_plus() {
         for version in [3u16, 4, 5, 9] {
             let data = CompatTailFixture {
                 outer_has_block: Some(0),
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn version_3_absent_seed_block_keeps_the_defaults() {
+    fn version_3_absent_seed_block_default_preservation() {
         let data = CompatTailFixture {
             seed_has_block: Some(0),
             tail: ORDERLY_SENTINEL.to_vec(),
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn version_3_present_seed_block_is_skipped_by_its_declared_size() {
+    fn version_3_seed_block_declared_size_skip() {
         let data = CompatTailFixture {
             seed_levels: [0xff; 3],
             tail: ORDERLY_SENTINEL.to_vec(),
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_block_is_required_for_versions_4_and_newer() {
+    fn seed_block_requirement_version_4_plus() {
         for version in [4u16, 5, 9] {
             let data = CompatTailFixture {
                 seed_has_block: Some(0),
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_4_and_5_decode_the_full_tail() {
+    fn version_4_and_5_full_tail_decoding() {
         for version in [4u16, 5] {
             let data = CompatTailFixture {
                 seed_levels: [1, 0, 1],
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_and_maximum_levels_are_accepted_per_field() {
+    fn min_and_max_level_acceptance_per_field() {
         for levels in [[0u8; 3], [1; 3], [0, 1, 0], [1, 0, 1]] {
             let data = CompatTailFixture {
                 seed_levels: levels,
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn each_seed_level_above_last_is_bad_version_and_names_its_field() {
+    fn seed_level_above_last_bad_version_field_attribution() {
         let fields = [
             PersistentField::EpSeed,
             PersistentField::SpSeed,
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_list_reuses_the_strict_allocation_rules() {
+    fn shadow_list_strict_allocation_rule_reuse() {
         let bad_hash = CompatTailFixture {
             shadow: PcrAllocationFixture {
                 selections: vec![(0x0010, 3, vec![0x00; 3])],
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_list_entries_are_decoded_and_borrow_the_input() {
+    fn shadow_list_entry_decoding_input_borrow() {
         let data = CompatTailFixture {
             shadow: PcrAllocationFixture {
                 selections: vec![(0x0004, 3, vec![0x0f, 0xf0, 0xaa])],
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_empty_and_nonempty_future_blocks_land_at_the_same_boundary() {
+    fn absent_empty_and_nonempty_future_block_boundary_parity() {
         for future in [
             (0u8, 0u16, Vec::new()),
             (1, 0, Vec::new()),
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn future_block_contents_are_never_interpreted() {
+    fn future_block_contents_uninterpreted() {
         let data = CompatTailFixture {
             future_block: Some((1, 5, vec![0xff, 0xff, 0xff, 0xff, 0xff])),
             tail: ORDERLY_SENTINEL.to_vec(),
@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_a_full_tail_fails_safely() {
+    fn full_tail_strict_prefix_rejection_safety() {
         let full = CompatTailFixture {
             seed_levels: [1, 1, 1],
             future_block: Some((1, 2, vec![0xd1, 0xd2])),
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn skipped_block_size_beyond_input_is_insufficient() {
+    fn skipped_block_size_beyond_input_insufficiency() {
         let data = CompatTailFixture {
             outer_block_size: Some(0x4000),
             ..CompatTailFixture::default()
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn future_block_size_beyond_input_is_insufficient() {
+    fn future_block_size_beyond_input_insufficiency() {
         let data = CompatTailFixture {
             future_block: Some((1, 9, vec![0x11])),
             ..CompatTailFixture::default()
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn compat_tail_byte_mutations_do_not_panic() {
+    fn compat_tail_byte_mutation_panic_safety() {
         for version in [1u16, 2, 3, 4, 5, 0xffff] {
             for len in 0..8usize {
                 for byte in [0x00u8, 0x01, 0xff] {

@@ -165,7 +165,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_matching_is_exact() {
+    fn exact_token_matching() {
         assert!(algorithm_enabled(b"sha384", b"sha384"));
         assert!(!algorithm_enabled(b"sha384", b"sha3"));
         assert!(!algorithm_enabled(b"sha3", b"sha384"));
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_hash_maps_to_its_profile_token() {
+    fn supported_hash_profile_token_mapping() {
         assert_eq!(hash_profile_name(TPM_ALG_SHA1), Some(b"sha1".as_slice()));
         assert_eq!(
             hash_profile_name(TPM_ALG_SHA256),
@@ -191,19 +191,19 @@ mod tests {
     }
 
     #[test]
-    fn alg_null_has_no_profile_token() {
+    fn alg_null_no_profile_token() {
         assert_eq!(hash_profile_name(TPM_ALG_NULL), None);
     }
 
     #[test]
-    fn non_hash_algorithms_have_no_profile_token() {
+    fn non_hash_algorithm_no_profile_token() {
         assert_eq!(hash_profile_name(TPM_ALG_AES), None);
         assert_eq!(hash_profile_name(TPM_ALG_RSA), None);
         assert_eq!(hash_profile_name(TPM_ALG_HMAC), None);
     }
 
     #[test]
-    fn every_compiled_curve_maps_to_its_profile_token() {
+    fn compiled_curve_profile_token_mapping() {
         assert_eq!(
             curve_profile_name(0x0001),
             Some(b"ecc-nist-p192".as_slice())
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn a_family_shortcut_enables_every_curve_of_that_family() {
+    fn family_shortcut_all_family_curves() {
         for curve in [0x0001u16, 0x0002, 0x0003, 0x0004, 0x0005] {
             assert!(curve_enabled(b"ecc,ecc-nist", curve), "curve {curve:#06x}");
             assert!(!curve_enabled(b"ecc,ecc-bn", curve), "curve {curve:#06x}");
@@ -245,27 +245,27 @@ mod tests {
     }
 
     #[test]
-    fn the_sm2_curve_has_no_family_shortcut() {
+    fn sm2_curve_no_family_shortcut() {
         assert!(!curve_enabled(b"ecc,ecc-nist,ecc-bn", 0x0020));
         assert!(curve_enabled(b"ecc,ecc-sm2-p256", 0x0020));
     }
 
     #[test]
-    fn an_individual_curve_token_enables_only_that_curve() {
+    fn individual_curve_token_single_curve_scope() {
         assert!(curve_enabled(b"ecc,ecc-nist-p384", 0x0004));
         assert!(!curve_enabled(b"ecc,ecc-nist-p384", 0x0003));
         assert!(!curve_enabled(b"ecc,ecc-nist-p384", 0x0005));
     }
 
     #[test]
-    fn a_family_prefix_never_matches_a_curve_of_another_family() {
+    fn family_prefix_no_cross_family_match() {
         assert!(!curve_enabled(b"ecc-nist", 0x0010), "ecc-bn-p256");
         assert!(!curve_enabled(b"ecc-bn", 0x0001), "ecc-nist-p192");
         assert!(!curve_enabled(b"", 0x0004));
     }
 
     #[test]
-    fn the_default_minimum_key_sizes_match_the_vendored_tables() {
+    fn default_min_key_size_vendored_table_match() {
         assert_eq!(algorithm_default_min_key_size(TPM_ALG_RSA), 1024);
         assert_eq!(algorithm_default_min_key_size(TPM_ALG_ECC), 192);
         assert_eq!(algorithm_default_min_key_size(TPM_ALG_AES), 128);
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn a_minimum_size_token_overrides_the_table_default() {
+    fn min_size_token_default_override() {
         let profile = b"rsa,rsa-min-size=3072,ecc,ecc-min-size=384,aes,aes-min-size=256,\
 tdes,tdes-min-size=192,camellia,camellia-min-size=256";
         assert_eq!(algorithm_min_key_size(profile, TPM_ALG_RSA), 3072);
@@ -286,14 +286,14 @@ tdes,tdes-min-size=192,camellia,camellia-min-size=256";
     }
 
     #[test]
-    fn a_missing_minimum_size_token_leaves_the_table_default() {
+    fn missing_min_size_token_default_preservation() {
         assert_eq!(algorithm_min_key_size(b"rsa,ecc,aes", TPM_ALG_RSA), 1024);
         assert_eq!(algorithm_min_key_size(b"rsa,ecc,aes", TPM_ALG_ECC), 192);
         assert_eq!(algorithm_min_key_size(b"rsa,ecc,aes", TPM_ALG_AES), 128);
     }
 
     #[test]
-    fn a_minimum_size_token_of_another_algorithm_is_not_borrowed() {
+    fn min_size_token_no_cross_algorithm_borrowing() {
         assert_eq!(
             algorithm_min_key_size(b"aes-min-size=256", TPM_ALG_RSA),
             1024
@@ -305,7 +305,7 @@ tdes,tdes-min-size=192,camellia,camellia-min-size=256";
     }
 
     #[test]
-    fn a_malformed_minimum_size_token_falls_back_to_the_default() {
+    fn malformed_min_size_token_default_fallback() {
         assert_eq!(algorithm_min_key_size(b"rsa-min-size=", TPM_ALG_RSA), 1024);
         assert_eq!(algorithm_min_key_size(b"rsa-min-size=x", TPM_ALG_RSA), 1024);
         assert_eq!(
@@ -315,7 +315,7 @@ tdes,tdes-min-size=192,camellia,camellia-min-size=256";
     }
 
     #[test]
-    fn unknown_algorithm_ids_have_no_profile_token() {
+    fn unknown_algorithm_id_no_profile_token() {
         assert_eq!(hash_profile_name(0x0012), None);
         assert_eq!(hash_profile_name(0x0027), None);
         assert_eq!(hash_profile_name(0xffff), None);

@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn current_writer_fixture_decodes_every_field() {
+    fn current_writer_fixture_full_field_decode() {
         let data = StateClearFixture {
             sh_enable: 1,
             eh_enable: 0,
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_alg_is_raw_and_never_validated() {
+    fn platform_alg_raw_unvalidated() {
         for alg in [0x0000u16, 0x0012, 0xffff] {
             let data = StateClearFixture {
                 platform_alg: alg,
@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn subset_of_banks_parses_when_shadow_needs_none() {
+    fn bank_subset_parse_without_shadow_requirement() {
         let pcr_save = PcrSaveFixture {
             banks: vec![(TPM_ALG_SHA256, 512, vec![0xaa; 512])],
             ..PcrSaveFixture::default()
@@ -504,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_shadow_active_bank_is_bad_parameter() {
+    fn missing_shadow_active_bank_bad_parameter() {
         let shadow = vec![PcrSelection {
             hash_alg: 0x000c,
             select: &[0x01, 0x00, 0x00],
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_selection_with_all_zero_bitmap_needs_no_bank() {
+    fn all_zero_shadow_bitmap_no_bank_requirement() {
         let shadow = vec![PcrSelection {
             hash_alg: 0x000c,
             select: &[0x00, 0x00, 0x00],
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_bank_algorithm_is_bad_parameter() {
+    fn unsupported_bank_algorithm_bad_parameter() {
         for alg in [0x0000u16, 0x0012, 0xffff] {
             let pcr_save = PcrSaveFixture {
                 banks: vec![(alg, 4, vec![0x00; 4])],
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_bank_size_is_bad_parameter() {
+    fn wrong_bank_size_bad_parameter() {
         for size in [0u16, 511, 513] {
             let pcr_save = PcrSaveFixture {
                 banks: vec![(TPM_ALG_SHA256, size, vec![0x00; usize::from(size)])],
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_num_static_pcr_is_a_size_error() {
+    fn wrong_num_static_pcr_size_error() {
         let pcr_save = PcrSaveFixture {
             num_static_pcr: 24,
             ..PcrSaveFixture::default()
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_end_marker_is_reported_as_truncation() {
+    fn missing_end_marker_truncation_error() {
         let pcr_save = PcrSaveFixture {
             end_marker: None,
             future_block: None,
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_pcr_authvalue_count_is_bad_parameter() {
+    fn wrong_pcr_authvalue_count_bad_parameter() {
         for count in [0u16, 2, u16::MAX] {
             let pcr_auth_values = PcrAuthValueFixture {
                 count,
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_platform_tpm2bs_are_size_errors() {
+    fn oversized_platform_tpm2b_size_errors() {
         for (fixture, field) in [
             (
                 StateClearFixture {
@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_section_magic_errors_carry_their_own_identity() {
+    fn nested_section_magic_error_identity() {
         let mut pcr_save = PcrSaveFixture::default().bytes();
         pcr_save[2] = 0x00;
         let data = StateClearFixture {
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_fails_safely() {
+    fn strict_prefix_rejection_safety() {
         let full = StateClearFixture::default().bytes();
         for len in 0..full.len() {
             let error = parse(&full[..len], &no_shadow()).unwrap_err();
@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn state_clear_byte_mutations_do_not_panic() {
+    fn state_clear_byte_mutation_panic_safety() {
         let full = StateClearFixture::default().bytes();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0xff] {

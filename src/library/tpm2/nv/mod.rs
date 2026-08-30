@@ -1,5 +1,4 @@
 mod attributes;
-mod host;
 mod image;
 mod index;
 pub(in crate::library::tpm2) mod layout;
@@ -35,8 +34,6 @@ pub(in crate::library::tpm2) use attributes::TPMA_NV_TPM_NT_SHIFT;
 #[cfg(test)]
 pub(in crate::library::tpm2) use public_area::{NV_INDEX_FIRST, NV_INDEX_LAST};
 
-pub(in crate::library) use host::HostNvram;
-pub(super) use host::{NvramLoad, NvramWrite, PermanentStateProbe};
 pub(super) use image::{
     WireWriter, any_object_image, build_nv_image, command_bitmap_image, marshal_sym_def_object,
     persistent_object_image, stored_object_attributes,

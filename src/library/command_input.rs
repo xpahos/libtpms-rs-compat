@@ -43,7 +43,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_prefix_keeps_acceptable_requests_whole() {
+    fn in_range_size_full_prefix() {
         for size in [0u32, 1, 5, 6, 10, 4095, 4096] {
             assert_eq!(
                 CommandInput::required_prefix_len(size),
@@ -54,7 +54,7 @@ mod tests {
     }
 
     #[test]
-    fn arbitrarily_large_received_sizes_never_request_a_matching_allocation() {
+    fn large_received_size_allocation_bound() {
         for size in [
             4097u32,
             0x1_0000,
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "required prefix")]
-    fn mismatched_prefix_length_is_a_caller_bug() {
+    fn mismatched_prefix_length_panic() {
         let _ = CommandInput::new(100, vec![0u8; 6]);
     }
 }

@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (code, record, expected, decrypt) in [
             (CC_POLICY_CP_HASH, "CCATTR_016E", 0x0200_016eu32, 2u16),
             (CC_POLICY_LOCALITY, "CCATTR_016F", 0x0200_016f, 0),
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn every_direct_assertion_matches_the_oracle_digest() {
+    fn direct_assertion_oracle_digest_parity() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32])),
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn the_restriction_fields_follow_the_policy_digest() {
+    fn hash_assertion_bound_entity_flag_update() {
         let mut runtime = restored("POLICY_FRESH");
         run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32]));
         let session = session_of(&runtime, POLICY_SESSION_0);
@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn the_locality_narrows_and_never_widens() {
+    fn locality_narrowing_only() {
         assert_eq!(narrowed_locality(0, 0x1f), Ok(0x1f));
         assert_eq!(narrowed_locality(0, 0x04), Ok(0x04));
         assert_eq!(narrowed_locality(0x1f, 0x05), Ok(0x05));
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_and_conflicting_assertions_match_the_oracle() {
+    fn repeated_and_conflicting_assertion_oracle_parity() {
         let mut runtime = restored("POLICY_FRESH");
         run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32]));
         assert_eq!(
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn duplication_select_seeds_the_name_hash_and_the_command_code() {
+    fn duplication_select_name_hash_command_code_seeding() {
         let mut runtime = restored("POLICY_FRESH");
         let mut parameters = sized(&[0xa1; 34]);
         parameters.extend_from_slice(&sized(&[0xb2; 34]));
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn duplication_select_refuses_a_session_that_already_carries_a_command_code() {
+    fn duplication_select_existing_command_code_rejection() {
         let mut runtime = restored("POLICY_FRESH");
         run(
             &mut runtime,
@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_direct_assertions_match_the_oracle() {
+    fn malformed_direct_assertion_oracle_parity() {
         let mut runtime = restored("POLICY_FRESH");
         for (record, code, extra) in [
             ("PCPH_SHORT", CC_POLICY_CP_HASH, sized(&[0x11; 20])),
@@ -703,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_direct_assertion_leaves_the_session_untouched() {
+    fn failed_assertion_session_unchanged() {
         let mut runtime = restored("POLICY_FRESH");
         run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32]));
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_records_the_same_restrictions() {
+    fn trial_session_identical_restrictions() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(
             run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32])),
@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = policy_command(CC_POLICY_DUPLICATION_SELECT, &{
             let mut out = sized(&[0xa1; 34]);
             out.extend_from_slice(&sized(&[0xb2; 34]));

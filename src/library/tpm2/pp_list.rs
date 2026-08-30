@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_order_parity() {
         let mut fixture = vec![0x00, 0x11];
         let array: Vec<u8> = (1..=17).collect();
         fixture.extend_from_slice(&array);
@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn every_size_up_to_the_array_capacity_is_valid_for_raw_blobs() {
+    fn raw_blob_capacity_range_acceptance() {
         for version in RAW_VERSIONS {
             for size in 0..=PP_LIST_SIZE {
                 let data = PpListFixture {
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_plus_one_is_a_size_error_for_raw_blobs() {
+    fn raw_blob_capacity_overflow_size_error() {
         for version in RAW_VERSIONS {
             for size in [PP_LIST_SIZE + 1, 100, usize::from(u16::MAX)] {
                 let data = PpListFixture {
@@ -165,14 +165,14 @@ mod tests {
     }
 
     #[test]
-    fn oversized_raw_count_is_rejected_before_any_byte_is_read() {
+    fn oversized_raw_count_rejection_no_read() {
         let data = u16::MAX.to_be_bytes();
         let error = parse(&data, 5).unwrap_err();
         assert_eq!(error.tpm_result(), TPM_RC_SIZE);
     }
 
     #[test]
-    fn compressed_blobs_accept_any_size_the_input_carries() {
+    fn compressed_blob_arbitrary_size_acceptance() {
         for version in COMPRESSED_VERSIONS {
             for size in [0usize, 1, 14, PP_LIST_SIZE, PP_LIST_SIZE + 1, 100, 5000] {
                 let data = PpListFixture {
@@ -191,14 +191,14 @@ mod tests {
     }
 
     #[test]
-    fn version_gate_matches_the_upstream_comparison() {
+    fn version_gate_upstream_comparison_parity() {
         let data = PpListFixture::default().bytes();
         assert!(parse(&data, 4).unwrap().compressed);
         assert!(!parse(&data, 5).unwrap().compressed);
     }
 
     #[test]
-    fn truncated_size_field_is_insufficient() {
+    fn truncated_size_field_insufficient_error() {
         for version in [4u16, 5] {
             for len in 0..2usize {
                 let data = vec![0x00; len];
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_array_is_insufficient_on_both_paths() {
+    fn truncated_array_insufficient_both_paths() {
         for (version, size) in [(5u16, PP_LIST_SIZE), (4, 40)] {
             let full = PpListFixture {
                 array: vec![0x77; size],
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_a_valid_array_fails_safely() {
+    fn strict_prefix_rejection_safety() {
         let full = PpListFixture {
             array: (0..17).collect(),
             ..PpListFixture::default()
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn all_bit_patterns_are_preserved_verbatim() {
+    fn bit_pattern_verbatim_preservation() {
         for array in [vec![0xff; 17], vec![0xa5; 17], (0x80..0x91).collect()] {
             let data = PpListFixture {
                 array: array.clone(),
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn array_borrows_the_original_blob() {
+    fn array_original_blob_borrow() {
         let data = PpListFixture {
             array: vec![0x42; 17],
             ..PpListFixture::default()
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn remainder_begins_exactly_at_the_failed_tries_sentinel() {
+    fn remainder_failed_tries_sentinel_boundary() {
         let data = PpListFixture {
             tail: vec![0xde, 0xad, 0xbe],
             ..PpListFixture::default()
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_end_array_read_succeeds() {
+    fn exact_end_array_read_success() {
         let data = PpListFixture::default().bytes();
         let parsed = parse(&data, 5).unwrap();
         assert_eq!(parsed.array.len(), PP_LIST_SIZE);
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn pp_list_byte_mutations_do_not_panic() {
+    fn pp_list_byte_mutation_panic_safety() {
         for version in [0u16, 4, 5, 0xffff] {
             for len in 0..6usize {
                 for byte in [0x00u8, 0x11, 0xff] {
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_and_the_authorization_gate_share_one_membership_decision() {
+    fn capability_authorization_gate_shared_membership() {
         use super::super::capability::TPM_CAP_PP_COMMANDS;
         use super::super::capability::single::lookup;
         use super::super::golden_responses::policy_sessions::vector;

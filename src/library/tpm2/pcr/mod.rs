@@ -368,7 +368,7 @@ mod tests {
     ];
 
     #[test]
-    fn the_reset_locality_attribute_matches_the_upstream_platform_table() {
+    fn reset_locality_attribute_upstream_table_match() {
         for (pcr, expected) in UPSTREAM_RESET_LOCALITY.into_iter().enumerate() {
             assert_eq!(
                 pcr_platform_attributes(pcr).reset_locality,
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_reset_allowed_matches_the_upstream_platform_table() {
+    fn pcr_reset_allowed_upstream_platform_table_parity() {
         for (pcr, reset_locality) in UPSTREAM_RESET_LOCALITY.into_iter().enumerate() {
             for locality in 0..=4u8 {
                 let expected = locality != 4 && reset_locality & (1 << locality) != 0;
@@ -393,14 +393,14 @@ mod tests {
     }
 
     #[test]
-    fn drtm_blocks_every_command_reset_from_locality_four() {
+    fn drtm_locality_four_command_reset_denial() {
         for pcr in 0..IMPLEMENTATION_PCR {
             assert!(!pcr_reset_allowed(pcr, 4), "PCR {pcr}");
         }
     }
 
     #[test]
-    fn localities_above_four_never_allow_a_reset() {
+    fn locality_above_four_reset_denial() {
         for pcr in 0..IMPLEMENTATION_PCR {
             for locality in 5..=u8::MAX {
                 assert!(!pcr_reset_allowed(pcr, locality), "PCR {pcr}, {locality}");
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn static_rtm_pcrs_can_never_be_reset_by_a_command() {
+    fn static_rtm_pcr_command_reset_denial() {
         for pcr in 0..16 {
             for locality in 0..=u8::MAX {
                 assert!(!pcr_reset_allowed(pcr, locality), "PCR {pcr}, {locality}");
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn full_bank_set_decodes_in_compiled_order() {
+    fn full_bank_set_compiled_order_decoding() {
         let select = sha256_shadow();
         let mut data = PcrFixture::default().bytes();
         data.extend_from_slice(&TAIL_SENTINEL);
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn banks_not_in_the_shadow_are_accepted_and_optional() {
+    fn non_shadow_bank_optional_acceptance() {
         let data = PcrFixture {
             banks: vec![(TPM_ALG_SHA1, 20, vec![0xaa; 20])],
             ..PcrFixture::default()
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_shadow_active_bank_is_bad_parameter() {
+    fn missing_shadow_active_bank_bad_parameter() {
         let select = sha256_shadow();
         let data = PcrFixture {
             banks: vec![(TPM_ALG_SHA1, 20, vec![0xaa; 20])],
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_selection_with_all_zero_bitmap_requires_nothing() {
+    fn shadow_selection_all_zero_bitmap_no_requirement() {
         let select = vec![0x00, 0x00, 0x00];
         let data = PcrFixture {
             banks: Vec::new(),
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_bank_algorithm_is_bad_parameter() {
+    fn unsupported_bank_algorithm_bad_parameter() {
         let data = PcrFixture {
             banks: vec![(0x0012, 32, vec![0; 32])],
             ..PcrFixture::default()
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_bank_digest_size_is_bad_parameter() {
+    fn wrong_bank_digest_size_bad_parameter() {
         for declared in [0u16, 19, 21, 0xffff] {
             let data = PcrFixture {
                 banks: vec![(TPM_ALG_SHA1, declared, vec![0; declared as usize])],
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_magic_is_bad_tag() {
+    fn wrong_magic_bad_tag() {
         let mut data = PcrFixture::default().bytes();
         data[2] ^= 0xff;
         let error = parse(&data, &[]).unwrap_err();
@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_fails_safely() {
+    fn strict_prefix_rejection_safety() {
         let full = PcrFixture::default().bytes();
         for len in 0..full.len() {
             let error = parse(&full[..len], &[]).unwrap_err();
@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_block_byte_mutations_do_not_panic() {
+    fn pcr_block_byte_mutation_panic_safety() {
         let full = PcrFixture::default().bytes();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0xff] {

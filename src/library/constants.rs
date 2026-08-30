@@ -5,13 +5,14 @@ use crate::types::{TpmResult, TpmlibTpmProperty, TpmlibTpmVersion};
 pub const TPM_SUCCESS: TpmResult = 0;
 pub const TPM_FAIL: TpmResult = 9;
 pub const TPM_SIZE: TpmResult = 23;
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_INVALID_POSTINIT: TpmResult = 38;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_BAD_TYPE: TpmResult = 52;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_BAD_LOCALITY: TpmResult = 61;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
-pub(in crate::library) const TPM_RETRY: TpmResult = 0x800;
+pub(crate) const TPM_RETRY: TpmResult = 0x800;
 
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_BAD_PARAMETER: TpmResult = 0x003;
@@ -146,10 +147,9 @@ pub(in crate::library) const TPM_RC_SESSION_MEMORY: TpmResult = 0x903;
 pub(in crate::library) const TPM_RC_SESSION_HANDLES: TpmResult = 0x905;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_LOCALITY: TpmResult = 0x907;
-// TODO: Returned by the upstream cancellation checkpoints (AlgorithmTests.c
-// CHECK_CANCELED, CryptEccCommitCompute, RSA key generation). No command
-// implemented so far reaches one.
-#[allow(dead_code)]
+// TODO: Poll cancellation from the ECC sign-and-verify self test
+// (AlgorithmTests.c CHECK_CANCELED) once that primitive is ported.
+#[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_CANCELED: TpmResult = 0x909;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_REFERENCE_H0: TpmResult = 0x910;
@@ -186,7 +186,7 @@ mod tests {
     const RC_FMT1: TpmResult = 0x080;
 
     #[test]
-    fn the_version_one_codes_match_the_vendored_tpm_types_header() {
+    fn version_one_codes_vendored_header_match() {
         assert_eq!(TPM_RC_INITIALIZE, RC_VER1);
         assert_eq!(TPM_RC_FAILURE, RC_VER1 + 0x001);
         assert_eq!(TPM_RC_AUTH_TYPE, RC_VER1 + 0x024);
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn the_integrity_code_is_a_format_one_code() {
+    fn integrity_code_format_one_classification() {
         assert_eq!(TPM_RC_INTEGRITY, RC_FMT1 + 0x01f);
         assert_ne!(TPM_RC_INTEGRITY & RC_FMT1, 0);
         assert_eq!(TPM_RC_SENSITIVE & RC_FMT1, 0);
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn the_warning_codes_match_the_vendored_tpm_types_header() {
+    fn warning_codes_vendored_header_match() {
         assert_eq!(TPM_RC_OBJECT_MEMORY, RC_WARN + 0x002);
         assert_eq!(TPM_RC_LOCALITY, RC_WARN + 0x007);
         assert_eq!(TPM_RC_CANCELED, RC_WARN + 0x009);
@@ -236,14 +236,14 @@ mod tests {
     }
 
     #[test]
-    fn the_tpm2_retry_warning_is_distinct_from_the_library_retry_code() {
+    fn tpm2_retry_warning_library_retry_distinction() {
         assert_eq!(TPM_RC_RETRY, 0x922);
         assert_eq!(TPM_RETRY, 0x800);
         assert_ne!(TPM_RC_RETRY, TPM_RETRY);
     }
 
     #[test]
-    fn the_nv_specific_codes_carry_the_expected_format() {
+    fn nv_specific_code_format_conformance() {
         for code in [
             TPM_RC_NV_RANGE,
             TPM_RC_NV_SIZE,
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn only_format_one_codes_carry_a_handle_or_parameter_number() {
+    fn handle_parameter_number_format_one_only() {
         for code in [
             TPM_RC_NV_SPACE,
             TPM_RC_NV_DEFINED,

@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_layout_requires_a_little_endian_lp64_target() {
+    fn pinned_layout_little_endian_lp64_requirement() {
         const {
             assert!(cfg!(target_endian = "little"));
             assert!(cfg!(target_pointer_width = "64"));
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn every_constant_matches_the_compiled_oracle() {
+    fn constant_compiled_oracle_parity() {
         let fixture = fixture_entries();
         for &(name, value) in ALL {
             assert_eq!(
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn every_fixture_entry_is_pinned() {
+    fn fixture_entry_pinning() {
         let fixture = fixture_entries();
         let known: std::collections::HashSet<&str> = ALL.iter().map(|&(name, _)| name).collect();
         for name in fixture.keys() {

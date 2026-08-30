@@ -80,6 +80,7 @@ fn parse_parameters(parameters: &[u8]) -> Result<Parameters, TpmResult> {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::parse_command;
     use crate::library::tpm2::command::core::registry::TPM_CC_DICTIONARY_ATTACK_PARAMETERS;
@@ -108,7 +109,7 @@ mod tests {
         Ok(())
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -124,7 +125,7 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        let response = dispatch(runtime, &parsed);
+        let response = dispatch(runtime, &parsed, Cancellation::disabled());
         crate::library::tpm2::command::core::header::serialize_response(&response)
             .expect("the response serializes")
     }
@@ -167,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn success_updates_the_parameters_and_preserves_failed_tries() {
+    fn success_parameter_update_failed_tries_preservation() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().persistent.failed_tries = 2;
         let response = dispatch_bytes(
@@ -180,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_lockout_authorization_of_a_cycle_is_not_a_retry() {
+    fn first_cycle_lockout_authorization_non_retry() {
         let mut runtime = started_runtime();
         assert!(!runtime.live.da_used, "the cycle starts before any DA use");
         let response = dispatch_bytes(
@@ -199,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_unavailable_preserves_every_field_without_scheduling_a_commit() {
+    fn nv_unavailable_full_field_preservation_no_commit() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         let before = da_fields(&runtime);
@@ -215,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistence_failure_rolls_back_the_parameter_update() {
+    fn persistence_failure_parameter_rollback() {
         let mut runtime = started_runtime();
         let before = da_fields(&runtime);
         runtime.state.as_mut().unwrap().persistent.owner_auth =
@@ -230,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_parameters_answer_their_indexed_errors_without_mutation() {
+    fn truncated_parameter_indexed_error_no_mutation() {
         let mut runtime = started_runtime();
         let before = da_fields(&runtime);
         for (params, expected) in [
@@ -256,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_command_handle_is_an_indexed_value_error() {
+    fn wrong_command_handle_indexed_value_error() {
         let mut runtime = started_runtime();
         for handle in [TPM_RH_OWNER, 0x4000_000c, 0x0100_0000, 0, u32::MAX] {
             let response =
@@ -270,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_area_is_auth_missing() {
+    fn missing_authorization_area_auth_missing() {
         let mut runtime = started_runtime();
         let mut bytes = vec![0x80, 0x01, 0, 0, 0, 0];
         bytes.extend_from_slice(&TPM_CC_DICTIONARY_ATTACK_PARAMETERS.to_be_bytes());
@@ -283,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_lockout_password_disables_lockout_auth_and_preserves_the_parameters() {
+    fn wrong_lockout_password_auth_disable_parameter_preservation() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().persistent.lockout_auth =
             OwnedSecret::from_vec(b"secret".to_vec());
@@ -312,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_requires_a_prior_startup() {
+    fn pre_startup_execution_rejection() {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");

@@ -60,14 +60,14 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_persistent() -> Box<crate::library::tpm2::Tpm2Runtime> {
+    fn manufactured_persistent() -> crate::library::tpm2::Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         commit_manufactured_state(state).expect("commits")
     }
 
     #[test]
-    fn each_hierarchy_selects_its_own_proof() {
+    fn per_hierarchy_proof_selection() {
         let runtime = manufactured_persistent();
         let persistent = &runtime.state().persistent;
         assert!(persistent.ph_proof.expose() != persistent.sh_proof.expose());
@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn every_selected_proof_has_the_full_proof_size() {
+    fn selected_proof_full_size() {
         let runtime = manufactured_persistent();
         let persistent = &runtime.state().persistent;
         for hierarchy in [TPM_RH_PLATFORM, TPM_RH_OWNER, TPM_RH_ENDORSEMENT] {
@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_hierarchy_and_every_other_handle_select_no_proof() {
+    fn null_hierarchy_other_handles_no_proof() {
         let runtime = manufactured_persistent();
         let persistent = &runtime.state().persistent;
         for hierarchy in [
@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn the_permanent_handle_values_match_upstream() {
+    fn permanent_handle_values_upstream_match() {
         assert_eq!(TPM_RH_OWNER, 0x4000_0001);
         assert_eq!(TPM_RH_NULL, 0x4000_0007);
         assert_eq!(TPM_RH_UNASSIGNED, 0x4000_0008);
@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn the_implemented_permanent_handles_match_the_oracle_list() {
+    fn implemented_permanent_handles_oracle_match() {
         // `oracle16 perm_all` on the vendored C libtpms.
         assert_eq!(
             IMPLEMENTED_PERMANENT_HANDLES,
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_four_tpmi_rh_hierarchy_auth_handles_are_accepted() {
+    fn hierarchy_auth_four_handle_acceptance() {
         for handle in [
             TPM_RH_OWNER,
             TPM_RH_ENDORSEMENT,
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn every_other_permanent_handle_is_rejected() {
+    fn other_permanent_handle_rejection() {
         for handle in 0x4000_0000..=0x4000_0020u32 {
             let accepted = matches!(
                 handle,
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn non_permanent_handle_ranges_are_rejected() {
+    fn non_permanent_handle_range_rejection() {
         for handle in [
             0x0000_0000u32,
             0x0000_0017,

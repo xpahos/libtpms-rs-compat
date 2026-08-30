@@ -249,6 +249,7 @@ pub(in crate::library::tpm2::command) fn execute(
         primary_handle == TPM_RH_ENDORSEMENT,
         &secrets,
         &mut rand,
+        frame.cancellation,
     )?;
 
     let out_public = marshal_public_area(&created.public)?;
@@ -458,6 +459,7 @@ mod tests {
     use super::fixtures::*;
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_CREATE_PRIMARY;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
@@ -486,11 +488,15 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        let response = crate::library::tpm2::command::core::dispatcher::dispatch(runtime, &parsed);
+        let response = crate::library::tpm2::command::core::dispatcher::dispatch(
+            runtime,
+            &parsed,
+            Cancellation::disabled(),
+        );
         serialize_response(&response).expect("the response fits")
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -572,7 +578,51 @@ mod tests {
     }
 
     #[test]
-    fn the_command_code_and_attributes_match_upstream() {
+    fn creation_cancellation() {
+        const TPM_RC_CANCELED_CODE: u32 = 0x0000_0909;
+        let mut runtime = started_runtime();
+        let parameters = parameters(
+            &empty_sensitive(),
+            &rsa_storage_template(2048),
+            &[],
+            &no_creation_pcr(),
+        );
+        let packet = command(0x4000_0001, &[], &parameters);
+
+        let input = CommandInput::new(packet.len() as u32, packet.clone());
+        let parsed = parse_command(&input).expect("the header parses");
+        let response =
+            serialize_response(&crate::library::tpm2::command::core::dispatcher::dispatch(
+                &mut runtime,
+                &parsed,
+                Cancellation::requested(),
+            ))
+            .expect("the response fits");
+        assert_eq!(response_code(&response), TPM_RC_CANCELED_CODE);
+        assert_eq!(response.len(), 10, "no handle or public area is returned");
+        assert!(
+            runtime
+                .live
+                .objects
+                .iter()
+                .all(|object| object.attributes & ATTR_OCCUPIED == 0),
+            "a cancelled creation consumes no object slot"
+        );
+        assert!(!runtime.failure_mode);
+
+        let retried = decode(&create(
+            &mut runtime,
+            0x4000_0001,
+            &rsa_storage_template(2048),
+        ));
+        assert_eq!(
+            retried.object_handle, 0x8000_0000,
+            "the runtime stays usable"
+        );
+    }
+
+    #[test]
+    fn command_code_attributes_upstream_match() {
         use crate::library::tpm2::command::core::registry::find;
         assert_eq!(TPM_CC_CREATE_PRIMARY, 0x0000_0131);
         let descriptor = find(TPM_CC_CREATE_PRIMARY).expect("a registered command");
@@ -583,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_declares_one_user_authorized_hierarchy_handle() {
+    fn single_user_auth_hierarchy_handle_declaration() {
         use crate::library::tpm2::command::core::registry::{HandleKind, find};
         let descriptor = find(TPM_CC_CREATE_PRIMARY).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 1);
@@ -604,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_hierarchy_creates_a_primary_with_a_password_session() {
+    fn supported_hierarchy_password_session_primary_creation() {
         for handle in [
             TPM_RH_OWNER,
             TPM_RH_PLATFORM,
@@ -620,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn a_handle_outside_the_hierarchy_range_is_a_value_error() {
+    fn out_of_range_hierarchy_handle_value_error() {
         let mut runtime = started_runtime();
         for handle in [0x4000_000au32, 0x4000_0009, 0x8000_0000, 0, u32::MAX] {
             let response = create(&mut runtime, handle, &rsa_storage_template(1024));
@@ -629,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_hierarchy_is_reported_before_the_parameters_are_parsed() {
+    fn disabled_hierarchy_error_before_parameter_parsing() {
         let mut runtime = started_runtime();
         runtime.live.ph_enable = false;
         let response = create(&mut runtime, TPM_RH_PLATFORM, &[]);
@@ -652,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_without_an_authorization_area_is_auth_missing() {
+    fn missing_authorization_area_auth_missing() {
         let mut runtime = started_runtime();
         let parameters = parameters(
             &empty_sensitive(),
@@ -673,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_hierarchy_password_is_rejected_before_any_key_is_generated() {
+    fn wrong_password_rejection_before_key_generation() {
         let mut runtime = started_runtime();
         let parameters = parameters(
             &empty_sensitive(),
@@ -693,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_bare_size_error() {
+    fn trailing_parameter_bytes_bare_size_error() {
         let mut runtime = started_runtime();
         let mut parameters = parameters(
             &empty_sensitive(),
@@ -707,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_the_parameters_fails_without_creating_an_object() {
+    fn strict_parameter_prefix_failure_no_object_creation() {
         let mut runtime = started_runtime();
         let parameters = parameters(
             &empty_sensitive(),
@@ -733,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_sized_input_is_a_size_error_on_its_own_parameter() {
+    fn empty_sized_input_parameter_size_error() {
         let mut runtime = started_runtime();
         let mut parameters = Vec::new();
         push_tpm2b(&mut parameters, &[]);
@@ -753,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_size_that_disagrees_with_the_structure_is_a_size_error() {
+    fn declared_size_structure_mismatch_size_error() {
         let mut runtime = started_runtime();
         let template = rsa_storage_template(1024);
         let mut parameters = Vec::new();
@@ -767,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn template_errors_are_decorated_with_the_public_parameter_number() {
+    fn template_error_public_parameter_decoration() {
         let mut runtime = started_runtime();
         let cases: [(Vec<u8>, u32); 4] = [
             (
@@ -791,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn attribute_errors_are_decorated_with_the_public_parameter_number() {
+    fn attribute_error_public_parameter_decoration() {
         let mut runtime = started_runtime();
         let template = rsa_template(
             2048,
@@ -806,7 +856,7 @@ mod tests {
     const TPMA_OBJECT_SENSITIVE_DATA_ORIGIN_BIT: u32 = 1 << 5;
 
     #[test]
-    fn an_oversized_user_auth_is_a_size_error_on_the_sensitive_parameter() {
+    fn oversized_user_auth_sensitive_parameter_size_error() {
         let mut runtime = started_runtime();
         let mut sensitive = Vec::new();
         push_tpm2b(&mut sensitive, &[0xaa; 33]);
@@ -829,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_two_thousand_forty_eight_bit_endorsement_key_is_created() {
+    fn rsa_2048_endorsement_key_creation() {
         let mut runtime = started_runtime();
         let response = create(
             &mut runtime,
@@ -849,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_three_thousand_seventy_two_bit_endorsement_key_is_created() {
+    fn rsa_3072_endorsement_key_creation() {
         let mut runtime = started_runtime();
         let response = create(
             &mut runtime,
@@ -865,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_nist_p384_endorsement_key_is_created() {
+    fn ecc_nist_p384_endorsement_key_creation() {
         let mut runtime = started_runtime();
         let response = create(&mut runtime, TPM_RH_ENDORSEMENT, &ecc_ek_template());
         let decoded = decode(&response);
@@ -880,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_seed_and_template_derive_the_same_key_twice() {
+    fn same_seed_template_key_determinism() {
         let mut first = started_runtime();
         let mut second = started_runtime();
         let template = rsa_storage_template(1024);
@@ -891,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_creation_in_the_same_boot_reproduces_the_first_key() {
+    fn repeated_creation_same_boot_key_reproduction() {
         let mut runtime = started_runtime();
         let template = rsa_storage_template(1024);
         let first = decode(&create(&mut runtime, TPM_RH_OWNER, &template));
@@ -902,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn each_hierarchy_derives_its_own_key_from_its_own_seed() {
+    fn per_hierarchy_seed_key_derivation() {
         let mut runtime = started_runtime();
         let template = rsa_storage_template(1024);
         let owner = decode(&create(&mut runtime, TPM_RH_OWNER, &template));
@@ -912,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_hierarchy_seed_changes_the_derived_key() {
+    fn hierarchy_seed_change_key_divergence() {
         let mut runtime = started_runtime();
         let template = rsa_storage_template(1024);
         let before = decode(&create(&mut runtime, TPM_RH_OWNER, &template));
@@ -928,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn a_different_template_derives_a_different_key() {
+    fn template_change_key_divergence() {
         let mut runtime = started_runtime();
         let first = decode(&create(
             &mut runtime,
@@ -944,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sensitive_data_field_changes_the_derived_key() {
+    fn sensitive_data_key_divergence() {
         let mut runtime = started_runtime();
         let template = rsa_storage_template(1024);
         let plain = decode(&create(&mut runtime, TPM_RH_OWNER, &template));
@@ -960,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_handles_are_allocated_in_order_until_the_slots_run_out() {
+    fn ordered_transient_handle_allocation_until_exhaustion() {
         let mut runtime = started_runtime();
         let template = rsa_storage_template(1024);
         for expected in [0x8000_0000u32, 0x8000_0001, 0x8000_0002] {
@@ -972,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_memory_error_is_reported_before_the_template_is_validated() {
+    fn object_memory_error_before_template_validation() {
         let mut runtime = started_runtime();
         for object in &mut runtime.live.objects {
             object.attributes = ATTR_OCCUPIED;
@@ -982,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn the_created_object_occupies_its_slot_with_a_matching_name() {
+    fn created_object_slot_occupancy_name_match() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1001,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_creation_leaves_every_slot_free() {
+    fn failed_creation_all_slots_free() {
         let mut runtime = started_runtime();
         for template in [
             rsa_template(512, TPM_ALG_SHA256, storage_attributes(), &[]),
@@ -1022,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn the_creation_data_carries_the_hierarchy_handle_as_both_parent_names() {
+    fn creation_data_hierarchy_handle_parent_names() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1041,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn the_creation_hash_digests_the_creation_data() {
+    fn creation_hash_creation_data_digest() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1055,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn the_outside_info_travels_into_the_creation_data() {
+    fn outside_info_creation_data_propagation() {
         let mut runtime = started_runtime();
         let parameters = parameters(
             &empty_sensitive(),
@@ -1074,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn a_creation_pcr_selection_is_filtered_against_the_allocation() {
+    fn creation_pcr_selection_allocation_filter() {
         let mut runtime = started_runtime();
         let mut creation_pcr = 1u32.to_be_bytes().to_vec();
         creation_pcr.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1098,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unselectable_creation_pcr_bank_is_cleared() {
+    fn unselectable_creation_pcr_bank_clearing() {
         let mut runtime = started_runtime();
         if let Some(state) = runtime.state.as_mut() {
             state.persistent.pcr_allocated.selections.clear();
@@ -1126,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn too_many_creation_pcr_banks_are_a_size_error_on_the_fourth_parameter() {
+    fn excess_creation_pcr_banks_parameter_four_size_error() {
         let mut runtime = started_runtime();
         let creation_pcr = 5u32.to_be_bytes().to_vec();
         let parameters = parameters(
@@ -1140,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn a_creation_pcr_selection_size_outside_the_bounds_is_a_value_error() {
+    fn creation_pcr_selection_size_bounds_value_error() {
         let mut runtime = started_runtime();
         for sizeof_select in [0u8, 1, 2, 4, 255] {
             let mut creation_pcr = 1u32.to_be_bytes().to_vec();
@@ -1163,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn the_creation_ticket_is_a_full_length_hierarchy_mac() {
+    fn creation_ticket_full_length_hierarchy_mac() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1187,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_hierarchy_ticket_uses_the_null_proof() {
+    fn null_hierarchy_ticket_null_proof() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1210,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn the_returned_name_is_the_digest_of_the_returned_public_area() {
+    fn returned_name_public_area_digest() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1226,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn the_locality_travels_into_the_creation_data() {
+    fn locality_creation_data_propagation() {
         let mut runtime = started_runtime();
         runtime.locality = 3;
         let decoded = decode(&create(
@@ -1238,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn the_locality_attribute_matches_the_upstream_encoding() {
+    fn locality_attribute_upstream_encoding() {
         for locality in 0..5u8 {
             assert_eq!(locality_attributes(locality), 1 << locality);
         }
@@ -1248,7 +1298,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn round_trip_object(runtime: &Tpm2Runtime) -> Box<Tpm2Runtime> {
+    fn round_trip_object(runtime: &Tpm2Runtime) -> Tpm2Runtime {
         let blob = crate::library::tpm2::volatile_all_store(runtime)
             .expect("the volatile state serializes");
         let profile = validate_user_profile(None).expect("the null profile validates");
@@ -1276,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn the_created_object_survives_a_volatile_state_round_trip() {
+    fn created_object_volatile_state_round_trip() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1301,7 +1351,7 @@ mod tests {
         );
     }
 
-    fn started_default_profile_runtime() -> Box<Tpm2Runtime> {
+    fn started_default_profile_runtime() -> Tpm2Runtime {
         let json = br#"{"Name":"default-v1"}"#;
         let profile = validate_user_profile(Some(json)).expect("the profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
@@ -1318,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn the_current_state_format_carries_the_hierarchy_through_a_round_trip() {
+    fn current_state_format_hierarchy_round_trip() {
         let mut runtime = started_default_profile_runtime();
         decode(&create(
             &mut runtime,
@@ -1339,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_ecc_object_survives_a_volatile_state_round_trip() {
+    fn stored_ecc_object_volatile_state_round_trip() {
         let mut runtime = started_runtime();
         let decoded = decode(&create(
             &mut runtime,
@@ -1356,7 +1406,7 @@ mod tests {
     }
 
     #[test]
-    fn the_restored_object_keeps_its_public_and_sensitive_areas() {
+    fn restored_object_public_sensitive_preservation() {
         let mut runtime = started_runtime();
         decode(&create(
             &mut runtime,
@@ -1401,7 +1451,7 @@ mod tests {
         );
     }
 
-    fn oracle_runtime() -> Box<Tpm2Runtime> {
+    fn oracle_runtime() -> Tpm2Runtime {
         use crate::library::tpm2::golden_responses::create_primary::vector;
         let mut runtime = crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL"))
             .expect("the oracle permanent state restores");
@@ -1416,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    fn every_swtpm_setup_template_matches_the_libtpms_oracle_byte_for_byte() {
+    fn swtpm_setup_template_libtpms_oracle_byte_parity() {
         use crate::library::tpm2::golden_responses::create_primary::oracle_cases;
         for (label, hierarchy, template, expected) in oracle_cases() {
             let mut runtime = oracle_runtime();
@@ -1426,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unrestricted_signing_primary_is_created_in_every_hierarchy() {
+    fn unrestricted_signing_primary_all_hierarchies() {
         for handle in [
             TPM_RH_OWNER,
             TPM_RH_PLATFORM,
@@ -1448,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_hierarchy_key_has_the_oracle_shape_but_a_per_boot_value() {
+    fn null_hierarchy_key_oracle_shape_per_boot_value() {
         use crate::library::tpm2::golden_responses::create_primary::{
             null_hierarchy_template, vector,
         };
@@ -1474,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn the_oracle_permanent_state_restores_with_the_default_profile() {
+    fn oracle_permanent_state_default_profile_restore() {
         let runtime = oracle_runtime();
         let state = runtime.state.as_ref().expect("decoded state");
         assert_eq!(state.profile.state_format_level, 7);
@@ -1484,7 +1534,7 @@ mod tests {
         assert_eq!(state.persistent.ep_seed_compat_level, 1);
     }
 
-    fn sym_permall_runtime() -> Box<Tpm2Runtime> {
+    fn sym_permall_runtime() -> Tpm2Runtime {
         use crate::library::tpm2::golden_responses::create_primary::vector;
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("SYM_PERMALL"))
@@ -1499,7 +1549,7 @@ mod tests {
         runtime
     }
 
-    fn profile_runtime(algorithms: &str) -> Box<Tpm2Runtime> {
+    fn profile_runtime(algorithms: &str) -> Tpm2Runtime {
         let json = format!(r#"{{"Name":"custom","Algorithms":"{algorithms}"}}"#);
         let profile = validate_user_profile(Some(json.as_bytes())).expect("the profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
@@ -1529,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_minimum_key_sizes_match_the_libtpms_oracle_codes() {
+    fn profile_minimum_key_size_oracle_codes() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, Vec<u8>, u32); 9] = [
             (
@@ -1594,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn a_template_at_or_above_the_profile_minimum_is_accepted() {
+    fn template_at_or_above_profile_minimum_acceptance() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, Vec<u8>); 3] = [
             ("rsa3072", vectors::asym_rsa_template(3072, 256)),
@@ -1612,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn the_symmetric_parameter_of_a_storage_key_is_checked_against_the_profile() {
+    fn storage_key_symmetric_parameter_profile_check() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let mut runtime = profile_runtime(vectors::MIN_SIZE_PROFILE);
         let template = vectors::asym_rsa_template(3072, 128);
@@ -1624,7 +1674,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_curve_family_is_rejected_with_the_oracle_code() {
+    fn disabled_curve_family_oracle_code_rejection() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         for (label, curve, expected) in [
             ("bn_p256", 0x0010u16, vectors::RC_NOBN_ECC_BN_P256),
@@ -1645,7 +1695,7 @@ mod tests {
     }
 
     #[test]
-    fn an_individually_disabled_curve_is_rejected_with_the_oracle_code() {
+    fn individually_disabled_curve_oracle_code_rejection() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         for (label, curve, expected) in [
             ("p192", 0x0001u16, vectors::RC_ONECURVE_ECC_P192),
@@ -1668,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_symmetric_algorithm_is_rejected_before_its_key_size() {
+    fn disabled_symmetric_algorithm_rejection_before_key_size() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let mut runtime = profile_runtime(vectors::NO_TDES_PROFILE);
         let template = vectors::symcipher_template(0x0003, 128, vectors::SYM_GENERATED_ATTRIBUTES);
@@ -1677,7 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_symmetric_primaries_match_the_libtpms_oracle_byte_for_byte() {
+    fn generated_symmetric_primary_libtpms_oracle_byte_parity() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, u16, u16, &[u8]); 3] = [
             ("tdes128", 0x0003, 128, vectors::vector("TDES128_GENERATED")),
@@ -1694,7 +1744,7 @@ mod tests {
     }
 
     #[test]
-    fn supplied_symmetric_primaries_match_the_libtpms_oracle_byte_for_byte() {
+    fn supplied_symmetric_primary_libtpms_oracle_byte_parity() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, u16, u16, &[u8], &[u8]); 5] = [
             (
@@ -1743,7 +1793,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_supplied_tdes_key_matches_the_libtpms_oracle_code() {
+    fn supplied_tdes_key_rejection_oracle_code() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let cases: [(&str, u16, &[u8], u32); 5] = [
             (
@@ -1795,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_tdes_primary_derives_deterministically_from_the_hierarchy_seed() {
+    fn generated_tdes_primary_hierarchy_seed_determinism() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         let template = vectors::symcipher_template(0x0003, 192, vectors::SYM_GENERATED_ATTRIBUTES);
         let mut first = started_runtime();
@@ -1814,7 +1864,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_tdes_key_carries_odd_parity_and_distinct_components() {
+    fn generated_tdes_key_odd_parity_distinct_components() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
         for key_bits in [128u16, 192] {
             let mut runtime = started_runtime();
@@ -1843,7 +1893,7 @@ mod tests {
     }
 
     #[test]
-    fn the_modifier_helper_only_decorates_undecorated_format_one_codes() {
+    fn modifier_helper_format_one_only_decoration() {
         assert_eq!(add_modifier(0x082, RC_IN_PUBLIC), 0x2c2);
         assert_eq!(add_modifier(0x095, RC_IN_SENSITIVE), 0x1d5);
         assert_eq!(add_modifier(0x095, RC_CREATION_PCR), 0x4d5);

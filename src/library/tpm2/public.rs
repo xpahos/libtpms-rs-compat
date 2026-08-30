@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn key_sizes_and_curves_follow_the_state_format_level() {
+    fn key_size_curve_state_format_level_dependence() {
         use crate::library::constants::TPM_SUCCESS;
 
         let levels = [
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn rsa_public_decodes() {
+    fn rsa_public_decoding() {
         let data = rsa_public(256);
         let public = parse_public(&data).unwrap();
         assert_eq!(public.object_type, TPM_ALG_RSA);
@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn keyedhash_and_ecc_publics_decode() {
+    fn keyedhash_and_ecc_public_decoding() {
         let data = keyedhash_public();
         let public = parse_public(&data).unwrap();
         let PublicParms::KeyedHash(scheme) = public.parameters else {
@@ -862,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn xor_keyedhash_scheme_reads_hash_and_kdf() {
+    fn xor_keyedhash_scheme_hash_kdf_decoding() {
         let mut data = Vec::new();
         data.extend_from_slice(&TPM_ALG_KEYEDHASH.to_be_bytes());
         data.extend_from_slice(&TPM_ALG_SHA1.to_be_bytes());
@@ -882,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_public_type_is_rc_type() {
+    fn invalid_public_type_rc_type_error() {
         for object_type in [0x0000u16, TPM_ALG_NULL, 0xffff] {
             let mut data = rsa_public(4);
             data[0..2].copy_from_slice(&object_type.to_be_bytes());
@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn name_alg_null_is_gated_by_allow_null() {
+    fn null_name_alg_allow_null_gating() {
         let mut data = rsa_public(4);
         data[2..4].copy_from_slice(&TPM_ALG_NULL.to_be_bytes());
         let mut reader = BlobReader::new(&data);
@@ -913,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_object_attribute_bits_are_rejected() {
+    fn reserved_attribute_bit_rejection() {
         let mut data = rsa_public(4);
         data[4..8].copy_from_slice(&0x0000_0009u32.to_be_bytes());
         let error = parse_public(&data).unwrap_err();
@@ -928,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn sym_def_algorithm_and_mode_are_validated() {
+    fn sym_def_algorithm_mode_validation() {
         let mut data = rsa_public(4);
         data[10..12].copy_from_slice(&TPM_ALG_XOR.to_be_bytes());
         let error = parse_public(&data).unwrap_err();
@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_key_bits_are_rc_value() {
+    fn invalid_key_bits_rc_value_error() {
         let mut data = rsa_public(4);
         data[12..14].copy_from_slice(&64u16.to_be_bytes());
         let error = parse_public(&data).unwrap_err();
@@ -961,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn tdes_key_bits_accept_only_128_and_192() {
+    fn tdes_key_bits_128_192_only() {
         for (bits, ok) in [(128u16, true), (192, true), (256, false), (64, false)] {
             let mut data = Vec::new();
             data.extend_from_slice(&TPM_ALG_SYMCIPHER.to_be_bytes());
@@ -978,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn symcipher_null_symmetric_is_rejected() {
+    fn symcipher_null_symmetric_rejection() {
         let mut data = Vec::new();
         data.extend_from_slice(&TPM_ALG_SYMCIPHER.to_be_bytes());
         data.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -991,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn ecdaa_scheme_reads_hash_and_count() {
+    fn ecdaa_scheme_hash_count_decoding() {
         let mut data = Vec::new();
         data.extend_from_slice(&TPM_ALG_ECC.to_be_bytes());
         data.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1014,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_none_curve_is_rc_curve() {
+    fn invalid_or_none_curve_rc_curve_error() {
         for curve in [TPM_ECC_NONE, 0x0006u16, 0xffff] {
             let mut data = ecc_public();
             data[16..18].copy_from_slice(&curve.to_be_bytes());
@@ -1033,14 +1033,14 @@ mod tests {
     }
 
     #[test]
-    fn oversized_unique_fields_are_size_errors() {
+    fn oversized_unique_field_size_error() {
         let error = parse_public(&rsa_public(MAX_RSA_KEY_BYTES + 1)).unwrap_err();
         assert_eq!(error.tpm_result(), TPM_RC_SIZE);
         assert!(parse_public(&rsa_public(MAX_RSA_KEY_BYTES)).is_ok());
     }
 
     #[test]
-    fn sensitive_composites_use_their_own_capacities() {
+    fn sensitive_composite_capacity_independence() {
         let mut reader = BlobReader::new(&[]);
         assert!(parse_nv_tpmt_sensitive(&mut reader, SECTION).is_err());
 
@@ -1057,7 +1057,7 @@ mod tests {
     }
 
     #[test]
-    fn public_only_sensitive_requires_error_type_and_empty_fields() {
+    fn public_only_sensitive_error_type_empty_field_requirement() {
         let data = public_only_sensitive();
         let mut reader = BlobReader::new(&data);
         let sensitive = parse_nv_tpmt_sensitive(&mut reader, SECTION).unwrap();
@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_at_every_boundary_is_insufficient() {
+    fn boundary_truncation_insufficient_error() {
         for full in [rsa_public(16), keyedhash_public(), ecc_public()] {
             for len in 0..full.len() {
                 let mut reader = BlobReader::new(&full[..len]);
@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn public_area_byte_mutations_do_not_panic() {
+    fn public_area_byte_mutation_panic_safety() {
         let full = rsa_public(8);
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x10, 0xff] {

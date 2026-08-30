@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn null_profile_store_emits_the_upstream_v3_shape() {
+    fn null_profile_store_upstream_v3_shape() {
         let state = materialize(&crate::library::tpm2::valid_permanent_state_fixture());
         let blob = persistent_all_store(&state).expect("the null-profile state serializes");
 
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_bitmap_remaps_bits_through_the_v09_table() {
+    fn compressed_bitmap_v09_table_bit_remapping() {
         let mut pp = vec![0u8; 17];
         pp[0] = 1 << 5;
         let payload = {
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn default_v1_store_round_trips_byte_identically() {
+    fn default_v1_store_byte_identical_round_trip() {
         let canonical = format_active_profile(
             &validate_profile(super::super::ProfileField::Bytes(
                 br#"{"Name":"default-v1","StateFormatLevel":7}"#,
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn su_state_store_round_trips_and_drops_the_null_seed_level() {
+    fn su_state_store_round_trip_null_seed_level_drop() {
         let sections = {
             let mut out = super::super::orderly::OrderlyFixture::default().bytes();
             out.extend_from_slice(
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn stored_compat_tail_carries_the_active_allocation_not_the_input_shadow() {
+    fn stored_compat_tail_active_allocation_precedence() {
         let allocated = PcrAllocationFixture {
             selections: vec![(0x000b, 3, vec![0x01, 0x00, 0x00])],
             ..PcrAllocationFixture::default()
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn serialized_profile_with_level_one_is_the_upstream_abort_boundary() {
+    fn level_one_profile_upstream_abort_boundary() {
         let blob = crate::library::tpm2::commit_failing_permanent_state_fixture();
         let profile = br#"{"Name":"null","StateFormatLevel":1}"#;
         let mut payload = compile_constants::marshalled_section(3);
@@ -706,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn stored_blob_never_leaks_secret_lengths_through_debug() {
+    fn stored_blob_debug_secret_length_absence() {
         let state = materialize(&crate::library::tpm2::valid_permanent_state_fixture());
         let _ = persistent_all_store(&state).unwrap();
         let formatted = format!("{state:?}");

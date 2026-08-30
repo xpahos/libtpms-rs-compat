@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_user_nvram_parses() {
+    fn empty_user_nvram_parse_success() {
         let data = UserNvramFixture {
             max_count: Some(7),
             ..with_tail()
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_index_entry_decodes() {
+    fn nv_index_entry_decode_success() {
         let index = NvIndexFixture {
             data_size: 32,
             ..NvIndexFixture::default()
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_object_entry_decodes() {
+    fn persistent_object_entry_decode_success() {
         let object = object_fixtures::any_rsa_object(4);
         let data = UserNvramFixture {
             entries: vec![UserNvramFixture::persistent_entry(0x8100_0002, &object)],
@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_objects_obey_the_permanent_state_format_level() {
+    fn persistent_object_state_format_level_gating() {
         use crate::library::constants::{TPM_RC_CURVE, TPM_RC_VALUE};
         use crate::library::tpm2::public::fixtures as public_fixtures;
 
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_format_uses_the_fixed_rsa3072_size() {
+    fn legacy_format_fixed_rsa3072_size() {
         let object = object_fixtures::any_rsa_object(3);
         let data = UserNvramFixture {
             entries: vec![UserNvramFixture::persistent_entry(0x8100_0002, &object)],
@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_entries_preserve_wire_order() {
+    fn mixed_entry_wire_order_preservation() {
         let index = NvIndexFixture::default().bytes();
         let object = object_fixtures::any_rsa_object(4);
         let data = UserNvramFixture {
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_handle_type_is_rc_handle() {
+    fn unknown_handle_type_rc_handle() {
         for handle in [0x0000_0001u32, 0x0200_0000, 0x4000_0001, 0x8000_0000] {
             let mut entry = Vec::new();
             entry.extend_from_slice(&10u32.to_be_bytes());
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_nv_index_datasize_is_rc_size() {
+    fn oversized_nv_index_datasize_rc_size() {
         let index = NvIndexFixture::default().bytes();
         let mut entry = Vec::new();
         entry.extend_from_slice(&200u32.to_be_bytes());
@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_index_data_beyond_capacity_is_a_size_error() {
+    fn nv_index_data_beyond_capacity_size_error() {
         let index = NvIndexFixture::default().bytes();
         let bulk = vec![0x5a; 65535];
         let entries: Vec<Vec<u8>> = (0..3)
@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn unoccupied_persistent_object_is_rejected() {
+    fn unoccupied_persistent_object_rejection() {
         let object = object_fixtures::any_unoccupied_object();
         let data = UserNvramFixture {
             entries: vec![UserNvramFixture::persistent_entry(0x8100_0002, &object)],
@@ -580,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn sequence_object_with_key_type_is_storable() {
+    fn sequence_object_key_type_acceptance() {
         let object = object_fixtures::any_sequence_object(object_fixtures::SEQ_HASH);
         let data = UserNvramFixture {
             entries: vec![UserNvramFixture::persistent_entry(0x8100_0002, &object)],
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_max_count_is_decoded() {
+    fn terminal_max_count_decoding() {
         let data = UserNvramFixture {
             max_count: Some(0x0102_0304_0506_0708),
             ..with_tail()
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_max_count_is_insufficient() {
+    fn missing_max_count_insufficiency() {
         let data = UserNvramFixture {
             max_count: None,
             future_block: None,
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_entry_size_is_recorded_raw() {
+    fn declared_entry_size_raw_record() {
         let index = NvIndexFixture::default().bytes();
         let mut entry = UserNvramFixture::nv_index_entry(0x0100_0001, &index, &[]);
         entry[0..4].copy_from_slice(&0xdead_beefu32.to_be_bytes());
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn future_blocks_are_skipped_without_interpretation() {
+    fn future_block_uninterpreted_skip() {
         for future in [
             (0u8, 0u16, Vec::new()),
             (1, 0, Vec::new()),
@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_at_every_boundary_is_insufficient() {
+    fn truncation_all_boundaries_insufficiency() {
         let index = NvIndexFixture::default().bytes();
         let object = object_fixtures::any_rsa_object(4);
         let full = UserNvramFixture {
@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn user_nv_byte_mutations_do_not_panic() {
+    fn user_nv_byte_mutation_panic_safety() {
         let index = NvIndexFixture::default().bytes();
         let full = UserNvramFixture {
             entries: vec![UserNvramFixture::nv_index_entry(

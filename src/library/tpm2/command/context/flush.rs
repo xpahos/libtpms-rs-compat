@@ -83,6 +83,7 @@ fn flush_loaded_or_saved_session(runtime: &mut Tpm2Runtime, handle: u32) {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::capability::handles::test_state::{load_session, save_session};
     use crate::library::tpm2::clock::RecordingClock;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
@@ -140,7 +141,8 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
@@ -152,7 +154,7 @@ mod tests {
         runtime.nv_update_pending = false;
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -161,14 +163,14 @@ mod tests {
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         start(&mut runtime);
         runtime
     }
 
     #[track_caller]
-    fn oracle_runtime() -> Box<Tpm2Runtime> {
+    fn oracle_runtime() -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL"))
             .expect("the oracle permanent state restores");
         start(&mut runtime);
@@ -404,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_advertised_with_the_oracle_attributes() {
+    fn advertised_attributes_oracle_match() {
         let mut runtime = started_runtime();
         assert_eq!(
             capability(&mut runtime, 2, TPM_CC_FLUSH_CONTEXT, 1),
@@ -413,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             flush(&mut runtime, 0x8000_0000),
@@ -422,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_tagged_request_is_rejected() {
+    fn session_tagged_request_rejection() {
         let mut runtime = started_runtime();
         let session = pw_session(&[]);
         let mut payload = (session.len() as u32).to_be_bytes().to_vec();
@@ -435,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_flush_handle_is_an_indexed_parameter_error() {
+    fn truncated_handle_indexed_parameter_error() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &flush_command(&[])),
@@ -451,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = started_runtime();
         for extra in 1..5usize {
             let mut parameters = 0x8000_0000u32.to_be_bytes().to_vec();
@@ -465,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn handles_of_unsupported_types_are_rejected_by_the_unmarshaller() {
+    fn unsupported_handle_type_unmarshal_rejection() {
         let mut runtime = started_runtime();
         for handle in [
             0x0000_0000u32,
@@ -495,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unloaded_transient_handle_is_a_decorated_handle_error() {
+    fn unloaded_transient_handle_decorated_error() {
         let mut runtime = started_runtime();
         for slot in 0..MAX_LOADED_OBJECTS as u32 {
             assert_eq!(
@@ -507,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_session_is_a_decorated_handle_error() {
+    fn unknown_session_decorated_handle_error() {
         let mut runtime = started_runtime();
         for slot in [0u32, 21, 42, 63] {
             assert_eq!(
@@ -524,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_transient_object_is_flushed_and_its_slot_is_reused() {
+    fn loaded_transient_flush_slot_reuse() {
         let mut runtime = oracle_runtime();
         let (owner, owner_response) = create_primary(&mut runtime, OWNER_HANDLE);
         let (platform, platform_response) = create_primary(&mut runtime, PLATFORM_HANDLE);
@@ -568,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn flushing_a_transient_object_never_touches_nv_state() {
+    fn transient_object_flush_nv_preservation() {
         let mut runtime = oracle_runtime();
         assert_matches_oracle(&runtime, "PERMALL_STARTED", "startup");
         let (owner, _) = create_primary(&mut runtime, OWNER_HANDLE);
@@ -580,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn the_create_spk_flow_flushes_the_transient_copy_and_keeps_the_evict_object() {
+    fn create_spk_transient_flush_evict_preservation() {
         let mut runtime = oracle_runtime();
         let (spk, spk_response) = create_primary(&mut runtime, OWNER_HANDLE);
         assert_eq!(spk_response, vector("SPK_PRIMARY_RESPONSE"));
@@ -610,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_sessions_are_flushed_and_disappear_from_capability_reporting() {
+    fn loaded_session_flush_capability_removal() {
         let mut runtime = started_runtime();
         three_loaded_sessions(&mut runtime);
         assert_eq!(
@@ -648,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_sessions_are_flushed_through_the_context_slot() {
+    fn saved_session_context_slot_flush() {
         let mut runtime = started_runtime();
         three_loaded_sessions(&mut runtime);
         context_save(&mut runtime, 2, 2);
@@ -680,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_policy_session_is_flushed_through_the_same_path() {
+    fn saved_policy_session_same_path_flush() {
         let mut runtime = started_runtime();
         load_session(&mut runtime, 0, 0, true);
         runtime.live.free_session_slots = MAX_LOADED_SESSIONS as u32 - 1;
@@ -694,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn flushing_the_oldest_saved_session_rescans_the_context_array() {
+    fn oldest_saved_session_flush_context_array_rescan() {
         let mut runtime = started_runtime();
         {
             let reset = runtime
@@ -720,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn flushing_a_younger_saved_session_leaves_the_oldest_alone() {
+    fn younger_saved_session_flush_oldest_unchanged() {
         let mut runtime = started_runtime();
         {
             let reset = runtime
@@ -738,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn the_exclusive_audit_session_is_reset_only_when_it_is_itself_flushed() {
+    fn exclusive_audit_reset_only_on_self_flush() {
         let mut runtime = started_runtime();
         three_loaded_sessions(&mut runtime);
         set_exclusive_audit(
@@ -764,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn a_flush_without_an_exclusive_audit_session_leaves_the_field_unassigned() {
+    fn unset_exclusive_audit_flush_field_preservation() {
         let mut runtime = started_runtime();
         three_loaded_sessions(&mut runtime);
         set_exclusive_audit(
@@ -783,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn every_rejected_request_leaves_the_whole_tpm_untouched() {
+    fn rejected_request_tpm_unchanged() {
         let mut runtime = oracle_runtime();
         let (owner, _) = create_primary(&mut runtime, OWNER_HANDLE);
         evict(&mut runtime, owner, SPK_PERSISTENT_HANDLE);
@@ -818,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_flush_leaves_the_rest_of_the_tpm_alone() {
+    fn successful_flush_unrelated_state_unchanged() {
         let mut runtime = oracle_runtime();
         let (persisted, _) = create_primary(&mut runtime, OWNER_HANDLE);
         evict(&mut runtime, persisted, SPK_PERSISTENT_HANDLE);

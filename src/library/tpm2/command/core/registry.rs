@@ -2296,6 +2296,7 @@ pub(in crate::library::tpm2) fn implemented() -> impl Iterator<Item = &'static C
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::constants::{TPM_RC_COMMAND_CODE, TPM_RC_INITIALIZE};
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::parse_command;
@@ -2304,12 +2305,12 @@ mod tests {
     const TPMA_CC_RESERVED: u32 = 0x003f_0000 | 0xc000_0000;
 
     #[test]
-    fn registry_holds_every_implemented_command() {
+    fn registry_implemented_command_coverage() {
         assert_eq!(implemented().count(), 114);
     }
 
     #[test]
-    fn registry_is_strictly_sorted_by_command_code() {
+    fn registry_strict_sort_order() {
         let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
         assert!(
             codes.windows(2).all(|pair| pair[0] < pair[1]),
@@ -2318,7 +2319,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_has_no_duplicate_command_codes() {
+    fn registry_command_code_uniqueness() {
         let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
         for (index, &code) in codes.iter().enumerate() {
             assert!(
@@ -2329,7 +2330,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_finds_every_registered_command() {
+    fn registered_command_lookup_coverage() {
         for descriptor in implemented() {
             assert_eq!(
                 find(descriptor.code).map(|found| found.code),
@@ -2341,7 +2342,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_rejects_unregistered_command_codes() {
+    fn unregistered_command_code_lookup_rejection() {
         assert!(find(0x0000_0000).is_none(), "below all entries");
         assert!(
             find(TPM_CC_NV_UNDEFINE_SPACE_SPECIAL - 1).is_none(),
@@ -2363,7 +2364,7 @@ mod tests {
     }
 
     #[test]
-    fn iteration_returns_every_implemented_command_exactly_once() {
+    fn iteration_unique_implemented_command_coverage() {
         let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
         assert_eq!(
             codes,
@@ -2487,7 +2488,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_attributes_match_upstream() {
+    fn registered_attribute_upstream_parity() {
         for (code, attributes) in [
             (TPM_CC_CHANGE_EPS, 0x02c0_0124u32),
             (TPM_CC_DICTIONARY_ATTACK_PARAMETERS, 0x0240_013a),
@@ -2513,7 +2514,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_free_commands_allow_sessions() {
+    fn handle_free_command_session_acceptance() {
         for code in [
             TPM_CC_INCREMENTAL_SELF_TEST,
             TPM_CC_SELF_TEST,
@@ -2532,7 +2533,7 @@ mod tests {
     }
 
     #[test]
-    fn authorized_handle_nv_attributes_match() {
+    fn authorized_handle_nv_attribute_parity() {
         for (code, updates_nv) in [
             (TPM_CC_CHANGE_EPS, true),
             (TPM_CC_HIERARCHY_CHANGE_AUTH, true),
@@ -2561,7 +2562,7 @@ mod tests {
     }
 
     #[test]
-    fn the_extensive_commands_match_the_vendored_attribute_table() {
+    fn extensive_commands_vendored_table_match() {
         const EXTENSIVE: [u32; 4] = [
             TPM_CC_HIERARCHY_CONTROL,
             TPM_CC_CHANGE_EPS,
@@ -2579,7 +2580,7 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_attack_parameters_declares_one_lockout_handle_requiring_user_authorization() {
+    fn dictionary_attack_parameters_lockout_handle_user_auth() {
         let descriptor = find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS).unwrap();
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
@@ -2599,7 +2600,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lockout_handle_kind_accepts_only_the_lockout_hierarchy() {
+    fn lockout_handle_kind_lockout_hierarchy_only() {
         use crate::library::tpm2::hierarchy::{
             TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
         };
@@ -2623,7 +2624,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hierarchy_auth_handle_kind_accepts_only_the_four_hierarchies() {
+    fn hierarchy_auth_handle_kind_four_hierarchies_only() {
         use crate::library::tpm2::hierarchy::{
             TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
         };
@@ -2656,7 +2657,7 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_handle_kind_accepts_only_the_platform_hierarchy() {
+    fn platform_handle_kind_platform_hierarchy_only() {
         use crate::library::tpm2::hierarchy::{
             TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
         };
@@ -2679,12 +2680,12 @@ mod tests {
     }
 
     #[test]
-    fn hash_carries_no_nv_attribute() {
+    fn hash_command_nv_attribute_absence() {
         assert_eq!(find(TPM_CC_HASH).unwrap().attributes & (1 << 22), 0);
     }
 
     #[test]
-    fn pcr_event_declares_one_command_handle_requiring_user_authorization() {
+    fn pcr_event_single_user_auth_command_handle() {
         let descriptor = find(TPM_CC_PCR_EVENT).unwrap();
         assert_eq!(descriptor.code, TPM_CC_PCR_EVENT);
         assert_eq!(descriptor.handles.len(), 1);
@@ -2714,7 +2715,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pcr_event_handle_kind_accepts_implemented_pcrs_and_the_null_handle() {
+    fn pcr_event_handle_kind_pcr_null_acceptance() {
         let kind = find(TPM_CC_PCR_EVENT).unwrap().handles[0].kind;
         for pcr in 0..IMPLEMENTATION_PCR as u32 {
             assert!(kind.accepts(pcr), "PCR {pcr}");
@@ -2735,7 +2736,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_event_sorts_between_nv_change_auth_and_pcr_reset() {
+    fn pcr_event_registry_sort_position() {
         let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
         let at = codes
             .iter()
@@ -2746,7 +2747,7 @@ mod tests {
     }
 
     #[test]
-    fn the_exact_pcr_handle_kind_rejects_the_null_handle() {
+    fn exact_pcr_handle_kind_null_rejection() {
         let kind = find(TPM_CC_PCR_RESET).unwrap().handles[0].kind;
         for pcr in 0..24u32 {
             assert!(kind.accepts(pcr), "PCR {pcr}");
@@ -2761,7 +2762,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_presence_applicability_matches_the_vendored_attribute_table() {
+    fn physical_presence_applicability_vendored_table_parity() {
         const PP_COMMANDS: [u32; 19] = [
             TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
             TPM_CC_EVICT_CONTROL,
@@ -2794,7 +2795,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_count_attribute_matches_the_declared_handles() {
+    fn handle_count_attribute_declaration_match() {
         for descriptor in implemented() {
             assert_eq!(
                 (descriptor.attributes >> 25) & 0x7,
@@ -2806,7 +2807,7 @@ mod tests {
     }
 
     #[test]
-    fn only_startup_and_flush_context_forbid_an_authorization_area() {
+    fn authorization_area_prohibition_startup_and_flush_context_only() {
         for descriptor in implemented() {
             assert_eq!(
                 descriptor.sessions_allowed,
@@ -2824,7 +2825,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_context_declares_no_handles_and_no_sessions() {
+    fn flush_context_handleless_sessionless_declaration() {
         let descriptor = find(TPM_CC_FLUSH_CONTEXT).unwrap();
         assert!(descriptor.handles.is_empty());
         assert!(!descriptor.sessions_allowed);
@@ -2845,7 +2846,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pcr_handle_kind_accepts_implemented_pcrs_and_the_null_handle() {
+    fn pcr_handle_kind_pcr_null_acceptance() {
         let kind = find(TPM_CC_PCR_EXTEND).unwrap().handles[0].kind;
         for pcr in 0..24u32 {
             assert!(kind.accepts(pcr), "PCR {pcr}");
@@ -2860,7 +2861,7 @@ mod tests {
     }
 
     #[test]
-    fn attribute_command_index_mirrors_the_command_code() {
+    fn attribute_command_index_command_code_mirroring() {
         for descriptor in implemented() {
             assert_eq!(
                 descriptor.attributes & 0xffff,
@@ -2872,7 +2873,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_attribute_bits_are_clear() {
+    fn reserved_attribute_bits_zero() {
         for descriptor in implemented() {
             assert_eq!(
                 descriptor.attributes & TPMA_CC_RESERVED,
@@ -2884,7 +2885,7 @@ mod tests {
     }
 
     #[test]
-    fn every_registered_handler_is_reachable_through_the_dispatcher() {
+    fn registered_handler_dispatcher_reachability() {
         for descriptor in implemented() {
             let mut runtime = empty_state_runtime();
             runtime.startup_received = match descriptor.lifecycle {
@@ -2895,7 +2896,7 @@ mod tests {
             bytes.extend_from_slice(&descriptor.code.to_be_bytes());
             let input = CommandInput::new(bytes.len() as u32, bytes);
             let parsed = parse_command(&input).expect("the header parses");
-            let code = dispatch(&mut runtime, &parsed).code();
+            let code = dispatch(&mut runtime, &parsed, Cancellation::disabled()).code();
             assert_ne!(code, TPM_RC_COMMAND_CODE, "code {:#x}", descriptor.code);
             assert_ne!(code, TPM_RC_INITIALIZE, "code {:#x}", descriptor.code);
         }

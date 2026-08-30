@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn current_version_fixture_matches_upstream_marshal() {
+    fn current_version_fixture_upstream_marshal_parity() {
         let fixture = [
             0x00, 0x04, 0xab, 0x36, 0x47, 0x23, 0x00, 0x04, 0x00, 0x03, b'{', b'}', 0x00, 0xde,
             0xad, 0xab, 0x36, 0x47, 0x23,
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_uses_a_six_byte_header() {
+    fn version_1_six_byte_header() {
         let data = blob(1, None, &MAGIC_BYTES);
         let envelope = PersistentAllEnvelope::parse(&data).unwrap();
         assert_eq!(
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn version_zero_is_not_rejected_at_the_header_layer() {
+    fn version_zero_header_layer_acceptance() {
         let data = blob(0, None, &MAGIC_BYTES);
         assert_eq!(
             PersistentAllEnvelope::parse(&data).unwrap().header.version,
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_2_and_3_use_an_eight_byte_header_without_profile() {
+    fn version_2_and_3_eight_byte_header_no_profile() {
         for version in [2u16, 3] {
             let data = blob(version, Some(1), &[0x55, 0xab, 0x36, 0x47, 0x23]);
             let envelope = PersistentAllEnvelope::parse(&data).unwrap();
@@ -564,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn incorrect_header_magic_is_rejected_as_bad_tag() {
+    fn incorrect_header_magic_bad_tag_rejection() {
         let mut data = blob(4, Some(4), &MAGIC_BYTES);
         data[2] = 0xff;
         assert_eq!(
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_version_and_magic_are_reported_as_truncated() {
+    fn truncated_version_magic_error() {
         assert_eq!(PersistentAllEnvelope::parse(&[]), Err(truncated()));
         assert_eq!(
             PersistentAllEnvelope::parse(&[0x00]),
@@ -592,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_min_version_is_reported_as_truncated() {
+    fn truncated_min_version_error() {
         assert_eq!(
             PersistentAllEnvelope::parse(&[0x00, 0x02, 0xab, 0x36, 0x47, 0x23, 0x00]),
             Err(truncated())
@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn supported_min_versions_are_accepted() {
+    fn supported_min_version_acceptance() {
         for min_version in [0u16, 1, 3, PERSISTENT_ALL_VERSION] {
             let data = blob(4, Some(min_version), &[0x00, 0x00, 0xab, 0x36, 0x47, 0x23]);
             let envelope = PersistentAllEnvelope::parse(&data).unwrap();
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn min_version_newer_than_implementation_is_rejected() {
+    fn newer_min_version_rejection() {
         let data = blob(5, Some(5), &MAGIC_BYTES);
         assert_eq!(
             PersistentAllEnvelope::parse(&data),
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn future_version_with_supported_min_version_is_accepted() {
+    fn future_version_supported_min_acceptance() {
         let mut tail = profile_field(b"{}");
         tail.extend_from_slice(&[0x01, 0x02]);
         tail.extend_from_slice(&MAGIC_BYTES);
@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_below_4_have_no_profile_field() {
+    fn pre_v4_no_profile_field() {
         for (version, min_version) in [(1u16, None), (2, Some(1)), (3, Some(1))] {
             let data = blob(version, min_version, &[0x00, 0x01, 0xab, 0x36, 0x47, 0x23]);
             let envelope = PersistentAllEnvelope::parse(&data).unwrap();
@@ -644,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn version_4_null_profile_is_distinct_from_bytes() {
+    fn v4_null_profile_bytes_distinction() {
         let mut tail = vec![0x00, 0x00];
         tail.extend_from_slice(&MAGIC_BYTES);
         let data = blob(4, Some(4), &tail);
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn version_4_profile_bytes_exclude_the_terminating_nul() {
+    fn version_4_profile_bytes_terminating_nul_exclusion() {
         let mut tail = profile_field(b"{\"Name\":\"null\"}");
         tail.extend_from_slice(&MAGIC_BYTES);
         let data = blob(4, Some(4), &tail);
@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_length_is_big_endian() {
+    fn profile_length_big_endian() {
         let mut tail = vec![0x01, 0x01];
         tail.extend_from_slice(&[b'x'; 256]);
         tail.push(0);
@@ -677,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_bytes_are_not_utf8_converted() {
+    fn profile_bytes_no_utf8_conversion() {
         let mut tail = profile_field(&[0xff, 0xfe]);
         tail.extend_from_slice(&MAGIC_BYTES);
         let data = blob(4, Some(4), &tail);
@@ -686,19 +686,19 @@ mod tests {
     }
 
     #[test]
-    fn truncated_profile_length_is_reported_as_truncated() {
+    fn truncated_profile_length_error() {
         let data = blob(4, Some(4), &[0x00]);
         assert_eq!(PersistentAllEnvelope::parse(&data), Err(truncated()));
     }
 
     #[test]
-    fn profile_length_beyond_input_is_reported_as_truncated() {
+    fn profile_length_beyond_input_truncation_error() {
         let data = blob(4, Some(4), &[0x00, 0x10, b'x']);
         assert_eq!(PersistentAllEnvelope::parse(&data), Err(truncated()));
     }
 
     #[test]
-    fn profile_without_terminating_nul_is_rejected() {
+    fn missing_profile_nul_rejection() {
         let mut tail = vec![0x00, 0x02, b'{', b'}'];
         tail.extend_from_slice(&MAGIC_BYTES);
         let data = blob(4, Some(4), &tail);
@@ -709,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn incorrect_footer_magic_is_rejected() {
+    fn incorrect_footer_magic_rejection() {
         let data = blob(1, None, &[0xab, 0x36, 0x47, 0x24]);
         assert_eq!(
             PersistentAllEnvelope::parse(&data),
@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_footer_is_reported_as_missing() {
+    fn truncated_footer_missing_error() {
         let data = blob(1, None, &[0xab, 0x36, 0x47]);
         assert_eq!(
             PersistentAllEnvelope::parse(&data),
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_excludes_the_footer_and_borrows_the_blob() {
+    fn payload_footer_exclusion_and_blob_borrow() {
         let mut tail = vec![0x11, 0x22, 0x33];
         tail.extend_from_slice(&MAGIC_BYTES);
         let data = blob(1, None, &tail);
@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn magic_like_bytes_inside_the_payload_are_not_the_footer() {
+    fn payload_magic_bytes_footer_distinction() {
         let mut tail = Vec::new();
         tail.extend_from_slice(&MAGIC_BYTES);
         tail.extend_from_slice(&[0x99]);
@@ -750,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn bytes_after_a_magic_like_sequence_decide_by_the_final_four_only() {
+    fn magic_like_sequence_final_four_byte_decision() {
         let mut tail = Vec::new();
         tail.extend_from_slice(&MAGIC_BYTES);
         tail.extend_from_slice(&[0x00, 0x00]);
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn structurally_complete_envelope_with_empty_payload_parses() {
+    fn structurally_complete_empty_payload_envelope_acceptance() {
         let data = blob(4, Some(4), &{
             let mut tail = vec![0x00, 0x00];
             tail.extend_from_slice(&MAGIC_BYTES);
@@ -775,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_map_to_the_upstream_result_codes() {
+    fn error_upstream_result_code_mapping() {
         use super::super::compile_constants::{CompareOp, ConstantMismatch};
         use crate::library::constants::{
             TPM_RC_BAD_PARAMETER, TPM_RC_BAD_TAG, TPM_RC_BAD_VERSION, TPM_RC_HASH,

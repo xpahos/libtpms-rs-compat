@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn audit_runtime() -> Box<Tpm2Runtime> {
+    fn audit_runtime() -> Tpm2Runtime {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn getrandom_audited() -> Box<Tpm2Runtime> {
+    fn getrandom_audited() -> Tpm2Runtime {
         let mut runtime = audit_runtime();
         assert_eq!(
             run(&mut runtime, &audit_status(ALG_NULL, &[CC_GET_RANDOM], &[])),
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0133");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_GET_COMMAND_AUDIT_DIGEST, 0x0000_0133);
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn an_untouched_log_attests_an_empty_digest() {
+    fn untouched_log_empty_digest_attestation() {
         let mut runtime = audit_runtime();
         let expected = vector("CMD_AUDIT_DIGEST_EMPTY");
         replay_clock(&mut runtime, expected);
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_list_digest_covers_the_audited_commands() {
+    fn command_list_digest_audited_command_coverage() {
         use crate::library::tpm2::crypto::Hasher;
         let mut runtime = audit_runtime();
         let expected = vector("CMD_AUDIT_DIGEST_EMPTY");
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn an_audited_command_starts_a_digest_and_bumps_the_counter() {
+    fn audited_command_digest_start_and_counter_bump() {
         let mut runtime = getrandom_audited();
         assert_matches_oracle(
             &runtime,
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn every_audited_command_extends_the_same_digest() {
+    fn audited_command_shared_digest_extension() {
         let mut runtime = getrandom_audited();
         assert_eq!(
             run(&mut runtime, &get_random()),
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_signer_leaves_the_log_in_place() {
+    fn null_signer_log_preservation() {
         let mut runtime = getrandom_audited();
         let expected = vector("CMD_AUDIT_DIGEST_NULL_SIGNER");
         replay_clock(&mut runtime, expected);
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn clearing_the_last_audited_command_still_reports_the_log() {
+    fn cleared_last_audited_command_log_report() {
         let mut runtime = getrandom_audited();
         assert_eq!(
             run(&mut runtime, &audit_status(ALG_NULL, &[], &[CC_GET_RANDOM])),
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn an_algorithm_change_resets_the_digest_without_bumping_the_counter() {
+    fn algorithm_change_digest_reset_without_counter_bump() {
         let mut runtime = audit_runtime();
         run_ok(
             &mut runtime,
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn the_x509_certification_command_appears_in_the_command_list_digest() {
+    fn x509_certification_command_list_digest_inclusion() {
         let mut runtime = audit_runtime();
         run_ok(
             &mut runtime,
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scheme_and_privacy_handle_rules_match_the_oracle() {
+    fn scheme_and_privacy_handle_rules_oracle_match() {
         let mut runtime = audit_runtime();
         let expected = vector("CMD_AUDIT_DIGEST_EXPLICIT");
         replay_clock(&mut runtime, expected);
@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = audit_runtime();
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_report_keeps_the_log() {
+    fn failed_report_log_preservation() {
         let mut runtime = getrandom_audited();
         run_ok(&mut runtime, &get_random(), "the audited command runs");
         let before = audit_digest(&runtime).expect("the digest reads");
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = audit_runtime();

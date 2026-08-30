@@ -1132,14 +1132,14 @@ mod tests {
     }
 
     #[test]
-    fn image_has_exactly_nv_memory_size_bytes() {
+    fn image_nv_memory_size_exactness() {
         let image = image_for(&valid_permanent_state_fixture());
         assert_eq!(image.len(), NV_MEMORY_SIZE);
         assert_eq!(image.len(), crate::library::tpm2::runtime::NV_MEMORY_SIZE);
     }
 
     #[test]
-    fn reserved_regions_hold_the_expected_native_images() {
+    fn reserved_region_native_images() {
         let image = image_for(&valid_permanent_state_fixture());
 
         assert_eq!(le32(&image, NV_PERSISTENT_DATA + PD_DISABLE_CLEAR), 0);
@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn su_state_blob_commits_reset_and_clear_regions() {
+    fn su_state_blob_reset_and_clear_region_commit() {
         let blob =
             envelope_with_payload(&simple_payload(0x0001, remaining_sections_with_su_state()));
         let image = image_for(&blob);
@@ -1212,7 +1212,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_ram_entries_serialize_with_recomputed_sizes() {
+    fn orderly_ram_entry_recomputed_size_serialization() {
         let mut sections = OrderlyFixture::default().bytes();
         sections.extend_from_slice(
             &IndexOrderlyRamFixture {
@@ -1270,7 +1270,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_user_nvram_writes_terminator_and_max_count() {
+    fn empty_user_nvram_terminator_and_max_count() {
         let user = UserNvramFixture {
             max_count: Some(41),
             ..UserNvramFixture::default()
@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_entries_produce_the_expected_offsets_and_sizes() {
+    fn mixed_entry_offsets_and_sizes() {
         let index_bytes = NvIndexFixture::default().bytes();
         let bulk = vec![0xa5u8; 24];
         let object_bytes = object::fixtures::any_rsa_object(4);
@@ -1336,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn version_matched_objects_remarshal_to_their_wire_bytes() {
+    fn version_matched_object_wire_byte_remarshal() {
         for (profile, version) in [
             (&br#"{"Name":"default-v1","StateFormatLevel":5}"#[..], 3u16),
             (br#"{"Name":"default-v1","StateFormatLevel":7}"#, 4),
@@ -1388,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_profile_produces_the_rsa3072_native_layout() {
+    fn legacy_profile_rsa3072_native_layout() {
         let object_bytes = object::fixtures::any_rsa_object(4);
         let user = UserNvramFixture {
             entries: vec![UserNvramFixture::persistent_entry(
@@ -1452,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_capacity_user_nvram_commits() {
+    fn exact_capacity_user_nvram_commit_success() {
         let index_bytes = NvIndexFixture::default().bytes();
         let entries = [65792u32, 65792, 39148]
             .iter()
@@ -1478,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sequence_object_is_rejected_at_commit() {
+    fn legacy_sequence_object_commit_rejection() {
         let object_bytes = object::fixtures::any_sequence_object(object::fixtures::SEQ_HASH);
         let user = UserNvramFixture {
             entries: vec![UserNvramFixture::persistent_entry(
@@ -1496,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn inconsistent_destination_accounting_is_rejected() {
+    fn inconsistent_destination_accounting_rejection() {
         let object_bytes = object::fixtures::any_rsa_object(4);
         let user = UserNvramFixture {
             entries: vec![UserNvramFixture::persistent_entry(
@@ -1523,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn uncompressed_bitmaps_are_copied_and_zero_extended() {
+    fn uncompressed_bitmap_copy_zero_extension() {
         let bitmap = OwnedCommandBitmap {
             compressed: false,
             bytes: vec![0xff, 0x01],
@@ -1535,7 +1535,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_bitmaps_are_remapped_through_the_pinned_table() {
+    fn compressed_bitmap_pinned_table_remap() {
         let mut bytes = vec![0u8; 14];
         bytes[0] |= 1 << 0;
         bytes[0] |= 1 << 4;
@@ -1557,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_bits_past_the_table_are_ignored() {
+    fn compressed_bits_past_table_ignored() {
         let bitmap = OwnedCommandBitmap {
             compressed: true,
             bytes: vec![0xff; 15],
@@ -1572,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn image_survives_dropping_the_blob_and_candidate() {
+    fn image_blob_and_candidate_drop_survival() {
         let image = {
             let blob = valid_permanent_state_fixture();
             let state = candidate(&blob);

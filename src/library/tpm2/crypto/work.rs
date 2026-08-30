@@ -74,7 +74,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_counter_starts_and_resets_at_zero() {
+    fn counter_zero_start_and_reset() {
         reset();
         assert_eq!(snapshot(), Counters::default());
         count_modular_multiplication();
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn measuring_reports_the_work_done_inside_the_body() {
+    fn measurement_body_work_accounting() {
         let (value, counters) = measure(|| {
             for _ in 0..5 {
                 count_modular_multiplication();

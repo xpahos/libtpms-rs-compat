@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (code, record, expected) in [
             (CC_POLICY_AUTH_VALUE, "CCATTR_016B", 0x0200_016bu32),
             (CC_POLICY_COMMAND_CODE, "CCATTR_016C", 0x0200_016c),
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_are_rejected_before_startup() {
+    fn pre_startup_command_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn the_policy_digest_evolves_exactly_like_the_reference() {
+    fn policy_digest_evolution_reference_match() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(digest(&mut runtime), vector("PGD_INITIAL"));
         assert_eq!(
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_password_and_policy_auth_value_extend_the_same_digest() {
+    fn policy_password_and_auth_value_same_digest_extension() {
         let mut first = restored("POLICY_FRESH");
         run(&mut first, CC_POLICY_AUTH_VALUE, &[]);
         let mut second = restored("POLICY_FRESH");
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_flags_are_mutually_exclusive() {
+    fn authorization_flag_mutual_exclusion() {
         let mut runtime = restored("POLICY_FRESH");
         run(&mut runtime, CC_POLICY_AUTH_VALUE, &[]);
         let session = session_of(&runtime, POLICY_SESSION_0);
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn command_codes_the_reference_does_not_implement_are_rejected() {
+    fn unimplemented_reference_command_code_rejection() {
         let mut runtime = restored("POLICY_FRESH");
         for (record, code) in [
             ("PCC_UNIMPLEMENTED", 0x0000_0179u32),
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_match_the_oracle() {
+    fn malformed_parameter_oracle_parity() {
         let mut runtime = restored("POLICY_FRESH");
         for (record, code, extra) in [
             ("PCC_NO_CODE", CC_POLICY_COMMAND_CODE, Vec::new()),
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn handles_that_are_not_policy_sessions_match_the_oracle() {
+    fn non_policy_session_handle_oracle_match() {
         let mut runtime = restored("THREE_SESSIONS");
         for (suffix, handle) in [
             ("HMAC_RANGE", HMAC_SESSION_0),
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_get_digest_never_changes_the_session() {
+    fn policy_get_digest_session_preservation() {
         let mut runtime = restored("POLICY_FRESH");
         run(&mut runtime, CC_POLICY_AUTH_VALUE, &[]);
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_restart_clears_the_policy_state_but_keeps_the_transport_state() {
+    fn policy_restart_policy_state_clear_transport_preservation() {
         let mut runtime = restored("POLICY_FRESH");
         run(&mut runtime, CC_POLICY_AUTH_VALUE, &[]);
         run(
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_restart_keeps_the_trial_and_binding_attributes() {
+    fn policy_restart_trial_and_binding_attribute_preservation() {
         let mut runtime = restored("TRIAL_FRESH");
         run(&mut runtime, CC_POLICY_AUTH_VALUE, &[]);
         assert_eq!(
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_walks_the_same_digest_as_a_real_one() {
+    fn trial_session_digest_parity() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(digest(&mut runtime), vector("TRIAL_PGD_INITIAL"));
         assert_eq!(
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sha1_session_keeps_its_own_digest_size() {
+    fn sha1_session_digest_size_preservation() {
         let mut runtime = restored("READY");
         let mut parameters = 20u16.to_be_bytes().to_vec();
         parameters.extend_from_slice(&[0x5a; 20]);
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_policy_command_leaves_the_session_untouched() {
+    fn failed_policy_command_session_unchanged() {
         let mut runtime = restored("POLICY_FRESH");
         run(
             &mut runtime,
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_hash_self_test_publishes_no_policy_update() {
+    fn failing_hash_self_test_no_policy_update() {
         use crate::library::tpm2::self_test::always_fails;
         let mut runtime = restored("POLICY_FRESH");
         let before = session_of(&runtime, POLICY_SESSION_0).audit_digest.clone();
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pending_hash_self_test_is_consumed_at_the_point_of_use() {
+    fn pending_hash_self_test_use_time_consumption() {
         use crate::library::tpm2::self_test::PrimitiveTest;
         let mut runtime = restored("POLICY_FRESH");
         assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha256));
@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_stay_isolated_while_a_policy_is_built() {
+    fn session_isolation_during_policy_build() {
         let mut runtime = restored("THREE_SESSIONS");
         let hmac_before = session_of(&runtime, HMAC_SESSION_0).clone();
         let trial_before = session_of(&runtime, 0x0300_0002).clone();
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn the_policy_state_survives_a_volatile_save_and_restore() {
+    fn policy_state_volatile_round_trip() {
         let mut runtime = restored("POLICY_SAVED");
         assert_eq!(digest(&mut runtime), vector("RESTORED_PGD"));
         assert_eq!(
@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_and_reloaded_session_keeps_every_field() {
+    fn session_save_reload_field_preservation() {
         use crate::library::tpm2::clock::RecordingClock;
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = policy_command(CC_POLICY_COMMAND_CODE, POLICY_SESSION_0, &[0, 0, 1, 0x5d]);
         for length in 10..valid.len() {
             for byte in [0x00u8, 0x01, 0x80, 0xff] {

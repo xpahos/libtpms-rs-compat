@@ -107,6 +107,7 @@ fn parse_parameters<'a>(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_PCR_SET_AUTH_POLICY, find,
     };
@@ -126,7 +127,7 @@ mod tests {
     const TPM_ALG_ECB: u16 = 0x0044;
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn registration_upstream_attributes() {
         let descriptor = find(TPM_CC_PCR_SET_AUTH_POLICY).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0240_012c);
         assert!(descriptor.physical_presence);
@@ -144,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_command_attributes_match_the_reference() {
+    fn command_attributes_reference_match() {
         replay(&[(
             "CCATTR_012C",
             cap_command_attributes(TPM_CC_PCR_SET_AUTH_POLICY),
@@ -152,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn no_implemented_pcr_belongs_to_an_authorization_policy_group() {
+    fn implemented_pcr_policy_group_absence() {
         for pcr in 0..IMPLEMENTATION_PCR {
             assert_eq!(
                 pcr_policy_group(pcr),
@@ -163,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn every_pcr_is_rejected_like_the_reference() {
+    fn per_pcr_rejection_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -195,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_and_parameter_errors_match_the_reference() {
+    fn handle_parameter_error_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -287,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_is_reported_before_the_digest_size() {
+    fn unavailable_nv_pre_digest_size_order() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         runtime.nv_available = false;
@@ -302,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn no_request_ever_commits_an_nv_update() {
+    fn nv_update_commit_absence() {
         for bytes in [
             pcr_set_auth_policy(TPM_RH_PLATFORM, &DIGEST, TPM_ALG_SHA256, 20, &[]),
             pcr_set_auth_policy(TPM_RH_PLATFORM, &[], TPM_ALG_NULL, 0, &[]),
@@ -313,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_pcr_policy_survives_a_permanent_state_round_trip() {
+    fn stored_policy_permanent_round_trip() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         {
@@ -338,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = pcr_set_auth_policy(TPM_RH_PLATFORM, &DIGEST, TPM_ALG_SHA256, 20, &[]);
         for len in 0..=valid.len() {
@@ -354,6 +355,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
+                        Cancellation::disabled(),
                     );
                 }
             }

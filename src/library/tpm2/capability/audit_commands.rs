@@ -52,12 +52,12 @@ mod tests {
         };
     }
 
-    fn runtime() -> Box<Tpm2Runtime> {
+    fn runtime() -> Tpm2Runtime {
         started()
     }
 
     #[test]
-    fn a_manufactured_tpm_audits_the_command_that_maintains_the_list() {
+    fn manufactured_default_audit_entry() {
         let runtime = runtime();
         let page = collect(&runtime, 0, 100);
         assert_eq!(page.entries, [TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS]);
@@ -65,7 +65,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_audit_list_reports_no_more_data() {
+    fn empty_audit_list_no_more_data() {
         let mut runtime = runtime();
         audited(&mut runtime, &[]);
         let page = collect(&runtime, 0, 100);
@@ -77,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn the_audited_commands_are_returned_in_command_code_order() {
+    fn audited_command_code_order() {
         let mut runtime = runtime();
         audited(
             &mut runtime,
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn the_starting_command_is_inclusive_and_skips_to_the_next_audited_command() {
+    fn inclusive_start_next_audited_skip() {
         let mut runtime = runtime();
         audited(
             &mut runtime,
@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn a_start_past_the_last_audited_command_returns_an_empty_page() {
+    fn start_past_last_empty_page() {
         let mut runtime = runtime();
         audited(&mut runtime, &[TPM_CC_STARTUP]);
         for start in [TPM_CC_STARTUP + 1, 0x0000_019d, 0x2000_0000, u32::MAX] {
@@ -119,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn the_requested_count_truncates_the_page_and_reports_more_data() {
+    fn count_truncation_more_data() {
         let mut runtime = runtime();
         audited(
             &mut runtime,
@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capacity_matches_the_command_list_capacity() {
+    fn capacity_command_list_match() {
         assert_eq!(MAX_CAP_CC, 254);
     }
 }

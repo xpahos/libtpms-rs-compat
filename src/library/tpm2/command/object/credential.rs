@@ -239,7 +239,7 @@ mod test_support {
     pub(in crate::library::tpm2::command) fn runtime_at(
         snapshot: &str,
         clock: &SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         runtime_from(
             vector(&format!("PERMALL_{snapshot}")),
             vector(&format!("VOLATILE_{snapshot}")),
@@ -604,7 +604,7 @@ mod tests {
     };
 
     #[test]
-    fn the_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let make = registry::find(CC_MAKE_CREDENTIAL).expect("TPM2_MakeCredential is registered");
         assert_eq!(make.attributes, 0x0200_0168);
         assert_eq!(make.decrypt_size, 2);
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handles_are_resolved_before_the_command_runs() {
+    fn pre_execution_handle_resolution() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         let name = object_name("READPUBLIC_RSA_AK");
@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsa_keys_are_created_from_the_reference_templates() {
+    fn rsa_key_reference_template_creation() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn making_an_rsa_credential_matches_the_oracle() {
+    fn rsa_make_credential_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         let name = object_name("READPUBLIC_RSA_AK");
@@ -808,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn activating_an_rsa_credential_matches_the_oracle() {
+    fn rsa_activate_credential_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         let (blob, secret) = made_credential("MC_RSA_SHA256");
@@ -988,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecc_protector_round_trips() {
+    fn ecc_protector_round_trip() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -1081,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sha384_protector_bounds_the_credential_to_its_own_digest() {
+    fn sha384_protector_credential_digest_bound() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_restricted_asymmetric_decryption_key_protects_a_credential() {
+    fn credential_protection_restricted_decrypt_key_only() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -1228,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn an_hmac_session_authorizes_the_activation_object() {
+    fn hmac_session_activation_authorization() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         exec(&mut runtime, &clock, "SAS_PLAIN", start_hmac_session());
@@ -1272,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn the_request_and_response_parameters_are_encrypted_by_the_session() {
+    fn session_parameter_encryption() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         exec(&mut runtime, &clock, "SAS_AES", start_hmac_session_aes());
@@ -1372,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_session_authorizes_the_admin_role() {
+    fn policy_session_admin_role_authorization() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -1504,7 +1504,7 @@ mod behaviour {
     }
 
     #[test]
-    fn the_response_codes_carry_the_reference_decorations() {
+    fn response_code_reference_decorations() {
         const HANDLE_1_TYPE: u32 = 0x018a;
         const HANDLE_2_TYPE: u32 = 0x028a;
         const HANDLE_1_VALUE: u32 = 0x0184;
@@ -1578,7 +1578,7 @@ mod behaviour {
     }
 
     #[test]
-    fn a_request_rejected_before_the_seed_is_generated_leaves_the_generator_alone() {
+    fn pre_seed_rejection_generator_unchanged() {
         let clock = clock();
         let name = object_name("READPUBLIC_RSA_AK");
         for (what, packet) in [
@@ -1618,7 +1618,7 @@ mod behaviour {
     }
 
     #[test]
-    fn activating_a_credential_only_draws_for_the_lazy_self_test() {
+    fn activate_credential_lazy_self_test_only_draw() {
         let clock = clock();
         let (blob, secret) = made_credential("MC_RSA_SHA256");
         let mut runtime = runtime_at("RSA_READY", &clock);
@@ -1651,7 +1651,7 @@ mod behaviour {
     }
 
     #[test]
-    fn activating_an_ecc_credential_never_draws_even_on_its_first_use() {
+    fn ecc_activate_credential_first_use_no_draw() {
         let clock = clock();
         let (blob, secret) = made_credential("MC_ECC_SHA256");
         let mut runtime = runtime_at("ECC_READY", &clock);
@@ -1677,7 +1677,7 @@ mod behaviour {
     }
 
     #[test]
-    fn a_starved_generator_stops_an_ecc_credential_without_entering_failure_mode() {
+    fn starved_generator_ecc_error_no_failure_mode() {
         let clock = clock();
         let mut runtime = runtime_at("ECC_READY", &clock);
         starve_the_generator(&mut runtime);
@@ -1696,7 +1696,7 @@ mod behaviour {
     }
 
     #[test]
-    fn a_starved_generator_still_wraps_an_rsa_credential_with_a_zeroed_seed() {
+    fn starved_generator_rsa_zeroed_seed_wrap() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         starve_the_generator(&mut runtime);
@@ -1715,7 +1715,7 @@ mod behaviour {
     }
 
     #[test]
-    fn making_a_credential_runs_only_the_self_tests_its_protector_reaches() {
+    fn make_credential_protector_scoped_self_tests() {
         let clock = clock();
         for (snapshot, name_label, expected) in [
             (
@@ -1763,7 +1763,7 @@ mod behaviour {
     }
 
     #[test]
-    fn a_credential_refused_before_the_arithmetic_runs_no_self_test() {
+    fn pre_arithmetic_rejection_no_self_test() {
         let clock = clock();
         let name = object_name("READPUBLIC_ECC_AK");
         let mut runtime = runtime_at("ECC_READY", &clock);
@@ -1782,7 +1782,7 @@ mod behaviour {
     }
 
     #[test]
-    fn the_ecdh_test_runs_only_once_the_secret_point_unmarshals() {
+    fn ecdh_test_after_secret_point_unmarshal() {
         let clock = clock();
         let (blob, secret) = made_credential("MC_ECC_SHA256");
         for (what, encrypted_secret, cleared) in [
@@ -1815,7 +1815,7 @@ mod behaviour {
     }
 
     #[test]
-    fn recovering_a_valid_secret_settles_the_name_algorithm_before_the_credential_blob() {
+    fn valid_secret_recovery_name_algorithm_precedence() {
         let clock = clock();
         for (snapshot, record, protector_hash) in [
             ("RSA_READY", "MC_RSA_SHA256", ALG_SHA256),
@@ -1853,7 +1853,7 @@ mod behaviour {
     }
 
     #[test]
-    fn an_injected_self_test_failure_stops_the_credential_commands() {
+    fn injected_self_test_failure_command_stop() {
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::self_test::{fails_on_aes, fails_on_sha256};
         const FAILURE: u32 = 0x0000_0101;
@@ -1945,7 +1945,7 @@ mod behaviour {
     }
 
     #[test]
-    fn an_rsa_hash_failure_stops_after_the_seed_but_before_the_oaep_padding() {
+    fn rsa_hash_failure_post_seed_pre_oaep_stop() {
         use crate::library::tpm2::self_test::fails_on_sha256;
         let clock = clock();
         let name = object_name("READPUBLIC_RSA_AK");
@@ -1981,7 +1981,7 @@ mod behaviour {
     }
 
     #[test]
-    fn the_recovered_credential_is_the_one_that_was_made() {
+    fn make_activate_round_trip() {
         let clock = clock();
         for (snapshot, label, activate, key, expected) in [
             ("RSA_READY", "MC_RSA_SHA256", H1, H0, credential()),

@@ -266,7 +266,7 @@ mod tests {
         ENTROPY_REQUESTS.with(|requests| core::mem::take(&mut *requests.borrow_mut()))
     }
 
-    fn runtime_for(continuous_test: bool) -> Box<Tpm2Runtime> {
+    fn runtime_for(continuous_test: bool) -> Tpm2Runtime {
         let profile = if continuous_test {
             validate_user_profile(Some(CONTINUOUS_TEST_PROFILE)).expect("the profile validates")
         } else {
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn the_request_sequence_matches_the_vendored_oracle() {
+    fn request_sequence_vendored_oracle_match() {
         for continuous_test in [false, true] {
             let record = generate_record(continuous_test);
             let mut runtime = runtime_for(continuous_test);
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_requests_return_the_next_output_instead_of_repeating() {
+    fn repeated_request_output_advance() {
         let record = generate_record(false);
         let mut runtime = runtime_for(false);
         install_initial(&mut runtime, &record);
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_length_request_still_advances_the_state_like_upstream() {
+    fn zero_length_request_state_advance() {
         for continuous_test in [false, true] {
             let record = generate_record(continuous_test);
             let zero_step = &record.steps[0];
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn the_continuous_test_attribute_reaches_the_generator() {
+    fn continuous_test_attribute_generator_propagation() {
         let record = generate_record(true);
         let repeated = block_words(&record.steps[4].output()[..16]);
 
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_seed_length_fails_transactionally() {
+    fn malformed_seed_length_transactional_failure() {
         for length in [0usize, 1, 47, 49, 64] {
             let mut runtime = runtime_for(false);
             install(&mut runtime, &vec![0x5a; length], 3, [1, 2, 3, 4]);
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_magic_fails_instead_of_instantiating_a_new_generator() {
+    fn foreign_magic_failure_no_reinstantiation() {
         let record = generate_record(false);
         for magic in [0u32, DRBG_MAGIC ^ 1, 0xffff_ffff] {
             let mut runtime = runtime_for(false);
@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_decoded_state_fails_transactionally() {
+    fn undecoded_state_transactional_failure() {
         let record = generate_record(false);
         let mut runtime = empty_state_runtime();
         runtime.entropy = unreachable_entropy;
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_request_leaves_the_persistent_state_and_nv_alone() {
+    fn request_success_persistent_nv_unchanged() {
         let record = generate_record(false);
         let mut runtime = runtime_for(false);
         install_initial(&mut runtime, &record);
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_never_draws_host_entropy() {
+    fn generation_no_host_entropy_draw() {
         let record = generate_record(false);
         let mut runtime = runtime_for(false);
         runtime.entropy = failing_entropy;
@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_below_the_reseed_threshold_never_draws_entropy() {
+    fn below_reseed_threshold_no_entropy_draw() {
         for continuous_test in [false, true] {
             let record = boundary_record(continuous_test);
             let case = &record.cases[0];
@@ -624,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_at_the_reseed_threshold_draws_exactly_one_seed_block() {
+    fn reseed_threshold_single_seed_block_draw() {
         for continuous_test in [false, true] {
             let record = boundary_record(continuous_test);
             let case = &record.cases[1];
@@ -655,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_above_the_reseed_threshold_also_reseeds() {
+    fn above_reseed_threshold_reseed() {
         for continuous_test in [false, true] {
             let record = boundary_record(continuous_test);
             let case = &record.cases[3];
@@ -675,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_length_request_at_the_threshold_still_reseeds() {
+    fn zero_length_request_threshold_reseed() {
         for continuous_test in [false, true] {
             let record = boundary_record(continuous_test);
             let case = &record.cases[2];
@@ -704,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_at_the_threshold_yields_no_bytes_without_failing() {
+    fn threshold_entropy_failure_no_bytes_no_failure_mode() {
         for continuous_test in [false, true] {
             let record = boundary_record(continuous_test);
             for case in [&record.cases[1], &record.cases[2], &record.cases[3]] {
@@ -754,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_test_hit_during_the_automatic_reseed_stops_the_tpm() {
+    fn auto_reseed_continuous_test_hit_tpm_stop() {
         let record = boundary_record(true);
         let case = &record.cases[1];
         let mut runtime = runtime_for(true);
@@ -781,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_fetch_latches_entropy_bad_and_never_retries_the_source() {
+    fn failed_fetch_entropy_bad_latch_no_retry() {
         let record = boundary_record(false);
         let case = &record.cases[1];
         let mut runtime = runtime_for(false);
@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn the_entropy_bad_latch_reaches_the_stir_and_back() {
+    fn entropy_bad_latch_stir_generate_propagation() {
         let stir_case = stir_record(false);
         let case = &stir_case.cases[0];
         let mut runtime = runtime_for(false);
@@ -849,7 +849,7 @@ mod tests {
         );
     }
 
-    fn stir_runtime(continuous_test: bool) -> Box<Tpm2Runtime> {
+    fn stir_runtime(continuous_test: bool) -> Tpm2Runtime {
         let mut runtime = runtime_for(continuous_test);
         runtime.entropy = recording_entropy;
         take_entropy_requests();
@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn the_test_entropy_pattern_is_the_block_the_oracle_injected() {
+    fn test_entropy_pattern_oracle_block_match() {
         let mut block = [0u8; DRBG_SEED_SIZE];
         deterministic_entropy(&mut block).expect("fills");
         for continuous_test in [false, true] {
@@ -868,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn every_stir_matches_the_vendored_oracle() {
+    fn stir_vendored_oracle_parity() {
         for continuous_test in [false, true] {
             let record = stir_record(continuous_test);
             for (index, case) in record.cases.iter().enumerate() {
@@ -897,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stream_after_a_stir_matches_the_vendored_oracle() {
+    fn post_stir_stream_vendored_oracle_match() {
         for continuous_test in [false, true] {
             let record = stir_record(continuous_test);
             for (index, case) in record.cases.iter().enumerate() {
@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stir_forces_the_counter_to_one_and_the_next_request_advances_to_two() {
+    fn stir_counter_reset_next_request_advance() {
         for continuous_test in [false, true] {
             let record = stir_record(continuous_test);
             for (index, case) in record.cases.iter().enumerate() {
@@ -937,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stir_draws_exactly_one_full_seed_block() {
+    fn stir_single_seed_block_draw() {
         for continuous_test in [false, true] {
             let record = stir_record(continuous_test);
             for (index, case) in record.cases.iter().enumerate() {
@@ -954,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_input_reseeds_from_entropy_alone() {
+    fn empty_stir_input_entropy_only_reseed() {
         let record = stir_record(false);
         let case = &record.cases[0];
         assert!(
@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_empty_input_changes_the_resulting_state() {
+    fn nonempty_stir_input_state_change() {
         let record = stir_record(false);
         let mut runtime = stir_runtime(false);
         install_stir(&mut runtime, &record.cases[0]);
@@ -997,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn different_inputs_of_the_same_length_produce_different_states() {
+    fn equal_length_input_state_divergence() {
         let record = stir_record(false);
         let (left, right) = (&record.cases[2], &record.cases[3]);
         assert_eq!(
@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_stir_leaves_the_persistent_state_and_nv_alone() {
+    fn stir_success_persistent_nv_unchanged() {
         for continuous_test in [false, true] {
             let record = stir_record(continuous_test);
             for case in &record.cases {
@@ -1033,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_reports_no_result_and_changes_nothing() {
+    fn stir_entropy_failure_no_result_unchanged() {
         for continuous_test in [false, true] {
             let record = stir_record(continuous_test);
             for case in &record.cases {
@@ -1059,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_seed_length_fails_the_stir_transactionally() {
+    fn stir_malformed_seed_length_transactional_failure() {
         for length in [0usize, 1, 47, 49, 64] {
             let mut runtime = stir_runtime(false);
             install(&mut runtime, &vec![0x5a; length], 3, [1, 2, 3, 4]);
@@ -1078,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_test_hit_during_a_stir_stops_the_tpm() {
+    fn stir_continuous_test_hit_tpm_stop() {
         let continuous = stir_record(true);
         let case = &continuous.cases[0];
         let mut runtime = stir_runtime(true);
@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_magic_fails_the_stir_instead_of_reseeding() {
+    fn stir_foreign_magic_failure_no_reseed() {
         let record = stir_record(false);
         for magic in [0u32, DRBG_MAGIC ^ 1, 0xffff_ffff] {
             let mut runtime = stir_runtime(false);
@@ -1121,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stir_on_a_runtime_without_decoded_state_fails_transactionally() {
+    fn stir_undecoded_state_transactional_failure() {
         let record = stir_record(false);
         let mut runtime = empty_state_runtime();
         runtime.entropy = unreachable_entropy;
@@ -1134,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn the_continuous_test_attribute_reaches_the_stir() {
+    fn stir_continuous_test_attribute_propagation() {
         let plain = stir_record(false);
         let continuous = stir_record(true);
         for (index, (left, right)) in plain.cases.iter().zip(&continuous.cases).enumerate() {
@@ -1160,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn an_automatic_reseed_leaves_the_persistent_state_and_nv_alone() {
+    fn auto_reseed_persistent_nv_unchanged() {
         for continuous_test in [false, true] {
             let record = boundary_record(continuous_test);
             let mut runtime = runtime_for(continuous_test);
@@ -1179,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn no_production_caller_bypasses_the_live_drbg_layer() {
+    fn production_caller_live_drbg_layer_coverage() {
         use std::path::Path;
 
         let rules: &[(&str, &[&str])] = &[
@@ -1278,7 +1278,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn a_successful_reseed_draws_one_full_seed_and_resets_the_counter() {
+        fn reseed_success_single_seed_counter_reset() {
             let mut runtime = runtime_for(false);
             runtime.entropy = recording_entropy;
             take_entropy_requests();
@@ -1288,7 +1288,7 @@ mod tests {
         }
 
         #[test]
-        fn an_instantiate_draws_one_full_seed_when_no_stored_state_is_valid() {
+        fn instantiate_invalid_stored_state_seed_draw() {
             let mut runtime = runtime_for(false);
             runtime.live.orderly.drbg_state.drbg_magic = 0;
             runtime.entropy = recording_entropy;
@@ -1299,7 +1299,7 @@ mod tests {
         }
 
         #[test]
-        fn an_entropy_failure_latches_and_never_reaches_the_callback_again() {
+        fn entropy_failure_latch_no_callback_retry() {
             for wipe_magic in [false, true] {
                 let mut runtime = runtime_for(false);
                 if wipe_magic {
@@ -1326,7 +1326,7 @@ mod tests {
         }
 
         #[test]
-        fn a_reseed_collision_is_the_encrypt_drbg_fatal() {
+        fn reseed_collision_encrypt_drbg_fatal() {
             let mut runtime = runtime_for(true);
             runtime.entropy = deterministic_entropy;
             let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
@@ -1349,7 +1349,7 @@ mod tests {
         }
 
         #[test]
-        fn a_startup_draw_collision_is_the_encrypt_drbg_fatal() {
+        fn startup_draw_collision_encrypt_drbg_fatal() {
             let mut runtime = runtime_for(true);
             let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
             let mut drbg = Drbg::restore(&seed, 1, colliding_last_value(&seed), true)
@@ -1366,7 +1366,7 @@ mod tests {
         }
 
         #[test]
-        fn a_healthy_startup_draw_serves_the_secret_without_entropy() {
+        fn healthy_startup_draw_secret_no_entropy() {
             let mut runtime = runtime_for(true);
             let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
             let mut drbg = Drbg::restore(&seed, 1, [0; 4], true).expect("restores");
@@ -1381,7 +1381,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn take_generate_finish_matches_the_direct_generate_path() {
+        fn take_generate_finish_direct_path_parity() {
             let record = generate_record(false);
             let step = &record.steps[1];
 
@@ -1407,7 +1407,7 @@ mod tests {
         }
 
         #[test]
-        fn a_reseed_due_entropy_failure_is_no_result_and_latches_at_finish() {
+        fn reseed_due_entropy_failure_finish_latch() {
             let record = boundary_record(false);
             let mut runtime = runtime_for(false);
             runtime.entropy = failing_entropy;
@@ -1429,7 +1429,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pre_latched_runtime_never_reaches_the_callback() {
+        fn pre_latched_runtime_no_callback() {
             let record = boundary_record(false);
             let mut runtime = runtime_for(false);
             runtime.entropy_bad = true;
@@ -1445,7 +1445,7 @@ mod tests {
         }
 
         #[test]
-        fn a_generate_collision_is_fatal_at_finish_and_stores_nothing() {
+        fn generate_collision_finish_fatal_no_store() {
             let mut runtime = runtime_for(true);
             let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
             runtime.live.orderly.drbg_state.last_value = colliding_last_value(&seed);
@@ -1471,7 +1471,7 @@ mod tests {
         }
 
         #[test]
-        fn an_invalid_stored_state_is_fatal_at_take() {
+        fn invalid_stored_state_take_fatal() {
             let mut runtime = runtime_for(false);
             runtime.live.orderly.drbg_state.drbg_magic = 0;
             assert_eq!(
@@ -1486,7 +1486,7 @@ mod tests {
         }
 
         #[test]
-        fn a_non_live_generator_is_a_completion_no_op() {
+        fn non_live_generator_completion_noop() {
             let mut runtime = runtime_for(false);
             let before = live_drbg(&runtime);
             let rand = crate::library::tpm2::crypto::SeededRand::instantiate(

@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vendored_test_key_loads_and_its_primes_multiply_to_the_modulus() {
+    fn vendored_key_load_prime_product_modulus() {
         let key = load_test_key().expect("the pinned modulus is divisible by the pinned prime");
         assert_eq!(key.p.mul(&key.q), key.modulus);
         assert_eq!(TEST_MODULUS.len(), 256);
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn the_known_answer_test_passes_for_any_seed() {
+    fn known_answer_seed_independence() {
         for offset in [0u8, 1, 0x37, 0xff] {
             let seed: Vec<u8> = (0..OAEP_TEST_SEED_SIZE)
                 .map(|index| (index as u8).wrapping_add(offset))
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_expected_value_is_caught_by_the_known_answer_comparison() {
+    fn wrong_expected_value_detection() {
         for position in [0usize, 31, 63] {
             let mut message = TEST_VALUE[..TEST_MESSAGE_SIZE].to_vec();
             message[position] ^= 0x01;
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupted_known_ciphertext_is_caught_before_the_flag_is_cleared() {
+    fn corrupted_ciphertext_detection_before_flag_clear() {
         let mut corrupted = OAEP_KNOWN_CIPHERTEXT;
         corrupted[200] ^= 0x01;
         assert_eq!(
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn a_known_ciphertext_for_a_different_message_fails_the_comparison() {
+    fn different_message_ciphertext_comparison_failure() {
         let key = load_test_key().expect("the test key loads");
         let other = [0x5au8; TEST_MESSAGE_SIZE];
         let padded = oaep_encode(
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_seed_length_is_reported_as_an_encryption_failure() {
+    fn wrong_seed_length_encryption_failure() {
         assert_eq!(
             run_oaep_known_answer(&[0u8; 32]),
             Err(PaddedRsaSelfTestStage::Encrypt)
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn the_known_ciphertext_decodes_to_the_pinned_test_value() {
+    fn known_ciphertext_pinned_value_decode() {
         let key = load_test_key().expect("the test key loads");
         let recovered =
             decrypt(&key, &oaep(&seed()), &OAEP_KNOWN_CIPHERTEXT).expect("the pinned KVT decodes");
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupted_known_ciphertext_is_detected() {
+    fn corrupted_known_ciphertext_detection() {
         let key = load_test_key().expect("the test key loads");
         for position in [0usize, 1, 64, 128, 255] {
             let mut corrupted = OAEP_KNOWN_CIPHERTEXT;
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn a_round_trip_uses_the_supplied_seed() {
+    fn supplied_seed_round_trip() {
         let padded = oaep_encode(
             TEST_HASH_ALG,
             OAEP_TEST_LABEL,
@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsaes_padding_size_is_the_one_the_reference_draws() {
+    fn rsaes_padding_size_reference_match() {
         assert_eq!(
             rsaes_padding_length(TEST_MODULUS.len(), TEST_MESSAGE_SIZE),
             Some(RSAES_TEST_PADDING_SIZE)
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsaes_known_answer_test_passes_for_any_padding() {
+    fn rsaes_known_answer_padding_independence() {
         for offset in [0u8, 1, 0x37, 0xfe] {
             let padding: Vec<u8> = (0..RSAES_TEST_PADDING_SIZE)
                 .map(|index| (index as u8).wrapping_add(offset))
@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_rsaes_padding_length_is_reported_as_an_encryption_failure() {
+    fn wrong_rsaes_padding_length_encryption_failure() {
         for length in [
             0usize,
             1,
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pinned_rsaes_ciphertext_decodes_to_the_pinned_test_value() {
+    fn pinned_rsaes_ciphertext_decode() {
         let key = load_test_key().expect("the test key loads");
         let padding = rsaes_padding();
         let recovered = decrypt(
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupted_rsaes_known_ciphertext_is_caught() {
+    fn corrupted_rsaes_ciphertext_detection() {
         let padding = rsaes_padding();
         let mut corrupted = RSAES_KNOWN_CIPHERTEXT;
         corrupted[200] ^= 0x01;
@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsaes_known_ciphertext_for_a_different_message_fails_the_comparison() {
+    fn rsaes_different_message_comparison_failure() {
         let key = load_test_key().expect("the test key loads");
         let padding = rsaes_padding();
         let padded = rsaes_encode(TEST_MODULUS.len(), &[0x5au8; TEST_MESSAGE_SIZE], &padding)
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn the_raw_known_answer_test_reproduces_the_pinned_ciphertext() {
+    fn raw_known_answer_pinned_ciphertext_match() {
         assert_eq!(run_rsaep_known_answer(), Ok(()));
         let key = load_test_key().expect("the test key loads");
         assert_eq!(
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn the_three_pinned_ciphertexts_differ() {
+    fn pinned_ciphertext_distinctness() {
         assert_ne!(OAEP_KNOWN_CIPHERTEXT, RSAES_KNOWN_CIPHERTEXT);
         assert_ne!(OAEP_KNOWN_CIPHERTEXT, RSAEP_KNOWN_CIPHERTEXT);
         assert_ne!(RSAES_KNOWN_CIPHERTEXT, RSAEP_KNOWN_CIPHERTEXT);

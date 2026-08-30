@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let oracle = vector("CCATTR_0171");
         let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
         let descriptor = find(CC_POLICY_OR).expect("a registered command");
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_matching_the_current_digest_rebuilds_it() {
+    fn matching_branch_digest_rebuild() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_or(&mut runtime, &digest_list(&[&BRANCH_A, &BRANCH_B])),
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn a_match_in_any_position_produces_the_same_digest_as_its_list() {
+    fn any_position_match_same_list_digest() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_or(&mut runtime, &digest_list(&[&BRANCH_A, &ZERO])),
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn the_maximum_branch_count_is_accepted() {
+    fn maximum_branch_count_acceptance() {
         let mut runtime = restored("POLICY_FRESH");
         let branches: Vec<&[u8]> = core::iter::once(&ZERO[..])
             .chain(core::iter::repeat_n(&BRANCH_A[..], 7))
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_branch_lists_match_the_oracle() {
+    fn malformed_branch_list_oracle_parity() {
         let mut runtime = restored("POLICY_FRESH");
         let nine: Vec<&[u8]> = core::iter::repeat_n(&ZERO[..], 9).collect();
         let short = [0u8; 20];
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_accepts_any_branch_list() {
+    fn trial_session_any_branch_list_acceptance() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(
             policy_or(&mut runtime, &digest_list(&[&BRANCH_A, &BRANCH_B])),
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sha1_session_matches_its_own_digest_size() {
+    fn sha1_session_digest_size_match() {
         let mut runtime = restored("READY");
         let mut parameters = 20u16.to_be_bytes().to_vec();
         parameters.extend_from_slice(&[0x5a; 20]);
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_branch_list_leaves_the_session_untouched() {
+    fn rejected_branch_list_session_unchanged() {
         let mut runtime = restored("POLICY_FRESH");
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         let short = [0u8; 20];
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_branch_selection_only_changes_the_digest() {
+    fn successful_selection_digest_only_change() {
         let mut runtime = restored("POLICY_FRESH");
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         assert_eq!(
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_comparison_is_length_checked_before_content() {
+    fn branch_comparison_length_before_content() {
         assert!(branch_matches(&[1, 2, 3], &[1, 2, 3]));
         assert!(!branch_matches(&[1, 2, 3], &[1, 2]));
         assert!(!branch_matches(&[1, 2], &[1, 2, 3]));
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = command(
             CC_POLICY_OR,
             &[POLICY_SESSION_0],

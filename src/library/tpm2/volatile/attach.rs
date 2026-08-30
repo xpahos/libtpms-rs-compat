@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_survives_dropping_the_input_blob() {
+    fn candidate_input_blob_drop_survival() {
         let candidate = {
             let blob = VolatileFixture::default().bytes();
             decode_and_materialize(&blob)
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_debug_output_never_contains_secret_bytes() {
+    fn candidate_debug_output_secret_byte_absence() {
         let mut fixture = VolatileFixture::default();
         fixture.session_entries[0].3 = b"caller-nonce-mrk".to_vec();
         fixture.session_entries[0].4 = b"input-auth-mark!".to_vec();
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn inconsistent_counts_are_rejected_transactionally() {
+    fn inconsistent_count_transactional_rejection() {
         let blob = VolatileFixture::default().bytes();
         let decoded = parse_volatile_state_blob(
             &blob,
@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn contradictory_session_slot_is_rejected() {
+    fn contradictory_session_slot_rejection() {
         let blob = VolatileFixture::default().bytes();
         let mut decoded = parse_volatile_state_blob(
             &blob,

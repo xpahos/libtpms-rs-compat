@@ -1,8 +1,12 @@
 use core::ffi::{c_char, c_int, c_uchar, c_uint};
 
+use std::sync::Arc;
+
+use crate::ffi::platform::CallbackPlatform;
+use crate::ffi::storage::CallbackStorage;
 use crate::library::{
-    self, EncodedBlobKind, StateBlobKind, StateInput, StateOutput, StateValidationMask, TPM_FAIL,
-    TPM_SIZE, TPM_SUCCESS,
+    self, EncodedBlobKind, ExternalServices, StateBlobKind, StateInput, StateOutput,
+    StateValidationMask, TPM_FAIL, TPM_SIZE, TPM_SUCCESS,
 };
 use crate::types::{
     LibtpmsCallbacks, TpmBool, TpmResult, TpmlibBlobType, TpmlibInfoFlags, TpmlibStateType,
@@ -45,61 +49,128 @@ pub(crate) unsafe fn process(
     if command.is_null() && command_size != 0 {
         return TPM_FAIL;
     }
-    match library::prepare_process() {
-        library::ProcessPreparation::Disabled => TPM_FAIL,
-        #[cfg(feature = "tpm2")]
-        library::ProcessPreparation::Tpm2(context) => {
-            let prefix_len = library::CommandInput::required_prefix_len(command_size);
-            let command_input = library::CommandInput::new(
-                command_size,
-                if prefix_len == 0 {
-                    Vec::new()
-                } else {
-                    // SAFETY: `command` is non-null and points to at least
-                    // `prefix_len <= command_size` readable bytes by the
-                    // FFI contract.
-                    unsafe { core::slice::from_raw_parts(command, prefix_len) }.to_vec()
-                },
-            );
-            // SAFETY: the output pointers were null-checked above and
-            // `*respbuffer` is null or caller-owned by the FFI contract.
-            if let Err(code) = unsafe { ensure_response_buffer(respbuffer, respbufsize) } {
-                return code;
-            }
-            match context.execute(&command_input) {
-                // SAFETY: null-checked above; `ensure_response_buffer`
-                // left `*respbuffer` with `*respbufsize` writable bytes.
-                Ok(response) => unsafe {
-                    copy_response(respbuffer, resp_size, respbufsize, &response)
-                },
-                Err(code) => code,
-            }
+    #[cfg(feature = "tpm2")]
+    {
+        let prefix_len = library::CommandInput::required_prefix_len(command_size);
+        let command_input = library::CommandInput::new(
+            command_size,
+            if prefix_len == 0 {
+                Vec::new()
+            } else {
+                // SAFETY: `command` is non-null and points to at least
+                // `prefix_len <= command_size` readable bytes by the
+                // FFI contract.
+                unsafe { core::slice::from_raw_parts(command, prefix_len) }.to_vec()
+            },
+        );
+        if !library::tpm2_selected() {
+            return TPM_FAIL;
         }
+        // SAFETY: the output pointers were null-checked above and
+        // `*respbuffer` is null or caller-owned by the FFI contract.
+        let prepared = match unsafe { PreparedResponseBuffer::for_outputs(respbuffer, respbufsize) }
+        {
+            Ok(prepared) => prepared,
+            Err(code) => return code,
+        };
+        match library::process(&command_input) {
+            // SAFETY: null-checked above; `publish` leaves `*respbuffer`
+            // with at least `*respbufsize` writable bytes, and the command
+            // bytes were copied before the old allocation can be freed.
+            Ok(response) => unsafe {
+                prepared.publish(respbuffer, respbufsize);
+                copy_response(respbuffer, resp_size, respbufsize, &response)
+            },
+            Err(code) => code,
+        }
+    }
+    #[cfg(not(feature = "tpm2"))]
+    {
+        let _ = (command, command_size);
+        TPM_FAIL
     }
 }
 
-/// # Safety
-///
-/// `respbuffer` and `respbufsize` must be non-null and writable, and
-/// `*respbuffer` must be null or a caller-owned C-allocator allocation.
+#[cfg(all(test, feature = "tpm2"))]
+thread_local! {
+    static RESPONSE_ALLOCATION_OVERRIDE: core::cell::RefCell<
+        Option<Box<dyn FnMut() -> *mut c_uchar>>,
+    > = const { core::cell::RefCell::new(None) };
+}
+
 #[cfg(feature = "tpm2")]
-unsafe fn ensure_response_buffer(
-    respbuffer: *mut *mut c_uchar,
-    respbufsize: *mut u32,
-) -> Result<(), TpmResult> {
-    // SAFETY: the pointers are valid per this function's contract, and
-    // `*respbuffer` may be passed to realloc.
-    unsafe {
-        if (*respbufsize as usize) < RESPONSE_BUFFER_SIZE || (*respbuffer).is_null() {
-            let grown = libc::realloc((*respbuffer).cast(), RESPONSE_BUFFER_SIZE);
-            if grown.is_null() {
-                return Err(TPM_SIZE);
-            }
-            *respbuffer = grown.cast();
-            *respbufsize = RESPONSE_BUFFER_SIZE as u32;
+fn allocate_response_buffer() -> *mut c_uchar {
+    #[cfg(test)]
+    {
+        let overridden =
+            RESPONSE_ALLOCATION_OVERRIDE.with(|hook| hook.borrow_mut().as_mut().map(|hook| hook()));
+        if let Some(replacement) = overridden {
+            return replacement;
         }
     }
-    Ok(())
+    // SAFETY: a plain C allocation of a nonzero constant size.
+    unsafe { libc::malloc(RESPONSE_BUFFER_SIZE).cast() }
+}
+
+#[cfg(feature = "tpm2")]
+struct PreparedResponseBuffer {
+    replacement: *mut c_uchar,
+}
+
+#[cfg(feature = "tpm2")]
+impl PreparedResponseBuffer {
+    /// # Safety
+    ///
+    /// `respbuffer` and `respbufsize` must be non-null and readable, and
+    /// `*respbuffer` must be null or a caller-owned C-allocator allocation
+    /// holding at least `*respbufsize` bytes.
+    unsafe fn for_outputs(
+        respbuffer: *mut *mut c_uchar,
+        respbufsize: *mut u32,
+    ) -> Result<Self, TpmResult> {
+        // SAFETY: the pointers are readable per this function's contract.
+        let sufficient =
+            unsafe { !(*respbuffer).is_null() && (*respbufsize as usize) >= RESPONSE_BUFFER_SIZE };
+        if sufficient {
+            return Ok(Self {
+                replacement: core::ptr::null_mut(),
+            });
+        }
+        let replacement = allocate_response_buffer();
+        if replacement.is_null() {
+            return Err(TPM_SIZE);
+        }
+        Ok(Self { replacement })
+    }
+
+    /// # Safety
+    ///
+    /// `respbuffer` and `respbufsize` must be non-null and writable,
+    /// `*respbuffer` must be null or a caller-owned C-allocator allocation,
+    /// and no live borrow may still alias that allocation.
+    unsafe fn publish(mut self, respbuffer: *mut *mut c_uchar, respbufsize: *mut u32) {
+        if self.replacement.is_null() {
+            return;
+        }
+        // SAFETY: the displaced allocation is caller-owned and unaliased per
+        // this function's contract; the replacement takes over its role.
+        unsafe {
+            libc::free((*respbuffer).cast());
+            *respbuffer = self.replacement;
+            *respbufsize = RESPONSE_BUFFER_SIZE as u32;
+        }
+        self.replacement = core::ptr::null_mut();
+    }
+}
+
+#[cfg(feature = "tpm2")]
+impl Drop for PreparedResponseBuffer {
+    fn drop(&mut self) {
+        if !self.replacement.is_null() {
+            // SAFETY: an unpublished replacement is exclusively owned here.
+            unsafe { libc::free(self.replacement.cast()) };
+        }
+    }
 }
 
 /// # Safety
@@ -261,12 +332,39 @@ unsafe fn copy_callbacks(callbacks: *const LibtpmsCallbacks) -> LibtpmsCallbacks
     }
 }
 
+fn split_callbacks(callbacks: LibtpmsCallbacks) -> (CallbackPlatform, CallbackStorage) {
+    let LibtpmsCallbacks {
+        size_of_struct: _,
+        tpm_nvram_init,
+        tpm_nvram_loaddata,
+        tpm_nvram_storedata,
+        tpm_nvram_deletename,
+        tpm_io_init,
+        tpm_io_getlocality,
+        tpm_io_getphysicalpresence,
+    } = callbacks;
+    (
+        CallbackPlatform::new(tpm_io_init, tpm_io_getlocality, tpm_io_getphysicalpresence),
+        CallbackStorage::new(
+            tpm_nvram_init,
+            tpm_nvram_loaddata,
+            tpm_nvram_storedata,
+            tpm_nvram_deletename,
+        ),
+    )
+}
+
 pub(crate) unsafe fn register_callbacks(callbacks: *mut LibtpmsCallbacks) -> TpmResult {
     if callbacks.is_null() {
         return TPM_FAIL;
     }
     // SAFETY: forwarded from TPMLIB_RegisterCallbacks after the null check.
-    library::register_callbacks(unsafe { copy_callbacks(callbacks) });
+    let copied = unsafe { copy_callbacks(callbacks) };
+    let (platform, storage) = split_callbacks(copied);
+    library::register_external_services(ExternalServices::new(
+        Arc::new(platform),
+        Arc::new(storage),
+    ));
     TPM_SUCCESS
 }
 
@@ -472,10 +570,51 @@ pub(crate) fn tpm_io_tpm_established_reset() -> TpmResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::{Platform, Storage};
 
     const BUFFER_MAX_PROPERTY: TpmlibTpmProperty = 2;
 
     unsafe extern "C" fn dummy_init() -> TpmResult {
+        TPM_SUCCESS
+    }
+
+    unsafe extern "C" fn dummy_loaddata(
+        _data: *mut *mut c_uchar,
+        _length: *mut u32,
+        _tpm_number: u32,
+        _name: *const c_char,
+    ) -> TpmResult {
+        TPM_SUCCESS
+    }
+
+    unsafe extern "C" fn dummy_storedata(
+        _data: *const c_uchar,
+        _length: u32,
+        _tpm_number: u32,
+        _name: *const c_char,
+    ) -> TpmResult {
+        TPM_SUCCESS
+    }
+
+    unsafe extern "C" fn dummy_deletename(
+        _tpm_number: u32,
+        _name: *const c_char,
+        _must_exist: TpmBool,
+    ) -> TpmResult {
+        TPM_SUCCESS
+    }
+
+    unsafe extern "C" fn dummy_getlocality(
+        _locality: *mut crate::types::TpmModifierIndicator,
+        _tpm_number: u32,
+    ) -> TpmResult {
+        TPM_SUCCESS
+    }
+
+    unsafe extern "C" fn dummy_getphysicalpresence(
+        _asserted: *mut TpmBool,
+        _tpm_number: u32,
+    ) -> TpmResult {
         TPM_SUCCESS
     }
 
@@ -488,8 +627,70 @@ mod tests {
         }
     }
 
+    fn every_callback_table() -> LibtpmsCallbacks {
+        LibtpmsCallbacks {
+            size_of_struct: core::mem::size_of::<LibtpmsCallbacks>() as c_int,
+            tpm_nvram_init: Some(dummy_init),
+            tpm_nvram_loaddata: Some(dummy_loaddata),
+            tpm_nvram_storedata: Some(dummy_storedata),
+            tpm_nvram_deletename: Some(dummy_deletename),
+            tpm_io_init: Some(dummy_init),
+            tpm_io_getlocality: Some(dummy_getlocality),
+            tpm_io_getphysicalpresence: Some(dummy_getphysicalpresence),
+        }
+    }
+
     #[test]
-    fn full_size_table_round_trips() {
+    fn storage_callback_isolation() {
+        let (platform, storage) = split_callbacks(every_callback_table());
+        assert_eq!(storage.init(), Ok(library::StorageOperation::Done));
+        assert!(storage.can_store());
+        assert_eq!(
+            storage.delete(StateBlobKind::Permanent, false),
+            Ok(library::StorageOperation::Done)
+        );
+        assert_eq!(
+            storage.load(StateBlobKind::Permanent),
+            Ok(library::StorageLoad::Empty)
+        );
+        assert_eq!(platform.locality(), 0, "the dummy platform writes nothing");
+    }
+
+    #[test]
+    fn platform_callback_isolation() {
+        let (platform, storage) = split_callbacks(LibtpmsCallbacks {
+            tpm_nvram_init: None,
+            tpm_nvram_loaddata: None,
+            tpm_nvram_storedata: None,
+            tpm_nvram_deletename: None,
+            ..every_callback_table()
+        });
+        assert_eq!(platform.initialize(), Ok(()));
+        assert!(!platform.physical_presence());
+        assert_eq!(storage.init(), Ok(library::StorageOperation::Unsupported));
+        assert!(!storage.can_store());
+        assert_eq!(
+            storage.load(StateBlobKind::Permanent),
+            Ok(library::StorageLoad::Unsupported)
+        );
+        assert_eq!(
+            storage.delete(StateBlobKind::Permanent, false),
+            Ok(library::StorageOperation::Unsupported)
+        );
+    }
+
+    #[test]
+    fn empty_table_absent_classification() {
+        let (platform, storage) = split_callbacks(LibtpmsCallbacks::empty());
+        assert_eq!(platform.initialize(), Ok(()));
+        assert_eq!(platform.locality(), 0);
+        assert!(!platform.physical_presence());
+        assert_eq!(storage.init(), Ok(library::StorageOperation::Unsupported));
+        assert!(!storage.can_store());
+    }
+
+    #[test]
+    fn full_size_table_round_trip() {
         let table = full_table();
         // SAFETY: `table` is a live, full-size callback table.
         let stored = unsafe { copy_callbacks(&table) };
@@ -500,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn smaller_declared_size_truncates_copy() {
+    fn smaller_declared_size_copy_truncation() {
         let mut table = full_table();
         table.size_of_struct = core::mem::offset_of!(LibtpmsCallbacks, tpm_io_init) as c_int;
         // SAFETY: `table` has at least the number of live bytes it declares.
@@ -510,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_declared_size_is_capped_to_known_struct() {
+    fn oversized_declared_size_known_struct_cap() {
         let mut table = full_table();
         table.size_of_struct = i32::MAX;
         // SAFETY: the implementation caps the read to the live table size.
@@ -520,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_declared_size_copies_nothing() {
+    fn negative_declared_size_no_copy() {
         let mut table = full_table();
         table.size_of_struct = -1;
         // SAFETY: reading the first field of the live table is valid.
@@ -530,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_size_that_would_tear_a_callback_stops_at_the_previous_field() {
+    fn mid_callback_declared_size_field_boundary() {
         let full = core::mem::size_of::<LibtpmsCallbacks>() as c_int;
         let first_callback = core::mem::offset_of!(LibtpmsCallbacks, tpm_nvram_init) as c_int;
         for declared in [first_callback + 1, full - 1] {
@@ -559,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn every_declared_size_copies_a_whole_number_of_fields() {
+    fn declared_size_whole_field_copy() {
         let full = core::mem::size_of::<LibtpmsCallbacks>();
         for declared in 0..=(full as c_int + 8) {
             let copy_len = callbacks_copy_len(declared);
@@ -580,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn a_misaligned_callback_table_is_read_without_undefined_behaviour() {
+    fn misaligned_callback_table_read_safety() {
         let table = full_table();
         let mut unaligned = vec![0u8; core::mem::size_of::<LibtpmsCallbacks>() + 1];
         // SAFETY: `table` is a live struct and `unaligned` has room for its
@@ -599,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn tis_abi_signatures_are_exact() {
+    fn tis_abi_signature_exactness() {
         let _: unsafe extern "C" fn() -> TpmResult = crate::tpm_tis_abi::TPM_IO_Hash_Start;
         let _: unsafe extern "C" fn(*const c_uchar, u32) -> TpmResult =
             crate::tpm_tis_abi::TPM_IO_Hash_Data;
@@ -611,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn tis_null_established_output_pointer_fails_safely() {
+    fn tis_null_established_output_pointer_safe_failure() {
         // SAFETY: NULL is explicitly accepted and rejected by the adapter.
         assert_eq!(
             unsafe { tpm_io_tpm_established_get(core::ptr::null_mut()) },
@@ -625,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn tis_null_hash_data_is_valid_only_for_zero_length() {
+    fn tis_null_hash_data_zero_length_only() {
         // SAFETY: a null pointer with a nonzero length is rejected before any
         // dereference.
         unsafe {
@@ -644,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn null_callbacks_pointer_fails_without_touching_state() {
+    fn null_callbacks_pointer_failure_state_preservation() {
         // SAFETY: NULL is explicitly accepted and rejected by the adapter.
         assert_eq!(
             unsafe { register_callbacks(core::ptr::null_mut()) },
@@ -653,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn property_is_written_to_c_output_pointer() {
+    fn property_c_output_pointer_write() {
         let mut value: c_int = 0;
         // SAFETY: `value` is a live, writable c_int.
         assert_eq!(
@@ -664,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn null_property_output_pointer_fails() {
+    fn null_property_output_pointer_failure() {
         // SAFETY: NULL is explicitly accepted and rejected by the adapter.
         assert_eq!(
             unsafe { get_tpm_property(BUFFER_MAX_PROPERTY, core::ptr::null_mut()) },
@@ -675,7 +876,7 @@ mod tests {
     const LEN_SENTINEL: u32 = 0xdead_beef;
 
     #[test]
-    fn blob_outputs_reject_null_pointers() {
+    fn blob_output_null_pointer_rejection() {
         let called = core::cell::Cell::new(false);
 
         let mut buflen = LEN_SENTINEL;
@@ -710,22 +911,21 @@ mod tests {
     }
 
     #[test]
-    fn volatile_all_store_abi_signature_is_exact() {
+    fn volatile_all_store_abi_signature_exactness() {
         let _: unsafe extern "C" fn(*mut *mut c_uchar, *mut u32) -> TpmResult =
             crate::tpm_library_abi::TPMLIB_VolatileAll_Store;
     }
 
     #[test]
-    fn cancel_command_abi_signature_is_exact() {
+    fn cancel_command_abi_signature_exactness() {
         let _: unsafe extern "C" fn() -> TpmResult = crate::tpm_library_abi::TPMLIB_CancelCommand;
     }
 
-    #[cfg(feature = "tpm2")]
     static GLOBAL_LIBRARY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[cfg(all(feature = "tpm2", feature = "tpm1"))]
     #[test]
-    fn the_exported_cancel_command_covers_the_whole_dispatch_matrix() {
+    fn exported_cancel_command_dispatch_matrix_coverage() {
         const TPMLIB_TPM_VERSION_1_2: crate::types::TpmlibTpmVersion = 0;
         const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
 
@@ -763,7 +963,7 @@ mod tests {
 
     #[cfg(not(feature = "tpm2"))]
     #[test]
-    fn the_exported_cancel_command_fails_without_tpm2_support() {
+    fn exported_cancel_command_no_tpm2_failure() {
         assert_eq!(
             cancel_command(),
             TPM_FAIL,
@@ -777,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn the_exported_cancel_command_returns_instead_of_panicking() {
+    fn exported_cancel_command_panic_safety() {
         for round in 0..4 {
             let code = std::panic::catch_unwind(|| {
                 // SAFETY: the exported wrapper takes no arguments and guards
@@ -793,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    fn exported_volatile_all_store_rejects_null_pointers() {
+    fn exported_volatile_all_store_null_pointer_rejection() {
         let mut buflen = LEN_SENTINEL;
         // SAFETY: `buffer` is null on purpose; `buflen` references a live
         // writable local.
@@ -818,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn blob_outputs_preserve_errors_without_allocating() {
+    fn blob_output_error_preservation_no_allocation() {
         let mut buffer = core::ptr::dangling_mut::<c_uchar>();
         let mut buflen = 0xdead_beef;
         // SAFETY: both output pointers reference live writable locals.
@@ -831,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn blob_outputs_transfer_a_c_allocation_to_the_caller() {
+    fn blob_output_c_allocation_transfer() {
         let expected = [1u8, 2, 3, 4];
         let mut buffer = core::ptr::null_mut();
         let mut buflen = 0u32;
@@ -854,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn blob_outputs_represent_an_explicitly_empty_state_with_the_wire_sentinel() {
+    fn blob_output_explicit_empty_wire_sentinel() {
         let mut buffer = core::ptr::dangling_mut::<c_uchar>();
         let mut buflen = 0u32;
         // SAFETY: both output pointers reference live writable locals.
@@ -868,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn blob_outputs_represent_an_empty_blob_as_null_and_zero() {
+    fn blob_output_empty_blob_null_and_zero() {
         let mut buffer = core::ptr::dangling_mut::<c_uchar>();
         let mut buflen = 0xdead_beef;
         // SAFETY: both output pointers reference live writable locals.
@@ -889,7 +1089,7 @@ mod tests {
     const SAVE_STATE: TpmlibStateType = 4;
 
     #[test]
-    fn state_abi_signatures_are_exact() {
+    fn state_abi_signature_exactness() {
         let _: unsafe extern "C" fn(TpmlibStateType, *const c_uchar, u32) -> TpmResult =
             crate::tpm_library_abi::TPMLIB_SetState;
         let _: unsafe extern "C" fn(TpmlibStateType, *mut *mut c_uchar, *mut u32) -> TpmResult =
@@ -897,13 +1097,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_state_abi_signature_is_exact() {
+    fn validate_state_abi_signature_exactness() {
         let _: unsafe extern "C" fn(TpmlibStateType, c_uint) -> TpmResult =
             crate::tpm_library_abi::TPMLIB_ValidateState;
     }
 
     #[test]
-    fn the_exported_validate_state_returns_instead_of_panicking() {
+    fn exported_validate_state_panic_safety() {
         for st in [
             0,
             PERMANENT_STATE,
@@ -934,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_state_buffer_is_an_explicitly_empty_state_whatever_the_length_says() {
+    fn null_state_buffer_explicit_empty_any_length() {
         // SAFETY: a null buffer carries no bytes to read, so any length is
         // valid for this call.
         unsafe {
@@ -949,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_null_state_buffer_of_zero_length_is_a_zero_length_blob() {
+    fn non_null_zero_length_state_buffer_zero_length_blob() {
         let caller = [7u8; 4];
         // SAFETY: `caller` is live and no bytes are read at length zero.
         assert_eq!(
@@ -960,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn state_input_is_copied_before_the_library_sees_it() {
+    fn state_input_copy_before_library_access() {
         let mut caller = vec![1u8, 2, 3, 4];
         // SAFETY: `caller` is live and holds the four bytes announced.
         let input = unsafe { copy_state_input(caller.as_ptr(), caller.len() as u32) };
@@ -970,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_state_types_are_rejected_without_reaching_the_library() {
+    fn unknown_state_type_rejection_before_library() {
         for st in [0, 3, 5, 6, 7, -1, i32::MAX, i32::MIN] {
             // SAFETY: the state type is rejected before `buffer` is read.
             assert_eq!(
@@ -1000,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn get_state_rejects_every_null_output_combination_before_asking_the_library() {
+    fn get_state_null_output_combination_rejection_before_library() {
         for st in [PERMANENT_STATE, VOLATILE_STATE, SAVE_STATE] {
             let mut buflen = LEN_SENTINEL;
             // SAFETY: `buffer` is null on purpose; `buflen` references a live
@@ -1043,7 +1243,7 @@ mod tests {
     });
 
     #[test]
-    fn buffer_size_limits_reach_both_c_output_pointers() {
+    fn buffer_size_limit_output_pointer_propagation() {
         let mut min: u32 = 0xdead_beef;
         let mut max: u32 = 0xfeed_face;
         // SAFETY: both outputs are live, writable u32s.
@@ -1054,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn every_null_output_pointer_combination_is_safe() {
+    fn null_output_pointer_combination_safety() {
         let mut min: u32 = 0xdead_beef;
         let mut max: u32 = 0xfeed_face;
         // SAFETY: null is explicitly permitted for either output pointer, and
@@ -1080,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_implementation_answers_zero_and_writes_nothing() {
+    fn disabled_implementation_zero_result_no_write() {
         let mut min: u32 = 0xdead_beef;
         let mut max: u32 = 0xfeed_face;
         // SAFETY: both outputs are live, writable u32s; null is permitted too.
@@ -1096,12 +1296,14 @@ mod tests {
     }
 
     #[test]
-    fn the_exported_set_buffer_size_never_panics_on_null_outputs() {
+    fn exported_set_buffer_size_null_output_panic_safety() {
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut min: u32 = 0xdead_beef;
         let mut max: u32 = 0xfeed_face;
-        // SAFETY: the wanted sizes below either query or request the
-        // compile-time maximum, so the shared global library state other tests
-        // observe cannot change; null outputs are explicitly permitted.
+        // SAFETY: the global-library guard prevents version changes between
+        // calls, and null output pointers are explicitly permitted.
         let current = unsafe {
             for wanted_size in [0u32, 4096] {
                 crate::tpm_library_abi::TPMLIB_SetBufferSize(
@@ -1133,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_fd_and_level_reach_the_debug_configuration() {
+    fn debug_fd_and_level_configuration_propagation() {
         let _state = crate::ffi::debug::test_support::DebugStateGuard::hold();
         set_debug_fd(21);
         set_debug_level(4);
@@ -1141,7 +1343,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_prefix_is_owned_replaced_and_cleared() {
+    fn debug_prefix_ownership_replacement_and_clear() {
         let _state = crate::ffi::debug::test_support::DebugStateGuard::hold();
         let mut caller = b"first\0".to_vec();
         // SAFETY: `caller` is NUL-terminated and remains live for the call.
@@ -1175,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn a_debug_prefix_of_many_kilobytes_is_kept_whole() {
+    fn multi_kilobyte_debug_prefix_preservation() {
         let _state = crate::ffi::debug::test_support::DebugStateGuard::hold();
         let mut caller = vec![b'p'; 5000];
         caller.push(0);
@@ -1259,7 +1461,7 @@ mod tests {
     const BAD_TAG_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x1e];
 
     #[test]
-    fn process_rejects_null_output_pointers_without_touching_the_rest() {
+    fn process_null_output_pointer_rejection() {
         let mut command = STARTUP_COMMAND;
         let mut buffer: *mut c_uchar = core::ptr::null_mut();
         let mut resp_size: u32 = 0xdead_beef;
@@ -1304,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn process_rejects_a_null_command_with_nonzero_size_without_output_updates() {
+    fn process_null_command_nonzero_size_rejection() {
         let mut outputs = ProcessOutputs::new();
         // SAFETY: output pointers reference live fields; the null command is
         // rejected before it can be dereferenced.
@@ -1323,9 +1525,207 @@ mod tests {
         assert_eq!(outputs.respbufsize, 0);
     }
 
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    fn install_allocation_override(hook: Box<dyn FnMut() -> *mut c_uchar>) {
+        RESPONSE_ALLOCATION_OVERRIDE.with(|slot| *slot.borrow_mut() = Some(hook));
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    fn clear_allocation_override() {
+        RESPONSE_ALLOCATION_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    #[test]
+    fn version_switch_rollback() {
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
+        const WAIT: Duration = Duration::from_secs(30);
+
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        terminate();
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
+
+        let (entered_tx, entered_rx) = sync_channel(1);
+        let (release_tx, release_rx) = sync_channel::<()>(1);
+        let worker = std::thread::spawn(move || {
+            let mut outputs = ProcessOutputs::new();
+            outputs.respbuffer = crate::ffi::memory::malloc_bytes(&[0u8; 16]);
+            outputs.respbufsize = 16;
+            let original = outputs.respbuffer as usize;
+            install_allocation_override(Box::new(move || {
+                entered_tx
+                    .send(())
+                    .expect("the test observes the allocation");
+                release_rx
+                    .recv_timeout(WAIT)
+                    .expect("timed out waiting for the version switch");
+                // SAFETY: a plain C allocation of a nonzero constant size.
+                unsafe { libc::malloc(RESPONSE_BUFFER_SIZE).cast() }
+            }));
+            let code = outputs.call(&STARTUP_COMMAND);
+            clear_allocation_override();
+            (
+                code,
+                outputs.respbuffer as usize == original,
+                outputs.resp_size,
+                outputs.respbufsize,
+            )
+        });
+
+        entered_rx
+            .recv_timeout(WAIT)
+            .expect("timed out waiting for the allocation attempt");
+        assert_eq!(
+            choose_tpm_version(0),
+            TPM_SUCCESS,
+            "the selection can still switch before MainInit"
+        );
+        release_tx.send(()).expect("the worker resumes");
+
+        let (code, pointer_unchanged, resp_size, respbufsize) =
+            worker.join().expect("the worker never panics");
+        assert_eq!(code, TPM_FAIL, "the switched selection rejects the command");
+        assert!(pointer_unchanged, "the caller keeps its own allocation");
+        assert_eq!(resp_size, 0xdead_beef, "the size stays untouched");
+        assert_eq!(respbufsize, 16, "the capacity stays untouched");
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    #[test]
+    fn sufficient_buffer_reuse() {
+        const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
+
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        terminate();
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
+        crate::library::stage_empty_permanent_state_for_tests();
+        assert_eq!(main_init(), TPM_SUCCESS);
+
+        let mut outputs = ProcessOutputs::new();
+        outputs.respbuffer = crate::ffi::memory::malloc_bytes(&[0u8; RESPONSE_BUFFER_SIZE]);
+        outputs.respbufsize = RESPONSE_BUFFER_SIZE as u32;
+        let original = outputs.respbuffer;
+        install_allocation_override(Box::new(|| {
+            panic!("a sufficient response buffer must not trigger an allocation")
+        }));
+        let code = outputs.call(&UNKNOWN_COMMAND);
+        clear_allocation_override();
+
+        assert_eq!(code, TPM_SUCCESS);
+        assert_eq!(outputs.respbuffer, original, "the buffer is reused");
+        assert_eq!(outputs.respbufsize, RESPONSE_BUFFER_SIZE as u32);
+        assert_eq!(outputs.response(), UNSUPPORTED_RESPONSE);
+
+        terminate();
+        assert_eq!(choose_tpm_version(0), TPM_SUCCESS);
+    }
+
+    #[cfg(all(feature = "tpm2", feature = "tpm1"))]
+    #[test]
+    fn allocation_failure_before_execution() {
+        use std::sync::Mutex;
+
+        struct MemoryStorage {
+            permall: Arc<Mutex<Option<Vec<u8>>>>,
+        }
+
+        impl Storage for MemoryStorage {
+            fn init(&self) -> Result<library::StorageOperation, TpmResult> {
+                Ok(library::StorageOperation::Done)
+            }
+
+            fn probe_permanent(&self) -> library::StorageProbe {
+                library::StorageProbe {
+                    exists: self.permall.lock().unwrap().is_some(),
+                    load_supported: true,
+                }
+            }
+
+            fn load(&self, kind: StateBlobKind) -> Result<library::StorageLoad, TpmResult> {
+                Ok(match (kind, self.permall.lock().unwrap().clone()) {
+                    (StateBlobKind::Permanent, Some(blob)) => library::StorageLoad::Data(blob),
+                    _ => library::StorageLoad::Missing,
+                })
+            }
+
+            fn can_store(&self) -> bool {
+                true
+            }
+
+            fn store(
+                &self,
+                kind: StateBlobKind,
+                data: &[u8],
+            ) -> Result<library::StorageOperation, TpmResult> {
+                assert_eq!(kind, StateBlobKind::Permanent);
+                *self.permall.lock().unwrap() = Some(data.to_vec());
+                Ok(library::StorageOperation::Done)
+            }
+
+            fn delete(
+                &self,
+                _kind: StateBlobKind,
+                _must_exist: bool,
+            ) -> Result<library::StorageOperation, TpmResult> {
+                Ok(library::StorageOperation::Done)
+            }
+        }
+
+        const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
+        const STARTUP_SUCCESS: [u8; 10] =
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
+
+        let _serial = GLOBAL_LIBRARY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        terminate();
+        assert_eq!(choose_tpm_version(TPMLIB_TPM_VERSION_2), TPM_SUCCESS);
+
+        let permall: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+        crate::library::register_storage(Arc::new(MemoryStorage {
+            permall: Arc::clone(&permall),
+        }));
+        assert_eq!(main_init(), TPM_SUCCESS, "a first boot manufactures");
+        let manufactured = permall.lock().unwrap().clone();
+
+        let mut outputs = ProcessOutputs::new();
+        install_allocation_override(Box::new(|| core::ptr::null_mut()));
+        assert_eq!(outputs.call(&STARTUP_COMMAND), TPM_SIZE);
+        clear_allocation_override();
+        assert!(outputs.respbuffer.is_null(), "no allocation is published");
+        assert_eq!(outputs.resp_size, 0xdead_beef, "the size stays untouched");
+        assert_eq!(outputs.respbufsize, 0, "the capacity stays untouched");
+        assert_eq!(
+            *permall.lock().unwrap(),
+            manufactured,
+            "the failed allocation committed nothing"
+        );
+
+        assert_eq!(
+            outputs.call(&STARTUP_COMMAND),
+            TPM_SUCCESS,
+            "the retried command executes with a working allocation"
+        );
+        assert_eq!(
+            outputs.response(),
+            STARTUP_SUCCESS,
+            "the failed allocation never reached the TPM: this is the first TPM2_Startup"
+        );
+        terminate();
+        crate::library::register_external_services(ExternalServices::default());
+        assert_eq!(choose_tpm_version(0), TPM_SUCCESS);
+    }
+
     #[cfg(feature = "tpm2")]
     #[test]
-    fn process_end_to_end_follows_the_c_buffer_and_response_contract() {
+    fn process_c_buffer_contract() {
         const TPMLIB_TPM_VERSION_2: crate::types::TpmlibTpmVersion = 1;
         const TPM_BUFFER_MAX: u32 = RESPONSE_BUFFER_SIZE as u32;
 
@@ -1570,7 +1970,7 @@ mod tests {
     }
 
     #[test]
-    fn the_initstate_blob_type_maps_to_the_only_blob_kind() {
+    fn initstate_blob_type_sole_kind_mapping() {
         assert_eq!(
             blob_kind(TPMLIB_BLOB_TYPE_INITSTATE),
             Some(EncodedBlobKind::InitState)
@@ -1579,14 +1979,14 @@ mod tests {
     }
 
     #[test]
-    fn every_other_blob_type_maps_to_no_blob_kind() {
+    fn other_blob_type_no_kind_mapping() {
         for blob_type in [1, 2, 3, -1, -2, i32::MAX, i32::MIN] {
             assert_eq!(blob_kind(blob_type), None, "blob type {blob_type}");
         }
     }
 
     #[test]
-    fn a_multi_hundred_kilobyte_blob_string_decodes_in_full() {
+    fn multi_hundred_kilobyte_blob_full_decode() {
         let payload: Vec<u8> = (0..200_000u32).map(|index| (index % 251) as u8).collect();
         let mut caller = Vec::new();
         caller.extend_from_slice(b"-----BEGIN INITSTATE-----\n");
@@ -1617,7 +2017,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_blob_abi_signature_is_exact() {
+    fn decode_blob_abi_signature_exactness() {
         let _: unsafe extern "C" fn(
             *const c_char,
             TpmlibBlobType,
@@ -1627,7 +2027,7 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_blob_decodes_into_a_freeable_c_allocation() {
+    fn valid_blob_decode_freeable_c_allocation() {
         let mut blob = DecodedBlob::new();
         assert_eq!(blob.call(INITSTATE_BLOB, BLOB_TYPE_INITSTATE), TPM_SUCCESS);
         assert_eq!(blob.decoded(), b"ABC");
@@ -1641,7 +2041,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_data_pointer_fails_without_publishing_an_allocation() {
+    fn null_data_pointer_failure_no_allocation() {
         let mut result = PTR_SENTINEL;
         let mut result_len = SIZE_SENTINEL;
         // SAFETY: `data` is null on purpose; both outputs reference live
@@ -1662,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn every_null_output_combination_fails_without_touching_the_other_output() {
+    fn null_output_combination_failure_isolation() {
         let mut result = PTR_SENTINEL;
         let mut result_len = SIZE_SENTINEL;
         // SAFETY: `result` is null on purpose; `result_len` references a live
@@ -1723,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_blob_types_fail_without_publishing_an_allocation() {
+    fn unknown_blob_type_failure_no_allocation() {
         for blob_type in [1, 2, -1, -2, i32::MAX, i32::MIN] {
             let mut blob = DecodedBlob::new();
             assert_eq!(
@@ -1736,7 +2136,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_blobs_fail_without_publishing_an_allocation() {
+    fn malformed_blob_failure_no_allocation() {
         for data in [
             b"\0".as_slice(),
             b"hello world\0",
@@ -1753,7 +2153,7 @@ mod tests {
     }
 
     #[test]
-    fn the_exported_decode_blob_only_sees_the_caller_c_string() {
+    fn exported_decode_blob_caller_c_string_boundary() {
         let mut blob = DecodedBlob::new();
         let trailing = [
             INITSTATE_BLOB,
@@ -1773,7 +2173,7 @@ mod tests {
     }
 
     #[test]
-    fn the_exported_decode_blob_returns_instead_of_panicking() {
+    fn exported_decode_blob_panic_safety() {
         let corpus: Vec<Vec<u8>> = [
             b"\0".as_slice(),
             b"-----BEGIN INITSTATE-----\0",

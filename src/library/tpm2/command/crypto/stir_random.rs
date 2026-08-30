@@ -41,6 +41,7 @@ fn parse_in_data(parameters: &[u8]) -> Result<&[u8], TpmResult> {
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -55,6 +56,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -113,7 +115,7 @@ mod tests {
         ENTROPY_REQUESTS.with(|requests| core::mem::take(&mut *requests.borrow_mut()))
     }
 
-    fn manufactured_runtime(continuous_test: bool) -> Box<Tpm2Runtime> {
+    fn manufactured_runtime(continuous_test: bool) -> Tpm2Runtime {
         let profile = if continuous_test {
             validate_user_profile(Some(CONTINUOUS_TEST_PROFILE)).expect("the profile validates")
         } else {
@@ -129,11 +131,12 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime(continuous_test: bool) -> Box<Tpm2Runtime> {
+    fn started_runtime(continuous_test: bool) -> Tpm2Runtime {
         let mut runtime = manufactured_runtime(continuous_test);
         let startup = hex("80010000000c0000014400 00");
         assert_eq!(
@@ -244,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn stir_random_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime(false);
         runtime.entropy = failing_entropy;
         let before = snapshot(&runtime);
@@ -265,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn every_input_size_up_to_the_maximum_is_accepted() {
+    fn input_size_up_to_maximum_acceptance() {
         let mut runtime = started_runtime(false);
         for length in 0..=MAX_SYM_DATA {
             let in_data: Vec<u8> = (0..length).map(|index| index as u8).collect();
@@ -279,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn an_input_above_the_maximum_returns_the_indexed_size_error() {
+    fn oversized_input_indexed_size_error() {
         for length in [129usize, 130, 255, 1024] {
             let mut runtime = started_runtime(false);
             let before = snapshot(&runtime);
@@ -297,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn the_size_check_precedes_the_payload_length_check() {
+    fn size_check_before_payload_length_check() {
         let mut runtime = started_runtime(false);
         assert_eq!(
             dispatch_bytes(&mut runtime, &command_with(&hex("ffff"))),
@@ -307,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_in_data_returns_its_indexed_error() {
+    fn truncated_in_data_indexed_error() {
         let mut truncated: Vec<Vec<u8>> = vec![vec![], vec![0x00], vec![0x00, 0x10]];
         for present in [1usize, 15, 127] {
             let mut parameters = 128u16.to_be_bytes().to_vec();
@@ -330,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_return_size() {
+    fn trailing_parameter_bytes_size_error() {
         for parameters in [hex("0000 00"), hex("0001 11 22"), hex("0002 1122 00000000")] {
             let mut runtime = started_runtime(false);
             let before = snapshot(&runtime);
@@ -347,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn the_resulting_state_and_the_next_random_bytes_match_the_oracle() {
+    fn resulting_state_and_random_bytes_oracle_match() {
         for continuous_test in [false, true] {
             let record = stir_record(continuous_test);
             for (index, case) in record.cases.iter().enumerate() {
@@ -388,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_stir_leaves_the_persistent_state_and_nv_alone() {
+    fn successful_stir_persistent_state_and_nv_unchanged() {
         let record = stir_record(false);
         for case in &record.cases {
             let mut runtime = started_runtime(false);
@@ -407,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_answers_success_and_changes_nothing() {
+    fn entropy_failure_success_response_no_mutation() {
         let record = stir_record(false);
         for (index, case) in record.cases.iter().enumerate() {
             let mut runtime = started_runtime(false);
@@ -435,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn a_drbg_failure_answers_a_bare_error_response_and_stops_the_tpm() {
+    fn drbg_failure_bare_error_and_tpm_stop() {
         for in_data in [&[][..], &[0x11][..], &[0x22; 128][..]] {
             let mut runtime = started_runtime(false);
             runtime.live.orderly.drbg_state.seed = OwnedSecret::copy_of(&[0x11; 47]);
@@ -453,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_drbg_magic_stops_the_tpm() {
+    fn foreign_drbg_magic_tpm_stop() {
         let mut runtime = started_runtime(false);
         runtime.live.orderly.drbg_state.drbg_magic = DRBG_MAGIC ^ 1;
         let before = snapshot(&runtime);
@@ -468,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn the_next_command_after_a_drbg_failure_takes_the_failure_mode_path() {
+    fn post_drbg_failure_failure_mode_path() {
         let mut runtime = started_runtime(false);
         runtime.live.orderly.drbg_state.seed = OwnedSecret::copy_of(&[0x11; 47]);
         let command = stir_command(&[0x44; 8]);
@@ -490,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn session_tagged_requests_match_the_oracle() {
+    fn session_tagged_request_oracle_parity() {
         let pw_auth = hex("8002000000190000014600000009 40000009 0000 00 0000 0000");
         let no_authsize = hex("8002000000 0c 00000146 0000");
         let authsize_zero = hex("8002000000 10 00000146 00000000 0000");
@@ -514,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_stir_answers_without_parameters_or_an_authorization_area() {
+    fn successful_stir_response_without_parameters_or_auth_area() {
         let mut runtime = started_runtime(false);
         let response = dispatch_bytes(&mut runtime, &stir_command(&[0x55; 32]));
         assert_eq!(response, success_response());
@@ -522,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn short_parameters_return_upstream_error() {
+    fn short_parameter_upstream_error() {
         let filler = [0x00u8, 0xff, 0x80, 0x7f, 0x01];
         for length in 0..=6usize {
             for &byte in &filler {

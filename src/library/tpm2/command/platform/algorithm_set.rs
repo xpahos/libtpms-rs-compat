@@ -62,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_reference_attributes() {
+    fn command_registration_reference_attributes() {
         let descriptor = find(TPM_CC_SET_ALGORITHM_SET).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0240_013f);
         assert_eq!(
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_needs_a_started_tpm() {
+    fn started_tpm_requirement() {
         let clock = replay_clock();
         let mut runtime = manufactured(&clock);
         expect(
@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn the_property_follows_every_accepted_value() {
+    fn property_accepted_value_tracking() {
         let clock = replay_clock();
         let host = Host::at("READY");
         let mut runtime = ready(&clock);
@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_and_parsing_errors_match_the_reference() {
+    fn authorization_parsing_error_reference_match() {
         let clock = replay_clock();
         let host = Host::at("READY");
         let mut runtime = restored("AFTER_ALGORITHM_SET", &clock);
@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_value_survives_a_restart() {
+    fn stored_value_restart_persistence() {
         let clock = replay_clock();
         let host = Host::at("AFTER_ALGORITHM_SET");
         let mut runtime = restored("AFTER_ALGORITHM_SET", &clock);
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_leaves_the_stored_value_alone() {
+    fn unavailable_nv_stored_value_unchanged() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         runtime.nv_available = false;
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_commit_restores_the_previous_value() {
+    fn failed_commit_value_restoration() {
         use crate::library::tpm2::persistent::OwnedSecret;
 
         let clock = replay_clock();
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = set_algorithm_set(TPM_RH_PLATFORM, 3, &[]);
         for len in 0..=valid.len() {

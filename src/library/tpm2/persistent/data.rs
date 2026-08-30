@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_order_parity() {
         let fixture = [
             0x00, 0x05, 0x12, 0x21, 0x34, 0x43, 0x00, 0x01, 0x01, 0x00, 0x0b, 0x00, 0x0c, 0x00,
             0x0d, 0x00, 0x01, 0xa1, 0x00, 0x01, 0xa2, 0x00, 0x01, 0xa3, 0x00, 0x01, 0xb1, 0x00,
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn all_empty_fixture_parses_and_leaves_the_tail_untouched() {
+    fn empty_fields_fixture_tail_preservation() {
         let fixture = PrefixFixture {
             tail: vec![0x00, 0x00, 0x00],
             ..PrefixFixture::default()
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn each_tpm2b_field_is_decoded_at_its_own_wire_position() {
+    fn tpm2b_field_wire_position_decode() {
         let mut fixture = PrefixFixture::default();
         for (index, _, _) in TPM2B_FIELDS {
             fixture.tpm2bs[index] = vec![index as u8 + 1; 2];
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn nonempty_fields_of_each_category_are_returned_and_borrow_the_input() {
+    fn nonempty_field_return_input_borrow() {
         for (index, field, _) in [
             TPM2B_FIELDS[0],
             TPM2B_FIELDS[3],
@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_algorithm_ids_are_preserved_exactly() {
+    fn unknown_algorithm_id_preservation() {
         let data = PrefixFixture {
             algs: [0xffff, 0x1234, 0x0000],
             ..PrefixFixture::default()
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn disable_clear_decodes_canonical_and_noncanonical_values() {
+    fn disable_clear_canonical_and_noncanonical_decoding() {
         for (byte, expected) in [(0x00u8, false), (0x01, true), (0x02, true), (0xff, true)] {
             let data = PrefixFixture {
                 disable_clear: byte,
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_counters_are_read_big_endian() {
+    fn reset_counter_big_endian_read() {
         let data = PrefixFixture {
             total_reset_count: 0x0102_0304_0506_0708,
             reset_count: 0x0a0b_0c0d,
@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn header_magic_and_version_behave_like_the_other_sections() {
+    fn header_magic_and_version_section_consistency() {
         let data = PrefixFixture::default().bytes();
         let prefix = parse(&data).unwrap();
         assert_eq!(prefix.header.version, 5);
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn older_versions_are_accepted_at_the_header_layer() {
+    fn older_version_header_acceptance() {
         for version in [2u16, 3, 4] {
             let data = PrefixFixture {
                 version,
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn future_version_with_supported_min_version_is_accepted() {
+    fn future_version_supported_min_acceptance() {
         let data = PrefixFixture {
             version: 9,
             min_version: 5,
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn min_version_newer_than_5_is_rejected() {
+    fn min_version_above_5_rejection() {
         let fixture = PrefixFixture {
             version: 9,
             min_version: 6,
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_header_fields_are_reported_as_truncated() {
+    fn truncated_header_field_error() {
         for len in [0usize, 1, 2, 5, 7] {
             let data = &PrefixFixture::default().bytes()[..len];
             let error = parse(data).unwrap_err();
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_is_truncated_and_never_panics() {
+    fn strict_prefix_truncation_panic_safety() {
         let full = PrefixFixture {
             tpm2bs: core::array::from_fn(|index| vec![index as u8; 3]),
             ..PrefixFixture::default()
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_inside_each_tpm2b_body_is_reported() {
+    fn tpm2b_body_truncation_error() {
         for (index, field, _) in TPM2B_FIELDS {
             let full = PrefixFixture::with_tpm2b(index, vec![0x77; 8]).bytes();
             let body_start = full.windows(8).position(|w| w == [0x77; 8]).unwrap();
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_capacity_is_accepted_for_every_field() {
+    fn exact_capacity_acceptance() {
         for (index, field, maximum) in TPM2B_FIELDS {
             let data = PrefixFixture::with_tpm2b(index, vec![0x11; maximum]).bytes();
             let prefix = parse(&data).unwrap_or_else(|error| {
@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_plus_one_is_rejected_as_size_exceeded_for_every_field() {
+    fn capacity_plus_one_size_exceeded_rejection() {
         for (index, field, maximum) in TPM2B_FIELDS {
             let data = PrefixFixture::with_tpm2b(index, vec![0x11; maximum + 1]).bytes();
             let error = parse(&data).unwrap_err();
@@ -545,14 +545,14 @@ mod tests {
     }
 
     #[test]
-    fn incorrect_magic_maps_to_bad_tag() {
+    fn incorrect_magic_bad_tag_mapping() {
         let mut data = PrefixFixture::default().bytes();
         data[3] = 0x00;
         assert_eq!(parse(&data).unwrap_err().tpm_result(), TPM_RC_BAD_TAG);
     }
 
     #[test]
-    fn debug_output_never_contains_secret_bytes() {
+    fn debug_output_secret_byte_absence() {
         let auth = b"auth-secret-mark".to_vec();
         let seed = b"seed-secret-mark".to_vec();
         let proof = b"proof-secret-mrk".to_vec();
@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn size_errors_identify_field_and_lengths_but_not_contents() {
+    fn size_error_field_and_length_disclosure_only() {
         let secret = b"oversized-secret-material-that-must-never-leak-into-diagnostics-!";
         assert_eq!(secret.len(), MAX_DIGEST_SIZE + 1);
         let data = PrefixFixture::with_tpm2b(3, secret.to_vec()).bytes();

@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_order_parity() {
         let fixture = [
             0x00, 0x00, 0x00, 0x01, 0x00, 0x0b, 0x03, 0x00, 0x00, 0x00, 0x99, 0x98,
         ];
@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_count_is_valid_and_reads_no_entry() {
+    fn zero_count_no_entry_read() {
         let data = PcrAllocationFixture {
             selections: Vec::new(),
             tail: vec![0xaa, 0xbb],
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn counts_one_through_hash_count_are_valid() {
+    fn count_range_validity() {
         for count in 1..=HASH_COUNT {
             let data = PcrAllocationFixture {
                 selections: vec![(TPM_ALG_SHA256, 3, vec![0x00; 3]); count],
@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn count_above_hash_count_is_a_size_error_before_any_entry_is_read() {
+    fn oversized_count_size_error_before_entry_read() {
         for count in [5u32, 100, u32::MAX] {
             let data = PcrAllocationFixture {
                 count: Some(count),
@@ -205,13 +205,13 @@ mod tests {
     }
 
     #[test]
-    fn attacker_controlled_count_neither_allocates_nor_panics() {
+    fn attacker_controlled_count_safety() {
         let data = u32::MAX.to_be_bytes();
         assert_eq!(parse(&data).unwrap_err().tpm_result(), TPM_RC_SIZE);
     }
 
     #[test]
-    fn truncated_count_is_insufficient() {
+    fn truncated_count_insufficiency() {
         for len in 0..4usize {
             let data = vec![0x00; len];
             let error = parse(&data).unwrap_err();
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn in_range_count_larger_than_the_entry_data_is_insufficient() {
+    fn count_beyond_entry_data_insufficiency() {
         let data = PcrAllocationFixture {
             count: Some(4),
             ..PcrAllocationFixture::default()
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_hash_algorithm_is_accepted_and_preserved() {
+    fn compiled_hash_algorithm_acceptance_preservation() {
         for alg in COMPILED_HASH_ALGORITHMS {
             let data = PcrAllocationFixture {
                 selections: vec![(alg, 3, vec![0x00; 3])],
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_hash_algorithms_are_rejected_with_the_hash_code() {
+    fn invalid_hash_algorithm_hash_code_rejection() {
         for alg in [
             0x0000u16,
             TPM_ALG_NULL,
@@ -273,18 +273,18 @@ mod tests {
     }
 
     #[test]
-    fn truncated_hash_algorithm_is_insufficient() {
+    fn truncated_hash_algorithm_insufficiency() {
         let data = [0x00, 0x00, 0x00, 0x01, 0x00];
         assert_eq!(parse(&data).unwrap_err(), truncated());
     }
 
     #[test]
-    fn sizeof_select_three_is_accepted() {
+    fn sizeof_select_three_acceptance() {
         assert!(parse(&PcrAllocationFixture::default().bytes()).is_ok());
     }
 
     #[test]
-    fn out_of_range_sizeof_select_is_a_value_error_without_reading_the_bitmap() {
+    fn out_of_range_sizeof_select_value_error_no_bitmap_read() {
         for size in [0u8, 1, 2, 4, 255] {
             let data = PcrAllocationFixture {
                 selections: vec![(TPM_ALG_SHA256, size, Vec::new())],
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_sizeof_select_does_not_consume_trailing_bytes() {
+    fn invalid_sizeof_select_no_trailing_consumption() {
         let data = PcrAllocationFixture {
             selections: vec![(TPM_ALG_SHA256, 4, vec![0xde, 0xad, 0xbe, 0xef])],
             ..PcrAllocationFixture::default()
@@ -316,13 +316,13 @@ mod tests {
     }
 
     #[test]
-    fn truncated_sizeof_select_is_insufficient() {
+    fn truncated_sizeof_select_insufficiency() {
         let data = [0x00, 0x00, 0x00, 0x01, 0x00, 0x0b];
         assert_eq!(parse(&data).unwrap_err(), truncated());
     }
 
     #[test]
-    fn all_bitmap_bit_patterns_are_accepted_verbatim() {
+    fn bitmap_pattern_verbatim_acceptance() {
         for bitmap in [[0x00u8; 3], [0xff; 3], [0xa5, 0x3c, 0x81]] {
             let data = PcrAllocationFixture {
                 selections: vec![(TPM_ALG_SHA1, 3, bitmap.to_vec())],
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_end_bitmap_read_succeeds() {
+    fn exact_end_bitmap_read_success() {
         let data = PcrAllocationFixture::default().bytes();
         let parsed = parse(&data).unwrap();
         assert_eq!(parsed.selections[0].select.len(), 3);
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_bitmap_is_insufficient() {
+    fn truncated_bitmap_insufficiency() {
         for len in 0..3usize {
             let data = PcrAllocationFixture {
                 selections: vec![(TPM_ALG_SHA256, 3, vec![0x11; len])],
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn bitmap_borrows_the_original_blob() {
+    fn bitmap_original_blob_borrow() {
         let data = PcrAllocationFixture {
             selections: vec![(TPM_ALG_SHA512, 3, vec![0x01, 0x02, 0x03])],
             ..PcrAllocationFixture::default()
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn four_entries_preserve_input_order_and_duplicates() {
+    fn four_entry_input_order_and_duplicate_preservation() {
         let entries = [
             (TPM_ALG_SHA512, [0x01, 0x00, 0x00]),
             (TPM_ALG_SHA256, [0x02, 0x00, 0x00]),
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn fewer_entries_than_hash_count_are_accepted() {
+    fn partial_entry_count_acceptance() {
         for count in [1usize, 2, 3] {
             let data = PcrAllocationFixture {
                 selections: vec![(TPM_ALG_SHA384, 3, vec![0x00; 3]); count],
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn error_in_a_later_entry_is_reported() {
+    fn later_entry_error_propagation() {
         let data = PcrAllocationFixture {
             selections: vec![
                 (TPM_ALG_SHA1, 3, vec![0x00; 3]),
@@ -433,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn remainder_begins_exactly_at_the_pp_list_sentinel() {
+    fn remainder_pp_list_sentinel_boundary() {
         let data = PcrAllocationFixture {
             tail: vec![0xde, 0xad, 0xbe],
             ..PcrAllocationFixture::default()
@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_a_valid_list_fails_safely() {
+    fn strict_prefix_rejection_safety() {
         let full = PcrAllocationFixture {
             selections: vec![
                 (TPM_ALG_SHA1, 3, vec![0xff; 3]),
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_selection_byte_mutations_do_not_panic() {
+    fn pcr_selection_byte_mutation_panic_safety() {
         for len in 0..12usize {
             for byte in [0x00u8, 0x03, 0x0b, 0xff] {
                 let _ = parse(&vec![byte; len]);

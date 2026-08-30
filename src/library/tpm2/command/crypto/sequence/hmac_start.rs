@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn registration_upstream_attributes() {
         assert_eq!(TPM_CC_HMAC_START, 0x0000_015b);
         let descriptor = registry::find(TPM_CC_HMAC_START).expect("registered");
         assert_eq!(descriptor.attributes, 0x1200_015b);
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         let mut params = 2u32.to_be_bytes().to_vec();
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
@@ -250,7 +250,7 @@ mod tests {
         clock: &crate::library::tpm2::clock::SteppingClock,
         label: &str,
         public: &[u8],
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         let mut runtime = base_runtime(clock);
         exec(
             &mut runtime,
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn a_keyed_hash_key_starts_and_completes_an_hmac_sequence() {
+    fn keyed_hash_key_hmac_sequence_completion() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "Q_CREATE_HMAC_KEY", &hmac_key(TPM_ALG_SHA256));
         exec(
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn the_requested_scheme_must_match_the_key_scheme() {
+    fn scheme_key_scheme_match_requirement() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "Q_CREATE_HMAC_KEY", &hmac_key(TPM_ALG_SHA256));
         exec(
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn every_key_scheme_hash_produces_the_reference_mac() {
+    fn per_key_scheme_hash_reference_mac() {
         for (label, hash_alg, start, update, complete) in [
             (
                 "R_CREATE_SHA384_KEY",
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cmac_scheme_is_incompatible_with_a_keyed_hash_key() {
+    fn cmac_scheme_keyed_hash_incompatibility() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_key_kinds_report_the_reference_errors() {
+    fn wrong_key_kind_reference_errors() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(
             &clock,
@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sequence_authorization_travels_with_the_new_object() {
+    fn sequence_auth_propagation() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "Q_CREATE_HMAC_KEY", &hmac_key(TPM_ALG_SHA256));
         exec(
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_and_handles_report_the_indexed_errors() {
+    fn malformed_parameter_and_handle_indexed_errors() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "Q_CREATE_HMAC_KEY", &hmac_key(TPM_ALG_SHA256));
         for (label, params) in [
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_key_consumes_a_transient_slot_like_the_reference() {
+    fn persistent_key_transient_slot_consumption() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "V_CREATE_KEY", &hmac_key(TPM_ALG_SHA256));
         exec(
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transient_key_leaves_no_slot_for_a_third_sequence() {
+    fn transient_key_slot_exhaustion() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "V_CREATE_TRANSIENT_KEY", &hmac_key(TPM_ALG_SHA256));
         exec(
@@ -684,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn a_da_protected_key_counts_failed_authorizations() {
+    fn da_protected_key_failure_count() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_scheme_reports_the_symmetric_error() {
+    fn profile_disabled_scheme_symmetric_error() {
         let clock = fresh_clock();
         let mut runtime = minimal_runtime(&clock);
         exec(
@@ -815,7 +815,7 @@ mod tests {
         &body[2..2 + size]
     }
 
-    fn cmac_runtime(clock: &crate::library::tpm2::clock::SteppingClock) -> Box<Tpm2Runtime> {
+    fn cmac_runtime(clock: &crate::library::tpm2::clock::SteppingClock) -> Tpm2Runtime {
         let mut runtime = base_runtime(clock);
         exec(
             &mut runtime,
@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cmac_sequence_answers_the_one_shot_digest() {
+    fn cmac_sequence_one_shot_digest_match() {
         let clock = fresh_clock();
         let mut runtime = cmac_runtime(&clock);
         exec(
@@ -905,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cmac_sequence_handles_every_message_shape() {
+    fn cmac_sequence_message_shape_coverage() {
         let clock = fresh_clock();
         let mut runtime = cmac_runtime(&clock);
         exec(
@@ -952,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cmac_sequence_saves_and_flushes_like_the_reference() {
+    fn cmac_sequence_save_flush_reference_match() {
         let clock = fresh_clock();
         let mut runtime = cmac_runtime(&clock);
         exec(
@@ -989,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn a_triple_des_cmac_sequence_answers_a_short_digest() {
+    fn tdes_cmac_short_digest() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -1025,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn a_symmetric_key_without_a_cmac_scheme_starts_no_sequence() {
+    fn symmetric_key_no_cmac_scheme_rejection() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_cmac_context_loads_without_resuming_the_sequence() {
+    fn saved_cmac_context_load_no_resume() {
         let clock = fresh_clock();
         let mut runtime = cmac_runtime(&clock);
         exec(
@@ -1159,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_hash_or_hmac_sequence_still_resumes() {
+    fn saved_hash_hmac_sequence_resume() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -1257,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn volatile_state_with_a_live_cmac_sequence_is_refused() {
+    fn live_cmac_sequence_volatile_state_rejection() {
         let clock = fresh_clock();
         let restored =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_Y_AFTER_START"));
@@ -1293,7 +1293,7 @@ mod tests {
     }
 
     #[test]
-    fn a_live_event_sequence_survives_a_volatile_round_trip() {
+    fn live_event_sequence_volatile_round_trip() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -1324,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupted_event_bank_is_refused_without_touching_the_runtime() {
+    fn corrupted_event_bank_rejection_runtime_unchanged() {
         let clock = fresh_clock();
         let mut source = base_runtime(&clock);
         let _ = exec_raw(&mut source, &clock, hash_sequence_start(&[], 0x0010));
@@ -1376,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "Q_CREATE_HMAC_KEY", &hmac_key(TPM_ALG_SHA256));
         let valid = mac_start(0x8000_0000, b"a", TPM_ALG_SHA256);

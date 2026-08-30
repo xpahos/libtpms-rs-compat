@@ -56,7 +56,7 @@ mod tests {
     const TPM_CC: u32 = 0x0000_015e;
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = registry::find(TPM_CC).expect("TPM2_Unseal is registered");
         assert_eq!(descriptor.attributes, 0x0200_015e);
         assert_eq!(descriptor.decrypt_size, 0);
@@ -75,14 +75,14 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(&mut runtime, &clock, "CCATTR_015E", cap_cc(0x015e));
     }
 
     #[test]
-    fn an_external_sealed_object_unseals_only_with_its_authorization() {
+    fn external_sealed_object_authorization_requirement() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec_raw(
@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn type_and_attribute_rejections_match_the_oracle() {
+    fn type_attribute_rejection_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_data_object_unseals_and_a_key_object_does_not() {
+    fn data_object_success_key_object_rejection() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_LOAD", &clock);
         exec(
@@ -187,7 +187,7 @@ mod tests {
     const SEALED_CHILD_DATA: &[u8] = b"sealed child payload";
 
     #[test]
-    fn the_unsealed_data_never_reaches_debug_output() {
+    fn unsealed_data_debug_output_exclusion() {
         let clock = clock();
         let runtime = runtime_at("AFTER_LOAD", &clock);
         let OwnedAnyObjectBody::Object(body) = &runtime.live.objects[2].body else {

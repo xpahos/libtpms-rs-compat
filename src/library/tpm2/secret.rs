@@ -290,7 +290,7 @@ mod tests {
 
     const ECC_PARENT: u32 = 0x8000_0001;
 
-    fn ecc_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn ecc_runtime(clock: &SteppingClock) -> Tpm2Runtime {
         runtime_from(
             vector("PERMALL_ECC_READY"),
             vector("VOLATILE_ECC_READY"),
@@ -314,7 +314,7 @@ mod tests {
     const RSA_PARENT: u32 = 0x8000_0001;
     const ALG_SHA256: u16 = 0x000b;
 
-    fn rsa_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn rsa_runtime(clock: &SteppingClock) -> Tpm2Runtime {
         runtime_from(
             vector("PERMALL_RSA_READY"),
             vector("VOLATILE_RSA_READY"),
@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_recovery_reaches_ecdh_then_the_protector_name_algorithm() {
+    fn ecc_recovery_test_order_ecdh_name_algorithm() {
         let clock = clock();
         let mut runtime = ecc_runtime(&clock);
         let parent = ecc_parent(&runtime);
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_recovery_stops_before_the_name_algorithm_when_the_point_is_unusable() {
+    fn ecc_recovery_unusable_point_no_name_algorithm_test() {
         let clock = clock();
         let runtime = ecc_runtime(&clock);
         let parent = ecc_parent(&runtime);
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_recovery_whose_multiplication_yields_nothing_never_starts_the_derivation() {
+    fn ecc_recovery_empty_multiplication_no_derivation() {
         let clock = clock();
         let mut runtime = ecc_runtime(&clock);
         let mut parent = ecc_parent(&runtime);
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_ecc_name_algorithm_test_stops_the_recovery_at_the_key_derivation() {
+    fn ecc_name_algorithm_test_failure_derivation_stop() {
         let clock = clock();
         let mut runtime = ecc_runtime(&clock);
         let parent = ecc_parent(&runtime);
@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_recovery_reaches_the_scheme_then_the_protector_name_algorithm() {
+    fn rsa_recovery_test_order_scheme_name_algorithm() {
         let clock = clock();
         let mut runtime = rsa_runtime(&clock);
         let parent = loaded_object(&runtime, RSA_PARENT);
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_recovery_rejected_by_its_size_check_reaches_no_test() {
+    fn rsa_recovery_size_check_rejection_no_test() {
         let clock = clock();
         let mut runtime = rsa_runtime(&clock);
         let parent = loaded_object(&runtime, RSA_PARENT);
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_rsa_name_algorithm_test_stops_the_recovery_inside_the_decoding() {
+    fn rsa_name_algorithm_test_failure_decoding_stop() {
         let clock = clock();
         let mut runtime = rsa_runtime(&clock);
         let parent = loaded_object(&runtime, RSA_PARENT);
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_secret_encryption_round_trips_through_the_parent_private_key() {
+    fn ecc_secret_encryption_parent_key_round_trip() {
         let clock = clock();
         let mut runtime = ecc_runtime(&clock);
         let parent = ecc_parent(&runtime);
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn a_starved_generator_reports_no_result_rather_than_a_bad_key() {
+    fn starved_generator_no_result_not_key_error() {
         let clock = clock();
         let mut runtime = ecc_runtime(&clock);
         let parent = ecc_parent(&runtime);
@@ -525,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn a_starved_generator_leaves_the_runtime_usable() {
+    fn starved_generator_runtime_usability() {
         let clock = clock();
         let mut runtime = ecc_runtime(&clock);
         let parent = ecc_parent(&runtime);
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_point_off_the_curve_is_still_a_key_error() {
+    fn off_curve_public_point_key_error() {
         let clock = clock();
         let mut runtime = ecc_runtime(&clock);
         let mut parent = ecc_parent(&runtime);

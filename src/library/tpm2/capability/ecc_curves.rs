@@ -48,12 +48,12 @@ mod tests {
     const DEFAULT_CURVES: [u16; 8] = [P192, P224, P256, P384, P521, BN_P256, BN_P638, SM2_P256];
 
     #[test]
-    fn the_capacity_matches_the_vendored_structure_size() {
+    fn capacity_vendored_structure_size_match() {
         assert_eq!(MAX_ECC_CURVES, 508);
     }
 
     #[test]
-    fn a_complete_page_lists_the_curves_in_the_vendored_array_order() {
+    fn complete_page_vendored_array_order() {
         let runtime = started();
         let state = runtime.state.as_ref().expect("decoded state");
         let page = collect(state, 0, 1000);
@@ -62,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn the_starting_curve_is_inclusive() {
+    fn starting_curve_inclusive_boundary() {
         let runtime = started();
         let state = runtime.state.as_ref().expect("decoded state");
         let page = collect(state, u32::from(P384), 1000);
@@ -75,7 +75,7 @@ mod tests {
     }
 
     #[test]
-    fn a_start_after_the_last_curve_returns_an_empty_page() {
+    fn start_past_last_curve_empty_page() {
         let runtime = started();
         let state = runtime.state.as_ref().expect("decoded state");
         for start in [u32::from(SM2_P256) + 1, 0x0000_ffff, u32::MAX] {
@@ -86,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_count_reports_more_data_only_when_a_curve_remains() {
+    fn zero_count_more_data_remainder_dependence() {
         let runtime = started();
         let state = runtime.state.as_ref().expect("decoded state");
         let page = collect(state, 0, 0);
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn the_requested_count_truncates_the_page() {
+    fn requested_count_page_truncation() {
         let runtime = started();
         let state = runtime.state.as_ref().expect("decoded state");
         let page = collect(state, 0, 2);
@@ -131,7 +131,7 @@ ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cf
     }
 
     #[test]
-    fn a_profile_disabled_curve_is_left_out_of_the_page() {
+    fn profile_disabled_curve_omission() {
         let runtime = started_with_algorithms(&algorithms_with(&[
             ("ecc-nist", "ecc-nist-p192,ecc-nist-p256,ecc-nist-p384"),
             ("ecc-bn", ""),
@@ -146,7 +146,7 @@ ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cf
     }
 
     #[test]
-    fn a_profile_minimum_key_size_hides_the_smaller_curves() {
+    fn profile_minimum_key_size_small_curve_omission() {
         let runtime = started_with_algorithms(&algorithms_with(&[(
             "ecc-min-size=192",
             "ecc-min-size=256",
@@ -158,7 +158,7 @@ ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cf
     }
 
     #[test]
-    fn a_disabled_curve_is_also_absent_from_a_page_that_starts_at_it() {
+    fn disabled_start_curve_omission() {
         let runtime = started_with_algorithms(&algorithms_with(&[
             ("ecc-nist", "ecc-nist-p256,ecc-nist-p384"),
             ("ecc-bn", ""),

@@ -105,13 +105,13 @@ mod tests {
     }
 
     #[test]
-    fn the_capacity_matches_the_vendored_structure_size() {
+    fn capacity_vendored_structure_size_match() {
         assert_eq!(SIZEOF_TPMS_TAGGED_POLICY, 72);
         assert_eq!(MAX_TAGGED_POLICIES, 14);
     }
 
     #[test]
-    fn only_the_hierarchies_that_can_hold_a_policy_are_listed() {
+    fn policy_capable_hierarchies_only() {
         let runtime = started();
         let page = collect(&runtime, 0x4000_0000, 1000);
         assert_eq!(handles(&page), POLICY_HANDLES);
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unset_policy_is_reported_with_a_null_hash_and_no_digest() {
+    fn unset_policy_null_hash_empty_digest() {
         let runtime = started();
         let page = collect(&runtime, 0x4000_0000, 1000);
         for entry in &page.entries {
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn a_set_policy_is_padded_to_the_digest_size() {
+    fn set_policy_digest_size_padding() {
         let mut runtime = started();
         set_owner_policy(&mut runtime, &[0xa5; 20]);
         let owner = one(&runtime, TPM_RH_OWNER).expect("the owner carries a policy");
@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn the_starting_handle_is_inclusive() {
+    fn starting_handle_inclusive_boundary() {
         let runtime = started();
         let page = collect(&runtime, TPM_RH_ENDORSEMENT, 1000);
         assert_eq!(handles(&page), [TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM]);
@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn a_start_after_the_last_handle_returns_an_empty_page() {
+    fn start_past_last_handle_empty_page() {
         let runtime = started();
         for start in [TPM_RH_PLATFORM + 1, 0x4000_ffff, u32::MAX] {
             let page = collect(&runtime, start, 1000);
@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_count_reports_more_data_only_when_a_handle_remains() {
+    fn zero_count_more_data_remainder_dependence() {
         let runtime = started();
         let page = collect(&runtime, 0x4000_0000, 0);
         assert!(page.entries.is_empty());
@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn the_requested_count_truncates_the_page() {
+    fn requested_count_page_truncation() {
         let runtime = started();
         let page = collect(&runtime, 0x4000_0000, 2);
         assert_eq!(handles(&page), [TPM_RH_OWNER, TPM_RH_LOCKOUT]);

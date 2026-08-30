@@ -130,6 +130,7 @@ fn apply_state(runtime: &mut Tpm2Runtime, enable: u32, state: bool) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_HIERARCHY_CONTROL, find,
     };
@@ -150,7 +151,7 @@ mod tests {
     };
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = find(TPM_CC_HIERARCHY_CONTROL).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x02c0_0121);
         assert!(descriptor.physical_presence);
@@ -172,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_handle_takes_only_the_three_base_hierarchies() {
+    fn auth_handle_base_hierarchy_restriction() {
         let kind = find(TPM_CC_HIERARCHY_CONTROL).unwrap().handles[0].kind;
         for handle in [TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM] {
             assert!(kind.accepts(handle), "handle {handle:#x}");
@@ -195,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_command_attributes_match_the_reference() {
+    fn reported_command_attributes_reference_match() {
         replay(&[(
             "CCATTR_0121",
             cap_command_attributes(TPM_CC_HIERARCHY_CONTROL),
@@ -203,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn the_framing_errors_match_the_reference() {
+    fn framing_error_reference_match() {
         let mut steps: Vec<(&str, Vec<u8>)> = vec![(
             "HC_NO_SESSIONS",
             framed(
@@ -329,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn the_illegal_authorization_combinations_match_the_reference() {
+    fn illegal_authorization_reference_match() {
         replay(&[
             (
                 "HC_OWNER_BY_ENDORSEMENT",
@@ -359,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn enabling_an_enabled_hierarchy_changes_nothing() {
+    fn enabled_hierarchy_reenable_no_op() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -392,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_the_storage_hierarchy_matches_the_reference() {
+    fn storage_hierarchy_disable_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         for (label, bytes) in [
@@ -510,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_the_endorsement_hierarchy_matches_the_reference() {
+    fn endorsement_hierarchy_disable_reference_match() {
         let runtime = replay(&[
             ("EH_ENDORSEMENT_PRIMARY", create_primary(TPM_RH_ENDORSEMENT)),
             ("EH_OWNER_PRIMARY", create_primary(TPM_RH_OWNER)),
@@ -543,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_platform_nv_matches_the_reference() {
+    fn platform_nv_disable_reference_match() {
         let runtime = replay(&[
             (
                 "PNV_DEFINE_PLATFORM_INDEX",
@@ -584,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_the_platform_hierarchy_matches_the_reference() {
+    fn platform_hierarchy_disable_reference_match() {
         let runtime = replay(&[
             ("PH_PLATFORM_PRIMARY", create_primary(TPM_RH_PLATFORM)),
             ("PH_OWNER_PRIMARY", create_primary(TPM_RH_OWNER)),
@@ -633,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn a_state_change_clears_the_orderly_state_and_a_no_op_does_not() {
+    fn state_change_orderly_clear_noop_preservation() {
         for (label, startup_label, request, orderly) in [
             (
                 "HC_ORDERLY_DISABLE_OWNER",
@@ -663,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hierarchy_change_survives_a_volatile_state_round_trip() {
+    fn hierarchy_change_volatile_round_trip() {
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{
             VolatileDecodeBoundary, decode_volatile_blob, volatile_validation_context,
@@ -689,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_only_blocks_a_state_change_that_must_clear_the_orderly_state() {
+    fn nv_unavailable_orderly_clear_only_block() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         runtime.nv_available = false;
@@ -723,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn a_state_change_requests_an_nv_update_only_while_orderly() {
+    fn state_change_nv_update_orderly_only() {
         assert_eq!(
             commits_for(&hierarchy_control(TPM_RH_OWNER, TPM_RH_OWNER, 0, &[])),
             0,
@@ -754,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = hierarchy_control(TPM_RH_PLATFORM, TPM_RH_OWNER, 0, &[]);
         for len in 0..=valid.len() {
@@ -770,6 +771,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
+                        Cancellation::disabled(),
                     );
                 }
             }

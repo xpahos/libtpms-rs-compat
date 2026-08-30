@@ -117,13 +117,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_hash_has_no_key_stream() {
+    fn unsupported_hash_empty_key_stream() {
         assert!(kdfa(TPM_ALG_NULL, b"key", b"L", &[], &[], 128).is_none());
         assert!(mgf1(TPM_ALG_NULL, b"seed", 32).is_none());
     }
 
     #[test]
-    fn the_key_stream_length_follows_the_requested_bits() {
+    fn key_stream_length_requested_bits() {
         for (bits, expected) in [(8u32, 1usize), (128, 16), (256, 32), (264, 33), (1024, 128)] {
             let stream = kdfa(TPM_ALG_SHA256, b"key", b"L", &[], &[], bits).unwrap();
             assert_eq!(stream.len(), expected, "{bits} bits");
@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_terminated_label_is_not_padded_again() {
+    fn null_terminated_label_no_repadding() {
         let padded = kdfa(TPM_ALG_SHA256, b"key", b"L\0", &[], &[], 128).unwrap();
         let unpadded = kdfa(TPM_ALG_SHA256, b"key", b"L", &[], &[], 128).unwrap();
         assert_eq!(
@@ -141,14 +141,14 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_label_still_contributes_a_zero_byte() {
+    fn empty_label_zero_byte_contribution() {
         let empty = kdfa(TPM_ALG_SHA256, b"key", &[], &[], &[], 128).unwrap();
         let zero = kdfa(TPM_ALG_SHA256, b"key", &[0], &[], &[], 128).unwrap();
         assert_eq!(empty, zero);
     }
 
     #[test]
-    fn every_input_changes_the_key_stream() {
+    fn key_stream_input_sensitivity() {
         let base = kdfa(TPM_ALG_SHA256, b"key", b"L", b"u", b"v", 128).unwrap();
         for other in [
             kdfa(TPM_ALG_SHA256, b"KEY", b"L", b"u", b"v", 128).unwrap(),
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn the_size_in_bits_is_part_of_the_hmac_input() {
+    fn size_in_bits_hmac_input_inclusion() {
         let short = kdfa(TPM_ALG_SHA256, b"key", b"L", &[], &[], 128).unwrap();
         let long = kdfa(TPM_ALG_SHA256, b"key", b"L", &[], &[], 256).unwrap();
         assert_ne!(
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mask_length_is_exact_and_the_prefix_is_stable() {
+    fn mask_length_exactness_prefix_stability() {
         let long = mgf1(TPM_ALG_SHA256, b"seed", 100).unwrap();
         assert_eq!(long.len(), 100);
         for length in [1usize, 31, 32, 33, 64] {
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mask_matches_a_hand_built_counter_chain() {
+    fn mask_counter_chain_match() {
         let mut expected = Vec::new();
         for counter in 0u32..2 {
             let mut hasher = Hasher::new(TPM_ALG_SHA256).unwrap();
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mask_matches_the_vendored_oracle() {
+    fn mask_oracle_match() {
         for (algorithm, seed, expected) in [
             (
                 TPM_ALG_SHA256,
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn the_counter_follows_the_seed_in_every_block() {
+    fn counter_after_seed_block_layout() {
         let seed = b"an-mgf1-seed";
         let mask = mgf1(TPM_ALG_SHA256, seed, 96).unwrap();
 
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_counter_continues_the_key_stream() {
+    fn resumed_counter_key_stream_continuation() {
         let block = |counter: &mut u32| {
             kdfa_from(TPM_ALG_SHA256, b"key", b"L", &[], &[], 256, counter).unwrap()
         };
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_length_request_produces_nothing() {
+    fn zero_length_request_empty_output() {
         assert!(mgf1(TPM_ALG_SHA256, b"seed", 0).unwrap().is_empty());
         assert!(
             kdfa(TPM_ALG_SHA256, b"key", b"L", &[], &[], 0)

@@ -25,7 +25,7 @@ mod tests {
     const TPM_RH_ACT_F: u32 = 0x4000_011f;
 
     #[test]
-    fn the_reference_profile_compiles_act_set_timeout_out() {
+    fn act_set_timeout_compiled_out() {
         assert!(
             !upstream_implements(TPM_CC_ACT_SET_TIMEOUT),
             "the pinned profile sets CC_ACT_SetTimeout to CC_NO"
@@ -46,7 +46,7 @@ mod tests {
     }
 
     #[test]
-    fn every_act_request_answers_the_reference_command_code_error() {
+    fn act_request_command_code_error() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         let before = snapshot(&runtime);
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn an_act_request_before_startup_answers_the_same_error() {
+    fn pre_startup_act_request_command_code_error() {
         let clock = replay_clock();
         let mut runtime = manufactured(&clock);
         expect(
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn the_act_capability_reports_an_empty_list_for_every_act_handle() {
+    fn act_capability_empty_list() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         for (label, bytes) in [
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn the_single_capability_lookup_still_rejects_the_act_selector() {
+    fn single_capability_act_selector_rejection() {
         let clock = replay_clock();
         let runtime = ready(&clock);
         assert_eq!(
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn the_physical_presence_capability_matches_the_single_lookup() {
+    fn physical_presence_capability_single_lookup_match() {
         let clock = replay_clock();
         let host = Host::at("AFTER_PP_COMMANDS");
         let mut runtime = restored("AFTER_PP_COMMANDS", &clock);
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn the_group_reports_the_reference_command_attributes() {
+    fn group_command_attributes_reference_match() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         for (record, code) in [

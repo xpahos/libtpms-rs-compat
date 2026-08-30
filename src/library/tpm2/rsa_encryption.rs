@@ -341,14 +341,14 @@ mod tests {
     }
 
     #[test]
-    fn a_null_scheme_carries_no_details() {
+    fn null_scheme_no_details() {
         assert_eq!(parse(&[0x00, 0x10]), Ok(RsaDecryptScheme::NULL));
         assert_eq!(RsaDecryptScheme::NULL.scheme, TPM_ALG_NULL);
         assert_eq!(RsaDecryptScheme::NULL.hash_alg, TPM_ALG_ERROR);
     }
 
     #[test]
-    fn an_rsaes_scheme_carries_no_details() {
+    fn rsaes_scheme_no_details() {
         assert_eq!(
             parse(&[0x00, 0x15]),
             Ok(requested(TPM_ALG_RSAES, TPM_ALG_ERROR))
@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oaep_scheme_carries_its_hash() {
+    fn oaep_scheme_hash_detail() {
         for hash_alg in [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512] {
             let mut bytes = TPM_ALG_OAEP.to_be_bytes().to_vec();
             bytes.extend_from_slice(&hash_alg.to_be_bytes());
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signature_scheme_selector_is_a_value_error() {
+    fn signature_scheme_selector_value_error() {
         for scheme in [TPM_ALG_RSASSA, TPM_ALG_RSAPSS, 0x0000, 0x0018, 0xffff] {
             let mut bytes = scheme.to_be_bytes().to_vec();
             bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_scheme_is_insufficient() {
+    fn truncated_scheme_insufficient_error() {
         for bytes in [
             &[][..],
             &[0x00][..],
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_oaep_hash_is_a_hash_error() {
+    fn invalid_oaep_hash_error() {
         for hash_alg in [TPM_ALG_NULL, 0x0000u16, 0x0012, 0xffff] {
             let mut bytes = TPM_ALG_OAEP.to_be_bytes().to_vec();
             bytes.extend_from_slice(&hash_alg.to_be_bytes());
@@ -410,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_scheme_is_a_selector_error() {
+    fn profile_disabled_scheme_selector_error() {
         let without_oaep = profile_without(b"oaep");
         let mut bytes = TPM_ALG_OAEP.to_be_bytes().to_vec();
         bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_hash_is_a_hash_error() {
+    fn profile_disabled_hash_error() {
         let without_sha1 = profile_without(b"sha1");
         let mut bytes = TPM_ALG_OAEP.to_be_bytes().to_vec();
         bytes.extend_from_slice(&TPM_ALG_SHA1.to_be_bytes());
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn a_label_is_properly_formatted_when_it_is_empty_or_null_terminated() {
+    fn label_format_empty_or_nul_terminated() {
         assert!(is_label_properly_formatted(b""));
         assert!(is_label_properly_formatted(b"\0"));
         assert!(is_label_properly_formatted(b"label\0"));
@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_a_scheme_takes_the_command_scheme() {
+    fn schemeless_key_command_scheme_adoption() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         for scheme in [
             RsaDecryptScheme::NULL,
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_scheme_answers_a_null_command_scheme() {
+    fn null_command_scheme_key_scheme_fallback() {
         let rsaes = rsa_body(TPM_ALG_RSAES, None, &TEST_MODULUS);
         assert_eq!(
             select_rsa_scheme(&rsaes, RsaDecryptScheme::NULL),
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn an_identical_command_scheme_is_accepted_and_a_different_one_is_not() {
+    fn command_scheme_match_requirement() {
         let oaep = rsa_body(TPM_ALG_OAEP, Some(TPM_ALG_SHA256), &TEST_MODULUS);
         assert_eq!(
             select_rsa_scheme(&oaep, requested(TPM_ALG_OAEP, TPM_ALG_SHA256)),
@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_rsa_object_has_no_scheme() {
+    fn non_rsa_object_no_scheme() {
         let mut key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         key.public.parameters = PublicParms::SymCipher(SymDefObject {
             algorithm: TPM_ALG_NULL,
@@ -563,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn oaep_encoding_reaches_its_hash_test_before_drawing_the_padding_seed() {
+    fn oaep_hash_self_test_before_seed_draw() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         let mut generator = rand();
         let (outcome, calls) = recorded_encrypt(
@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn oaep_encoding_rejected_by_its_size_checks_reaches_no_hash_test() {
+    fn oaep_size_rejection_no_hash_self_test() {
         let wide = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         let narrow = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS[..128]);
         for (what, key, scheme, message) in [
@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_oaep_encryption_reaches_its_hash_test_once() {
+    fn oaep_success_single_hash_self_test() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         let mut generator = rand();
         let (outcome, calls) = recorded_encrypt(
@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn the_unpadded_and_rsaes_schemes_reach_no_hash_test() {
+    fn unpadded_rsaes_no_hash_self_test() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         for scheme in [
             RsaDecryptScheme::NULL,
@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oaep_hash_too_large_for_the_modulus_is_a_hash_error() {
+    fn oaep_hash_exceeding_modulus_hash_error() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS[..128]);
         assert_eq!(
             crypt_rsa_encrypt(
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_oaep_message_is_a_value_error_and_draws_nothing() {
+    fn oversized_oaep_message_value_error_no_draw() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         let mut generator = rand();
         let before = generator.random_bytes(0).expect("a zero draw");
@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_rsaes_message_is_a_value_error() {
+    fn oversized_rsaes_message_value_error() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
             crypt_rsa_encrypt(
@@ -717,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn the_unpadded_scheme_follows_the_profile_attribute() {
+    fn unpadded_scheme_profile_attribute_gate() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
             crypt_rsa_encrypt(
@@ -770,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_message_at_or_above_the_modulus_is_a_size_error() {
+    fn raw_message_at_or_above_modulus_size_error() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
             crypt_rsa_encrypt(
@@ -801,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_message_longer_than_the_modulus_needs_leading_zeros() {
+    fn long_raw_message_leading_zero_requirement() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         let mut padded = vec![0u8; 4];
         padded.extend_from_slice(&TEST_MODULUS[..255]);
@@ -852,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn every_scheme_round_trips_through_the_shared_layer() {
+    fn scheme_shared_layer_round_trip() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         for (scheme, label) in [
             (RsaDecryptScheme::NULL, &b""[..]),
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oaep_ciphertext_does_not_decode_with_a_different_label_or_hash() {
+    fn oaep_decode_label_hash_mismatch_failure() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         let scheme = requested(TPM_ALG_OAEP, TPM_ALG_SHA256);
         let ciphertext = round_trip(scheme, b"payload", b"right\0");
@@ -926,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_ciphertext_never_returns_a_partial_plaintext() {
+    fn malformed_ciphertext_no_partial_plaintext() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         for scheme in [
             requested(TPM_ALG_RSAES, TPM_ALG_ERROR),
@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ciphertext_at_or_above_the_modulus_is_a_size_error() {
+    fn ciphertext_at_or_above_modulus_size_error() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         assert_eq!(
             crypt_rsa_decrypt(
@@ -964,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn the_encryption_draws_exactly_the_reference_number_of_random_bytes() {
+    fn encryption_reference_random_consumption() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         for (scheme, expected) in [
             (RsaDecryptScheme::NULL, 0usize),
@@ -999,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ciphertext_of_the_wrong_length_is_a_size_error() {
+    fn wrong_length_ciphertext_size_error() {
         let key = rsa_body(TPM_ALG_NULL, None, &TEST_MODULUS);
         for length in [0usize, 1, 255, 257, 384] {
             assert_eq!(

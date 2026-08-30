@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn the_iv_length_follows_the_parent_block_size() {
+    fn iv_length_parent_block_size_match() {
         for (algorithm, iv_len) in [
             (TPM_ALG_AES, 16u16),
             (TPM_ALG_TDES, 8),
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn the_child_name_and_parent_seed_bind_the_wrap() {
+    fn child_name_parent_seed_wrap_binding() {
         let baseline = wrap(TPM_ALG_AES, &NAME, &SEED, b"bind");
         assert_eq!(baseline, wrap(TPM_ALG_AES, &NAME, &SEED, b"bind"));
         assert_ne!(baseline, wrap(TPM_ALG_AES, &OTHER_NAME, &SEED, b"bind"));
@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn a_keyed_hash_parent_cannot_wrap() {
+    fn keyed_hash_parent_wrap_rejection() {
         assert_eq!(
             sensitive_to_private(
                 &child_sensitive(),
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn the_private_blob_round_trips_through_the_shared_layer() {
+    fn private_blob_shared_layer_round_trip() {
         let parent = parent(TPM_ALG_AES);
         let blob = wrap(TPM_ALG_AES, &NAME, &SEED, b"round");
         let recovered = private_to_sensitive(&blob, &NAME, &protector(&parent, &SEED))
@@ -660,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_private_blob_is_bound_to_its_name_and_its_parent_seed() {
+    fn private_blob_name_seed_binding() {
         let parent = parent(TPM_ALG_AES);
         let blob = wrap(TPM_ALG_AES, &NAME, &SEED, b"bound");
         assert_eq!(
@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn the_outer_wrapper_of_a_duplicate_carries_no_initialization_vector() {
+    fn duplicate_outer_wrap_no_iv() {
         let parent = parent(TPM_ALG_AES);
         let wrapped = produce_outer_wrap(
             &protector(&parent, &[]),
@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn the_outer_integrity_is_the_reference_hmac_over_the_protected_bytes() {
+    fn outer_integrity_reference_hmac() {
         let parent = parent(TPM_ALG_AES);
         let wrapped = produce_outer_wrap(
             &protector(&parent, &[]),
@@ -741,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_outer_seed_or_name_is_an_integrity_failure() {
+    fn wrong_outer_seed_or_name_integrity_failure() {
         let parent = parent(TPM_ALG_AES);
         let wrapped = produce_outer_wrap(
             &protector(&parent, &[]),
@@ -772,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn the_inner_integrity_hashes_the_payload_and_the_name() {
+    fn inner_integrity_payload_name_hash() {
         let wrapped = produce_inner_integrity(&NAME, TPM_ALG_SHA256, b"payload")
             .expect("the integrity is produced");
         let mut hasher = Hasher::new(TPM_ALG_SHA256).expect("sha256");
@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn every_duplication_wrapper_combination_round_trips() {
+    fn duplication_wrapper_combination_round_trip() {
         let parent = parent(TPM_ALG_AES);
         for (label, seed, symmetric, key) in [
             (&b"plain"[..], &[][..], null_sym(), &[][..]),
@@ -851,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_inner_key_is_generated_from_the_supplied_generator() {
+    fn absent_inner_key_generation() {
         let parent = parent(TPM_ALG_AES);
         let produced = sensitive_to_duplicate(
             &child_sensitive(),
@@ -889,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicate_is_bound_to_its_name_its_seed_and_its_inner_key() {
+    fn duplicate_name_seed_inner_key_binding() {
         let parent = parent(TPM_ALG_AES);
         let key = [0xa5u8; 16];
         let produced = sensitive_to_duplicate(
@@ -927,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupted_duplication_blob_never_yields_a_sensitive_area() {
+    fn corrupted_duplication_blob_no_sensitive_output() {
         let parent = parent(TPM_ALG_AES);
         let produced = sensitive_to_duplicate(
             &child_sensitive(),
@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn every_prefix_of_a_duplication_blob_is_rejected_without_panicking() {
+    fn duplication_blob_prefix_rejection_panic_safety() {
         let parent = parent(TPM_ALG_AES);
         let produced = sensitive_to_duplicate(
             &child_sensitive(),
@@ -1032,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn a_credential_round_trips_for_every_protector_shape() {
+    fn credential_round_trip_all_protector_shapes() {
         for (label, public, seed) in credential_protectors() {
             for credential in [&[][..], &[0xaa][..], &CREDENTIAL[..]] {
                 let blob = credential_blob(&public, credential, &seed);
@@ -1063,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn a_credential_is_bound_to_its_name_and_its_seed() {
+    fn credential_name_seed_binding() {
         for (label, public, seed) in credential_protectors() {
             let blob = credential_blob(&public, &CREDENTIAL, &seed);
             for (what, name, other_seed) in [
@@ -1091,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn every_corruption_of_a_credential_is_refused() {
+    fn credential_corruption_rejection() {
         let public = parent(TPM_ALG_AES);
         let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
         for position in 0..blob.len() {
@@ -1117,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn every_prefix_of_a_credential_is_refused_without_panicking() {
+    fn credential_prefix_rejection_panic_safety() {
         let public = parent(TPM_ALG_AES);
         let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
         for length in 0..blob.len() {
@@ -1150,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn the_decrypted_credential_must_be_exactly_one_digest() {
+    fn decrypted_credential_single_digest_requirement() {
         let public = parent(TPM_ALG_AES);
         let mut digest = 32u16.to_be_bytes().to_vec();
         digest.extend_from_slice(&CREDENTIAL);
@@ -1189,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn the_integrity_of_a_credential_is_compared_in_constant_time() {
+    fn credential_integrity_constant_time_comparison() {
         let public = parent(TPM_ALG_AES);
         let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
         for position in 2..34 {
@@ -1277,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_credential_tests_the_name_algorithm_then_the_symmetric_algorithm() {
+    fn credential_creation_name_then_symmetric_self_test_order() {
         for (label, public, symmetric, name_alg) in [
             (
                 "RSA SHA-256/AES",
@@ -1306,7 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_self_test_stops_the_credential_at_its_own_boundary() {
+    fn failing_self_test_credential_creation_boundary() {
         let public = parent(TPM_ALG_AES);
         for (label, failing, expected) in [
             ("the name algorithm", TPM_ALG_SHA256, vec![TPM_ALG_SHA256]),
@@ -1323,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_credential_tests_the_symmetric_algorithm_only_after_the_integrity_matches() {
+    fn credential_open_symmetric_self_test_after_integrity() {
         let public = parent(TPM_ALG_AES);
         let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
         let mut oversized = blob.clone();
@@ -1372,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_self_test_stops_the_credential_open_at_its_own_boundary() {
+    fn failing_self_test_credential_open_boundary() {
         let public = parent(TPM_ALG_AES);
         let blob = credential_blob(&public, &CREDENTIAL, &RSA_DERIVED_SEED);
         for (label, failing, expected) in [
@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn a_marshalled_sensitive_area_pads_its_authorization_value_to_the_digest() {
+    fn marshalled_sensitive_auth_value_digest_padding() {
         let mut sensitive = child_sensitive();
         sensitive.auth_value = OwnedSecret::from_vec(b"short".to_vec());
         let marshalled = marshal_sensitive(&sensitive, TPM_ALG_SHA256).expect("it marshals");
@@ -1403,7 +1403,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_sensitive_type_is_a_type_error() {
+    fn unknown_sensitive_type_type_error() {
         let parent = parent(TPM_ALG_AES);
         let mut payload = 0u16.to_be_bytes().to_vec();
         for field in [&[][..], &[][..], &[][..]] {

@@ -49,7 +49,7 @@ mod tests {
     const TPM_CC: u32 = 0x0000_0173;
 
     #[track_caller]
-    fn restored(snapshot: &str) -> Box<Tpm2Runtime> {
+    fn restored(snapshot: &str) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
@@ -77,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0173");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         assert_eq!(TPM_CC_READ_PUBLIC, TPM_CC);
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_handle_needs_no_authorization() {
+    fn object_handle_no_authorization() {
         let descriptor = find(TPM_CC_READ_PUBLIC).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 1);
         assert!(
@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn every_public_area_matches_the_oracle() {
+    fn public_area_oracle_parity() {
         for (snapshot, record, handle) in [
             ("KEYS", "READPUBLIC_RSASSA", 0x8000_0000),
             ("KEYS", "READPUBLIC_ECDSA", 0x8000_0001),
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn every_hierarchy_reports_its_own_qualified_name() {
+    fn per_hierarchy_qualified_name_reporting() {
         for (record, handle) in [
             ("READPUBLIC_ENDORSEMENT", 0x8000_0000),
             ("READPUBLIC_PLATFORM", 0x8000_0001),
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_copy_reports_the_same_public_area_name_and_qualified_name() {
+    fn persistent_copy_identical_report() {
         assert_matches_oracle("PERSISTENT", "READPUBLIC_PERSISTENT", 0x8100_0001);
         let transient = vector("READPUBLIC_RSASSA");
         let persistent = vector("READPUBLIC_PERSISTENT");
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_name_and_qualified_name_are_the_stored_ones() {
+    fn reported_names_stored_value_match() {
         let runtime = restored("KEYS");
         let response = vector("READPUBLIC_RSASSA");
         let parameters = &response[10..];
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn no_sensitive_material_reaches_the_response() {
+    fn response_no_sensitive_material() {
         let runtime = restored("KEYS");
         let object = resolve_any_object(&runtime, 0x8000_0000).expect("the key is loaded");
         let OwnedAnyObjectBody::Object(body) = &object.body else {
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn every_sequence_object_is_rejected_with_the_upstream_sequence_error() {
+    fn sequence_object_upstream_error_rejection() {
         for (snapshot, record, handle) in [
             ("SEQUENCE_OBJECT", "READPUBLIC_SEQUENCE", 0x8000_0002),
             (
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn every_rejected_handle_matches_the_oracle() {
+    fn rejected_handle_oracle_parity() {
         for (record, handle) in [
             ("READPUBLIC_EMPTY_TRANSIENT", 0x8000_0000),
             ("READPUBLIC_UNKNOWN_TRANSIENT", 0x8000_0005),
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_handle_matches_the_oracle() {
+    fn malformed_handle_oracle_match() {
         for (record, payload) in [
             ("READPUBLIC_NO_HANDLE", &[][..]),
             ("READPUBLIC_SHORT_HANDLE", &[0x80, 0x00, 0x00][..]),
@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_bytes_are_rejected_with_the_upstream_size_error() {
+    fn trailing_bytes_upstream_size_error() {
         let mut runtime = restored("KEYS");
         let mut payload = 0x8000_0000u32.to_be_bytes().to_vec();
         payload.push(0x00);
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn reading_a_public_area_leaves_the_runtime_untouched() {
+    fn read_runtime_unchanged() {
         let mut runtime = restored("KEYS");
         let before = snapshot_of(&runtime);
         assert_eq!(
@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_read_leaves_no_object_slot_occupied() {
+    fn persistent_read_no_slot_occupation() {
         let mut runtime = restored("PERSISTENT");
         let occupied: Vec<bool> = runtime
             .live
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn object_memory_exhaustion_is_reported_before_the_persistent_object_is_found() {
+    fn object_memory_exhaustion_pre_lookup_error() {
         let mut runtime = restored("PERSISTENT");
         for object in runtime.live.objects.iter_mut() {
             object.attributes |= ATTR_OCCUPIED;

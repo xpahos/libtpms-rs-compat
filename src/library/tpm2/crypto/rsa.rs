@@ -1,5 +1,6 @@
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
+use crate::library::cancel::Cancellation;
 use crate::types::TpmResult;
 
 use super::super::self_test::LazySelfTest;
@@ -18,6 +19,7 @@ pub(in crate::library::tpm2) enum RsaKeyError {
     Value,
     NoResult,
     Failure,
+    Canceled,
 }
 
 pub(in crate::library::tpm2) struct RsaKeyMaterial {
@@ -386,6 +388,7 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
     exponent: u32,
     is_signing_key: bool,
     rand: &mut SeededRand,
+    cancellation: Cancellation<'_>,
 ) -> Result<RsaKeyMaterial, RsaKeyError> {
     let mut effective_exponent = exponent;
     if effective_exponent == 0 {
@@ -419,6 +422,7 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
     for _ in 1..MAX_GENERATION_ATTEMPTS {
         #[cfg(test)]
         super::work::count_generation_attempt();
+        cancellation.check().map_err(|_| RsaKeyError::Canceled)?;
         z.p = generate_prime_for_rsa(prime_bits, effective_exponent, rand)
             .map_err(|_| RsaKeyError::Failure)?;
 
@@ -540,7 +544,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_valid_encoded_salt_round_trips() {
+    fn valid_salt_round_trip() {
         for length in [0usize, 1, 32, 64, 190] {
             let message: Vec<u8> = (0..length).map(|index| index as u8).collect();
             let padded = encoded(&message);
@@ -554,7 +558,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn an_unsupported_hash_or_short_block_fails_on_public_inputs_alone() {
+    fn unsupported_hash_or_short_block_rejection() {
         let padded = encoded(b"salt");
         assert!(decode(TPM_ALG_NULL, LABEL, &padded).is_none());
         assert!(decode(HASH, LABEL, &padded[..65]).is_none());
@@ -562,7 +566,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_wrong_leading_byte_is_rejected() {
+    fn wrong_leading_byte_rejection() {
         let db = strip(&encoded(b"salt"));
         for leading in [0x01u8, 0x80, 0xff] {
             assert!(decode(HASH, LABEL, &reencode(leading, &db)).is_none());
@@ -570,7 +574,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_wrong_label_hash_is_rejected() {
+    fn wrong_label_hash_rejection() {
         let padded = encoded(b"salt");
         assert!(decode(HASH, b"OTHER\0", &padded).is_none());
         let mut db = strip(&padded);
@@ -582,7 +586,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_missing_delimiter_is_rejected() {
+    fn missing_delimiter_rejection() {
         let hash_len = hash_length(HASH).expect("a compiled hash");
         let mut db = strip(&encoded(b"salt"));
         for byte in db[hash_len..].iter_mut() {
@@ -592,7 +596,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn nonzero_padding_before_the_delimiter_is_rejected() {
+    fn nonzero_pre_delimiter_padding_rejection() {
         let hash_len = hash_length(HASH).expect("a compiled hash");
         let padded = encoded(b"salt");
         let original = strip(&padded);
@@ -612,7 +616,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn delimiters_at_different_positions_decode_their_own_message() {
+    fn delimiter_position_message_decoding() {
         let hash_len = hash_length(HASH).expect("a compiled hash");
         let db_len = MODULUS_LEN - hash_len - 1;
         for delimiter in [hash_len, hash_len + 1, db_len - 2, db_len - 1] {
@@ -634,7 +638,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn every_invalid_encoding_reports_the_same_absent_result() {
+    fn invalid_encoding_uniform_absent_result() {
         let hash_len = hash_length(HASH).expect("a compiled hash");
         let original = strip(&encoded(b"salt"));
         let mut invalid: Vec<Vec<u8>> = Vec::new();
@@ -659,7 +663,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_truncated_encoded_message_is_rejected() {
+    fn truncated_encoding_rejection() {
         let padded = encoded(b"salt");
         for length in [0usize, 1, 65, 66, 128, MODULUS_LEN - 1] {
             let truncated = &padded[..length];
@@ -693,7 +697,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn decoding_reaches_the_hash_test_at_its_first_mask_generation() {
+    fn decode_first_mask_generation_hash_test() {
         let padded = encoded(b"salt");
         let (decoded, calls) = recorded_decode(HASH, &padded, false);
         assert_eq!(
@@ -704,7 +708,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_block_rejected_by_the_early_checks_reaches_no_hash_test() {
+    fn early_check_rejection_no_hash_test() {
         let padded = encoded(b"salt");
         let mut leading = padded.clone();
         leading[0] = 0x01;
@@ -720,7 +724,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_block_that_reaches_the_hash_but_fails_its_padding_still_ran_one_test() {
+    fn padding_failure_single_hash_test() {
         let padded = encoded(b"salt");
         let mut corrupt = padded.clone();
         corrupt[100] ^= 0xff;
@@ -734,7 +738,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn a_failing_hash_test_stops_the_decode() {
+    fn hash_test_failure_decode_abort() {
         let padded = encoded(b"salt");
         let (decoded, calls) = recorded_decode(HASH, &padded, true);
         assert_eq!(decoded, Err(crate::library::constants::TPM_RC_FAILURE));
@@ -742,7 +746,7 @@ mod oaep_tests {
     }
 
     #[test]
-    fn the_encoder_rejects_messages_that_cannot_fit() {
+    fn oversized_message_encode_rejection() {
         assert!(oaep_encode(HASH, LABEL, &[0u8; 191], &seed(), MODULUS_LEN).is_none());
         assert!(oaep_encode(HASH, LABEL, b"salt", &[0u8; 31], MODULUS_LEN).is_none());
         assert!(oaep_encode(HASH, LABEL, b"salt", &seed(), 65).is_none());
@@ -765,7 +769,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn the_padding_length_leaves_the_upstream_overhead() {
+    fn padding_length_upstream_overhead() {
         assert_eq!(RSAES_OVERHEAD, 11);
         for message_len in [0usize, 1, 100, MODULUS_LEN - RSAES_OVERHEAD] {
             assert_eq!(
@@ -783,7 +787,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn an_encoded_block_has_the_pkcs1_v1_5_shape() {
+    fn encoded_block_pkcs1_v1_5_shape() {
         let block = encoded(b"payload");
         assert_eq!(block.len(), MODULUS_LEN);
         assert_eq!(block[0], 0x00);
@@ -795,7 +799,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn a_zero_random_byte_is_replaced_so_the_pad_stays_non_zero() {
+    fn zero_random_byte_replacement() {
         let pad_len = rsaes_padding_length(MODULUS_LEN, 4).expect("fits");
         let mut zeros = vec![0u8; pad_len];
         zeros[0] = 0;
@@ -806,7 +810,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn a_padding_of_the_wrong_length_is_refused() {
+    fn wrong_length_padding_rejection() {
         let pad_len = rsaes_padding_length(MODULUS_LEN, 4).expect("fits");
         for length in [0usize, pad_len - 1, pad_len + 1] {
             assert!(rsaes_encode(MODULUS_LEN, b"abcd", &vec![0x11; length]).is_none());
@@ -815,7 +819,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn every_admissible_message_length_round_trips() {
+    fn admissible_message_length_round_trip() {
         for length in [0usize, 1, 8, 128, MODULUS_LEN - RSAES_OVERHEAD] {
             let message: Vec<u8> = (0..length).map(|index| index as u8).collect();
             assert_eq!(
@@ -827,7 +831,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn a_wrong_leading_pair_is_rejected() {
+    fn wrong_leading_pair_rejection() {
         for (offset, value) in [(0usize, 0x01u8), (1, 0x00), (1, 0x01), (1, 0xff)] {
             let mut block = encoded(b"abcd");
             block[offset] = value;
@@ -839,7 +843,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn a_pad_shorter_than_eight_bytes_is_rejected() {
+    fn short_pad_rejection() {
         for pad_len in 0usize..8 {
             let mut block = vec![0u8; MODULUS_LEN];
             block[1] = 0x02;
@@ -860,7 +864,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn a_block_without_a_terminator_is_rejected() {
+    fn missing_terminator_rejection() {
         let mut block = vec![0xaau8; MODULUS_LEN];
         block[0] = 0x00;
         block[1] = 0x02;
@@ -868,7 +872,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn a_block_shorter_than_the_minimum_is_rejected() {
+    fn undersized_block_rejection() {
         for length in 0usize..RSAES_OVERHEAD {
             let mut block = vec![0xaau8; length];
             if length > 0 {
@@ -882,7 +886,7 @@ mod rsaes_tests {
     }
 
     #[test]
-    fn the_first_zero_ends_the_pad_even_when_more_zeros_follow() {
+    fn first_zero_pad_boundary() {
         let mut block = encoded(&[0x00, 0x00, 0x7f]);
         assert_eq!(rsaes_decode(&block).as_deref(), Some(&[0, 0, 0x7f][..]));
         block[20] = 0x00;
@@ -903,20 +907,69 @@ mod tests {
             .expect("a non-empty derivation input")
     }
 
+    #[test]
+    fn generation_cancellation() {
+        assert_eq!(
+            generate_rsa_key(
+                1024,
+                0,
+                false,
+                &mut rand(b"cancel"),
+                Cancellation::requested()
+            )
+            .err(),
+            Some(RsaKeyError::Canceled)
+        );
+    }
+
+    #[test]
+    fn invalid_parameters_before_cancellation() {
+        assert_eq!(
+            generate_rsa_key(
+                1024,
+                4,
+                false,
+                &mut rand(b"cancel"),
+                Cancellation::requested()
+            )
+            .err(),
+            Some(RsaKeyError::Range),
+            "the upstream checkpoint sits inside the generation loop"
+        );
+        assert_eq!(
+            generate_rsa_key(
+                1000,
+                0,
+                false,
+                &mut rand(b"cancel"),
+                Cancellation::requested()
+            )
+            .err(),
+            Some(RsaKeyError::Value)
+        );
+    }
+
     fn original_rand(label: &[u8]) -> SeededRand {
         SeededRand::instantiate(&[0x21; 64], b"RSA", label, &[], 0, false)
             .expect("a non-empty derivation input")
     }
 
     #[test]
-    fn the_exponent_defaults_match_upstream() {
+    fn exponent_default_upstream_match() {
         assert_eq!(RSA_DEFAULT_PUBLIC_EXPONENT, 65537);
         assert_eq!(MAX_RSA_KEY_BITS, 3072);
     }
 
     #[test]
-    fn the_public_operation_undoes_the_private_one() {
-        let key = generate_rsa_key(1024, 0, true, &mut rand(b"public-op")).expect("a key");
+    fn public_op_private_op_inversion() {
+        let key = generate_rsa_key(
+            1024,
+            0,
+            true,
+            &mut rand(b"public-op"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         let modulus = BigUint::from_be_bytes(&key.modulus);
         let prime = BigUint::from_be_bytes(&key.prime);
         let message = BigUint::from_u64(0x0123_4567_89ab_cdef);
@@ -930,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn the_public_operation_uses_the_declared_exponent() {
+    fn public_op_declared_exponent() {
         let modulus = BigUint::from_u64(3233);
         let message = BigUint::from_u64(65);
         assert_eq!(
@@ -944,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn a_value_outside_the_modulus_has_no_public_operation() {
+    fn above_modulus_public_op_rejection() {
         let modulus = BigUint::from_u64(3233);
         assert!(rsa_public_key_op(&modulus, 17, &modulus).is_none());
         assert!(rsa_public_key_op(&modulus, 17, &BigUint::from_u64(3234)).is_none());
@@ -952,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_adjustment_sets_the_top_bits_to_at_least_the_root_of_two_over_two() {
+    fn new_adjustment_sqrt2_lower_bound() {
         for top in [0u32, 1, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff] {
             let mut value = BigUint::from_u64(u64::from(top) << 32).add_u64(0x1234_5678);
             adjust_prime_candidate_new(&mut value);
@@ -963,14 +1016,14 @@ mod tests {
     }
 
     #[test]
-    fn the_new_adjustment_saturates_just_below_the_top_of_the_range() {
+    fn new_adjustment_upper_saturation() {
         let mut value = BigUint::from_u64(0xffff_ffff_0000_0000);
         adjust_prime_candidate_new(&mut value);
         assert_eq!(value.high_u32(), 0xffff_ffff);
     }
 
     #[test]
-    fn the_pre_rev155_adjustment_only_rewrites_the_top_sixteen_bits() {
+    fn pre_rev155_adjustment_top16_bits_only() {
         let mut value = BigUint::from_u64(0x1234_5678_9abc_def0);
         adjust_prime_candidate_pre_rev155(&mut value);
         assert_eq!(value.high_u32() & 0xffff, 0x5678, "the next word is kept");
@@ -978,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn the_two_adjustments_differ_on_the_same_candidate() {
+    fn adjustment_variant_distinction() {
         let base = BigUint::from_u64(0x1234_5678_9abc_def0);
         let mut old = base.clone();
         let mut new = base;
@@ -988,10 +1041,17 @@ mod tests {
     }
 
     #[test]
-    fn an_exponent_below_the_default_is_out_of_range() {
+    fn below_default_exponent_range_error() {
         for exponent in [1u32, 3, 17, 65536] {
             assert_eq!(
-                generate_rsa_key(1024, exponent, false, &mut rand(b"e")).err(),
+                generate_rsa_key(
+                    1024,
+                    exponent,
+                    false,
+                    &mut rand(b"e"),
+                    Cancellation::disabled()
+                )
+                .err(),
                 Some(RsaKeyError::Range),
                 "exponent {exponent}"
             );
@@ -999,10 +1059,17 @@ mod tests {
     }
 
     #[test]
-    fn a_composite_exponent_is_out_of_range() {
+    fn composite_exponent_range_error() {
         for exponent in [65538u32, 65539 * 3, 0xffff_ffff] {
             assert_eq!(
-                generate_rsa_key(1024, exponent, false, &mut rand(b"e")).err(),
+                generate_rsa_key(
+                    1024,
+                    exponent,
+                    false,
+                    &mut rand(b"e"),
+                    Cancellation::disabled()
+                )
+                .err(),
                 Some(RsaKeyError::Range),
                 "exponent {exponent}"
             );
@@ -1010,10 +1077,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_key_size_is_a_value_error() {
+    fn unsupported_key_size_value_error() {
         for key_bits in [0u16, 512, 1023, 2047, 4096] {
             assert_eq!(
-                generate_rsa_key(key_bits, 0, false, &mut rand(b"size")).err(),
+                generate_rsa_key(
+                    key_bits,
+                    0,
+                    false,
+                    &mut rand(b"size"),
+                    Cancellation::disabled()
+                )
+                .err(),
                 Some(RsaKeyError::Value),
                 "keyBits {key_bits}"
             );
@@ -1062,21 +1136,31 @@ mod tests {
     }
 
     #[test]
-    fn a_two_thousand_forty_eight_bit_key_is_internally_consistent() {
-        let key = generate_rsa_key(2048, 0, false, &mut rand(b"rsa2048")).expect("a key");
+    fn rsa2048_key_consistency() {
+        let key = generate_rsa_key(
+            2048,
+            0,
+            false,
+            &mut rand(b"rsa2048"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_key_is_consistent(&key, 2048, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
-    fn a_signing_key_passes_its_own_trial_decryption() {
-        let key = generate_rsa_key(1024, 0, true, &mut rand(b"sign")).expect("a key");
+    fn signing_key_trial_decryption_success() {
+        let key = generate_rsa_key(1024, 0, true, &mut rand(b"sign"), Cancellation::disabled())
+            .expect("a key");
         assert_key_is_consistent(&key, 1024, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
-    fn a_key_is_deterministic_in_the_generator_state() {
-        let first = generate_rsa_key(1024, 0, false, &mut rand(b"same")).expect("a key");
-        let second = generate_rsa_key(1024, 0, false, &mut rand(b"same")).expect("a key");
+    fn key_generation_determinism() {
+        let first = generate_rsa_key(1024, 0, false, &mut rand(b"same"), Cancellation::disabled())
+            .expect("a key");
+        let second = generate_rsa_key(1024, 0, false, &mut rand(b"same"), Cancellation::disabled())
+            .expect("a key");
         assert_eq!(first.modulus, second.modulus);
         assert_eq!(first.prime, second.prime);
         assert_eq!(first.q, second.q);
@@ -1086,32 +1170,65 @@ mod tests {
     }
 
     #[test]
-    fn a_different_generator_state_produces_a_different_key() {
-        let first = generate_rsa_key(1024, 0, false, &mut rand(b"one")).expect("a key");
-        let second = generate_rsa_key(1024, 0, false, &mut rand(b"two")).expect("a key");
+    fn generator_state_key_distinction() {
+        let first = generate_rsa_key(1024, 0, false, &mut rand(b"one"), Cancellation::disabled())
+            .expect("a key");
+        let second = generate_rsa_key(1024, 0, false, &mut rand(b"two"), Cancellation::disabled())
+            .expect("a key");
         assert_ne!(first.modulus, second.modulus);
     }
 
     #[test]
-    fn the_seed_compatibility_level_changes_the_key() {
-        let new = generate_rsa_key(1024, 0, false, &mut rand(b"level")).expect("a key");
-        let old = generate_rsa_key(1024, 0, false, &mut original_rand(b"level")).expect("a key");
+    fn seed_compat_level_key_distinction() {
+        let new = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"level"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
+        let old = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut original_rand(b"level"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_ne!(new.modulus, old.modulus);
         assert_key_is_consistent(&old, 1024, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
-    fn a_signing_key_consumes_more_generator_output_than_a_decryption_key() {
-        let signing = generate_rsa_key(1024, 0, true, &mut rand(b"drain")).expect("a key");
-        let decryption = generate_rsa_key(1024, 0, false, &mut rand(b"drain")).expect("a key");
+    fn signing_key_extra_generator_consumption() {
+        let signing =
+            generate_rsa_key(1024, 0, true, &mut rand(b"drain"), Cancellation::disabled())
+                .expect("a key");
+        let decryption = generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut rand(b"drain"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_eq!(
             signing.modulus, decryption.modulus,
             "the trial decryption happens after both primes are chosen"
         );
         let mut signing_state = rand(b"drain");
         let mut decryption_state = rand(b"drain");
-        generate_rsa_key(1024, 0, true, &mut signing_state).expect("a key");
-        generate_rsa_key(1024, 0, false, &mut decryption_state).expect("a key");
+        generate_rsa_key(1024, 0, true, &mut signing_state, Cancellation::disabled())
+            .expect("a key");
+        generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut decryption_state,
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_ne!(
             signing_state.random_bytes(32).unwrap(),
             decryption_state.random_bytes(32).unwrap(),
@@ -1120,15 +1237,31 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_default_exponent_matches_the_implicit_one() {
-        let implicit = generate_rsa_key(1024, 0, false, &mut rand(b"exp")).expect("a key");
-        let explicit = generate_rsa_key(1024, 65537, false, &mut rand(b"exp")).expect("a key");
+    fn explicit_default_exponent_match() {
+        let implicit =
+            generate_rsa_key(1024, 0, false, &mut rand(b"exp"), Cancellation::disabled())
+                .expect("a key");
+        let explicit = generate_rsa_key(
+            1024,
+            65537,
+            false,
+            &mut rand(b"exp"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_eq!(implicit.modulus, explicit.modulus);
     }
 
     #[test]
-    fn a_larger_prime_exponent_produces_a_usable_key() {
-        let key = generate_rsa_key(1024, 65539, false, &mut rand(b"bigexp")).expect("a key");
+    fn larger_prime_exponent_usable_key() {
+        let key = generate_rsa_key(
+            1024,
+            65539,
+            false,
+            &mut rand(b"bigexp"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_key_is_consistent(&key, 1024, 65539);
     }
 
@@ -1136,21 +1269,36 @@ mod tests {
         [b"ek3072", b"spk3072", b"sign3072", b"seed-a", b"seed-b"];
 
     #[test]
-    fn a_three_thousand_seventy_two_bit_key_is_internally_consistent() {
-        let key = generate_rsa_key(3072, 0, false, &mut rand(b"ek3072")).expect("a key");
+    fn rsa3072_key_consistency() {
+        let key = generate_rsa_key(
+            3072,
+            0,
+            false,
+            &mut rand(b"ek3072"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
-    fn a_three_thousand_seventy_two_bit_signing_key_passes_its_own_trial_decryption() {
-        let key = generate_rsa_key(3072, 0, true, &mut rand(b"sign3072")).expect("a key");
+    fn rsa3072_signing_key_trial_decryption_success() {
+        let key = generate_rsa_key(
+            3072,
+            0,
+            true,
+            &mut rand(b"sign3072"),
+            Cancellation::disabled(),
+        )
+        .expect("a key");
         assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
-    fn every_three_thousand_seventy_two_bit_seed_yields_a_consistent_key() {
+    fn rsa3072_per_seed_key_consistency() {
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
-            let key = generate_rsa_key(3072, 0, false, &mut rand(label)).expect("a key");
+            let key = generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
+                .expect("a key");
             assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
             let p = BigUint::from_be_bytes(&key.prime);
             let difference = if p > key.q {
@@ -1167,11 +1315,12 @@ mod tests {
     }
 
     #[test]
-    fn the_chosen_seeds_exercise_different_prime_search_paths() {
+    fn seed_prime_search_path_coverage() {
         let mut lengths = Vec::new();
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
-            let (key, counters) =
-                work::measure(|| generate_rsa_key(3072, 0, false, &mut rand(label)));
+            let (key, counters) = work::measure(|| {
+                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
+            });
             key.expect("a key");
             lengths.push(counters.sieved_candidates);
         }
@@ -1189,13 +1338,15 @@ mod tests {
     }
 
     #[test]
-    fn a_three_thousand_seventy_two_bit_key_is_deterministic_in_the_generator_state() {
+    fn rsa3072_key_generation_determinism() {
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
             let (first, left) = work::measure(|| {
-                generate_rsa_key(3072, 0, false, &mut rand(label)).expect("a key")
+                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
+                    .expect("a key")
             });
             let (second, right) = work::measure(|| {
-                generate_rsa_key(3072, 0, false, &mut rand(label)).expect("a key")
+                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
+                    .expect("a key")
             });
             let name = core::str::from_utf8(label).unwrap();
             assert_eq!(first.modulus, second.modulus, "{name} modulus");
@@ -1209,11 +1360,11 @@ mod tests {
     }
 
     #[test]
-    fn different_seeds_produce_different_three_thousand_seventy_two_bit_keys() {
+    fn rsa3072_different_seed_key_distinction() {
         let mut moduli = Vec::new();
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
             moduli.push(
-                generate_rsa_key(3072, 0, false, &mut rand(label))
+                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
                     .expect("a key")
                     .modulus,
             );
@@ -1224,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn the_three_thousand_seventy_two_bit_search_does_the_pinned_amount_of_work() {
+    fn rsa3072_search_pinned_work() {
         let expected = [
             (b"ek3072".as_slice(), 46433u64, 19u64, 5184u64),
             (b"spk3072", 210178, 107, 25152),
@@ -1233,8 +1384,9 @@ mod tests {
             (b"seed-b", 295526, 153, 32640),
         ];
         for (label, multiplications, candidates, generator_bytes) in expected {
-            let (key, counters) =
-                work::measure(|| generate_rsa_key(3072, 0, false, &mut rand(label)));
+            let (key, counters) = work::measure(|| {
+                generate_rsa_key(3072, 0, false, &mut rand(label), Cancellation::disabled())
+            });
             key.expect("a key");
             let name = core::str::from_utf8(label).unwrap();
             assert_eq!(counters.sieved_candidates, candidates, "{name} candidates");
@@ -1250,9 +1402,16 @@ mod tests {
     }
 
     #[test]
-    fn the_two_thousand_forty_eight_bit_search_does_the_pinned_amount_of_work() {
-        let (key, counters) =
-            work::measure(|| generate_rsa_key(2048, 0, false, &mut rand(b"rsa2048")));
+    fn rsa2048_search_pinned_work() {
+        let (key, counters) = work::measure(|| {
+            generate_rsa_key(
+                2048,
+                0,
+                false,
+                &mut rand(b"rsa2048"),
+                Cancellation::disabled(),
+            )
+        });
         let key = key.expect("a key");
         assert_key_is_consistent(&key, 2048, RSA_DEFAULT_PUBLIC_EXPONENT);
         assert_eq!(counters.sieved_candidates, 61);
@@ -1264,11 +1423,18 @@ mod tests {
     }
 
     #[test]
-    fn the_generation_attempt_budget_bounds_every_supported_key_size() {
+    fn generation_attempt_budget_bound() {
         assert_eq!(MAX_GENERATION_ATTEMPTS, 100);
         for key_bits in [1024u16, 2048, 3072] {
-            let (key, counters) =
-                work::measure(|| generate_rsa_key(key_bits, 0, false, &mut rand(b"budget")));
+            let (key, counters) = work::measure(|| {
+                generate_rsa_key(
+                    key_bits,
+                    0,
+                    false,
+                    &mut rand(b"budget"),
+                    Cancellation::disabled(),
+                )
+            });
             key.expect("a key");
             assert!(
                 counters.generation_attempts < u64::from(MAX_GENERATION_ATTEMPTS),
@@ -1278,23 +1444,31 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_request_costs_no_arithmetic_at_all() {
+    fn rejected_request_no_arithmetic() {
         for (key_bits, exponent, error) in [
             (3072u16, 3u32, RsaKeyError::Range),
             (3072, 65538, RsaKeyError::Range),
             (4096, 0, RsaKeyError::Value),
             (1536, 0, RsaKeyError::Value),
         ] {
-            let (result, counters) =
-                work::measure(|| generate_rsa_key(key_bits, exponent, false, &mut rand(b"bad")));
+            let (result, counters) = work::measure(|| {
+                generate_rsa_key(
+                    key_bits,
+                    exponent,
+                    false,
+                    &mut rand(b"bad"),
+                    Cancellation::disabled(),
+                )
+            });
             assert_eq!(result.err(), Some(error), "keyBits {key_bits}");
             assert_eq!(counters, work::Counters::default(), "keyBits {key_bits}");
         }
     }
 
     #[test]
-    fn the_private_key_operation_inverts_the_public_one() {
-        let key = generate_rsa_key(1024, 0, false, &mut rand(b"crt")).expect("a key");
+    fn private_op_public_op_inversion() {
+        let key = generate_rsa_key(1024, 0, false, &mut rand(b"crt"), Cancellation::disabled())
+            .expect("a key");
         let modulus = BigUint::from_be_bytes(&key.modulus);
         let mut z = PrivateExponent {
             p: BigUint::from_be_bytes(&key.prime),

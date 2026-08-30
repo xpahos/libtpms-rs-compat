@@ -73,7 +73,7 @@ mod tests {
     const OTHER_INDEX: u32 = 0x0100_0002;
 
     #[test]
-    fn a_read_lock_beats_every_other_read_check() {
+    fn read_lock_check_precedence() {
         for attributes in [
             TPMA_NV_READLOCKED,
             TPMA_NV_READLOCKED | TPMA_NV_OWNERREAD | TPMA_NV_WRITTEN,
@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_and_platform_reads_need_their_own_attribute() {
+    fn owner_platform_read_own_attribute_requirement() {
         assert_eq!(
             read_access_checks(TPM_RH_OWNER, INDEX, TPMA_NV_WRITTEN),
             Err(TPM_RC_NV_AUTHORIZATION)
@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_authorizes_only_itself_for_reading() {
+    fn read_authorization_self_index_only() {
         assert_eq!(
             read_access_checks(INDEX, INDEX, TPMA_NV_AUTHREAD | TPMA_NV_WRITTEN),
             Ok(())
@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unwritten_index_is_uninitialized_after_the_authorization_checks() {
+    fn unwritten_index_uninitialized_after_authorization() {
         assert_eq!(
             read_access_checks(TPM_RH_OWNER, INDEX, TPMA_NV_OWNERREAD),
             Err(TPM_RC_NV_UNINITIALIZED)
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn a_write_lock_beats_every_other_write_check() {
+    fn write_lock_check_precedence() {
         for attributes in [
             TPMA_NV_WRITELOCKED,
             TPMA_NV_WRITELOCKED | TPMA_NV_OWNERWRITE,
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_and_platform_writes_need_their_own_attribute() {
+    fn owner_platform_write_own_attribute_requirement() {
         assert_eq!(
             write_access_checks(TPM_RH_OWNER, INDEX, 0),
             Err(TPM_RC_NV_AUTHORIZATION)
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_authorizes_only_itself_for_writing() {
+    fn write_authorization_self_index_only() {
         assert_eq!(write_access_checks(INDEX, INDEX, TPMA_NV_AUTHWRITE), Ok(()));
         assert_eq!(
             write_access_checks(OTHER_INDEX, INDEX, TPMA_NV_AUTHWRITE),
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn writing_never_requires_the_written_attribute() {
+    fn unwritten_index_write_acceptance() {
         assert_eq!(
             write_access_checks(TPM_RH_OWNER, INDEX, TPMA_NV_OWNERWRITE),
             Ok(()),

@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn provisioned_legacy() -> Box<Tpm2Runtime> {
+    fn provisioned_legacy() -> Tpm2Runtime {
         let mut runtime = started_runtime();
         for bytes in [
             create_primary(TPM_RH_OWNER),
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn each_hierarchy_selects_its_own_object_attribute() {
+    fn per_hierarchy_object_attribute_selection() {
         assert_eq!(
             hierarchy_object_attribute(TPM_RH_PLATFORM),
             Some(ATTR_PPS_HIERARCHY)
@@ -228,13 +228,13 @@ mod tests {
     }
 
     #[test]
-    fn the_seed_and_proof_sizes_match_the_vendored_buffers() {
+    fn seed_proof_size_vendored_buffer_match() {
         assert_eq!(PRIMARY_SEED_SIZE, 64);
         assert_eq!(PROOF_SIZE, 64);
     }
 
     #[test]
-    fn the_digest_size_helper_reports_zero_for_the_null_algorithm() {
+    fn digest_size_helper_null_algorithm_zero() {
         assert_eq!(digest_size_of(0x0010), 0);
         assert_eq!(digest_size_of(0x0004), 20);
         assert_eq!(digest_size_of(0x000b), 32);
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_attribute_word_follows_the_evict_object_image() {
+    fn stored_attribute_word_evict_object_image_match() {
         let mut object = OwnedAnyObject {
             attributes: ATTR_OCCUPIED | ATTR_SPS_HIERARCHY,
             body: OwnedAnyObjectBody::Unoccupied,
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lifecycle_answers_match_the_reference_before_startup() {
+    fn pre_startup_lifecycle_reference_match() {
         let mut runtime = manufactured_runtime();
         for (label, bytes) in [
             (
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reference_error_codes_are_the_documented_upstream_values() {
+    fn reference_error_code_upstream_values() {
         for (label, code) in [
             ("HC_BAD_AUTH_NULL", RC_VALUE_H1),
             ("HC_TRUNCATED_HANDLE_0", RC_INSUFFICIENT_H1),
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_object_format_flushes_persistent_objects_by_hierarchy() {
+    fn legacy_object_format_per_hierarchy_persistent_flush() {
         let mut runtime = provisioned_legacy();
         assert_eq!(
             runtime.state().profile.object_format(),
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn the_marshalled_object_format_never_flushes_persistent_objects() {
+    fn marshalled_object_format_no_persistent_flush() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         assert!(matches!(

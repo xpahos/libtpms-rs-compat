@@ -902,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn occupied_rsa_object_decodes() {
+    fn occupied_rsa_object_decoding() {
         let data = any_rsa_object(4);
         let object = parse(&data).unwrap();
         assert!(object.occupied());
@@ -922,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn version_3_object_has_no_hierarchy() {
+    fn version_3_object_hierarchy_absence() {
         let data = any_rsa_object(3);
         let object = parse(&data).unwrap();
         let AnyObjectBody::Object(body) = &object.body else {
@@ -933,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn unoccupied_object_reads_no_body() {
+    fn unoccupied_object_no_body_read() {
         let data = any_unoccupied_object();
         let object = parse(&data).unwrap();
         assert!(!object.occupied());
@@ -945,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_sequence_object_decodes_states() {
+    fn hash_sequence_object_state_decoding() {
         let data = any_sequence_object(SEQ_HASH);
         let object = parse(&data).unwrap();
         let AnyObjectBody::Sequence(body) = &object.body else {
@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn hmac_sequence_object_decodes_state_and_key() {
+    fn hmac_sequence_object_state_and_key_decoding() {
         let data = any_sequence_object(SEQ_HMAC);
         let object = parse(&data).unwrap();
         let AnyObjectBody::Sequence(body) = &object.body else {
@@ -973,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn event_sequence_object_reads_states_at_version_3() {
+    fn event_sequence_object_version_3_state_decoding() {
         let data = any_sequence_object(SEQ_EVENT);
         let object = parse(&data).unwrap();
         let AnyObjectBody::Sequence(body) = &object.body else {
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn every_live_sequence_state_combination_is_accepted() {
+    fn live_sequence_state_combination_acceptance() {
         for hash_alg in [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512] {
             let data = sequence_with_states(
                 ATTR_OCCUPIED | ATTR_HASH_SEQ,
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn unused_hash_state_slots_may_hold_uninitialised_bytes() {
+    fn unused_hash_state_slot_uninitialised_byte_tolerance() {
         let data = sequence_with_states(
             ATTR_OCCUPIED | ATTR_HASH_SEQ,
             &[
@@ -1060,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unusable_live_sequence_state_is_rejected() {
+    fn unusable_live_sequence_state_rejection() {
         for (attributes, states) in [
             (
                 ATTR_OCCUPIED | ATTR_HASH_SEQ,
@@ -1126,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_hash_state_payload_is_insufficient() {
+    fn truncated_hash_state_payload_insufficiency() {
         let full = typed_hash_state(HASH_STATE_HASH, TPM_ALG_SHA256);
         for length in 0..full.len() {
             let mut reader = BlobReader::new(&full[..length]);
@@ -1150,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn an_event_sequence_needs_every_compiled_bank_in_order() {
+    fn event_sequence_compiled_bank_order_requirement() {
         let data = event_sequence(&event_banks());
         let object = parse(&data).expect("all four banks in the compiled order");
         let AnyObjectBody::Sequence(body) = &object.body else {
@@ -1165,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_event_bank_is_rejected_before_the_object_exists() {
+    fn malformed_event_bank_pre_object_rejection() {
         let sha1 = COMPILED_HASHES[0].0;
         let sha256 = COMPILED_HASHES[1].0;
         let sha384 = COMPILED_HASHES[2].0;
@@ -1221,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_event_bank_payload_is_insufficient() {
+    fn truncated_event_bank_payload_insufficiency() {
         let full = event_sequence(&event_banks());
         let complete = {
             let mut reader = BlobReader::new(&full);
@@ -1242,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_hash_state_count_is_a_size_error() {
+    fn wrong_hash_state_count_size_error() {
         let mut data = any_sequence_object(SEQ_HASH);
         let offset = 8 + 4 + 8 + 2 + 2 + 4 + 2;
         data[offset..offset + 2].copy_from_slice(&3u16.to_be_bytes());
@@ -1260,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_bn_prime_is_a_size_error() {
+    fn oversized_bn_prime_size_error() {
         for numbytes in [193u16, 200, u16::MAX] {
             let data = bn_prime(numbytes);
             let mut reader = BlobReader::new(&data);
@@ -1273,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn bn_prime_word_rounding_matches_upstream() {
+    fn bn_prime_word_rounding_upstream_parity() {
         let data = bn_prime(5);
         let mut reader = BlobReader::new(&data);
         let prime = parse_bn_prime(&mut reader).unwrap();
@@ -1283,7 +1283,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_hierarchy_handle_is_rc_value() {
+    fn invalid_hierarchy_handle_rc_value() {
         let mut data = any_rsa_object(4);
         let len = data.len();
         data[len - 7..len - 3].copy_from_slice(&0x4000_0002u32.to_be_bytes());
@@ -1300,7 +1300,7 @@ mod tests {
     }
 
     #[test]
-    fn all_valid_hierarchy_handles_are_accepted() {
+    fn valid_hierarchy_handle_acceptance() {
         for handle in [
             TPM_RH_OWNER,
             TPM_RH_PLATFORM,
@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn marshalled_size_matches_wire_size_for_a_current_object() {
+    fn current_object_marshalled_wire_size_parity() {
         for version in [3u16, 4] {
             let data = any_rsa_object(version);
             let object = parse(&data).unwrap();
@@ -1343,7 +1343,7 @@ mod tests {
     }
 
     #[test]
-    fn remarshal_version_changes_the_private_exponent_accounting() {
+    fn remarshal_version_private_exponent_accounting() {
         let data = any_rsa_object(3);
         let object = parse(&data).unwrap();
         assert_eq!(
@@ -1354,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn marshalled_size_rounds_partial_primes_up() {
+    fn marshalled_size_partial_prime_round_up() {
         let mut out = nv_header(ANY_OBJECT_VERSION, ANY_OBJECT_MAGIC, 1);
         out.extend_from_slice(&ATTR_OCCUPIED.to_be_bytes());
         let mut object = nv_header(4, OBJECT_MAGIC, 4);
@@ -1383,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_at_every_boundary_is_insufficient() {
+    fn boundary_truncation_insufficiency() {
         let full = any_rsa_object(4);
         for len in 0..full.len() {
             let mut reader = BlobReader::new(&full[..len]);
@@ -1398,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn object_slot_byte_mutations_do_not_panic() {
+    fn object_slot_byte_mutation_panic_safety() {
         for full in [
             any_rsa_object(3),
             any_rsa_object(4),

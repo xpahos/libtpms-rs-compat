@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_parity() {
         let mut fixture = vec![0x00, 0x11];
         let commands: Vec<u8> = (1..=17).collect();
         fixture.extend_from_slice(&commands);
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn every_size_up_to_the_array_capacity_is_valid_for_raw_blobs() {
+    fn raw_blob_size_within_capacity_acceptance() {
         for version in RAW_VERSIONS {
             for size in 0..=AUDIT_COMMANDS_SIZE {
                 let data = AuditFixture {
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_plus_one_is_a_size_error_for_raw_blobs() {
+    fn raw_blob_capacity_plus_one_size_error() {
         for version in RAW_VERSIONS {
             for size in [AUDIT_COMMANDS_SIZE + 1, 100, usize::from(u16::MAX)] {
                 let data = AuditFixture {
@@ -199,14 +199,14 @@ mod tests {
     }
 
     #[test]
-    fn oversized_raw_count_is_rejected_before_any_byte_is_read() {
+    fn oversized_raw_count_pre_read_rejection() {
         let data = u16::MAX.to_be_bytes();
         let error = parse(&data, 5).unwrap_err();
         assert_eq!(error.tpm_result(), TPM_RC_SIZE);
     }
 
     #[test]
-    fn compressed_blobs_accept_any_size_and_record_their_indexing() {
+    fn compressed_blob_any_size_acceptance_and_indexing() {
         for version in COMPRESSED_VERSIONS {
             for size in [
                 0usize,
@@ -230,14 +230,14 @@ mod tests {
     }
 
     #[test]
-    fn version_gate_matches_the_upstream_comparison() {
+    fn version_gate_upstream_comparison_parity() {
         let data = AuditFixture::default().bytes();
         assert!(parse(&data, 4).unwrap().commands_compressed);
         assert!(!parse(&data, 5).unwrap().commands_compressed);
     }
 
     #[test]
-    fn all_bitmap_bit_patterns_are_preserved_verbatim_and_borrow_the_input() {
+    fn bitmap_pattern_verbatim_preservation_and_input_borrow() {
         for commands in [vec![0xff; 17], vec![0xa5; 17], (0x80..0x91).collect()] {
             let data = AuditFixture {
                 commands: commands.clone(),
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_array_transitions_exactly_into_audit_hash_alg() {
+    fn commands_array_to_audit_hash_alg_transition() {
         let data = AuditFixture {
             commands: vec![0x99],
             audit_hash_alg: 0x1234,
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_audit_hash_alg_is_preserved_without_validation() {
+    fn raw_audit_hash_alg_unvalidated_preservation() {
         for alg in [0x0000u16, 0x0010, 0x0012, 0xffff] {
             let data = AuditFixture {
                 audit_hash_alg: alg,
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn counters_and_firmware_versions_are_read_big_endian() {
+    fn counter_and_firmware_version_big_endian_read() {
         let data = AuditFixture {
             audit_counter: 0x0102_0304_0506_0708,
             algorithm_set: 0x0a0b_0c0d,
@@ -302,12 +302,12 @@ mod tests {
     }
 
     #[test]
-    fn clocksize_four_is_accepted() {
+    fn clocksize_four_acceptance() {
         assert!(parse(&AuditFixture::default().bytes(), 5).is_ok());
     }
 
     #[test]
-    fn invalid_clock_sizes_are_bad_parameter() {
+    fn invalid_clocksize_bad_parameter() {
         for clocksize in [0u8, 1, 3, 5, 8, 0xff] {
             let data = AuditFixture {
                 clocksize,
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_clocksize_does_not_consume_epoch_bytes() {
+    fn invalid_clocksize_epoch_bytes_unconsumed() {
         let mut data = AuditFixture {
             clocksize: 8,
             ..AuditFixture::default()
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_is_truncated_and_never_panics() {
+    fn strict_prefix_truncation_panic_safety() {
         let full = AuditFixture {
             commands: (0..17).collect(),
             audit_hash_alg: 0x000b,
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_sections_distinguish_audit_from_clock_epoch() {
+    fn audit_vs_clock_epoch_truncation_sections() {
         let full = AuditFixture::default().bytes();
         let audit_cut = full.len() - 5 - 2;
         assert_eq!(
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn remainder_begins_exactly_at_the_compat_tail_sentinel() {
+    fn remainder_compat_tail_sentinel_boundary() {
         let data = AuditFixture {
             tail: vec![0x01, 0x00, 0x2a],
             ..AuditFixture::default()
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_block_byte_mutations_do_not_panic() {
+    fn audit_block_byte_mutation_panic_safety() {
         for version in [0u16, 4, 5, 0xffff] {
             for len in 0..8usize {
                 for byte in [0x00u8, 0x11, 0xff] {

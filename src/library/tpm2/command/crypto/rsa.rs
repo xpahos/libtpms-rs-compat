@@ -157,6 +157,7 @@ pub(in crate::library::tpm2::command) fn execute_decrypt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_RSA_DECRYPT, TPM_CC_RSA_ENCRYPT, find,
     };
@@ -239,7 +240,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn restored(snapshot: &str) -> Box<Tpm2Runtime> {
+    fn restored(snapshot: &str) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
@@ -274,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn both_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let encrypt = find(TPM_CC_RSA_ENCRYPT).expect("TPM2_RSA_Encrypt is registered");
         assert_eq!(encrypt.attributes, 0x0200_0174);
         assert_eq!(encrypt.decrypt_size, 2);
@@ -326,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (record, code, attributes) in [
             ("CCATTR_0159", TPM_CC_RSA_DECRYPT, 0x0200_0159u32),
             ("CCATTR_0174", TPM_CC_RSA_ENCRYPT, 0x0200_0174),
@@ -337,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_page_keeps_the_upstream_command_order() {
+    fn capability_page_upstream_command_order() {
         use crate::library::tpm2::capability::commands::implemented;
 
         for (record, start) in [
@@ -376,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn neither_command_runs_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
         assert!(!runtime.startup_received);
@@ -393,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_rejections_match_the_oracle() {
+    fn handle_rejection_oracle_parity() {
         let mut runtime = restored("READY");
         for (record, handle) in [
             ("ENC_UNLOADED_TRANSIENT", KEY_NULL),
@@ -426,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn every_scheme_encrypts_like_the_oracle() {
+    fn per_scheme_encryption_oracle_parity() {
         let mut runtime = restored("KEYS");
         let message = payload(32);
         check(
@@ -474,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn key_default_schemes_and_conflicts_match_the_oracle() {
+    fn key_default_scheme_and_conflict_oracle_parity() {
         let mut runtime = restored("KEYS");
         let message = payload(32);
         check(
@@ -520,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn the_message_size_boundaries_match_the_oracle() {
+    fn message_size_boundaries_oracle_match() {
         let mut runtime = restored("KEYS");
         for (record, length, scheme) in [
             ("ENC_RSAES_MAX", 245usize, rsaes_scheme()),
@@ -550,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_encryption_tracks_the_numeric_value_like_the_oracle() {
+    fn raw_encryption_numeric_value_oracle_parity() {
         let mut runtime = restored("KEYS");
         check(
             &mut runtime,
@@ -579,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn label_and_scheme_rejections_match_the_oracle() {
+    fn label_and_scheme_rejection_oracle_parity() {
         let mut runtime = restored("KEYS");
         let message = payload(32);
         let mut long_label = payload(65);
@@ -622,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_and_extended_parameter_areas_match_the_oracle() {
+    fn truncated_extended_parameter_area_oracle_parity() {
         let mut runtime = restored("KEYS");
         let full = encrypt_command(
             KEY_NULL,
@@ -674,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_key_types_and_attributes_match_the_oracle() {
+    fn wrong_key_type_and_attribute_oracle_parity() {
         let mut runtime = restored("MIXED");
         let message = payload(32);
         let ciphertext = payload(256);
@@ -709,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_only_key_encrypts_but_never_decrypts() {
+    fn public_only_key_encrypt_only() {
         let mut runtime = restored("EXTERNAL");
         check(
             &mut runtime,
@@ -745,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn other_key_sizes_match_the_oracle() {
+    fn other_key_size_oracle_parity() {
         let mut runtime = restored("SIZES");
         check(
             &mut runtime,
@@ -786,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_and_dictionary_attack_accounting_match_the_oracle() {
+    fn authorization_and_da_accounting_oracle_parity() {
         let mut runtime = restored("KEYS");
         check(
             &mut runtime,
@@ -832,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn the_random_consumption_matches_the_oracle() {
+    fn random_consumption_oracle_match() {
         let random = command(0x0000_017b, &[], &[], &16u16.to_be_bytes());
         let mut runtime = restored("KEYS");
         check(&mut runtime, "RND_BASELINE", &random);
@@ -905,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_decryption_key_matches_the_oracle() {
+    fn persistent_decryption_key_oracle_match() {
         let mut runtime = restored("PERSISTENT");
         check(
             &mut runtime,
@@ -938,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_can_forbid_unpadded_encryption() {
+    fn profile_unpadded_encryption_gate() {
         let mut runtime = restored("NO_UNPADDED");
         check(
             &mut runtime,
@@ -958,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_can_disable_a_padding_scheme_and_a_hash() {
+    fn profile_scheme_and_hash_disable() {
         let mut runtime = restored("NO_RSAES");
         check(
             &mut runtime,
@@ -1039,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parameter_encrypting_session_matches_the_oracle() {
+    fn parameter_encryption_session_oracle_match() {
         let mut runtime = restored("KEYS");
         check(
             &mut runtime,
@@ -1093,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_response_session_rolls_back_the_command_but_keeps_the_random_draw() {
+    fn failed_response_session_rollback_random_draw_kept() {
         use crate::library::tpm2::command::session::processing::{
             ResponseFault, inject_response_fault,
         };
@@ -1144,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let mut runtime = restored("KEYS");
         let templates = [
             encrypt_command(
@@ -1210,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn an_hmac_authorized_decryption_matches_the_oracle() {
+    fn hmac_authorized_decryption_oracle_match() {
         let nonce_caller: Vec<u8> = payload(32).into_iter().rev().collect();
         let mut parameters = tpm2b(&rsa_output_of("ENC_OAEP_SHA256"));
         parameters.extend_from_slice(&oaep_scheme(TPM_ALG_SHA256));
@@ -1261,6 +1262,7 @@ mod tests {
                 command,
                 &RecordingClock::new(1_600_000_000_000, 5_000_000),
                 |_| panic!("failure mode must not schedule an NV commit"),
+                Cancellation::disabled(),
             )
         }
 
@@ -1287,7 +1289,7 @@ mod tests {
             crate::library::tpm2::rsa_vectors::run_rsaep_known_answer()
         }
 
-        fn counting_runtime() -> Box<Tpm2Runtime> {
+        fn counting_runtime() -> Tpm2Runtime {
             OAEP_CALLS.with(|calls| calls.set(0));
             RSAES_CALLS.with(|calls| calls.set(0));
             RAW_CALLS.with(|calls| calls.set(0));
@@ -1307,7 +1309,7 @@ mod tests {
         }
 
         #[test]
-        fn the_first_operation_of_each_scheme_runs_its_known_answer_test() {
+        fn first_operation_per_scheme_known_answer_test() {
             let mut runtime = counting_runtime();
             dispatch_bytes(
                 &mut runtime,
@@ -1342,7 +1344,7 @@ mod tests {
         }
 
         #[test]
-        fn a_raw_operation_runs_the_rsaep_known_answer_test_first() {
+        fn raw_operation_rsaep_known_answer_test_first() {
             let mut runtime = counting_runtime();
             dispatch_bytes(
                 &mut runtime,
@@ -1360,7 +1362,7 @@ mod tests {
         }
 
         #[test]
-        fn a_decryption_also_runs_the_pending_known_answer_test() {
+        fn decryption_pending_known_answer_test() {
             let mut runtime = counting_runtime();
             dispatch_bytes(
                 &mut runtime,
@@ -1376,7 +1378,7 @@ mod tests {
         }
 
         #[test]
-        fn a_rejected_command_runs_no_self_test() {
+        fn rejected_command_no_self_test() {
             for packet in [
                 encrypt_command(
                     KEY_NULL,
@@ -1428,7 +1430,7 @@ mod tests {
         }
 
         #[test]
-        fn an_injected_oaep_failure_stops_the_tpm_at_the_vendored_site() {
+        fn injected_oaep_failure_vendored_site_tpm_stop() {
             for (runner, location) in oaep_stage_table() {
                 let mut runtime = restored("KEYS");
                 runtime.self_test.set_oaep_runner(runner);
@@ -1447,7 +1449,7 @@ mod tests {
         }
 
         #[test]
-        fn an_injected_rsaes_failure_reuses_the_shared_vendored_sites() {
+        fn injected_rsaes_failure_shared_vendored_sites() {
             for (runner, location) in oaep_stage_table() {
                 let mut runtime = restored("KEYS");
                 runtime.self_test.set_rsaes_runner(runner);
@@ -1463,7 +1465,7 @@ mod tests {
         }
 
         #[test]
-        fn an_injected_raw_failure_stops_the_tpm_at_its_own_vendored_site() {
+        fn injected_raw_failure_own_vendored_site_stop() {
             for (runner, location) in [
                 (
                     (|| Err(RawRsaSelfTestStage::Encrypt)) as fn() -> _,
@@ -1496,7 +1498,7 @@ mod tests {
         }
 
         #[test]
-        fn a_latched_failure_mode_answers_before_the_handler_runs() {
+        fn latched_failure_mode_pre_handler_response() {
             let mut runtime = counting_runtime();
             runtime
                 .self_test
@@ -1521,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn every_scheme_decrypts_the_reference_ciphertext() {
+    fn per_scheme_reference_ciphertext_decryption() {
         let mut runtime = restored("KEYS");
         check(
             &mut runtime,
@@ -1621,7 +1623,7 @@ mod tests {
     }
 
     #[test]
-    fn the_recovered_message_is_the_one_that_was_encrypted() {
+    fn encryption_decryption_round_trip() {
         let mut runtime = restored("KEYS");
         let message = payload(32);
         let response = dispatch_bytes(
@@ -1644,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_label_scheme_or_ciphertext_is_rejected_like_the_oracle() {
+    fn wrong_label_scheme_ciphertext_oracle_rejection() {
         let mut runtime = restored("KEYS");
         let oaep_ct = rsa_output_of("ENC_OAEP_SHA256");
         let rsaes_ct = rsa_output_of("ENC_RSAES");
@@ -1764,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn key_default_schemes_decrypt_like_the_oracle() {
+    fn key_default_scheme_decryption_oracle_parity() {
         let mut runtime = restored("KEYS");
         check(
             &mut runtime,

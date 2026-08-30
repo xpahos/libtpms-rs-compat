@@ -79,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn an_all_banks_profile_filters_nothing() {
+    fn all_banks_profile_no_filtering() {
         for algs in [
             &[][..],
             &[TPM_ALG_SHA1],
@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn the_disabled_bank_filter_matches_the_oracle() {
+    fn disabled_bank_filter_oracle_match() {
         const S1: u16 = TPM_ALG_SHA1;
         const S256: u16 = TPM_ALG_SHA256;
         const S384: u16 = TPM_ALG_SHA384;
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_bank_never_survives_the_filter() {
+    fn disabled_bank_filter_removal() {
         const BANKS: [u16; 4] = [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512];
         for profile in [ALL_BANKS, NO_SHA1, NO_SHA512, NO_SHA1_SHA512] {
             // Every ordered arrangement of one to four banks, with repeats.
@@ -237,14 +237,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_bank_algorithm_counts_as_disabled() {
+    fn unknown_bank_algorithm_disabled_classification() {
         for alg in [0x0000u16, 0x0010, 0x0012, 0x0027, 0xffff] {
             assert!(!bank_enabled(alg, ALL_BANKS), "alg {alg:#06x}");
         }
     }
 
     #[test]
-    fn a_zero_count_reports_more_data_and_no_entries() {
+    fn zero_count_more_data_no_entries() {
         for algs in [&[][..], &[TPM_ALG_SHA256]] {
             let page = collect(&allocation(algs), ALL_BANKS, 0);
             assert!(page.entries.is_empty());
@@ -253,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn any_non_zero_count_returns_the_whole_allocation() {
+    fn nonzero_count_full_allocation_result() {
         let allocation = allocation(&[TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384]);
         for count in [1u32, 2, 3, 4, 64, u32::MAX] {
             let page = collect(&allocation, ALL_BANKS, count);
@@ -263,14 +263,14 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_allocation_returns_an_empty_list_without_more_data() {
+    fn empty_allocation_empty_list_no_more_data() {
         let page = collect(&allocation(&[]), ALL_BANKS, 64);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
-    fn the_bitmaps_are_returned_verbatim() {
+    fn bitmap_verbatim_return() {
         let allocation = OwnedPcrAllocation {
             selections: vec![OwnedPcrSelection {
                 hash_alg: TPM_ALG_SHA256,

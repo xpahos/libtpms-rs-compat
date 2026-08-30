@@ -120,7 +120,7 @@ mod tests {
                                      f69f2445df4f9b17ad2b417be66c3710";
 
     #[test]
-    fn the_rfc_4493_aes_128_vectors_are_reproduced() {
+    fn rfc_4493_aes_128_vector_match() {
         let key = unhex(RFC_4493_KEY);
         let message = unhex(SP800_38B_MESSAGE);
         for (length, expected) in [
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sp800_38b_aes_192_and_256_vectors_are_reproduced() {
+    fn sp800_38b_aes_192_256_vector_match() {
         let message = unhex(SP800_38B_MESSAGE);
         for (key, cases) in [
             (
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_cipher_and_key_size_matches_its_reference_value() {
+    fn supported_cipher_key_size_reference_match() {
         let key = unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         let message = unhex(SP800_38B_MESSAGE);
         let cases: [(u16, usize, usize, &str); 16] = [
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_updates_match_the_one_shot_result() {
+    fn incremental_update_one_shot_match() {
         let key = unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         let message: Vec<u8> = (0..100u32).map(|index| index as u8).collect();
         for (algorithm, key_bytes) in [
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn the_digest_size_follows_the_block_size() {
+    fn digest_size_block_size_match() {
         for (algorithm, key_bytes, size) in [
             (TPM_ALG_AES, 16usize, 16usize),
             (TPM_ALG_CAMELLIA, 32, 16),
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_keys_are_rejected_without_panicking() {
+    fn unsupported_key_rejection_panic_safety() {
         for (algorithm, key_bits, key_len) in [
             (TPM_ALG_AES, 64u16, 8usize),
             (TPM_ALG_AES, 128, 32),

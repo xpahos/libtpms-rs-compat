@@ -292,7 +292,7 @@ pub(super) mod test_support {
     }
 
     #[track_caller]
-    pub(in crate::library::tpm2::command) fn restored(snapshot: &str) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2::command) fn restored(snapshot: &str) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
@@ -301,20 +301,20 @@ pub(super) mod test_support {
     }
 
     #[track_caller]
-    pub(in crate::library::tpm2::command) fn rebooted(snapshot: &str) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2::command) fn rebooted(snapshot: &str) -> Tpm2Runtime {
         restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
             .expect("the oracle permanent state restores")
     }
 
     #[track_caller]
-    pub(in crate::library::tpm2::command) fn ready() -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2::command) fn ready() -> Tpm2Runtime {
         let runtime = restored("READY");
         assert!(runtime.startup_received, "READY is past TPM2_Startup");
         runtime
     }
 
     #[track_caller]
-    pub(in crate::library::tpm2::command) fn ready_with(loads: &[Vec<u8>]) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2::command) fn ready_with(loads: &[Vec<u8>]) -> Tpm2Runtime {
         let mut runtime = ready();
         for (index, packet) in loads.iter().enumerate() {
             let response = dispatch_bytes(&mut runtime, packet);
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn every_ecc_command_is_implemented_by_the_reference_and_the_registry() {
+    fn command_implementation_reference_registry_match() {
         for code in ECC_COMMANDS {
             assert!(upstream_implements(code), "code {code:#x}");
             assert!(find(code).is_some(), "code {code:#x} is registered");
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_records_advertise_every_new_command() {
+    fn capability_record_new_command_coverage() {
         let mut runtime = ready();
         for code in ECC_COMMANDS {
             expect(
@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_listing_keeps_the_new_commands_in_numeric_order() {
+    fn capability_listing_numeric_order() {
         let mut runtime = ready();
         for (record, first, count) in [
             ("CCLIST_FROM_ZGEN", TPM_CC_ECDH_ZGEN, 4),
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_key_can_not_carry_a_key_derivation_scheme() {
+    fn key_kdf_scheme_rejection() {
         let point = public_point();
         let mut runtime = ready();
         for (record, sensitive) in [
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_only_key_can_not_be_authorized_but_still_generates_a_pair() {
+    fn public_only_key_auth_rejection_keygen_success() {
         let point = public_point();
         let public_only = load_external(
             &tpm2b(&[]),
@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn a_two_phase_exchange_on_a_foreign_key_type_is_a_key_error() {
+    fn two_phase_foreign_key_type_key_error() {
         let (private, public) = keyed_object();
         let mut runtime = ready_with(&[load_external(&private, &public)]);
         let mut parameters = point2b(&generator_multiple(2));
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn an_hmac_session_authorizes_the_agreement() {
+    fn hmac_session_agreement_authorization() {
         let mut runtime = ready_with(&[load_external(
             &ecc_private(&PRIVATE_SCALAR, KEY_AUTH),
             &ecc_public(
@@ -654,7 +654,7 @@ mod tests {
     fn profile_runtime(
         algorithms: &str,
         attributes: &str,
-    ) -> Box<crate::library::tpm2::runtime::Tpm2Runtime> {
+    ) -> crate::library::tpm2::runtime::Tpm2Runtime {
         use crate::library::tpm2::manufacture::manufacture_state;
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_gate_refuses_ecc_key_derivation() {
+    fn profile_gate_kdf_rejection() {
         const TPM_RC_TYPE_CODE: u32 = 0x0000_008a;
         let mut runtime = profile_runtime(&all_algorithms(), "no-ecc-key-derivation");
         let point = public_point();
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_curve_is_refused_by_the_curve_commands() {
+    fn profile_disabled_curve_rejection() {
         const TPM_RC_CURVE_P1: u32 = 0x0000_01e6;
         let algorithms = all_algorithms()
             .split(',')
@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn every_ecc_command_runs_its_lazy_self_tests_before_the_operation() {
+    fn ecc_command_pre_operation_lazy_self_tests() {
         use crate::library::tpm2::self_test::PrimitiveTest;
         const SHA512: u16 = 0x000d;
         let (s2, y2) = commit_operand();
@@ -928,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_rejected_before_the_arithmetic_runs_no_ecdh_test() {
+    fn pre_arithmetic_rejection_no_ecdh_self_test() {
         let (private, public) = keyed_object();
         let mut runtime = ready_with(&[load_external(&private, &public)]);
         let before = runtime.self_test.pending_algorithms();
@@ -953,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn an_injected_ecdh_failure_stops_every_ecc_command_without_publishing_output() {
+    fn injected_ecdh_failure_stop_no_output() {
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::self_test::fails_on_ecdh;
         const FAILURE: u32 = 0x0000_0101;
@@ -1039,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn an_injected_hash_failure_stops_the_commands_that_hash() {
+    fn injected_hash_failure_hashing_command_stop() {
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::self_test::fails_on_sha512;
         const FAILURE: u32 = 0x0000_0101;
@@ -1067,8 +1067,9 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_commit_answers_canceled_and_allocates_nothing() {
-        use crate::library::cancel::CancelSignal;
+    fn canceled_commit_no_allocation() {
+        use crate::library::cancel::Cancellation;
+        use crate::library::tpm2::command::core::test_support::dispatch_bytes_with;
         const CANCELED: u32 = 0x0000_0909;
         let (s2, y2) = commit_operand();
         for (label, packet) in [
@@ -1083,9 +1084,8 @@ mod tests {
         ] {
             let mut runtime = ready_with(&[ecdaa_key()]);
             let commitment = commit_state(&runtime);
-            runtime.cancel = CancelSignal::signaled();
 
-            let response = dispatch_bytes(&mut runtime, &packet);
+            let response = dispatch_bytes_with(&mut runtime, &packet, Cancellation::requested());
             assert_eq!(response_code(&response), CANCELED, "{label}");
             assert_eq!(response.len(), 10, "{label} publishes no points");
             assert!(!runtime.failure_mode, "{label} is not fatal");
@@ -1095,7 +1095,6 @@ mod tests {
                 "{label} leaves the commitment state alone"
             );
 
-            runtime.cancel = CancelSignal::detached();
             let retried = dispatch_bytes(&mut runtime, &packet);
             assert_eq!(response_code(&retried), 0, "{label} succeeds once cleared");
             let (counter, _) = commit_state(&runtime);
@@ -1104,15 +1103,15 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_request_never_reaches_a_commit_without_a_second_point() {
-        use crate::library::cancel::CancelSignal;
+    fn single_point_commit_no_cancel_checkpoint() {
+        use crate::library::cancel::Cancellation;
+        use crate::library::tpm2::command::core::test_support::dispatch_bytes_with;
         let mut runtime = ready_with(&[ecdaa_key()]);
-        runtime.cancel = CancelSignal::signaled();
         for packet in [
             commit_packet(&raw_point2b(&[], &[]), &[], &[]),
             commit_packet(&point2b(&generator_multiple(2)), &[], &[]),
         ] {
-            let response = dispatch_bytes(&mut runtime, &packet);
+            let response = dispatch_bytes_with(&mut runtime, &packet, Cancellation::requested());
             assert_eq!(
                 response_code(&response),
                 0,
@@ -1122,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resume_keeps_the_commitment_and_a_reset_drops_it() {
+    fn resume_commit_preservation_reset_drop() {
         let mut runtime = ready();
         dispatch_bytes(
             &mut runtime,
@@ -1168,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unorderly_restart_resets_the_commitment_and_refuses_a_resume() {
+    fn unorderly_restart_commit_reset_resume_rejection() {
         let mut runtime = rebooted("BEFORE_UNORDERLY");
         expect(
             &mut runtime,

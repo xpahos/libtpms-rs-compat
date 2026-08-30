@@ -423,12 +423,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_empty_buffer_cannot_open_a_reader() {
+    fn empty_buffer_reader_rejection() {
         assert!(DerReader::new(&[]).is_none());
     }
 
     #[test]
-    fn a_short_form_length_is_read_as_written() {
+    fn short_form_length_round_trip() {
         let mut reader = DerReader::new(&[0x30, 0x02, 0xaa, 0xbb]).expect("a reader");
         assert_eq!(reader.next_tag(), 2);
         assert_eq!(reader.tag(), TAG_CONSTRUCTED_SEQUENCE);
@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn a_one_octet_long_form_length_is_accepted() {
+    fn one_octet_long_form_acceptance() {
         let mut bytes = vec![0x30, 0x81, 0x80];
         bytes.extend(std::iter::repeat_n(0u8, 0x80));
         let mut reader = DerReader::new(&bytes).expect("a reader");
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn a_two_octet_long_form_length_is_accepted() {
+    fn two_octet_long_form_acceptance() {
         let mut bytes = vec![0x30, 0x82, 0x01, 0x00];
         bytes.extend(std::iter::repeat_n(0u8, 0x100));
         let mut reader = DerReader::new(&bytes).expect("a reader");
@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn a_two_octet_length_above_thirty_two_thousand_is_refused() {
+    fn two_octet_length_limit_rejection() {
         let mut bytes = vec![0x30, 0x82, 0x80, 0x00];
         bytes.extend(std::iter::repeat_n(0u8, 0x100));
         let mut reader = DerReader::new(&bytes).expect("a reader");
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn three_or_more_length_octets_are_refused() {
+    fn three_octet_length_rejection() {
         for first in [0x80u8, 0x83, 0x84, 0xfe, 0xff] {
             let mut bytes = vec![0x30, first];
             bytes.extend(std::iter::repeat_n(0u8, 8));
@@ -474,21 +474,21 @@ mod tests {
     }
 
     #[test]
-    fn a_length_that_leaves_the_buffer_is_refused() {
+    fn length_beyond_buffer_rejection() {
         let mut reader = DerReader::new(&[0x30, 0x08, 0x00]).expect("a reader");
         assert_eq!(reader.next_tag(), -1);
         assert!(reader.failed());
     }
 
     #[test]
-    fn an_extended_tag_is_refused() {
+    fn extended_tag_rejection() {
         let mut reader = DerReader::new(&[0x1f, 0x01, 0x00]).expect("a reader");
         assert_eq!(reader.next_tag(), -1);
         assert_eq!(reader.tag(), 0xff);
     }
 
     #[test]
-    fn a_failed_reader_stays_failed() {
+    fn reader_failure_latching() {
         let mut reader = DerReader::new(&[0x1f, 0x01, 0x00]).expect("a reader");
         assert_eq!(reader.next_tag(), -1);
         assert_eq!(reader.next_tag(), -1);
@@ -497,20 +497,20 @@ mod tests {
     }
 
     #[test]
-    fn a_thirty_two_bit_bit_string_is_left_justified() {
+    fn bit_string_32_bit_left_justification() {
         let mut reader =
             DerReader::new(&[0x03, 0x05, 0x00, 0x00, 0x04, 0x00, 0x72]).expect("a reader");
         assert_eq!(reader.bit_string_value(), Some(0x0004_0072));
     }
 
     #[test]
-    fn a_short_bit_string_is_left_justified() {
+    fn short_bit_string_left_justification() {
         let mut reader = DerReader::new(&[0x03, 0x02, 0x07, 0x80]).expect("a reader");
         assert_eq!(reader.bit_string_value(), Some(0x8000_0000));
     }
 
     #[test]
-    fn a_bit_string_with_an_impossible_shift_is_refused() {
+    fn bit_string_invalid_shift_rejection() {
         for shift in [0x08u8, 0x09, 0xff] {
             let bytes = [0x03, 0x02, shift, 0x80];
             let mut reader = DerReader::new(&bytes).expect("a reader");
@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_bit_string_needs_a_zero_shift() {
+    fn empty_bit_string_zero_shift_requirement() {
         let mut reader = DerReader::new(&[0x03, 0x01, 0x00]).expect("a reader");
         assert_eq!(reader.bit_string_value(), Some(0));
         let mut reader = DerReader::new(&[0x03, 0x01, 0x01]).expect("a reader");
@@ -527,13 +527,13 @@ mod tests {
     }
 
     #[test]
-    fn a_bit_string_that_is_not_a_bit_string_is_refused() {
+    fn non_bit_string_tag_rejection() {
         let mut reader = DerReader::new(&[0x04, 0x02, 0x00, 0x80]).expect("a reader");
         assert!(reader.bit_string_value().is_none());
     }
 
     #[test]
-    fn an_oversized_bit_string_never_panics() {
+    fn oversized_bit_string_panic_safety() {
         for length in 5usize..12 {
             let mut bytes = vec![0x03, (length + 1) as u8, 0x00];
             bytes.extend(std::iter::repeat_n(0xffu8, length));
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn a_thirty_three_bit_zero_valued_bit_string_is_left_justified_like_the_reference() {
+    fn zero_valued_33_bit_string_reference_justification() {
         assert_eq!(
             parsed_bit_string(&[0x03, 0x06, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00]),
             Some(0)
@@ -563,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn the_thirty_two_bit_boundary_is_exact() {
+    fn bit_string_32_bit_boundary_exactness() {
         assert_eq!(
             parsed_bit_string(&[0x03, 0x05, 0x00, 0x12, 0x34, 0x56, 0x78]),
             Some(0x1234_5678),
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn every_unused_bit_count_left_justifies_a_narrow_bit_string() {
+    fn narrow_bit_string_unused_bit_count_left_justification() {
         for shift in 0u32..8 {
             let bytes = [0x03, 0x02, shift as u8, 0xa5];
             let significant = 8 - shift;
@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn bit_strings_with_zero_high_bytes_stay_total_beyond_thirty_two_bits() {
+    fn zero_high_byte_wide_bit_string_totality() {
         for content in 5usize..=18 {
             for shift in 0u8..=7 {
                 let mut bytes = vec![0x03, (content + 1) as u8, shift];
@@ -601,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn every_bit_string_shape_is_total() {
+    fn bit_string_shape_totality() {
         let patterns: [fn(usize) -> u8; 6] = [
             |_| 0x00,
             |_| 0xff,
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn every_truncation_of_a_structure_is_refused_without_panicking() {
+    fn structure_truncation_panic_safety() {
         let full = [
             0x30u8, 0x0c, 0x30, 0x03, 0x02, 0x01, 0x02, 0xa3, 0x05, 0x03, 0x03, 0x07, 0x80, 0x00,
         ];
@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn a_small_integer_drops_its_leading_zeros() {
+    fn integer_leading_zero_trim() {
         let mut writer = DerWriter::new(64);
         let length = writer.push_uint(2);
         assert_eq!(length, 3);
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn a_negative_looking_integer_gains_a_leading_zero() {
+    fn high_bit_integer_leading_zero_pad() {
         let mut writer = DerWriter::new(64);
         let length = writer.push_integer(&[0x80, 0x01]);
         assert_eq!(length, 5);
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn an_all_zero_integer_keeps_one_octet() {
+    fn all_zero_integer_single_octet() {
         let mut writer = DerWriter::new(64);
         let length = writer.push_integer(&[0x00, 0x00, 0x00]);
         assert_eq!(length, 3);
@@ -672,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_value_uses_the_one_octet_long_form() {
+    fn long_value_one_octet_long_form() {
         let mut writer = DerWriter::new(1024);
         writer.start();
         writer.push_bytes(&[0xaa; 200]);
@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn a_very_long_value_uses_the_two_octet_long_form() {
+    fn long_value_two_octet_long_form() {
         let mut writer = DerWriter::new(1024);
         writer.start();
         writer.push_bytes(&[0xaa; 300]);
@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn an_encapsulated_bit_string_gains_a_leading_zero() {
+    fn encapsulated_bit_string_leading_zero() {
         let mut writer = DerWriter::new(64);
         writer.start();
         writer.push_bytes(&[0xaa, 0xbb]);
@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_object_identifier_fails_the_writer() {
+    fn malformed_oid_writer_failure() {
         let mut writer = DerWriter::new(64);
         assert_eq!(writer.push_oid(&[0x05, 0x01, 0x00]), 0);
         assert!(writer.failed());
@@ -715,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn an_overfull_writer_reports_a_negative_offset() {
+    fn overfull_writer_negative_offset() {
         let mut writer = DerWriter::new(8);
         writer.push_bytes(&[0x00; 8]);
         assert!(!writer.failed());
@@ -724,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn pushing_past_the_buffer_never_panics() {
+    fn push_past_buffer_panic_safety() {
         let mut writer = DerWriter::new(4);
         assert_eq!(writer.push_bytes(&[0x00; 16]), 0);
         assert!(writer.failed());
@@ -733,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn the_marshaling_depth_is_bounded() {
+    fn marshaling_depth_bound() {
         let mut writer = DerWriter::new(1024);
         for _ in 0..MAX_MARSHAL_DEPTH {
             assert!(writer.start());

@@ -113,21 +113,21 @@ mod tests {
     }
 
     #[test]
-    fn the_capacity_matches_the_vendored_structure_size() {
+    fn capacity_vendored_structure_size_match() {
         assert_eq!(PCR_SELECT_BYTES, 3);
         assert_eq!(SIZEOF_TPMS_TAGGED_PCR_SELECT, 8);
         assert_eq!(MAX_PCR_PROPERTIES, 127);
     }
 
     #[test]
-    fn a_complete_page_lists_every_implemented_property_in_order() {
+    fn complete_page_implemented_property_order() {
         let page = collect(0, 1000);
         assert_eq!(tags(&page), IMPLEMENTED);
         assert!(!page.more_data);
     }
 
     #[test]
-    fn the_unimplemented_properties_are_skipped_without_ending_the_scan() {
+    fn unimplemented_property_skip_scan_continuation() {
         for property in [0x0000_000bu32, 0x0000_000c, 0x0000_0010] {
             assert!(one(property).is_none(), "{property:#x}");
         }
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn a_start_in_the_middle_is_inclusive() {
+    fn mid_range_start_inclusion() {
         let page = collect(TPM_PT_PCR_RESET_L2, 1000);
         assert_eq!(tags(&page)[0], TPM_PT_PCR_RESET_L2);
         assert_eq!(tags(&page).len(), IMPLEMENTED.len() - 6);
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_start_after_the_last_property_returns_an_empty_page() {
+    fn past_end_start_empty_page() {
         for start in [TPM_PT_PCR_AUTH + 1, 0x0000_00ff, u32::MAX] {
             let page = collect(start, 1000);
             assert!(page.entries.is_empty(), "{start:#x}");
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_count_reports_more_data_only_when_a_property_remains() {
+    fn zero_count_conditional_more_data() {
         let page = collect(0, 0);
         assert!(page.entries.is_empty());
         assert!(page.more_data);
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn the_requested_count_truncates_the_page() {
+    fn requested_count_page_truncation() {
         let page = collect(0, 3);
         assert_eq!(
             tags(&page),
@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn the_selection_bytes_match_the_vendored_platform_table() {
+    fn selection_bytes_vendored_platform_table_match() {
         let save = one(TPM_PT_PCR_SAVE).expect("implemented").marshal();
         assert_eq!(&save[..4], &TPM_PT_PCR_SAVE.to_be_bytes());
         assert_eq!(save[4], 3);

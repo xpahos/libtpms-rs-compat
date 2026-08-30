@@ -212,7 +212,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         commit_manufactured_state(state).expect("commits")
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_da_protected_authorization_records_the_marker_and_proceeds() {
+    fn first_da_use_marker_record_success() {
         let mut runtime = manufactured_runtime();
         runtime.timer.time_ms = 1_234;
         assert!(!runtime.live.da_used);
@@ -297,6 +297,7 @@ mod tests {
                 eh_proof: &[0x22; 64],
             },
             &mut rand,
+            crate::library::cancel::Cancellation::disabled(),
         )
         .expect("the fixture object generates");
         store_created_object(runtime, slot, TPM_RH_OWNER, 1, created)
@@ -337,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn real_object_da_classification_follows_the_noda_attribute() {
+    fn real_object_noda_attribute_da_classification() {
         use crate::library::tpm2::object_create::resolve_any_object;
 
         const PROTECTED_TRANSIENT: u32 = 0x8000_0000;
@@ -403,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_authorization_never_performs_the_first_use_transition() {
+    fn lockout_authorization_no_first_use_transition() {
         let mut runtime = manufactured_runtime();
         let orderly_before = runtime.state().persistent.orderly_state;
         let nv_before = runtime.nv_memory.clone();
@@ -436,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn recording_da_use_serializes_the_complete_transition() {
+    fn da_use_record_complete_transition_serialization() {
         let mut runtime = manufactured_runtime();
         let nv_before = runtime.nv_memory.clone();
         record_da_used(&mut runtime).expect("the transition commits");
@@ -450,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_da_use_without_nv_is_refused_without_recording_the_marker() {
+    fn first_da_use_nv_unavailable_rejection_no_marker() {
         let mut runtime = manufactured_runtime();
         runtime.state.as_mut().unwrap().persistent.orderly_state = SU_NONE_VALUE;
         runtime.nv_available = false;
@@ -464,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn reaching_max_tries_locks_out_da_protected_handles_but_not_the_lockout_hierarchy() {
+    fn max_tries_da_lockout_and_lockout_hierarchy_exemption() {
         let mut runtime = manufactured_runtime();
         runtime.live.da_used = true;
         {
@@ -493,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn a_regular_failure_increments_failed_tries_and_rewinds_the_self_heal_timer() {
+    fn regular_failure_tries_increment_timer_rewind() {
         let mut runtime = manufactured_runtime();
         runtime.timer.time_ms = 5_000;
         runtime.live.orderly.self_heal_timer = 111;
@@ -505,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn a_regular_failure_with_zero_recovery_time_only_rewinds_the_timer() {
+    fn regular_failure_zero_recovery_timer_rewind_only() {
         let mut runtime = manufactured_runtime();
         runtime.timer.time_ms = 5_000;
         runtime.state.as_mut().unwrap().persistent.recovery_time = 0;
@@ -516,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lockout_failure_disables_lockout_auth_and_rewinds_its_timer() {
+    fn lockout_failure_auth_disable_timer_rewind() {
         let mut runtime = manufactured_runtime();
         runtime.timer.time_ms = 7_000;
         assert_eq!(
@@ -534,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lockout_failure_with_zero_lockout_recovery_skips_the_nv_update() {
+    fn lockout_failure_zero_recovery_nv_update_skip() {
         let mut runtime = manufactured_runtime();
         runtime.timer.time_ms = 7_000;
         runtime.state.as_mut().unwrap().persistent.lockout_recovery = 0;
@@ -548,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_tries_wraps_like_the_upstream_plain_increment() {
+    fn failed_tries_upstream_wrap_parity() {
         let mut runtime = manufactured_runtime();
         runtime.state.as_mut().unwrap().persistent.failed_tries = u32::MAX;
         assert_eq!(register_lockout_failure(&mut runtime, DA_INDEX), Ok(()));
@@ -556,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_without_nv_becomes_a_pending_da_update() {
+    fn nv_unavailable_failure_pending_update() {
         let mut runtime = manufactured_runtime();
         runtime.nv_available = false;
         assert_eq!(register_lockout_failure(&mut runtime, DA_INDEX), Ok(()));
@@ -566,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_da_update_commits_once_nv_becomes_available() {
+    fn pending_update_nv_available_commit() {
         let mut runtime = manufactured_runtime();
         runtime.live.da_used = true;
         runtime.live.da_pending_on_nv = true;
@@ -576,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_da_update_blocks_authorization_while_nv_is_unavailable() {
+    fn pending_update_authorization_block() {
         let mut runtime = manufactured_runtime();
         runtime.live.da_used = true;
         runtime.live.da_pending_on_nv = true;
@@ -589,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistence_failure_rolls_back_the_failure_registration() {
+    fn persistence_failure_registration_rollback() {
         let mut runtime = manufactured_runtime();
         runtime.timer.time_ms = 5_000;
         runtime.live.orderly.self_heal_timer = 111;
@@ -609,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn self_heal_clears_failed_tries_immediately_when_recovery_time_is_zero() {
+    fn self_heal_zero_recovery_immediate_clear() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -622,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn self_heal_recovers_exactly_at_the_configured_interval() {
+    fn self_heal_configured_interval_recovery() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -647,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn self_heal_recovers_multiple_elapsed_intervals_in_one_sweep() {
+    fn self_heal_multi_interval_single_sweep_recovery() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -662,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn self_heal_never_decrements_below_zero() {
+    fn self_heal_zero_floor() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -676,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrapped_negative_self_heal_timer_accumulates_like_the_upstream_cast() {
+    fn negative_self_heal_timer_upstream_cast_accumulation() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -694,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn extreme_timer_values_never_panic_the_self_heal_arithmetic() {
+    fn extreme_timer_self_heal_panic_safety() {
         for (timer, time, recovery, failed) in [
             (u64::MAX, 0u64, 1u32, u32::MAX),
             (u64::MAX, u64::MAX, u32::MAX, u32::MAX),
@@ -725,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_auth_reenables_exactly_at_the_configured_interval() {
+    fn lockout_auth_configured_interval_reenable() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -746,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_auth_stays_disabled_when_lockout_recovery_is_zero() {
+    fn zero_lockout_recovery_no_reenable() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -763,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_self_heal_persistence_failure_rolls_back_the_recovery() {
+    fn self_heal_persistence_failure_rollback() {
         let mut runtime = manufactured_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -780,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn the_permanent_blob_round_trips_every_persistent_da_field() {
+    fn permanent_blob_da_field_round_trip() {
         use crate::library::tpm2::parse_persistent_all_payload;
         use crate::library::tpm2::persistent::{
             PersistentAllEnvelope, materialize_persistent_state, persistent_all_store,
@@ -813,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn the_volatile_blob_round_trips_every_live_da_field() {
+    fn volatile_blob_da_field_round_trip() {
         use crate::library::tpm2::clock::SteppingClock;
         use crate::library::tpm2::runtime::merge_volatile_state;
         use crate::library::tpm2::volatile::volatile_all_store;
@@ -854,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_lockout_hierarchy_is_dictionary_attack_protected() {
+    fn lockout_hierarchy_only_da_protection() {
         let runtime = empty_state_runtime();
         assert!(is_da_protected_handle(&runtime, TPM_RH_LOCKOUT));
         for handle in [
@@ -876,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn an_undefined_nv_index_is_dictionary_attack_exempt() {
+    fn undefined_nv_index_da_exemption() {
         let runtime = empty_state_runtime();
         for handle in [0x0100_0000u32, 0x0100_0001, 0x01ff_ffff] {
             assert!(
@@ -887,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_state_never_panics() {
+    fn stateless_runtime_panic_safety() {
         let mut runtime = empty_state_runtime();
         assert_eq!(
             check_locked_out(&mut runtime, TPM_RH_LOCKOUT),

@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn the_table_constants_match_upstream() {
+    fn table_constants_upstream_match() {
         assert_eq!(LAST_PRIME_IN_TABLE, 65537);
         assert_eq!(PRIME_TABLE_SIZE, 4097);
         assert_eq!(PRIMES_IN_TABLE, 6542);
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_prime_table_bytes_match_the_vendored_table() {
+    fn prime_table_bytes_vendored_match() {
         assert_eq!(
             &PRIME_TABLE[..13],
             &[
@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prime_table_marks_exactly_the_odd_primes_below_the_last_entry() {
+    fn prime_table_odd_prime_marks() {
         let mut count = 1;
         for value in (3..=LAST_PRIME_IN_TABLE).step_by(2) {
             assert_eq!(
@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn the_integer_primality_test_agrees_with_trial_division() {
+    fn primality_test_trial_division_match() {
         for n in 0..20_000u32 {
             assert_eq!(is_prime_int(n), reference_is_prime(n), "n {n}");
         }
@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_public_exponent_and_its_neighbours_classify_correctly() {
+    fn default_exponent_neighbour_classification() {
         assert!(is_prime_int(65537));
         assert!(!is_prime_int(65536));
         assert!(!is_prime_int(65538));
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn the_integer_square_root_bounds_the_trial_division_loop() {
+    fn square_root_trial_division_bound() {
         for n in (3..5_000u32).chain([65_539, 1_000_003, 4_294_967_291]) {
             let root = root2(n);
             assert!(root != 0, "n {n}");
@@ -496,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_seed_value_bytes_match_the_vendored_table() {
+    fn seed_value_bytes_vendored_match() {
         assert_eq!(
             &SEED_VALUES[..12],
             &[
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn the_seed_values_clear_every_multiple_of_three_five_and_seven() {
+    fn seed_values_small_prime_multiple_clearing() {
         for bit in 0..SEED_VALUES_SIZE * 8 {
             let set = SEED_VALUES[bit / 8] & (1 << (bit % 8)) != 0;
             let coprime = bit % 3 != 0 && bit % 5 != 0 && bit % 7 != 0;
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prime_limit_follows_the_marker_table() {
+    fn prime_limit_marker_table_match() {
         assert_eq!(adjust_prime_limit(1024, 1), 8167 >> 1);
         assert_eq!(adjust_prime_limit(1025, 1), 17881 >> 1);
         assert_eq!(adjust_prime_limit(4096, 1), 38891 >> 1);
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prime_limit_keeps_the_pre_fix_reduction_for_every_supported_seed_level() {
+    fn prime_limit_pre_fix_reduction_preservation() {
         for level in 0..=SEED_COMPAT_LEVEL_RSA_PRIME_ADJUST_FIX {
             assert_eq!(
                 adjust_prime_limit(0, level),
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prime_iterator_walks_the_table_in_order() {
+    fn prime_iterator_table_order() {
         let limit = adjust_prime_limit(0, 1);
         let mut prime = 7;
         let expected = [11u32, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47];
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prime_iterator_stops_at_the_limit() {
+    fn prime_iterator_limit_stop() {
         let limit = adjust_prime_limit(1024, 1);
         let mut prime = 8161u32;
         prime = next_prime(prime, limit);
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prime_iterator_reaches_the_last_table_entry_under_the_full_limit() {
+    fn prime_iterator_last_entry_full_limit() {
         let limit = adjust_prime_limit(0, 1);
         let mut prime = 65_500u32;
         prime = next_prime(prime, limit);
@@ -576,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nth_set_bit_is_found_by_counting_from_the_first_byte() {
+    fn nth_set_bit_first_byte_counting() {
         let field = [0b0000_0001u8, 0b0000_0000, 0b1000_0001];
         assert_eq!(find_nth_set_bit(&field, 1), 0);
         assert_eq!(find_nth_set_bit(&field, 2), 16);
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn every_set_bit_is_reachable_by_its_own_index() {
+    fn set_bit_index_reachability() {
         let field: Vec<u8> = (0..64u8).map(|index| index.wrapping_mul(37)).collect();
         let mut expected = Vec::new();
         for bit in 0..field.len() * 8 {
@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sieve_aligns_the_candidate_to_an_odd_multiple_of_one_hundred_five() {
+    fn sieve_candidate_odd_multiple_105_alignment() {
         for start in [1_000_001u64, 1_000_003, 1_000_005, 105, 211] {
             let mut candidate = BigUint::from_u64(start);
             let mut field = [0u8; 512];
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn every_surviving_sieve_bit_is_coprime_to_the_sieved_primes() {
+    fn surviving_sieve_bit_coprimality() {
         let mut candidate = BigUint::from_u64(1_000_003);
         let mut field = [0u8; 128];
         let limit = adjust_prime_limit(1024, 1);
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sieve_clears_every_value_divisible_by_a_sieved_prime() {
+    fn sieve_divisible_value_clearing() {
         let mut candidate = BigUint::from_u64(500_009);
         let mut field = [0u8; 64];
         let limit = adjust_prime_limit(1024, 1);
@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn miller_rabin_accepts_the_nist_curve_primes() {
+    fn miller_rabin_nist_curve_prime_acceptance() {
         let mut generator = rand();
         let power = |bits: usize| BigUint::from_u64(1).shl(bits);
         let p256 = power(256)
@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn miller_rabin_rejects_composites() {
+    fn miller_rabin_composite_rejection() {
         let mut generator = rand();
         for composite in [
             BigUint::from_u64(0xffff_ffff_ffff_fffd),
@@ -695,14 +695,14 @@ mod tests {
     }
 
     #[test]
-    fn miller_rabin_accepts_the_mersenne_prime() {
+    fn miller_rabin_mersenne_prime_acceptance() {
         let mut generator = rand();
         let prime = BigUint::from_u64(1).shl(521).sub_u64(1).unwrap();
         assert!(miller_rabin(&prime, &mut generator).unwrap());
     }
 
     #[test]
-    fn the_round_count_follows_the_published_table() {
+    fn round_count_published_table_match() {
         assert_eq!(miller_rabin_rounds(0), 8);
         assert_eq!(miller_rabin_rounds(510), 8);
         assert_eq!(miller_rabin_rounds(511), 5);
@@ -714,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sieve_selection_returns_a_prime_congruent_to_the_exponent_rules() {
+    fn sieve_selection_exponent_congruence() {
         let mut generator = rand();
         let mut candidate = generator.random_integer(512).unwrap();
         candidate.set_low_bit();
@@ -731,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sieve_selection_is_deterministic_for_a_fixed_generator_state() {
+    fn sieve_selection_determinism() {
         let run = || {
             let mut generator = rand();
             let mut candidate = generator.random_integer(512).unwrap();

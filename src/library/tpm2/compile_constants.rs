@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn table_has_the_upstream_entry_counts() {
+    fn table_upstream_entry_counts() {
         assert_eq!(PA_COMPILE_CONSTANTS.len(), 120);
         assert_eq!(SHARED_ENTRY_COUNT, 88);
         assert_eq!(
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn upstream_fixture_validates() {
+    fn upstream_fixture_validation_success() {
         let validated = parse(UPSTREAM_FIXTURE).unwrap();
         assert_eq!(validated.header.version, 3);
         assert_eq!(validated.header.min_version, 1);
@@ -330,12 +330,12 @@ mod tests {
     }
 
     #[test]
-    fn own_marshalling_matches_the_upstream_fixture() {
+    fn own_marshalling_upstream_fixture_parity() {
         assert_eq!(marshalled_section(3), UPSTREAM_FIXTURE);
     }
 
     #[test]
-    fn mutating_each_fixture_value_fails_as_expected() {
+    fn fixture_value_mutation_failure() {
         let cases = [
             (0, 0u32, true),
             (0, 2, true),
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn each_comparison_operator_has_the_upstream_semantics() {
+    fn comparison_operator_upstream_semantics() {
         assert!(CompareOp::Equal.is_compatible(5, 5));
         assert!(!CompareOp::Equal.is_compatible(4, 5));
         assert!(!CompareOp::Equal.is_compatible(6, 5));
@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_1_2_and_3_are_accepted() {
+    fn version_1_2_3_acceptance() {
         for version in [1u16, 2, 3] {
             let data = marshalled_section(version);
             let validated = parse(&data).unwrap();
@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_1_and_2_expect_88_entries_and_version_3_expects_120() {
+    fn version_entry_count_expectations() {
         for (version, expected) in [(1u16, 88usize), (2, 88), (3, 120)] {
             let data = marshalled_section(version);
             let validated = parse(&data).unwrap();
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_has_a_six_byte_header_and_no_skip_block() {
+    fn version_1_six_byte_header_no_skip_block() {
         let data = marshalled_section(1);
         assert_eq!(data.len(), 6 + 4 + 88 * 4);
         let validated = parse(&data).unwrap();
@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn version_0_is_rejected_as_unsupported() {
+    fn version_0_unsupported_rejection() {
         let mut data = marshalled_section(1);
         data[0..2].copy_from_slice(&0u16.to_be_bytes());
         assert_eq!(
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn version_4_is_rejected_even_with_a_supported_min_version() {
+    fn version_4_rejection_despite_supported_min_version() {
         let mut data = marshalled_section(3);
         data[0..2].copy_from_slice(&4u16.to_be_bytes());
         assert_eq!(
@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn min_version_newer_than_the_implementation_is_rejected() {
+    fn newer_min_version_rejection() {
         let mut data = marshalled_section(3);
         data[6..8].copy_from_slice(&4u16.to_be_bytes());
         assert_eq!(
@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn incorrect_section_magic_is_rejected() {
+    fn incorrect_section_magic_rejection() {
         let mut data = marshalled_section(3);
         data[2] = 0xde;
         assert_eq!(
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_section_header_is_reported_as_truncated() {
+    fn truncated_section_header_truncation_error() {
         for len in 0..8 {
             let data = &marshalled_section(3)[..len];
             assert_eq!(parse(data), Err(truncated()), "prefix length {len}");
@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_count_mismatch_is_kept_as_metadata_not_an_error() {
+    fn declared_count_mismatch_metadata_no_error() {
         let mut data = marshalled_section(3);
         data[8..12].copy_from_slice(&7u32.to_be_bytes());
         let validated = parse(&data).unwrap();
@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_count_zero_still_reads_all_expected_entries() {
+    fn declared_count_zero_full_entry_read() {
         let mut data = marshalled_section(3);
         data[8..12].copy_from_slice(&0u32.to_be_bytes());
         let validated = parse(&data).unwrap();
@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn huge_declared_count_neither_allocates_nor_overreads() {
+    fn huge_declared_count_allocation_and_overread_safety() {
         let mut data = marshalled_section(3);
         data[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
         let validated = parse(&data).unwrap();
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_expected_number_of_values_is_consumed() {
+    fn exact_value_count_consumption() {
         let mut data = marshalled_section(3);
         data.extend_from_slice(&[0xaa, 0xbb]);
         let validated = parse(&data).unwrap();
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_at_every_entry_boundary_is_reported() {
+    fn entry_boundary_truncation_error() {
         let full = marshalled_section(3);
         for index in 0..120 {
             let end = VALUES_OFFSET + 4 * index;
@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_stops_at_the_first_mismatch() {
+    fn validation_first_mismatch_stop() {
         let mut data = marshalled_section(3);
         let base = VALUES_OFFSET;
         data[base + 4 * 5..base + 4 * 6].copy_from_slice(&9u32.to_be_bytes());
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_1_and_2_validate_only_the_shared_prefix() {
+    fn version_1_2_shared_prefix_only_validation() {
         for version in [1u16, 2] {
             let data = marshalled_section(version);
             let validated = parse(&data).unwrap();
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn version_3_validates_all_120_entries() {
+    fn version_3_full_120_entry_validation() {
         let mut data = marshalled_section(3);
         let offset = VALUES_OFFSET + 4 * 119;
         data[offset..offset + 4].copy_from_slice(&1u32.to_be_bytes());
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_and_3_accept_an_absent_future_block() {
+    fn version_2_3_absent_future_block_acceptance() {
         for version in [2u16, 3] {
             let mut data = section_without_block(version);
             data.extend_from_slice(&[0x00, 0x00, 0x00]);
@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_and_3_skip_a_present_nonempty_future_block() {
+    fn version_2_3_nonempty_future_block_skip() {
         for version in [2u16, 3] {
             let mut data = section_without_block(version);
             data.extend_from_slice(&[0x01, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef]);
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn noncanonical_block_boolean_is_treated_as_true() {
+    fn noncanonical_block_boolean_true_interpretation() {
         let mut data = section_without_block(3);
         data.extend_from_slice(&[0xff, 0x00, 0x01, 0x99]);
         let validated = parse(&data).unwrap();
@@ -603,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_future_block_is_reported_as_truncated() {
+    fn truncated_future_block_truncation_error() {
         let base = section_without_block(3);
         assert_eq!(parse(&base), Err(truncated()));
         let mut data = base.clone();
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_stream_is_not_read_for_a_block() {
+    fn version_1_no_block_read() {
         let mut data = marshalled_section(1);
         data.extend_from_slice(&[0x01, 0x00, 0x01, 0x55]);
         let validated = parse(&data).unwrap();

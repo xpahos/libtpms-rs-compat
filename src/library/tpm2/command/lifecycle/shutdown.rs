@@ -144,6 +144,7 @@ fn perform_shutdown(runtime: &mut Tpm2Runtime, shutdown_type: u16) -> Result<(),
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{TPM_CC_SHUTDOWN, TPM_CC_STARTUP};
@@ -194,7 +195,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -244,11 +245,12 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
@@ -369,7 +371,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn rebooted_runtime(runtime: &Tpm2Runtime) -> Box<Tpm2Runtime> {
+    fn rebooted_runtime(runtime: &Tpm2Runtime) -> Tpm2Runtime {
         let restored = reload(state(runtime));
         let mut rebooted = commit_restored_state(restored).expect("the persisted state restores");
         rebooted.entropy = deterministic_entropy;
@@ -377,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_before_startup_returns_initialize_without_mutation() {
+    fn pre_startup_shutdown_initialize_error_no_mutation() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         for shutdown_type in [TPM_SU_CLEAR, TPM_SU_STATE] {
@@ -390,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_shutdown_before_startup_still_returns_initialize() {
+    fn pre_startup_malformed_shutdown_initialize_error() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         let truncated = command_with_params(TPM_CC_SHUTDOWN, &[]);
@@ -406,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_shutdown_is_dispatched_normally() {
+    fn repeated_shutdown_normal_dispatch() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &shutdown_command(TPM_SU_CLEAR)),
@@ -438,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_after_shutdown_without_a_reset_returns_initialize() {
+    fn post_shutdown_startup_without_reset_initialize_error() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &shutdown_command(TPM_SU_STATE)),
@@ -455,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_type_decodes_big_endian() {
+    fn shutdown_type_big_endian_decoding() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &shutdown_command(0x0100)),
@@ -474,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_match_the_oracle() {
+    fn malformed_parameter_oracle_parity() {
         for (label, params, expected) in [
             ("missing", &[][..], INSUFFICIENT_PARAM1),
             ("one_byte", &[0x00][..], INSUFFICIENT_PARAM1),
@@ -495,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_parameter_prefix_fails_safely() {
+    fn strict_parameter_prefix_rejection_safety() {
         let full = shutdown_command(TPM_SU_STATE);
         for len in 10..full.len() {
             let mut runtime = started_runtime();
@@ -512,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn session_tagged_requests_match_the_oracle() {
+    fn session_tagged_request_oracle_parity() {
         let pw = session_bytes(TPM_RS_PW, &[], 0x00, &[]);
         let mut no_authsize = vec![0x80, 0x02, 0x00, 0x00, 0x00, 0x0a];
         no_authsize.extend_from_slice(&TPM_CC_SHUTDOWN.to_be_bytes());
@@ -605,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_clear_persists_live_go_and_omits_gr_gc() {
+    fn shutdown_clear_live_go_persistence_gr_gc_omission() {
         let mut runtime = started_runtime();
         let live_seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
         let live_counter = runtime.live.orderly.drbg_state.reseed_counter;
@@ -646,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_state_persists_live_go_gr_and_gc() {
+    fn shutdown_state_live_go_gr_gc_persistence() {
         let mut runtime = started_runtime();
         let live_seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
         let null_proof = runtime
@@ -683,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_state_records_the_locality_3_modifier() {
+    fn shutdown_state_locality_3_modifier_record() {
         let mut runtime = manufactured_runtime();
         runtime.locality = 3;
         assert_eq!(
@@ -702,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_state_records_the_drtm_modifier_with_upstream_precedence() {
+    fn shutdown_state_drtm_modifier_upstream_precedence() {
         let mut runtime = started_runtime();
         runtime.live.drtm_pre_startup = true;
         assert_eq!(
@@ -729,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_clear_keeps_su_clear_without_modifiers() {
+    fn shutdown_clear_unmodified_su_clear() {
         let mut runtime = started_runtime();
         runtime.live.drtm_pre_startup = true;
         runtime.live.startup_locality3 = true;
@@ -741,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_nv_ram_is_copied_into_the_nv_backed_state() {
+    fn orderly_ram_nv_state_copy() {
         let mut runtime = started_runtime();
         let entry = OwnedOrderlyRamEntry {
             declared_size: 20,
@@ -777,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_clears_da_used() {
+    fn shutdown_da_used_flag_clear() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         assert_eq!(
@@ -788,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_state_saves_the_live_pcrs_into_gc() {
+    fn shutdown_state_live_pcr_gc_save() {
         let mut runtime = started_runtime();
         runtime.live.pcrs[5].banks[SHA256_SLOT] = Some(vec![0xaa; 32]);
         runtime.live.pcrs[17].banks[SHA256_SLOT] = Some(vec![0xbb; 32]);
@@ -815,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_clear_does_not_save_pcr_state() {
+    fn shutdown_clear_no_pcr_state_save() {
         let mut runtime = started_runtime();
         runtime.live.pcrs[5].banks[SHA256_SLOT] = Some(vec![0xaa; 32]);
         assert_eq!(
@@ -835,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_reconfiguration_rejects_only_state_shutdown() {
+    fn pcr_reconfiguration_state_shutdown_only_rejection() {
         let mut runtime = started_runtime();
         runtime.live.pcr_reconfig = true;
         let before = snapshot(&runtime);
@@ -852,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_nv_causes_no_mutation() {
+    fn unavailable_nv_no_mutation() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime);
@@ -878,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_live_gr_or_gc_rejects_state_shutdown_transactionally() {
+    fn missing_live_gr_gc_state_shutdown_transactional_rejection() {
         for drop_reset in [true, false] {
             let mut runtime = started_runtime();
             if drop_reset {
@@ -903,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_serialization_failure_rolls_back_all_state_changes() {
+    fn nv_serialization_failure_full_rollback() {
         let mut runtime = started_runtime();
         runtime.live.state_clear.as_mut().unwrap().platform_policy = vec![0x11; 100];
         let before = snapshot(&runtime);
@@ -923,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_clear_then_startup_clear_after_reset_is_a_reset() {
+    fn shutdown_clear_startup_clear_reset() {
         let mut runtime = started_runtime();
         assert_eq!(state(&runtime).persistent.reset_count, 1);
         assert_eq!(
@@ -964,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_state_then_startup_state_after_reset_is_a_resume() {
+    fn shutdown_state_startup_state_resume() {
         let mut runtime = started_runtime();
         runtime.live.pcrs[5].banks[SHA256_SLOT] = Some(vec![0xaa; 32]);
         let null_proof = runtime
@@ -1010,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_state_then_startup_clear_after_reset_is_a_restart() {
+    fn shutdown_state_startup_clear_restart() {
         let mut runtime = started_runtime();
         runtime.live.pcrs[5].banks[SHA256_SLOT] = Some(vec![0xaa; 32]);
         assert_eq!(
@@ -1043,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn locality_3_resume_round_trip_requires_locality_3() {
+    fn locality_3_resume_round_trip_locality_requirement() {
         let mut runtime = manufactured_runtime();
         runtime.locality = 3;
         assert_eq!(
@@ -1072,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    fn drtm_resume_round_trip_requires_the_pre_startup_flag() {
+    fn drtm_resume_round_trip_pre_startup_flag_requirement() {
         let mut runtime = started_runtime();
         runtime.live.drtm_pre_startup = true;
         assert_eq!(

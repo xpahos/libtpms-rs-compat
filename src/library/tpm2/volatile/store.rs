@@ -427,7 +427,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -466,20 +466,20 @@ mod tests {
         volatile_all_store(runtime, &host_clock()).expect("the runtime serializes")
     }
 
-    fn restored_from_c_fixture() -> Box<Tpm2Runtime> {
+    fn restored_from_c_fixture() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         merge_volatile_state(&mut runtime, own_c_fixture(C_FIXTURE_V4));
         runtime
     }
 
     #[test]
-    fn c_v4_fixture_reencodes_byte_for_byte() {
+    fn c_v4_fixture_byte_exact_reencoding() {
         let owned = own_c_fixture(C_FIXTURE_V4);
         assert_eq!(marshal_volatile_state(&owned).unwrap(), C_FIXTURE_V4);
     }
 
     #[test]
-    fn c_v4_future_fixture_reencodes_to_the_current_writer_bytes() {
+    fn c_v4_future_fixture_current_writer_reencoding() {
         assert_eq!(C_FIXTURE_V4_FUTURE.len(), C_FIXTURE_V4.len() + 6);
         let owned = own_c_fixture(C_FIXTURE_V4_FUTURE);
         assert_eq!(
@@ -490,14 +490,14 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_v4_fixture_reencodes_byte_for_byte() {
+    fn synthetic_v4_fixture_byte_exact_reencoding() {
         let fixture = VolatileFixture::default();
         let owned = own_synthetic_fixture(&fixture);
         assert_eq!(marshal_volatile_state(&owned).unwrap(), fixture.bytes());
     }
 
     #[test]
-    fn occupied_objects_and_sessions_reencode_byte_for_byte() {
+    fn occupied_object_and_session_byte_exact_reencoding() {
         let mut fixture = VolatileFixture::default();
         fixture.objects[0] = crate::library::tpm2::object::fixtures::any_rsa_object(4);
         let owned = own_synthetic_fixture(&fixture);
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn reencoded_blob_decodes_back_to_an_equal_snapshot() {
+    fn reencoded_blob_snapshot_round_trip() {
         let owned = own_c_fixture(C_FIXTURE_V4);
         let encoded = marshal_volatile_state(&owned).unwrap();
         let round_tripped = own_c_fixture(&encoded);
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn freshly_manufactured_runtime_serializes_without_restored_volatile() {
+    fn manufactured_runtime_serialization_without_restored_volatile() {
         let runtime = manufactured_runtime();
         assert!(runtime.restored_volatile.is_none());
         let blob = store(&runtime);
@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_restored_from_the_c_fixture_serializes_again() {
+    fn c_fixture_restored_runtime_reserialization() {
         let runtime = restored_from_c_fixture();
         assert!(runtime.restored_volatile.is_some());
         let blob = store(&runtime);
@@ -601,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn live_pcr_mutations_reach_the_new_blob() {
+    fn live_pcr_mutation_blob_propagation() {
         let mut runtime = manufactured_runtime();
         runtime.live.pcrs[7].banks[0] = Some(vec![0xa7; 20]);
         runtime.live.pcrs[7].banks[1] = Some(vec![0xb7; 32]);
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn live_session_and_object_slots_reach_the_new_blob() {
+    fn live_session_and_object_slot_blob_propagation() {
         let mut runtime = manufactured_runtime();
         let donor = own_synthetic_fixture(&{
             let mut fixture = VolatileFixture::default();
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_mode_and_tpm_established_come_from_the_runtime() {
+    fn failure_mode_and_tpm_established_runtime_source() {
         for (failure_mode, established) in [(false, false), (true, true), (true, false)] {
             let mut runtime = manufactured_runtime();
             runtime.failure_mode = failure_mode;
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_diagnostics_round_trip_through_the_volatile_state() {
+    fn failure_diagnostics_volatile_state_round_trip() {
         use crate::library::tpm2::failure_mode::{FailureLocation, enter_failure_mode};
 
         let mut runtime = manufactured_runtime();
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn the_entropy_bad_latch_is_not_part_of_the_volatile_contract() {
+    fn entropy_bad_latch_volatile_exclusion() {
         use crate::library::tpm2::runtime::merge_volatile_state;
 
         let mut runtime = manufactured_runtime();
@@ -714,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn a_healthy_runtime_serializes_zero_failure_diagnostics() {
+    fn healthy_runtime_zero_failure_diagnostics() {
         let runtime = manufactured_runtime();
         let blob = store(&runtime);
         let seeds = runtime_seed_tie(&runtime);
@@ -726,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_and_drbg_state_come_from_the_live_globals() {
+    fn orderly_and_drbg_state_live_global_source() {
         let mut runtime = manufactured_runtime();
         runtime.live.orderly.clock = 0x1234_5678;
         runtime.live.orderly.clock_safe = 0;
@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_seeds_are_written_into_the_seed_tie_block() {
+    fn persistent_seed_tie_block_placement() {
         let runtime = manufactured_runtime();
         let seeds = runtime_seed_tie(&runtime);
         assert!(!seeds.0.is_empty(), "a manufactured TPM has an EPS");
@@ -778,14 +778,14 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_persistent_state_cannot_be_serialized() {
+    fn missing_persistent_state_serialization_failure() {
         let mut runtime = manufactured_runtime();
         runtime.state = None;
         assert_eq!(volatile_all_store(&runtime, &host_clock()), Err(TPM_FAIL));
     }
 
     #[test]
-    fn object_encoding_follows_the_active_profile() {
+    fn object_encoding_active_profile_mapping() {
         assert_eq!(volatile_object_version(0), Err(TPM_FAIL));
         for level in 1..=5u32 {
             assert_eq!(volatile_object_version(level), Ok(LEGACY_OBJECT_VERSION));
@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_object_version_changes_the_emitted_object_bytes() {
+    fn snapshot_object_version_output_variation() {
         let mut fixture = VolatileFixture::default();
         fixture.objects[0] = crate::library::tpm2::object::fixtures::any_rsa_object(4);
         let mut owned = own_synthetic_fixture(&fixture);
@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_restored_values_never_override_the_live_globals() {
+    fn stale_restored_value_live_global_precedence() {
         let mut runtime = restored_from_c_fixture();
         runtime.live.max_nv_counter = 0x5a5a;
         runtime.live.da_pending_on_nv = false;
@@ -859,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn every_upstream_field_has_a_pinned_runtime_source() {
+    fn upstream_field_runtime_source_pinning() {
         let mut runtime = manufactured_runtime();
         runtime.live.ph_enable = true;
         runtime.live.pcr_reconfig = true;
@@ -908,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn clock_reads_follow_the_upstream_order_and_wrap_like_c() {
+    fn clock_read_upstream_order_and_wrap_parity() {
         let mut runtime = manufactured_runtime();
         runtime.clock = RuntimeClock {
             host_monotonic_adjust_ms: -8_000_000,
@@ -936,13 +936,13 @@ mod tests {
     }
 
     #[test]
-    fn two_serializations_of_the_same_runtime_are_identical() {
+    fn repeated_serialization_determinism() {
         let runtime = restored_from_c_fixture();
         assert_eq!(store(&runtime), store(&runtime));
     }
 
     #[test]
-    fn wrong_slot_counts_are_rejected() {
+    fn wrong_slot_count_rejection() {
         for mutate in [
             (|state: &mut OwnedVolatileState| {
                 state.objects.pop();
@@ -962,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn session_slot_occupancy_must_match_the_session_body() {
+    fn session_slot_occupancy_body_consistency() {
         let mut owned = own_synthetic_fixture(&VolatileFixture::default());
         owned.sessions[0].occupied = false;
         assert_eq!(marshal_volatile_state(&owned), Err(TPM_FAIL));
@@ -973,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_bank_digests_of_the_wrong_size_are_rejected() {
+    fn wrong_size_pcr_digest_rejection() {
         for (slot, wrong) in [(0usize, 19usize), (1, 33), (2, 0), (3, 65)] {
             let mut owned = own_c_fixture(C_FIXTURE_V4);
             owned.pcrs[3].banks[slot] = Some(vec![0u8; wrong]);
@@ -982,7 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_tpm2b_values_are_rejected() {
+    fn oversized_tpm2b_rejection() {
         let oversized = vec![0u8; DIGEST_SIZE + 1];
         let mut owned = own_c_fixture(C_FIXTURE_V4);
         owned.session_process.cp_hash_for_command_audit = oversized.clone();
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn a_block_payload_wider_than_its_length_field_is_rejected() {
+    fn overwide_block_payload_rejection() {
         let mut fixture = VolatileFixture::default();
         fixture.objects[0] = crate::library::tpm2::object::fixtures::any_rsa_object(4);
         let mut owned = own_synthetic_fixture(&fixture);
@@ -1016,21 +1016,21 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_without_a_version_4_tail_is_rejected() {
+    fn missing_version_4_tail_rejection() {
         let mut owned = own_c_fixture(C_FIXTURE_V4);
         owned.tail_v4 = None;
         assert_eq!(marshal_volatile_state(&owned), Err(TPM_FAIL));
     }
 
     #[test]
-    fn an_unoccupied_object_slot_with_the_occupied_bit_is_rejected() {
+    fn unoccupied_slot_occupied_bit_rejection() {
         let mut owned = own_c_fixture(C_FIXTURE_V4);
         owned.objects[0].attributes |= ATTR_OCCUPIED;
         assert_eq!(marshal_volatile_state(&owned), Err(TPM_FAIL));
     }
 
     #[test]
-    fn an_oversized_pcr_bank_from_state_clear_is_rejected() {
+    fn state_clear_oversized_pcr_bank_rejection() {
         let mut owned = own_c_fixture(C_FIXTURE_V4);
         owned.state_clear.pcr_save[0] = Some(OwnedPcrBank {
             hash_alg: 0x0004,
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_prefixes_of_a_produced_blob_are_handled_safely() {
+    fn produced_blob_prefix_safety() {
         let runtime = restored_from_c_fixture();
         let blob = store(&runtime);
         let seeds = runtime_seed_tie(&runtime);
@@ -1067,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn produced_blob_byte_mutations_do_not_panic() {
+    fn produced_blob_byte_mutation_panic_safety() {
         let runtime = restored_from_c_fixture();
         let blob = store(&runtime);
         let seeds = runtime_seed_tie(&runtime);

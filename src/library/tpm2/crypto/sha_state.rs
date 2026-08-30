@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_algorithm_builds_a_state() {
+    fn compiled_algorithm_state_construction() {
         for (hash_alg, size) in COMPILED_HASHES {
             let state = ShaState::new(hash_alg).expect("a compiled algorithm");
             assert_eq!(state.hash_alg(), hash_alg);
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn uncompiled_algorithms_build_no_state() {
+    fn uncompiled_algorithm_no_state_construction() {
         for hash_alg in [0x0000u16, 0x0005, 0x0010, 0x0012, 0xffff] {
             assert!(ShaState::new(hash_alg).is_none(), "alg {hash_alg:#06x}");
             assert!(hash_block_size(hash_alg).is_none());
@@ -504,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn digests_match_the_shared_hasher_for_many_split_patterns() {
+    fn split_pattern_shared_hasher_digest_match() {
         let message: Vec<u8> = (0..1000u32).map(|index| (index * 7) as u8).collect();
         for (hash_alg, _) in COMPILED_HASHES {
             for length in [0usize, 1, 3, 55, 56, 63, 64, 65, 111, 127, 128, 129, 1000] {
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_updates_do_not_change_the_digest() {
+    fn empty_update_digest_preservation() {
         for (hash_alg, _) in COMPILED_HASHES {
             assert_eq!(
                 digest_of(hash_alg, &[&[], b"abc", &[]]),
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn the_buffer_beyond_the_pending_bytes_stays_zero() {
+    fn buffer_beyond_pending_zero_preservation() {
         let message: Vec<u8> = (0..500u32).map(|index| index as u8).collect();
         for (hash_alg, _) in COMPILED_HASHES {
             let block = hash_block_size(hash_alg).expect("a compiled algorithm");
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exported_state_imports_back_unchanged() {
+    fn export_import_round_trip() {
         let message: Vec<u8> = (0..300u32).map(|index| (index * 3) as u8).collect();
         for (hash_alg, _) in COMPILED_HASHES {
             for split in [0usize, 1, 63, 64, 100, 200, 300] {
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn an_import_rejects_a_mismatched_payload() {
+    fn mismatched_payload_import_rejection() {
         let sha1 = ShaState::new(TPM_ALG_SHA1).expect("a compiled algorithm");
         assert!(ShaState::import(TPM_ALG_SHA256, &sha1.export()).is_none());
         let sha512 = ShaState::new(TPM_ALG_SHA512).expect("a compiled algorithm");
@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn an_import_rejects_an_out_of_range_buffer() {
+    fn out_of_range_buffer_import_rejection() {
         let state = ShaState::new(TPM_ALG_SHA256).expect("a compiled algorithm");
         let ShaStatePayload::Sha256 {
             h,
@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn the_md_len_matches_the_algorithm() {
+    fn md_len_algorithm_match() {
         for (hash_alg, size) in COMPILED_HASHES {
             let state = ShaState::new(hash_alg).expect("a compiled algorithm");
             let md_len = match state.export() {
@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn hmac_matches_the_shared_implementation() {
+    fn hmac_shared_implementation_match() {
         let message: Vec<u8> = (0..400u32).map(|index| (index * 5) as u8).collect();
         for (hash_alg, _) in COMPILED_HASHES {
             for key_len in [0usize, 1, 20, 63, 64, 65, 127, 128, 129, 200] {
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_hmac_key_is_the_opad_block() {
+    fn stored_hmac_key_opad_block() {
         for (hash_alg, _) in COMPILED_HASHES {
             let block = hash_block_size(hash_alg).expect("a compiled algorithm");
             let hmac = SequenceHmac::start(hash_alg, b"Jefe").expect("a compiled algorithm");
@@ -686,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_hmac_key_is_reduced_to_its_digest() {
+    fn long_hmac_key_digest_reduction() {
         for (hash_alg, digest_size) in COMPILED_HASHES {
             let block = hash_block_size(hash_alg).expect("a compiled algorithm");
             let key = vec![0xaa; block + 1];

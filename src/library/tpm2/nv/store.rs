@@ -569,7 +569,7 @@ mod tests {
         Ok(())
     }
 
-    fn runtime() -> Box<Tpm2Runtime> {
+    fn runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -597,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn an_added_index_is_resolvable_with_its_public_area() {
+    fn added_index_public_area_resolution() {
         let mut runtime = runtime();
         let area = public(0x0100_0001, 0, 32);
         transact(&mut runtime, |runtime| {
@@ -621,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orderly_index_keeps_its_data_in_ram() {
+    fn orderly_index_ram_data_residence() {
         let mut runtime = runtime();
         let area = public(0x0100_0002, TPMA_NV_ORDERLY, 8);
         transact(&mut runtime, |runtime| {
@@ -651,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_attributes_are_read_from_ram_not_from_the_stored_index() {
+    fn orderly_attributes_ram_source() {
         let mut runtime = runtime();
         let area = public(0x0100_0002, TPMA_NV_ORDERLY, 8);
         transact(&mut runtime, |runtime| {
@@ -677,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deleted_index_disappears_from_both_stores() {
+    fn deleted_index_dual_store_removal() {
         let mut runtime = runtime();
         let ordinary = public(0x0100_0001, 0, 32);
         let orderly = public(0x0100_0002, TPMA_NV_ORDERLY, 8);
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_written_counter_raises_the_max_counter() {
+    fn written_counter_delete_max_counter_raise() {
         let mut runtime = runtime();
         let counter = public(0x0100_0003, TPM_NT_COUNTER << TPMA_NV_TPM_NT_SHIFT, 8);
         transact(&mut runtime, |runtime| {
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_an_unwritten_counter_leaves_the_max_counter_alone() {
+    fn unwritten_counter_delete_max_counter_unchanged() {
         let mut runtime = runtime();
         let counter = public(0x0100_0003, TPM_NT_COUNTER << TPMA_NV_TPM_NT_SHIFT, 8);
         transact(&mut runtime, |runtime| {
@@ -742,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn a_first_partial_write_clears_the_rest_of_an_ordinary_index() {
+    fn first_partial_write_ordinary_index_clear() {
         let mut runtime = runtime();
         let area = public(0x0100_0001, 0, 16);
         transact(&mut runtime, |runtime| {
@@ -775,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn a_first_full_write_does_not_erase_an_ordinary_index() {
+    fn first_full_write_no_erase() {
         let mut runtime = runtime();
         let area = public(0x0100_0001, 0, 16);
         transact(&mut runtime, |runtime| {
@@ -804,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn a_first_write_to_a_non_ordinary_index_never_erases_it() {
+    fn non_ordinary_first_write_no_erase() {
         let mut runtime = runtime();
         let counter = public(0x0100_0003, TPM_NT_COUNTER << TPMA_NV_TPM_NT_SHIFT, 8);
         transact(&mut runtime, |runtime| {
@@ -829,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn a_write_to_an_orderly_index_asks_for_the_orderly_state_to_be_cleared() {
+    fn orderly_index_write_orderly_clear_request() {
         let mut runtime = runtime();
         let area = public(0x0100_0002, TPMA_NV_ORDERLY, 8);
         transact(&mut runtime, |runtime| {
@@ -861,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_mutation_restores_every_tracked_field() {
+    fn mutation_failure_field_rollback() {
         let mut runtime = runtime();
         let area = public(0x0100_0001, 0, 32);
         transact(&mut runtime, |runtime| {
@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn defining_an_index_without_nv_is_unavailable_and_changes_nothing() {
+    fn define_unavailable_nv_unchanged() {
         let mut runtime = runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime).unwrap();
@@ -910,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dynamic_space_test_reserves_room_for_evict_objects_and_counters() {
+    fn dynamic_space_evict_counter_reservation() {
         let runtime = runtime();
         let state = runtime.state();
         assert_eq!(persistent_object_count(state), 0);
@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn a_counter_allocation_does_not_reserve_the_counter_pool() {
+    fn counter_allocation_no_pool_reservation() {
         let runtime = runtime();
         let state = runtime.state();
         let with_counter_pool = 4
@@ -951,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orderly_ram_test_uses_the_header_plus_the_data_size() {
+    fn orderly_ram_header_plus_data_size() {
         let mut runtime = runtime();
         assert!(test_orderly_ram_space(
             &runtime,
@@ -973,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_is_hidden_when_its_creating_hierarchy_is_disabled() {
+    fn disabled_hierarchy_index_hiding() {
         let mut runtime = runtime();
         let owner = public(0x0100_0001, 0, 8);
         let platform = public(0x0100_0002, TPMA_NV_PLATFORMCREATE, 8);
@@ -1015,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_state_never_panics() {
+    fn stateless_runtime_panic_safety() {
         let mut runtime = empty_state_runtime();
         assert!(resolve_index(&runtime, 0x0100_0001).is_none());
         assert!(!handle_is_defined(&runtime, 0x0100_0001));

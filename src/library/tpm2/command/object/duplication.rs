@@ -457,7 +457,7 @@ mod test_support {
     pub(in crate::library::tpm2::command) fn runtime_at(
         snapshot: &str,
         clock: &SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         runtime_from(
             vector(&format!("PERMALL_{snapshot}")),
             vector(&format!("VOLATILE_{snapshot}")),
@@ -770,6 +770,7 @@ mod test_support {
                 commits.set(commits.get() + 1);
                 Ok(())
             },
+            crate::library::cancel::Cancellation::disabled(),
         )
         .expect("the command processes")
     }
@@ -957,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let duplicate = registry::find(CC_DUPLICATE).expect("TPM2_Duplicate is registered");
         assert_eq!(duplicate.attributes, 0x0400_014b);
         assert_eq!(duplicate.decrypt_size, 2);
@@ -1018,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(&mut runtime, &clock, "CCATTR_014B", cap_cc(0x014b));
@@ -1027,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn unloaded_and_mistyped_handles_match_the_oracle() {
+    fn unloaded_mistyped_handle_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -1070,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn the_transfer_objects_are_created_like_the_oracle() {
+    fn transfer_object_creation_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(
@@ -1127,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn the_transfer_parents_are_loaded_like_the_oracle() {
+    fn transfer_parent_load_oracle_match() {
         let clock = clock();
         let (private, public) = child();
 
@@ -1161,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn duplication_recovers_its_seed_through_the_shared_encrypted_secret_helpers() {
+    fn duplication_shared_secret_helper_seed_recovery() {
         const ALG_SHA256: u16 = 0x000b;
         const ALG_OAEP: u16 = 0x0017;
         const ALG_ECDH: u16 = 0x0019;
@@ -1207,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsa_duplicate_import_load_round_trip_matches_the_oracle() {
+    fn rsa_duplicate_import_load_round_trip_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         exec(&mut runtime, &clock, "SAS_DUP", start_policy_session());
@@ -1267,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tpm_generated_inner_wrapper_matches_the_oracle() {
+    fn tpm_generated_inner_wrapper_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -1327,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_supplied_inner_wrapper_matches_the_oracle() {
+    fn caller_supplied_inner_wrapper_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -1371,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecc_seed_encryption_stays_byte_compatible_with_the_oracle() {
+    fn ecc_seed_encryption_oracle_byte_compat() {
         let clock = clock();
         let mut runtime = runtime_at("ECC_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -1381,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecc_parent_and_rewrap_paths_match_the_oracle() {
+    fn ecc_parent_rewrap_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("ECC_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -1422,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_parent_path_matches_the_oracle() {
+    fn null_parent_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -1512,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_duplication_requires_both_wrappers_like_the_oracle() {
+    fn encrypted_duplication_dual_wrapper_oracle_requirement() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         let (private, public) = created("CREATE_ENCDUP_CHILD");
@@ -1577,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_duplication_select_authorizes_one_new_parent() {
+    fn policy_duplication_select_single_new_parent_authorization() {
         let clock = clock();
         let mut runtime = runtime_at("SRK_READY", &clock);
         let target_name = object_name(&primary_public("CP_TARGET"));
@@ -1623,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_authorization_failures_match_the_oracle() {
+    fn duplicate_authorization_failure_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         exec(
@@ -1663,7 +1664,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_rejections_match_the_oracle() {
+    fn duplicate_rejection_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -1717,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_parent_object_cannot_be_duplicated() {
+    fn fixed_parent_duplication_rejection() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         let (private, public) = created("CREATE_FIXED_CHILD");
@@ -1733,7 +1734,7 @@ mod tests {
     }
 
     #[test]
-    fn import_rejections_match_the_oracle() {
+    fn import_rejection_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         let (_key, blob, seed) = duplicated("DUP_RSA");
@@ -1810,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_parent_and_a_symmetric_parent_are_rejected_like_the_oracle() {
+    fn non_parent_symmetric_parent_rejection_oracle_match() {
         let clock = clock();
         let (_key, blob, seed) = duplicated("DUP_RSA");
         let public = child_public();
@@ -1867,7 +1868,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrap_rejections_match_the_oracle() {
+    fn rewrap_rejection_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         let (_key, blob, seed) = duplicated("DUP_RSA");
@@ -1907,7 +1908,7 @@ mod tests {
     }
 
     #[test]
-    fn the_transfer_commands_page_through_the_capability_listing() {
+    fn transfer_command_capability_paging() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         assert_eq!(
@@ -1947,7 +1948,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_framing_follows_the_session_tag() {
+    fn session_tag_response_framing() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -1984,7 +1985,7 @@ mod tests {
     }
 
     #[test]
-    fn no_transfer_command_commits_nv_state() {
+    fn transfer_command_no_nv_commit() {
         let clock = clock();
         let commits = std::cell::Cell::new(0usize);
         let mut runtime = runtime_at("RSA_READY", &clock);
@@ -2007,7 +2008,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_asymmetric_seed_operation_runs_the_lazy_self_test() {
+    fn first_asymmetric_seed_lazy_self_test() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         let (_key, blob, seed) = duplicated("DUP_RSA");
@@ -2028,7 +2029,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_transfer_leaves_the_generator_and_the_object_slots_untouched() {
+    fn rejected_transfer_generator_slots_unchanged() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -2061,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_duplicate_advances_the_generator_and_keeps_its_source() {
+    fn successful_duplicate_generator_advance_source_preserved() {
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
         open_dup_policy(&mut runtime, &clock);
@@ -2081,7 +2082,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_parent_duplicate_draws_only_the_response_nonce() {
+    fn null_parent_duplicate_nonce_only_draw() {
         use crate::library::tpm2::random::{finish_live_rand, take_live_rand};
         let clock = clock();
         let mut runtime = runtime_at("RSA_READY", &clock);
@@ -2101,7 +2102,7 @@ mod tests {
     }
 
     #[test]
-    fn transfer_command_mutations_do_not_panic() {
+    fn transfer_command_mutation_panic_safety() {
         let clock = clock();
         let (_key, blob, seed) = duplicated("DUP_RSA");
         let public = child_public();

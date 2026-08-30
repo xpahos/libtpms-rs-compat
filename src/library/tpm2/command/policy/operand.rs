@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (code, record, expected, handles) in [
             (CC_POLICY_NV, "CCATTR_0149", 0x0600_0149u32, 3usize),
             (CC_POLICY_COUNTER_TIMER, "CCATTR_016D", 0x0200_016d, 1),
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_nv_compares_the_stored_bytes_like_the_reference() {
+    fn policy_nv_stored_byte_comparison_reference_parity() {
         let mut runtime = restored("OPERAND_NV");
         assert_eq!(
             nv(
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn every_comparison_operator_matches_the_oracle() {
+    fn comparison_operator_oracle_parity() {
         for (record, operand_b, offset, operation) in [
             ("PNV_OP_EQ", vec![0x00, 0x00, 0x00, 0x2a], 0u16, 0x0000u16),
             ("PNV_OP_NEQ", vec![0x00, 0x00, 0x00, 0x2b], 0, 0x0001),
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_nv_rejects_out_of_range_reads_and_bad_operators() {
+    fn policy_nv_range_and_operator_rejection() {
         let mut runtime = restored("OPERAND_NV");
         for (record, operand_b, offset, operation) in [
             ("PNV_OFFSET_PAST_END", vec![0x00], 9u16, 0x0000u16),
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_policy_nv_skips_the_comparison_entirely() {
+    fn trial_policy_nv_comparison_skip() {
         let mut runtime = restored("OPERAND_NV_TRIAL");
         assert_eq!(
             nv(
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_counter_timer_bounds_the_offset_against_the_time_structure() {
+    fn policy_counter_timer_offset_time_structure_bound() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             session_only(
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_counter_timer_reads_the_marshaled_time_structure() {
+    fn policy_counter_timer_marshaled_time_structure_read() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             session_only(
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn the_marshaled_time_structure_is_the_upstream_size_and_layout() {
+    fn marshaled_time_structure_upstream_size_and_layout() {
         let runtime = restored("POLICY_FRESH");
         let info = marshaled_time_info(&runtime).expect("the time structure marshals");
         assert_eq!(info.len(), TIME_INFO_SIZE);
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_counter_timer_still_bounds_the_offset() {
+    fn trial_counter_timer_offset_bound() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(
             session_only(
@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_capability_compares_the_marshaled_property() {
+    fn policy_capability_marshaled_property_comparison() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             session_only(
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_capability_rejects_unsupported_capabilities_and_properties() {
+    fn policy_capability_unsupported_capability_property_rejection() {
         let mut runtime = restored("POLICY_FRESH");
         for (record, capability, property) in [
             ("PCAP_UNKNOWN_CAPABILITY", 0x0000_00ffu32, 0u32),
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_capability_property_only_satisfies_not_equal() {
+    fn absent_capability_property_not_equal_only() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             session_only(
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_capability_selector_answers_like_the_reference() {
+    fn supported_capability_selector_reference_match() {
         let mut runtime = restored("POLICY_FRESH");
         for (record, operand_b, operation, capability, property) in [
             (
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_capability_assertion_never_reads_the_capability() {
+    fn trial_capability_assertion_no_capability_read() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(
             session_only(
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_operand_command_leaves_the_session_untouched() {
+    fn failed_operand_command_session_unchanged() {
         let mut runtime = restored("OPERAND_NV");
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         for response in [
@@ -696,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = command(
             CC_POLICY_NV,
             &[NV_INDEX, NV_INDEX, POLICY_SESSION_0],

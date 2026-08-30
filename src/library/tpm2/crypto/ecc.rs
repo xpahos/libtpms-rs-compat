@@ -515,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compiled_curve_identifier_is_recognized() {
+    fn compiled_curve_identifier_recognition() {
         for curve_id in [
             TPM_ECC_NIST_P192,
             TPM_ECC_NIST_P224,
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn uncompiled_curve_identifiers_have_no_parameters() {
+    fn uncompiled_curve_no_parameters() {
         for curve_id in [0x0000u16, 0x0006, 0x000f, 0x0012, 0x0021, 0xffff] {
             assert!(!is_compiled_curve(curve_id), "curve {curve_id:#06x}");
             assert!(curve_parameters(curve_id).is_none());
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parameters_carry_the_curve_identifier_they_were_selected_with() {
+    fn parameter_curve_identifier_round_trip() {
         for entry in ECC_CURVES {
             let curve = curve_parameters(entry.curve_id).expect("a compiled curve");
             assert_eq!(curve.curve_id, entry.curve_id);
@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_key_sizes_match_the_vendored_metadata() {
+    fn key_size_vendored_metadata_match() {
         assert_eq!(curve_key_size_bits(TPM_ECC_NIST_P192), Some(192));
         assert_eq!(curve_key_size_bits(TPM_ECC_NIST_P224), Some(224));
         assert_eq!(curve_key_size_bits(TPM_ECC_NIST_P256), Some(256));
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hex_parser_handles_odd_length_and_whitespace() {
+    fn hex_parser_odd_length_whitespace_tolerance() {
         assert_eq!(parse_hex("03"), BigUint::from_u64(3));
         assert_eq!(parse_hex("101"), BigUint::from_u64(0x101));
         assert_eq!(parse_hex("00"), BigUint::zero());
@@ -578,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn every_generator_lies_on_its_own_curve() {
+    fn generator_own_curve_membership() {
         for entry in ECC_CURVES {
             let curve = curve_parameters(entry.curve_id).expect("a compiled curve");
             assert!(
@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn every_curve_prime_and_order_have_the_advertised_bit_length() {
+    fn curve_prime_and_order_bit_length() {
         for entry in ECC_CURVES {
             let curve = curve_parameters(entry.curve_id).expect("a compiled curve");
             assert_eq!(
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn multiplying_the_generator_by_the_order_reaches_infinity() {
+    fn generator_order_multiplication_infinity() {
         for curve_id in [TPM_ECC_NIST_P256, TPM_ECC_NIST_P384] {
             let curve = curve_parameters(curve_id).expect("a compiled curve");
             assert_eq!(
@@ -616,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn multiplying_the_generator_by_one_returns_the_generator() {
+    fn generator_times_one_identity() {
         for entry in ECC_CURVES {
             let curve = curve_parameters(entry.curve_id).expect("a compiled curve");
             let (x, y) = curve
@@ -628,13 +628,13 @@ mod tests {
     }
 
     #[test]
-    fn multiplying_by_zero_has_no_point() {
+    fn zero_multiplication_no_point() {
         let curve = curve_parameters(TPM_ECC_NIST_P256).unwrap();
         assert_eq!(curve.multiply_generator(&BigUint::zero()), None);
     }
 
     #[test]
-    fn small_multiples_of_the_generator_stay_on_the_curve() {
+    fn small_generator_multiple_curve_membership() {
         let curve = curve_parameters(TPM_ECC_NIST_P384).unwrap();
         for scalar in 1..12u64 {
             let (x, y) = curve
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sum_of_two_multiplications_agrees_with_repeated_addition() {
+    fn multiplication_sum_repeated_addition_match() {
         let curve = curve_parameters(TPM_ECC_NIST_P256).expect("a compiled curve");
         let (qx, qy) = curve
             .multiply_generator(&BigUint::from_u64(7))
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_scalar_drops_its_term_from_the_sum() {
+    fn zero_scalar_term_drop() {
         let curve = curve_parameters(TPM_ECC_NIST_P256).expect("a compiled curve");
         let (qx, qy) = curve
             .multiply_generator(&BigUint::from_u64(9))
@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sum_that_reaches_infinity_has_no_affine_point() {
+    fn infinity_sum_no_affine_point() {
         let curve = curve_parameters(TPM_ECC_NIST_P256).expect("a compiled curve");
         let (qx, qy) = curve
             .multiply_generator(&BigUint::from_u64(1))
@@ -706,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn the_p256_double_of_the_generator_matches_the_published_value() {
+    fn p256_generator_double_published_value_match() {
         let curve = curve_parameters(TPM_ECC_NIST_P256).unwrap();
         let (x, y) = curve
             .multiply_generator(&BigUint::from_u64(2))
@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn the_p384_double_of_the_generator_matches_the_published_value() {
+    fn p384_generator_double_published_value_match() {
         let curve = curve_parameters(TPM_ECC_NIST_P384).unwrap();
         let (x, y) = curve
             .multiply_generator(&BigUint::from_u64(2))
@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_key_lies_on_its_curve_and_matches_its_scalar() {
+    fn generated_key_on_curve_scalar_match() {
         for curve_id in [TPM_ECC_NIST_P256, TPM_ECC_NIST_P384, TPM_ECC_NIST_P521] {
             let key = generate_ecc_key(curve_id, &mut rand(b"key")).expect("a key");
             let curve = curve_parameters(curve_id).unwrap();
@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_key_is_deterministic_in_the_generator_state() {
+    fn generated_key_determinism() {
         let first = generate_ecc_key(TPM_ECC_NIST_P384, &mut rand(b"same")).expect("a key");
         let second = generate_ecc_key(TPM_ECC_NIST_P384, &mut rand(b"same")).expect("a key");
         assert_eq!(first.x, second.x);
@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn a_different_generator_state_produces_a_different_key() {
+    fn generator_state_key_distinction() {
         let first = generate_ecc_key(TPM_ECC_NIST_P384, &mut rand(b"one")).expect("a key");
         let second = generate_ecc_key(TPM_ECC_NIST_P384, &mut rand(b"two")).expect("a key");
         assert_ne!(first.private, second.private);
@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_curve_has_no_key() {
+    fn unsupported_curve_no_key() {
         assert_eq!(
             generate_ecc_key(0x0007, &mut rand(b"bad")).err(),
             Some(EccKeyError::Curve)
@@ -787,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn the_private_scalar_draws_sixty_four_extra_bits() {
+    fn private_scalar_sixty_four_extra_bits_draw() {
         let curve = curve_parameters(TPM_ECC_NIST_P384).unwrap();
         let mut scalar_state = rand(b"extra");
         let scalar = generate_private_scalar(&curve, &mut scalar_state).unwrap();

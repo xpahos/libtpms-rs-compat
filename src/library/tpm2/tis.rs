@@ -197,6 +197,7 @@ pub(in crate::library) fn established_reset(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -211,6 +212,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -261,7 +263,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -287,7 +289,7 @@ mod tests {
         );
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         startup_clear(&mut runtime);
         runtime
@@ -311,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_start_sets_established_and_reserves_a_transient_slot() {
+    fn hash_start_established_and_transient_slot_reservation() {
         let mut runtime = manufactured_runtime();
         assert!(!runtime.tpm_established);
         assert_eq!(hash_start(&mut runtime), TPM_SUCCESS);
@@ -328,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_start_with_full_slots_flushes_the_first_transient_object() {
+    fn hash_start_full_slots_first_transient_flush() {
         let mut runtime = manufactured_runtime();
         for object in &mut runtime.live.objects {
             object.attributes = ATTR_OCCUPIED;
@@ -343,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_data_before_start_is_a_successful_noop() {
+    fn hash_data_before_start_noop_success() {
         let mut runtime = manufactured_runtime();
         assert_eq!(hash_data(&mut runtime, b"xy"), TPM_SUCCESS);
         assert!(!runtime.tpm_established);
@@ -357,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_end_before_start_is_a_successful_noop() {
+    fn hash_end_before_start_noop_success() {
         let mut runtime = manufactured_runtime();
         assert_eq!(hash_end(&mut runtime), TPM_SUCCESS);
         assert!(!runtime.live.drtm_pre_startup);
@@ -365,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_startup_hash_end_completes_the_hcrtm_and_startup_preserves_pcr0() {
+    fn pre_startup_hcrtm_completion_and_pcr0_preservation() {
         let mut runtime = manufactured_runtime();
         assert_eq!(hash_start(&mut runtime), TPM_SUCCESS);
         assert_eq!(hash_data(&mut runtime, b"a"), TPM_SUCCESS);
@@ -403,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_hcrtm_sequence_extends_the_empty_digest() {
+    fn empty_hcrtm_sequence_empty_digest_extension() {
         let mut runtime = manufactured_runtime();
         assert_eq!(hash_start(&mut runtime), TPM_SUCCESS);
         assert_eq!(hash_end(&mut runtime), TPM_SUCCESS);
@@ -414,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_hash_start_replaces_the_previous_sequence() {
+    fn repeated_hash_start_sequence_replacement() {
         let mut runtime = manufactured_runtime();
         assert_eq!(hash_start(&mut runtime), TPM_SUCCESS);
         assert_eq!(hash_data(&mut runtime, b"zz"), TPM_SUCCESS);
@@ -429,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn hashing_is_incremental_across_data_calls() {
+    fn incremental_hash_across_data_calls() {
         let mut one_shot = manufactured_runtime();
         assert_eq!(hash_start(&mut one_shot), TPM_SUCCESS);
         assert_eq!(hash_data(&mut one_shot, b"abc"), TPM_SUCCESS);
@@ -451,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn post_startup_hash_end_resets_dynamics_extends_drtm_and_counts() {
+    fn post_startup_hash_end_dynamics_drtm_counts() {
         let mut runtime = started_runtime();
         let pcr16_marker = vec![0xaa; 32];
         runtime.live.pcrs[16].banks[SHA256_SLOT] = Some(pcr16_marker.clone());
@@ -496,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn any_command_aborts_the_inflight_sequence() {
+    fn command_inflight_sequence_abort() {
         let mut runtime = started_runtime();
         let pcr17_before = pcr_bank(&runtime, DRTM_PCR, SHA256_SLOT).cloned();
         assert_eq!(hash_start(&mut runtime), TPM_SUCCESS);
@@ -517,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn established_reset_localities_follow_the_oracle() {
+    fn established_reset_locality_oracle_parity() {
         let mut runtime = started_runtime();
         assert_eq!(hash_start(&mut runtime), TPM_SUCCESS);
         for locality in [0u32, 1, 2, 5, 31, 255] {

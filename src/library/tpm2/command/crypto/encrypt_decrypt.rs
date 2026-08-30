@@ -246,7 +246,7 @@ pub(in crate::library::tpm2) mod replay {
     pub(in crate::library::tpm2) fn runtime_at(
         snapshot: &str,
         clock: &SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         runtime_from(
             vector(&format!("PERMALL_{snapshot}")),
             vector(&format!("VOLATILE_{snapshot}")),
@@ -506,12 +506,12 @@ mod tests {
         failed_tries(&reference)
     }
 
-    fn base(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn base(clock: &SteppingClock) -> Tpm2Runtime {
         runtime_at("BASE", clock)
     }
 
     #[test]
-    fn the_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = registry::find(CC_ENCRYPT_DECRYPT).expect("registered");
         assert_eq!(descriptor.attributes, 0x0200_0164);
         assert_eq!(descriptor.decrypt_size, 0, "decrypt is not a sized buffer");
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(
@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_are_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn every_algorithm_and_mode_round_trips_through_both_layouts() {
+    fn algorithm_and_mode_dual_layout_round_trip() {
         for case in cases() {
             let label = case.label;
             let aligned = matches!(case.mode, TPM_ALG_CBC | TPM_ALG_ECB);
@@ -792,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_a_mode_needs_an_explicit_one() {
+    fn modeless_key_explicit_mode_requirement() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(
@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_attributes_and_type_decide_the_operation() {
+    fn object_attributes_operation_selection() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(
@@ -1002,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_requests_report_the_indexed_errors() {
+    fn malformed_request_indexed_error_reporting() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(
@@ -1188,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn a_da_protected_key_counts_failed_authorizations() {
+    fn da_protected_key_failed_auth_count() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(
@@ -1235,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_the_extra_modes_rejects_them() {
+    fn profile_extra_mode_rejection() {
         let clock = fresh_clock();
         let mut runtime = runtime_at("MINIMAL_BASE", &clock);
         exec(
@@ -1359,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_encryption_follows_each_command_layout() {
+    fn parameter_encryption_command_layout_conformance() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(
@@ -1496,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_symmetric_self_test_changes_on_success() {
+    fn success_self_test_change_symmetric_only() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(
@@ -1544,7 +1544,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = fresh_clock();
         let mut runtime = base(&clock);
         exec(

@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0176");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         let descriptor = find(0x0000_0176).expect("a registered command");
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             start(&mut runtime, &Request::default()),
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn each_session_type_takes_the_next_slot_and_answers_the_oracle_nonce() {
+    fn session_type_slot_order_and_oracle_nonce() {
         let mut runtime = restored("READY");
         for (record, session_type) in [
             ("SAS_HMAC_UNBOUND", TPM_SE_HMAC),
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_sessions_are_reported_through_capability_queries() {
+    fn loaded_session_capability_reporting() {
         let mut runtime = restored("THREE_SESSIONS");
         assert_eq!(
             dispatch_bytes(
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn a_freed_slot_is_handed_to_the_next_session() {
+    fn freed_slot_reuse() {
         let mut runtime = restored("THREE_SESSIONS");
         assert_eq!(
             dispatch_bytes(
@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn every_enabled_session_hash_matches_the_oracle() {
+    fn enabled_session_hash_oracle_parity() {
         for (record, auth_hash, size) in [
             ("SAS_SHA1", ALG_SHA1, 20usize),
             ("SAS_SHA256_LONG_NONCE", ALG_SHA256, 32),
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn the_symmetric_parameter_is_validated_like_the_reference() {
+    fn symmetric_parameter_reference_validation() {
         for (record, symmetric) in [
             ("SAS_SYM_AES_CFB", sym_aes(MODE_CFB)),
             ("SAS_SYM_XOR", sym_xor(ALG_SHA256)),
@@ -626,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_inputs_match_the_oracle() {
+    fn rejected_input_oracle_parity() {
         for (record, request) in [
             (
                 "SAS_NONCE_TOO_SHORT",
@@ -742,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_requests_match_the_oracle() {
+    fn truncated_request_oracle_parity() {
         let mut runtime = restored("READY");
         assert_eq!(
             dispatch_bytes(&mut runtime, &command(CC_START_AUTH_SESSION, &[], &[], &[])),
@@ -772,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_sessions_match_the_oracle_for_every_permanent_entity() {
+    fn bound_session_permanent_entity_oracle_parity() {
         for (record, bind) in [
             ("SAS_BOUND_OWNER", 0x4000_0001u32),
             ("SAS_BOUND_LOCKOUT", 0x4000_000a),
@@ -792,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bound_hmac_session_records_the_bind_name_and_da_state() {
+    fn bound_hmac_session_bind_name_and_da_record() {
         let mut runtime = restored("READY");
         let request = Request {
             bind: 0x4000_0001,
@@ -817,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lockout_bound_session_is_marked_lockout_bound() {
+    fn lockout_bound_session_marking() {
         let mut runtime = restored("READY");
         let request = Request {
             bind: 0x4000_000a,
@@ -830,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_bound_session_has_no_bound_entity_and_no_session_key() {
+    fn null_bind_no_bound_entity_no_session_key() {
         let mut runtime = restored("READY");
         assert_eq!(
             start(&mut runtime, &Request::default()),
@@ -843,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_and_trial_sessions_are_never_bound_but_stay_da_bound() {
+    fn policy_and_trial_sessions_unbound_da_bound() {
         for (record, session_type, expected) in [
             (
                 "SAS_POLICY_BOUND_OWNER",
@@ -875,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_session_records_the_start_time_and_epoch() {
+    fn policy_session_start_time_and_epoch_record() {
         let mut runtime = restored("READY");
         let request = Request {
             session_type: TPM_SE_POLICY,
@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn salted_sessions_match_the_oracle() {
+    fn salted_session_oracle_parity() {
         for (snapshot, record, salt) in [
             ("RSA_KEY", "SAS_SALTED_RSA", SALT_RSA),
             ("ECC_KEY", "SAS_SALTED_ECC", SALT_ECC),
@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn a_salted_and_bound_session_concatenates_the_auth_value_and_the_salt() {
+    fn salted_bound_session_auth_salt_concatenation() {
         let mut runtime = restored("RSA_KEY");
         let request = Request {
             tpm_key: 0x8000_0000,
@@ -934,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pending_oaep_self_test_is_consumed_by_the_first_salted_rsa_session() {
+    fn first_salted_rsa_session_oaep_self_test_consumption() {
         let mut runtime = restored("RSA_KEY");
         assert!(runtime.self_test.oaep_pending);
         let request = Request {
@@ -984,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_oaep_self_test_enters_failure_mode_and_keeps_the_test_pending() {
+    fn oaep_self_test_failure_mode_pending_retention() {
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::rsa_vectors::PaddedRsaSelfTestStage;
 
@@ -1055,7 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_oaep_self_test_exercises_the_known_answer_before_clearing_the_flag() {
+    fn oaep_self_test_known_answer_before_flag_clear() {
         use core::sync::atomic::{AtomicUsize, Ordering};
         static CALLS: AtomicUsize = AtomicUsize::new(0);
         fn counting_runner(seed: &[u8]) -> Result<(), PaddedRsaSelfTestStage> {
@@ -1080,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_salt_size_runs_no_self_test() {
+    fn rejected_salt_size_no_self_test() {
         let mut runtime = restored("RSA_KEY");
         assert_eq!(
             start(
@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_salts_are_rejected_like_the_reference() {
+    fn malformed_salt_reference_rejection() {
         let mut runtime = restored("RSA_KEY");
         assert_eq!(
             start(
@@ -1143,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_to_a_loaded_object_uses_its_name() {
+    fn loaded_object_bind_name_usage() {
         let mut runtime = restored("RSA_KEY");
         let request = Request {
             bind: 0x8000_0000,
@@ -1191,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_while_reading_the_policy_epoch_releases_the_slot() {
+    fn policy_epoch_read_failure_slot_release() {
         let mut runtime = restored("READY");
         let state = runtime.state.take();
         let nonce = nonce(16);
@@ -1210,7 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_during_nonce_generation_releases_the_slot() {
+    fn nonce_generation_failure_slot_release() {
         let mut runtime = restored("READY");
         let state = runtime.state.take();
         let nonce = nonce(16);
@@ -1228,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_during_session_key_derivation_releases_the_slot_but_keeps_the_drbg() {
+    fn session_key_derivation_failure_slot_release_drbg_retention() {
         let mut runtime = restored("READY");
         let state_clear = runtime.live.state_clear.take();
         let drbg_before = runtime.live.orderly.drbg_state.clone();
@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_during_bound_entity_derivation_releases_the_slot() {
+    fn bound_entity_derivation_failure_slot_release() {
         use crate::library::tpm2::persistent::OwnedUserNvramEntry;
         let mut runtime = restored("POLICY_NV");
         for entry in &mut runtime
@@ -1275,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn a_released_allocation_restores_every_reserved_field() {
+    fn released_allocation_field_restoration() {
         use crate::library::tpm2::session::{allocate_session, release_session};
         let mut runtime = restored("READY");
         let allocated = allocate_session(&mut runtime.live).expect("a free slot");
@@ -1290,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_session_table_refuses_a_new_allocation() {
+    fn full_session_table_allocation_rejection() {
         use crate::library::tpm2::session::allocate_session;
         let mut runtime = restored("THREE_SESSIONS");
         let context_before = context_array(&runtime);
@@ -1304,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn an_allocated_slot_is_never_occupied_without_a_session() {
+    fn allocated_slot_no_occupation_without_session() {
         let mut runtime = restored("READY");
         let state = runtime.state.take();
         let nonce = nonce(16);
@@ -1324,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_request_never_occupies_a_session_slot() {
+    fn rejected_request_no_slot_occupation() {
         let mut runtime = restored("READY");
         let free_before = runtime.live.free_session_slots;
         let context_before = context_array(&runtime);
@@ -1374,7 +1374,7 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_session_touches_no_permanent_or_orderly_nv_state() {
+    fn session_creation_permanent_orderly_nv_preservation() {
         use crate::library::tpm2::persistent::persistent_all_store;
         let mut runtime = restored("READY");
         let permanent = persistent_all_store(runtime.state()).expect("the state serializes");
@@ -1401,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn the_context_array_records_one_entry_per_created_session() {
+    fn context_array_entry_per_session() {
         let mut runtime = restored("READY");
         for index in 0..MAX_LOADED_SESSIONS {
             assert_eq!(response_code(&start(&mut runtime, &Request::default())), 0);
@@ -1414,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_stay_isolated_from_each_other() {
+    fn session_isolation() {
         let mut runtime = restored("READY");
         assert_eq!(response_code(&start(&mut runtime, &Request::default())), 0);
         assert_eq!(
@@ -1439,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = Request::default().bytes();
         for length in 10..valid.len() {
             for byte in [0x00u8, 0x01, 0x80, 0xff] {

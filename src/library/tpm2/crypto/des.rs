@@ -157,7 +157,7 @@ mod tests {
     ];
 
     #[test]
-    fn the_weak_key_table_matches_the_vendored_size_and_bounds() {
+    fn weak_key_table_vendored_bounds_match() {
         assert_eq!(DES_WEAK_KEYS.len(), 64);
         assert_eq!(DES_WEAK_KEYS[0], 0x0101_0101_0101_0101);
         assert_eq!(DES_WEAK_KEYS[1], 0xfefe_fefe_fefe_fefe);
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn every_weak_key_already_carries_odd_parity() {
+    fn weak_key_table_odd_parity() {
         for key in DES_WEAK_KEYS {
             assert_eq!(set_odd_byte_parity(key), key, "key {key:#018x}");
             assert!(is_weak_key(key));
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_parity_makes_every_byte_odd_and_never_zero() {
+    fn parity_setting_odd_nonzero_bytes() {
         for seed in [0u64, u64::MAX, 0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210] {
             let adjusted = set_odd_byte_parity(seed);
             for byte in adjusted.to_be_bytes() {
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_parity_only_touches_the_least_significant_bit_of_each_byte() {
+    fn parity_setting_least_significant_bit_only() {
         for seed in [0u64, 0x5555_5555_5555_5555, 0xaaaa_aaaa_aaaa_aaaa] {
             let adjusted = set_odd_byte_parity(seed);
             assert_eq!(adjusted & !PARITY_MASK, seed & !PARITY_MASK, "{seed:#018x}");
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_parity_is_idempotent() {
+    fn parity_setting_idempotence() {
         for seed in [0u64, 1, 0x0f0f_0f0f_0f0f_0f0f, u64::MAX] {
             let once = set_odd_byte_parity(seed);
             assert_eq!(set_odd_byte_parity(once), once);
@@ -200,13 +200,13 @@ mod tests {
     }
 
     #[test]
-    fn a_well_formed_two_key_and_three_key_value_validates() {
+    fn well_formed_two_and_three_key_validation() {
         assert!(validate_tdes_key(&TWO_KEY));
         assert!(validate_tdes_key(&THREE_KEY));
     }
 
     #[test]
-    fn only_sixteen_and_twenty_four_byte_keys_validate() {
+    fn sixteen_twenty_four_byte_key_validation_only() {
         for length in [0usize, 8, 9, 15, 17, 23, 25, 32] {
             let key = vec![0x01u8; length];
             assert!(!validate_tdes_key(&key), "length {length}");
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn a_weak_component_in_any_position_is_rejected() {
+    fn weak_component_any_position_rejection() {
         for position in 0..3 {
             let mut key = THREE_KEY;
             key[position * 8..(position + 1) * 8].copy_from_slice(&DES_WEAK_KEYS[0].to_be_bytes());
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_adjacent_components_are_rejected() {
+    fn adjacent_component_repeat_rejection() {
         let mut key = TWO_KEY;
         key.copy_within(0..8, 8);
         assert!(!validate_tdes_key(&key), "K1 == K2");
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_first_and_third_component_is_accepted_like_upstream() {
+    fn first_third_component_repeat_acceptance() {
         let mut key = THREE_KEY;
         key.copy_within(0..8, 16);
         assert!(
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn components_are_compared_after_parity_normalization() {
+    fn component_comparison_after_parity_normalization() {
         let mut key = TWO_KEY;
         key[..8].copy_from_slice(&[0x00; 8]);
         assert!(
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_odd_parity_validates_on_its_normalized_components() {
+    fn non_odd_parity_key_normalized_validation() {
         let mut key = TWO_KEY;
         for byte in &mut key {
             *byte &= 0xfe;
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_key_has_the_requested_length_and_odd_parity() {
+    fn generated_key_length_and_parity() {
         for key_bits in [128u16, 192] {
             let key = generate_tdes_key(key_bits, &mut rand(b"gen")).expect("a key");
             assert_eq!(key.len(), usize::from(key_bits) / 8);
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_key_is_deterministic_in_the_generator_state() {
+    fn generated_key_determinism() {
         let first = generate_tdes_key(192, &mut rand(b"same")).expect("a key");
         let second = generate_tdes_key(192, &mut rand(b"same")).expect("a key");
         assert_eq!(first, second);
@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn only_two_and_three_component_key_sizes_can_be_generated() {
+    fn two_three_component_key_generation_only() {
         for key_bits in [8u16, 64, 72, 256, 320] {
             assert_eq!(
                 generate_tdes_key(key_bits, &mut rand(b"size")).err(),
@@ -316,12 +316,12 @@ mod tests {
     }
 
     #[test]
-    fn the_generation_retry_budget_matches_the_rsa_prime_search() {
+    fn generation_retry_budget_rsa_prime_match() {
         assert_eq!(MAX_GENERATION_ATTEMPTS, 100);
     }
 
     #[test]
-    fn generation_draws_a_fresh_block_until_the_key_validates() {
+    fn generation_fresh_block_retry_until_valid_key() {
         let mut counting = rand(b"retry");
         let key = generate_tdes_key(128, &mut counting).expect("a key");
         let mut replay = rand(b"retry");

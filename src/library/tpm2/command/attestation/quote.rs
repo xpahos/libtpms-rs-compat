@@ -115,7 +115,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn quote_runtime() -> Box<Tpm2Runtime> {
+    fn quote_runtime() -> Tpm2Runtime {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0158");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_QUOTE, 0x0000_0158);
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_selection_quotes_the_empty_digest_like_the_oracle() {
+    fn empty_selection_empty_digest_oracle_match() {
         assert_quote(
             "QUOTE_EMPTY_SELECTION",
             KEY0,
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_bank_selection_quotes_like_the_oracle() {
+    fn single_bank_selection_oracle_match() {
         assert_quote(
             "QUOTE_PCR0_SHA256",
             KEY0,
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn every_allocated_bank_may_be_quoted_at_once() {
+    fn full_bank_selection_quote_acceptance() {
         assert_quote(
             "QUOTE_ALL_BANKS",
             KEY0,
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn a_high_selection_bit_is_preserved_when_the_pcr_is_implemented() {
+    fn implemented_pcr_high_selection_bit_preservation() {
         assert_quote(
             "QUOTE_UNSELECTED_HIGH_PCR",
             KEY0,
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn extending_a_pcr_changes_the_quoted_digest() {
+    fn pcr_extension_quoted_digest_change() {
         let mut runtime = quote_runtime();
         let before = vector("QUOTE_BEFORE_EXTEND");
         replay_clock(&mut runtime, before);
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_signer_has_no_hash_to_quote_with() {
+    fn null_signer_no_hash_error() {
         assert_quote(
             "QUOTE_NULL_SIGNER",
             TPM_RH_NULL,
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scheme_hash_that_disagrees_with_the_key_is_rejected() {
+    fn scheme_hash_key_mismatch_rejection() {
         assert_quote(
             "QUOTE_SHA384_SCHEME",
             KEY0,
@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn the_selection_errors_match_the_oracle() {
+    fn selection_error_oracle_match() {
         let mut runtime = quote_runtime();
         for (record, selections, code) in [
             (
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = quote_runtime();
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn the_quoted_digest_is_the_hash_of_the_selected_pcr_values() {
+    fn quoted_digest_selected_pcr_hash() {
         use crate::library::tpm2::crypto::Hasher;
         let mut runtime = quote_runtime();
         let expected = vector("QUOTE_PCR0_SHA256");
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_quote_leaves_no_trace() {
+    fn failed_quote_no_state_change() {
         let mut runtime = quote_runtime();
         run_ok(
             &mut runtime,
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         full.extend_from_slice(&pcr_selection(&ALL_BANKS));

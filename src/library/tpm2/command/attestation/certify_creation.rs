@@ -150,7 +150,7 @@ mod tests {
     const TPM_ST_CREATION_TAG: u16 = 0x8021;
 
     #[track_caller]
-    fn created_primary() -> (Box<Tpm2Runtime>, Vec<u8>, Vec<u8>) {
+    fn created_primary() -> (Tpm2Runtime, Vec<u8>, Vec<u8>) {
         let mut runtime = ready_runtime();
         let response = run(
             &mut runtime,
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_014A");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_CERTIFY_CREATION, 0x0000_014a);
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn a_matching_ticket_certifies_the_creation_like_the_oracle() {
+    fn matching_ticket_certification_oracle_match() {
         assert_certify_creation("CERTIFY_CREATION_OK", KEY0, &QUALIFY, ALG_NULL);
         assert_certify_creation("CERTIFY_CREATION_EXPLICIT", KEY0, &QUALIFY, ALG_RSASSA);
         assert_certify_creation("CERTIFY_CREATION_NO_QUALIFYING", KEY0, &[], ALG_NULL);
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attested_data_carries_the_object_name_and_creation_hash() {
+    fn attested_data_object_name_creation_hash() {
         let (mut runtime, creation_hash, ticket) = created_primary();
         let expected = vector("CERTIFY_CREATION_OK");
         replay_clock(&mut runtime, expected);
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn an_altered_creation_hash_or_ticket_is_a_ticket_error() {
+    fn altered_hash_or_ticket_error() {
         let (mut runtime, creation_hash, ticket) = created_primary();
         let mut altered_hash = creation_hash.clone();
         altered_hash[0] ^= 0xff;
@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_from_another_hierarchy_does_not_verify() {
+    fn foreign_hierarchy_ticket_verification_failure() {
         let (mut runtime, creation_hash, ticket) = created_primary();
         let digest = &ticket[8..];
         for (record, hierarchy) in [
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_ticket_is_reported_against_the_ticket_parameter() {
+    fn malformed_ticket_parameter_error() {
         let (mut runtime, creation_hash, ticket) = created_primary();
         let digest = &ticket[8..];
         assert_eq!(
@@ -410,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parameter_limits_match_the_oracle() {
+    fn parameter_limits_oracle_match() {
         let (mut runtime, creation_hash, ticket) = created_primary();
         let oversized: Vec<u8> = (0..65).collect();
         assert_eq!(
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_certification_leaves_no_trace() {
+    fn rejected_certification_no_state_change() {
         let (mut runtime, creation_hash, ticket) = created_primary();
         run(
             &mut runtime,
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let (_, creation_hash, ticket) = created_primary();
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&tpm2b(&creation_hash));

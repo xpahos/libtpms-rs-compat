@@ -97,7 +97,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_derivation_key_is_the_upstream_ascending_pattern() {
+    fn derivation_key_upstream_ascending_pattern() {
         assert_eq!(DF_KEY[0], 0x00);
         assert_eq!(DF_KEY[31], 0x1f);
         assert!(
@@ -109,12 +109,12 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_input_has_no_additional_data_block() {
+    fn empty_input_no_additional_data_block() {
         assert_eq!(df_buffer(&[]), None, "upstream DfBuffer returns NULL");
     }
 
     #[test]
-    fn every_non_empty_input_produces_one_full_seed_block() {
+    fn non_empty_input_single_seed_block() {
         for length in [1usize, 4, 11, 12, 15, 16, 17, 47, 48, 127, 128] {
             let data: Vec<u8> = (0..length).map(|index| index as u8).collect();
             let derived = df_buffer(&data).expect("a non-empty input derives a block");
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn the_derivation_is_deterministic_and_input_sensitive() {
+    fn derivation_determinism_input_sensitivity() {
         let base: Vec<u8> = (0..48u8).collect();
         let derived = df_buffer(&base).expect("derives");
         assert_eq!(df_buffer(&base), Some(derived), "the same input repeats");
@@ -138,14 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_prefix_does_not_collide_with_a_shorter_input() {
+    fn zero_prefix_shorter_input_no_collision() {
         let short = df_buffer(&[0x11]).expect("derives");
         let padded = df_buffer(&[0x11, 0x00]).expect("derives");
         assert_ne!(short, padded);
     }
 
     #[test]
-    fn the_derived_block_matches_the_vendored_oracle() {
+    fn derived_block_vendored_oracle_match() {
         let record = stir_record(false);
         let mut seen: Vec<[u8; DRBG_SEED_SIZE]> = Vec::new();
         for (index, case) in record.cases.iter().enumerate() {
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn the_derivation_does_not_depend_on_the_continuous_test_mode() {
+    fn derivation_continuous_test_mode_independence() {
         let plain = stir_record(false);
         let continuous = stir_record(true);
         for (index, (left, right)) in plain.cases.iter().zip(&continuous.cases).enumerate() {

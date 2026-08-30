@@ -140,7 +140,7 @@ mod tests {
     const RC_PARAM2_HASH: u32 = 0x2c3;
 
     #[track_caller]
-    fn restored(snapshot: &str) -> Box<Tpm2Runtime> {
+    fn restored(snapshot: &str) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0177");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         assert_eq!(TPM_CC_VERIFY_SIGNATURE, TPM_CC);
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn the_key_handle_needs_no_authorization() {
+    fn key_handle_no_authorization_requirement() {
         let descriptor = find(TPM_CC_VERIFY_SIGNATURE).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 1);
         assert!(
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn signatures_produced_by_tpm2_sign_verify_against_their_own_key() {
+    fn tpm2_sign_output_own_key_verification() {
         for (snapshot, record, source, handle, hash_alg) in [
             (
                 "KEYS",
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn a_verified_ticket_is_deterministic() {
+    fn verified_ticket_determinism() {
         let signature = oracle_signature("SIGN_RSASSA");
         let mut runtime = restored("KEYS");
         let first = verify(&mut runtime, 0x8000_0000, &abc(TPM_ALG_SHA256), &signature);
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn every_hierarchy_proof_produces_its_own_ticket() {
+    fn per_hierarchy_proof_ticket_distinction() {
         for (record, source, handle) in [
             ("VERIFYSIG_ENDORSEMENT_OK", "SIGN_ENDORSEMENT", 0x8000_0000),
             ("VERIFYSIG_PLATFORM_OK", "SIGN_PLATFORM", 0x8000_0001),
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_below_the_runtime_minimum_size_is_rejected() {
+    fn undersized_key_rejection() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         let mut runtime = restored("HMAC_KEYS");
         runtime
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn the_key_size_policy_is_checked_before_the_signature_scheme() {
+    fn key_size_check_before_scheme_check() {
         let mut runtime = restored("HMAC_KEYS");
         runtime
             .state
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn an_uncompiled_curve_is_a_value_error() {
+    fn uncompiled_curve_value_error() {
         let ecdsa = oracle_signature("SIGN_ECDSA");
         let mut runtime = restored("KEYS");
         let slot = runtime.live.objects.get_mut(1).expect("a loaded key");
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_hierarchy_key_produces_the_empty_verified_ticket() {
+    fn null_hierarchy_key_empty_ticket() {
         let signature = oracle_signature("SIGN_NULL_HIERARCHY");
         assert_matches_oracle(
             "HIERARCHY_KEYS",
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_name_algorithm_produces_the_empty_verified_ticket() {
+    fn null_name_algorithm_empty_ticket() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         let mut runtime = restored("HMAC_KEYS");
         let slot = runtime.live.objects.get_mut(0).expect("a loaded key");
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ticket_follows_the_digest_and_the_key_name() {
+    fn ticket_digest_and_key_name_dependence() {
         let signature = oracle_signature("SIGN_PERSISTENT");
         assert_matches_oracle(
             "PERSISTENT",
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_key_verifies_a_transient_signature() {
+    fn persistent_key_transient_signature_success() {
         let signature = oracle_signature("SIGN_RSASSA");
         assert_matches_oracle(
             "PERSISTENT",
@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_digest_an_altered_signature_and_a_foreign_key_are_all_rejected() {
+    fn wrong_digest_altered_signature_foreign_key_rejection() {
         let rsassa = oracle_signature("SIGN_RSASSA");
         let ecdsa = oracle_signature("SIGN_ECDSA");
         for (record, handle, digest, signature) in [
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn the_other_asymmetric_schemes_reject_altered_signatures() {
+    fn other_asymmetric_scheme_altered_signature_rejection() {
         let ecschnorr = oracle_signature("SIGN_ECSCHNORR");
         let rsapss = oracle_signature("SIGN_RSAPSS");
         for (record, handle, digest, signature) in [
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signature_from_a_different_key_of_the_same_type_is_rejected() {
+    fn same_type_different_key_rejection() {
         let signature = oracle_signature("SIGN_ENDORSEMENT");
         assert_matches_oracle(
             "HIERARCHY_KEYS",
@@ -665,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn keyed_hash_rejections_match_the_oracle() {
+    fn keyed_hash_rejection_oracle_parity() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         for (record, handle, digest, signature) in [
             (
@@ -719,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn objects_without_the_sign_attribute_are_rejected_before_the_signature() {
+    fn missing_sign_attribute_rejection_before_signature_check() {
         for (snapshot, record, handle) in [
             ("MISC_KEYS", "VERIFYSIG_STORAGE_KEY", 0x8000_0000),
             ("MISC_KEYS", "VERIFYSIG_SYMCIPHER_KEY", 0x8000_0001),
@@ -750,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_only_keyed_hash_key_reports_a_handle_error() {
+    fn public_only_keyed_hash_handle_error() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         let mut runtime = restored("HMAC_KEYS");
         let slot = runtime.live.objects.get_mut(0).expect("a loaded key");
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_only_asymmetric_key_still_verifies() {
+    fn public_only_asymmetric_key_success() {
         let signature = oracle_signature("SIGN_RSASSA");
         let mut runtime = restored("KEYS");
         let slot = runtime.live.objects.get_mut(0).expect("a loaded key");
@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn every_malformed_parameter_matches_the_oracle() {
+    fn malformed_parameter_oracle_parity() {
         let long = [0u8; 0x181];
         for (record, payload) in [
             ("VERIFYSIG_EMPTY_PARAMETERS", Vec::new()),
@@ -882,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn every_malformed_ecc_signature_field_matches_the_oracle() {
+    fn malformed_ecc_signature_field_oracle_parity() {
         let order = [
             0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2,
@@ -939,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn every_rejected_handle_matches_the_oracle() {
+    fn rejected_handle_oracle_parity() {
         for (record, handle) in [
             ("VERIFYSIG_EMPTY_TRANSIENT", 0x8000_0000),
             ("VERIFYSIG_UNKNOWN_TRANSIENT", 0x8000_0005),
@@ -976,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn the_runtime_profile_forbids_sha1_hmac_verification() {
+    fn sha1_hmac_profile_rejection() {
         let signature = oracle_signature("SIGN_NO_SHA1_HMAC");
         assert_matches_oracle(
             "NO_SHA1_HMAC",
@@ -993,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    fn the_runtime_profile_forbids_sha1_ecc_verification_but_not_rsa() {
+    fn sha1_ecc_rejection_rsa_acceptance() {
         let ecc = oracle_signature("SIGN_NO_SHA1_VERIFY_ECC");
         assert_matches_oracle(
             "NO_SHA1_VERIFY",
@@ -1041,7 +1041,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn recording_runtime(snapshot: &str, runner: fn(PrimitiveTest) -> bool) -> Box<Tpm2Runtime> {
+    fn recording_runtime(snapshot: &str, runner: fn(PrimitiveTest) -> bool) -> Tpm2Runtime {
         let mut runtime = restored(snapshot);
         runtime.self_test.set_runner(runner);
         take_self_tests_run();
@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn verifying_an_hmac_signature_runs_the_pending_test_for_its_hash() {
+    fn hmac_verification_pending_hash_self_test_run() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         let mut runtime = recording_runtime("HMAC_KEYS", recording_runner);
         for algorithm in [TPM_ALG_SHA256, TPM_ALG_SHA512] {
@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_hmac_hash_self_test_stops_the_tpm_without_answering_a_ticket() {
+    fn failed_hmac_hash_self_test_failure_mode_no_ticket() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         let mut runtime = recording_runtime("HMAC_KEYS", recording_runner_failing_sha256);
 
@@ -1104,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_empty_ticket_runs_the_pending_context_integrity_test() {
+    fn non_empty_ticket_context_integrity_test_run() {
         let signature = oracle_signature("SIGN_RSASSA");
         let mut runtime = recording_runtime("KEYS", recording_runner);
         assert!(
@@ -1128,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_context_integrity_self_test_stops_the_tpm_without_answering_a_ticket() {
+    fn failed_context_integrity_self_test_failure_mode_no_ticket() {
         let signature = oracle_signature("SIGN_RSASSA");
         let mut runtime = recording_runtime("KEYS", recording_runner_failing_sha512);
 
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_ticket_path_runs_no_context_integrity_test() {
+    fn empty_ticket_no_context_integrity_test() {
         let signature = oracle_signature("SIGN_NULL_HIERARCHY");
         let mut runtime = recording_runtime("HIERARCHY_KEYS", recording_runner);
         let before = runtime.self_test.pending_algorithms();
@@ -1170,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_ticket_from_a_null_name_algorithm_runs_no_context_integrity_test() {
+    fn null_name_algorithm_empty_ticket_no_context_integrity_test() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         let mut runtime = recording_runtime("HMAC_KEYS", recording_runner);
         let slot = runtime.live.objects.get_mut(0).expect("a loaded key");
@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_command_runs_no_self_test_and_keeps_its_response_code() {
+    fn rejected_command_no_self_test_code_preservation() {
         for (snapshot, record, handle, digest, signature) in [
             (
                 "KEYS",
@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_mac_comparison_still_runs_its_hash_self_test_and_keeps_the_signature_code() {
+    fn failed_mac_comparison_self_test_run_signature_code_preservation() {
         let signature = oracle_signature("SIGN_HMAC_SHA256");
         let mut runtime = recording_runtime("HMAC_KEYS", recording_runner);
 
@@ -1279,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn verification_never_touches_the_signing_state() {
+    fn verification_signing_state_preservation() {
         let signature = oracle_signature("SIGN_RSASSA");
         let mut runtime = restored("KEYS");
         let before = fingerprint(&runtime);

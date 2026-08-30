@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn a_query_from_zero_returns_every_registry_command() {
+    fn zero_start_full_registry() {
         let page = implemented(0, 1000);
         assert_eq!(
             page.entries,
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_undefine_space_special_leads_the_registry_because_its_command_code_is_the_lowest() {
+    fn nv_undefine_space_special_lowest_code_first() {
         let page = implemented(0, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_UNDEFINE_SPACE_SPECIAL]);
         assert!(page.more_data);
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hierarchy_administration_commands_are_advertised_in_command_code_order() {
+    fn hierarchy_admin_command_code_order() {
         let page = implemented(0x0121, 1);
         assert_eq!(page.entries, [TPMA_CC_HIERARCHY_CONTROL]);
         assert!(page.more_data);
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn change_eps_follows_nv_undefine_space() {
+    fn change_eps_after_nv_undefine_space_order() {
         let page = implemented(0x0122, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_UNDEFINE_SPACE]);
         assert!(page.more_data);
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn hierarchy_change_auth_follows_clear_control() {
+    fn hierarchy_change_auth_after_clear_control_order() {
         let page = implemented(0x0128, 2);
         assert_eq!(
             page.entries,
@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_define_space_follows_hierarchy_change_auth() {
+    fn nv_define_space_after_hierarchy_change_auth_order() {
         let page = implemented(0x012a, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_DEFINE_SPACE]);
         assert!(page.more_data);
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn create_primary_follows_set_primary_policy() {
+    fn create_primary_after_set_primary_policy_order() {
         let page = implemented(0x012e, 1);
         assert_eq!(page.entries, [TPMA_CC_SET_PRIMARY_POLICY]);
         assert!(page.more_data);
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_global_write_lock_follows_create_primary() {
+    fn nv_global_write_lock_after_create_primary_order() {
         let page = implemented(0x0132, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_GLOBAL_WRITE_LOCK]);
         assert!(page.more_data);
@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nv_modification_commands_are_advertised_in_command_code_order() {
+    fn nv_modification_command_code_order() {
         let page = implemented(0x0134, 5);
         assert_eq!(
             page.entries,
@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_event_is_advertised_from_its_own_command_code() {
+    fn pcr_event_code_advertisement() {
         let page = implemented(0x013c, 1);
         assert_eq!(page.entries, [TPMA_CC_PCR_EVENT]);
         assert!(page.more_data);
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nv_read_commands_are_advertised_in_command_code_order() {
+    fn nv_read_command_code_order() {
         let page = implemented(0x014e, 6);
         assert_eq!(
             page.entries,
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn self_test_is_advertised_from_its_own_command_code() {
+    fn self_test_code_advertisement() {
         let page = implemented(0x0143, 1);
         assert_eq!(page.entries, [TPMA_CC_SELF_TEST]);
         assert!(page.more_data);
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_self_test_is_advertised_from_its_own_command_code() {
+    fn incremental_self_test_code_advertisement() {
         let page = implemented(0x0142, 1);
         assert_eq!(page.entries, [TPMA_CC_INCREMENTAL_SELF_TEST]);
         assert!(page.more_data);
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn every_registry_descriptor_is_advertised() {
+    fn full_registry_advertisement() {
         let page = implemented(0, 1000);
         assert_eq!(page.entries.len(), implemented_commands().count());
         for descriptor in implemented_commands() {
@@ -544,14 +544,14 @@ mod tests {
     }
 
     #[test]
-    fn the_starting_command_is_inclusive() {
+    fn inclusive_start_boundary() {
         let page = implemented(0x0145, 1);
         assert_eq!(page.entries, [TPMA_CC_SHUTDOWN]);
         assert!(page.more_data);
     }
 
     #[test]
-    fn a_start_between_entries_skips_to_the_next_command() {
+    fn between_entries_start_next_command() {
         let page = implemented(0x0166, 11);
         assert_eq!(
             page.entries,
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn stir_random_is_advertised_from_its_own_command_code() {
+    fn stir_random_code_advertisement() {
         let page = implemented(0x0146, 1);
         assert_eq!(page.entries, [TPMA_CC_STIR_RANDOM]);
         assert!(page.more_data);
@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn get_random_is_advertised_from_its_own_command_code() {
+    fn get_random_code_advertisement() {
         let page = implemented(0x017b, 1);
         assert_eq!(page.entries, [TPMA_CC_GET_RANDOM]);
         assert!(page.more_data);
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn get_test_result_is_advertised_from_its_own_command_code() {
+    fn get_test_result_code_advertisement() {
         let page = implemented(0x017c, 1);
         assert_eq!(page.entries, [TPMA_CC_GET_TEST_RESULT]);
         assert!(page.more_data);
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_is_advertised_from_its_own_command_code() {
+    fn hash_code_advertisement() {
         let page = implemented(0x017d, 1);
         assert_eq!(page.entries, [TPMA_CC_HASH]);
         assert!(page.more_data);
@@ -625,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn read_public_and_verify_signature_are_advertised_between_nv_read_public_and_get_capability() {
+    fn read_public_verify_signature_ordering() {
         let page = implemented(0x0169, 4);
         assert_eq!(
             page.entries,
@@ -664,14 +664,14 @@ mod tests {
     }
 
     #[test]
-    fn a_start_above_the_last_command_is_empty() {
+    fn start_above_last_command_empty_result() {
         let page = implemented(0x019d, 10);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
-    fn pcr_extend_is_advertised_from_its_own_command_code() {
+    fn pcr_extend_code_advertisement() {
         let page = implemented(0x0182, 16);
         assert_eq!(
             page.entries,
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_certify_is_advertised_last() {
+    fn nv_certify_last_advertisement() {
         let page = implemented(0x0184, 14);
         assert_eq!(
             page.entries,
@@ -727,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn count_zero_reports_more_data_only_when_entries_remain() {
+    fn count_zero_more_data_remaining_entries_only() {
         let page = implemented(0, 0);
         assert!(page.entries.is_empty());
         assert!(page.more_data);
@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_and_oversized_counts_report_more_data_correctly() {
+    fn exact_and_oversized_count_more_data_reporting() {
         let page = implemented(0, total_count());
         assert_eq!(page.entries.len(), advertised_from(0));
         assert!(!page.more_data);
@@ -760,14 +760,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_counts_have_no_vendor_commands() {
+    fn registry_zero_vendor_command_count() {
         assert_eq!(total_count(), advertised_from(0) as u32);
         assert_eq!(library_count(), advertised_from(0) as u32);
         assert_eq!(vendor_count(), 0);
     }
 
     #[test]
-    fn the_sequence_commands_are_advertised_with_their_reference_attributes() {
+    fn sequence_commands_reference_attributes() {
         let page = implemented(0, 1000);
         for (code, attributes) in [
             (0x0000_013eu32, TPMA_CC_SEQUENCE_COMPLETE),
@@ -785,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capacity_constant_matches_upstream() {
+    fn capacity_constant_upstream_match() {
         assert_eq!(MAX_CAP_CC, 254);
     }
 }

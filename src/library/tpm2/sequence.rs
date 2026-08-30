@@ -586,7 +586,7 @@ pub(in crate::library::tpm2) mod replay {
         permanent: &str,
         volatile: &str,
         clock: &SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(permanent))
             .expect("the oracle permanent state restores");
         attach_volatile_blob(
@@ -601,11 +601,11 @@ pub(in crate::library::tpm2) mod replay {
         runtime
     }
 
-    pub(in crate::library::tpm2) fn base_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2) fn base_runtime(clock: &SteppingClock) -> Tpm2Runtime {
         runtime_from("PERMALL_BASE", "VOLATILE_BASE", clock)
     }
 
-    pub(in crate::library::tpm2) fn minimal_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2) fn minimal_runtime(clock: &SteppingClock) -> Tpm2Runtime {
         runtime_from("PERMALL_MINIMAL_BASE", "VOLATILE_MINIMAL_BASE", clock)
     }
 
@@ -623,7 +623,7 @@ pub(in crate::library::tpm2) mod replay {
         permanent: &[u8],
         volatile: &[u8],
         clock: &SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         let mut runtime =
             restore_permanent_blob_for_test(permanent).expect("the saved permanent state restores");
         attach_volatile_blob(
@@ -652,6 +652,7 @@ pub(in crate::library::tpm2) mod replay {
             &input,
             clock,
             |_| Ok(()),
+            crate::library::cancel::Cancellation::disabled(),
         )
         .expect("the command processes")
     }
@@ -956,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hash_sequence_takes_the_first_free_slot() {
+    fn hash_sequence_first_free_slot() {
         let mut runtime = empty_state_runtime();
         let handle =
             create_hash_sequence(&mut runtime, TPM_ALG_SHA256, b"auth").expect("a free slot");
@@ -969,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn every_sequence_kind_is_recognised_by_its_own_handle() {
+    fn kind_handle_resolution() {
         let mut runtime = empty_state_runtime();
         let hash = create_hash_sequence(&mut runtime, TPM_ALG_SHA1, &[]).expect("a free slot");
         let hmac = create_mac_sequence(&mut runtime, &hmac_key(TPM_ALG_SHA256, b"key"), &[])
@@ -1010,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hash_sequence_digests_the_concatenated_updates() {
+    fn hash_sequence_concatenated_update_digest() {
         for &(hash_alg, _) in &COMPILED_HASHES {
             let mut runtime = empty_state_runtime();
             let handle = create_hash_sequence(&mut runtime, hash_alg, &[]).expect("a free slot");
@@ -1027,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cmac_sequence_matches_the_one_shot_mac() {
+    fn cmac_one_shot_mac_match() {
         const TPM_ALG_AES: u16 = 0x0006;
         const TPM_ALG_TDES: u16 = 0x0003;
         const TPM_ALG_CAMELLIA: u16 = 0x0026;
@@ -1066,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cmac_sequence_serializes_like_an_smac_state() {
+    fn cmac_smac_state_serialization() {
         const TPM_ALG_AES: u16 = 0x0006;
         let mut runtime = empty_state_runtime();
         let key = cmac_key(TPM_ALG_AES, &(0..16u8).collect::<Vec<u8>>());
@@ -1085,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_cmac_key_creates_no_sequence() {
+    fn unsupported_cmac_key_no_creation() {
         const TPM_ALG_AES: u16 = 0x0006;
         let mut runtime = empty_state_runtime();
         let key = MacKey::Cmac {
@@ -1108,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn an_event_sequence_produces_every_compiled_bank() {
+    fn event_sequence_all_compiled_banks() {
         let mut runtime = empty_state_runtime();
         let handle = create_event_sequence(&mut runtime, &[]).expect("a free slot");
         let slot = resolve_sequence_slot(&runtime, handle).expect("the sequence resolves");
@@ -1122,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn the_event_digest_order_follows_the_compiled_table() {
+    fn event_digest_compiled_table_order() {
         let mut runtime = empty_state_runtime();
         let handle = create_event_sequence(&mut runtime, &[]).expect("a free slot");
         let slot = resolve_sequence_slot(&runtime, handle).expect("the sequence resolves");
@@ -1138,7 +1139,7 @@ mod tests {
     }
 
     #[test]
-    fn a_released_slot_is_reused_by_the_next_sequence() {
+    fn released_slot_reuse() {
         let mut runtime = empty_state_runtime();
         let first = create_hash_sequence(&mut runtime, TPM_ALG_SHA256, &[]).expect("a free slot");
         let second = create_hash_sequence(&mut runtime, TPM_ALG_SHA256, &[]).expect("a free slot");
@@ -1151,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn the_evict_cleanup_only_removes_marked_slots() {
+    fn evict_cleanup_marked_slots_only() {
         let mut runtime = empty_state_runtime();
         let kept = create_hash_sequence(&mut runtime, TPM_ALG_SHA256, &[]).expect("a free slot");
         let dropped = create_hash_sequence(&mut runtime, TPM_ALG_SHA256, &[]).expect("a free slot");
@@ -1163,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_block_flags_start_clear_and_latch() {
+    fn first_block_flag_initial_clear_and_latch() {
         let mut runtime = empty_state_runtime();
         let handle = create_hash_sequence(&mut runtime, TPM_ALG_SHA256, &[]).expect("a free slot");
         let slot = resolve_sequence_slot(&runtime, handle).expect("the sequence resolves");
@@ -1177,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sequence_hash_algorithm_is_reported_for_every_kind() {
+    fn hash_algorithm_report_per_kind() {
         let mut runtime = empty_state_runtime();
         let hash = create_hash_sequence(&mut runtime, TPM_ALG_SHA384, &[]).expect("a free slot");
         let hmac = create_mac_sequence(&mut runtime, &hmac_key(TPM_ALG_SHA512, b"key"), &[])
@@ -1194,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_algorithm_never_creates_a_sequence() {
+    fn unknown_algorithm_no_creation() {
         let mut runtime = empty_state_runtime();
         assert_eq!(
             create_hash_sequence(&mut runtime, TPM_ALG_NULL, &[]),
@@ -1215,7 +1216,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_sequence_handle_never_resolves_as_a_sequence() {
+    fn non_sequence_handle_no_resolution() {
         let mut runtime = empty_state_runtime();
         runtime.live.objects[0].attributes = ATTR_OCCUPIED;
         assert!(resolve_sequence_slot(&runtime, TRANSIENT_FIRST).is_none());
@@ -1310,7 +1311,7 @@ mod failure_atomicity {
         assert_eq!(after.failure_mode, before.failure_mode, "the failure mode");
     }
 
-    fn started_hash_sequence(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn started_hash_sequence(clock: &SteppingClock) -> Tpm2Runtime {
         let mut runtime = base_runtime(clock);
         exec(
             &mut runtime,
@@ -1336,7 +1337,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn a_rejected_algorithm_never_allocates_a_slot() {
+    fn rejected_algorithm_no_slot_allocation() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         let before = snapshot(&runtime);
@@ -1350,7 +1351,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn an_exhausted_slot_array_leaves_every_sequence_intact() {
+    fn slot_exhaustion_sequence_preservation() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         for (label, hash_alg) in [
@@ -1376,7 +1377,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn a_self_test_failure_after_slot_selection_enters_failure_mode() {
+    fn post_slot_selection_self_test_failure_mode() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         runtime.self_test.set_runner(always_fails);
@@ -1392,7 +1393,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn an_unreadable_hash_state_fails_the_update_without_losing_the_sequence() {
+    fn unreadable_state_update_failure_sequence_preserved() {
         let clock = fresh_clock();
         let mut runtime = started_hash_sequence(&clock);
         corrupt_stored_state(&mut runtime, 0);
@@ -1407,7 +1408,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn an_unreadable_hash_state_fails_the_completion_without_releasing_the_handle() {
+    fn unreadable_state_completion_failure_handle_retained() {
         let clock = fresh_clock();
         let mut runtime = started_hash_sequence(&clock);
         corrupt_stored_state(&mut runtime, 0);
@@ -1422,7 +1423,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn an_unreadable_event_state_fails_before_any_bank_is_extended() {
+    fn unreadable_event_state_no_bank_extension() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -1463,7 +1464,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn a_later_unreadable_event_bank_leaves_the_earlier_banks_untouched() {
+    fn late_unreadable_event_bank_earlier_banks_unchanged() {
         for bank in [1usize, HASH_STATE_COUNT - 1] {
             let clock = fresh_clock();
             let mut runtime = base_runtime(&clock);
@@ -1510,7 +1511,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn an_unusable_pcr_bank_leaves_every_bank_and_the_sequence_alone() {
+    fn unusable_pcr_bank_no_mutation() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -1531,7 +1532,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn a_ticket_self_test_failure_keeps_the_sequence_and_enters_failure_mode() {
+    fn ticket_self_test_failure_mode_sequence_preserved() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         runtime.self_test = runtime.self_test.restarted();
@@ -1573,7 +1574,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn a_failed_completion_keeps_the_sequence_usable() {
+    fn failed_completion_sequence_usability() {
         let clock = fresh_clock();
         let mut runtime = started_hash_sequence(&clock);
         exec(
@@ -1608,7 +1609,7 @@ mod failure_atomicity {
     }
 
     #[test]
-    fn a_refused_authorization_leaves_the_sequence_and_the_da_counter_alone() {
+    fn refused_authorization_sequence_da_unchanged() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(

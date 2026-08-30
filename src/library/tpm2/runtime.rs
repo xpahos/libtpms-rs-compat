@@ -1,7 +1,5 @@
 use crate::types::TpmResult;
 
-use crate::library::cancel::CancelSignal;
-
 use super::buffer_size::DEFAULT_BUFFER_SIZE;
 use super::clock::{RuntimeClock, TpmTimer};
 use super::crypto::{EntropySource, os_entropy};
@@ -50,8 +48,6 @@ pub struct Tpm2Runtime {
     pub(super) drtm_sequence: Option<DrtmSequence>,
 
     pub(super) self_test: SelfTestState,
-
-    pub(in crate::library) cancel: CancelSignal,
 
     pub manufactured: bool,
     pub was_manufactured: bool,
@@ -159,20 +155,20 @@ pub(super) fn format_active_profile(profile: &ValidatedProfile) -> String {
 
 pub(super) fn commit_restored_state(
     candidate: OwnedPersistentState,
-) -> Result<Box<Tpm2Runtime>, TpmResult> {
+) -> Result<Tpm2Runtime, TpmResult> {
     let live = LiveState::power_on_with_state_reset(candidate.state_reset.as_ref());
     commit_state(candidate, false, live, true)
 }
 
 pub(super) fn commit_manufactured_state(
     candidate: OwnedPersistentState,
-) -> Result<Box<Tpm2Runtime>, TpmResult> {
+) -> Result<Tpm2Runtime, TpmResult> {
     commit_state(candidate, true, LiveState::power_on(), false)
 }
 
 pub(super) fn commit_first_boot_reloaded_state(
     candidate: OwnedPersistentState,
-) -> Result<Box<Tpm2Runtime>, TpmResult> {
+) -> Result<Tpm2Runtime, TpmResult> {
     let live = LiveState::power_on_with_state_reset(candidate.state_reset.as_ref());
     commit_state(candidate, true, live, true)
 }
@@ -182,7 +178,7 @@ fn commit_state(
     was_manufactured: bool,
     mut live: LiveState,
     shadow_pcr_pending: bool,
-) -> Result<Box<Tpm2Runtime>, TpmResult> {
+) -> Result<Tpm2Runtime, TpmResult> {
     let nv_memory = build_nv_image(&candidate)?;
 
     live.orderly = candidate.orderly.clone();
@@ -197,7 +193,7 @@ fn commit_state(
     let active_profile_algorithms = candidate.profile.algorithms.clone();
     let self_test = SelfTestState::for_profile(&candidate.profile);
 
-    Ok(Box::new(Tpm2Runtime {
+    Ok(Tpm2Runtime {
         state: Some(candidate),
         shadow_pcr_allocated,
         shadow_pcr_pending,
@@ -212,7 +208,6 @@ fn commit_state(
         active_profile_algorithms,
         drtm_sequence: None,
         self_test,
-        cancel: CancelSignal::detached(),
         manufactured: true,
         was_manufactured,
         startup_received: false,
@@ -228,11 +223,11 @@ fn commit_state(
         removed_session_associations: Vec::new(),
         buffer_size: DEFAULT_BUFFER_SIZE,
         nv_memory,
-    }))
+    })
 }
 
-pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
-    Box::new(Tpm2Runtime {
+pub(super) fn empty_state_runtime() -> Tpm2Runtime {
+    Tpm2Runtime {
         state: None,
         shadow_pcr_allocated: OwnedPcrAllocation {
             selections: Vec::new(),
@@ -249,7 +244,6 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         active_profile_algorithms: Vec::new(),
         drtm_sequence: None,
         self_test: SelfTestState::for_algorithms(DEFAULT_ALGORITHMS_PROFILE),
-        cancel: CancelSignal::detached(),
         manufactured: false,
         was_manufactured: false,
         startup_received: false,
@@ -265,10 +259,10 @@ pub(super) fn empty_state_runtime() -> Box<Tpm2Runtime> {
         removed_session_associations: Vec::new(),
         buffer_size: DEFAULT_BUFFER_SIZE,
         nv_memory: vec![0u8; NV_MEMORY_SIZE].into_boxed_slice(),
-    })
+    }
 }
 
-pub(super) fn manufactured_zeroed_nv_runtime(manufactured: &Tpm2Runtime) -> Box<Tpm2Runtime> {
+pub(super) fn manufactured_zeroed_nv_runtime(manufactured: &Tpm2Runtime) -> Tpm2Runtime {
     let mut runtime = empty_state_runtime();
     runtime.manufactured = true;
     runtime.was_manufactured = true;

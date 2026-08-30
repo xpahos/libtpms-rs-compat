@@ -1,6 +1,7 @@
 use super::header::{Command, Response, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS};
 use super::registry::{self, CommandDescriptor, HandleKind};
 use super::transaction;
+use crate::library::cancel::Cancellation;
 use crate::library::constants::{
     TPM_RC_AUTH_CONTEXT, TPM_RC_AUTH_MISSING, TPM_RC_COMMAND_CODE, TPM_RC_FAILURE, TPM_RC_HANDLE,
     TPM_RC_HIERARCHY, TPM_RC_INITIALIZE, TPM_RC_INSUFFICIENT, TPM_RC_OBJECT_MEMORY,
@@ -36,11 +37,13 @@ const MIN_AUTH_AREA_SIZE: usize = 9;
 pub(in crate::library::tpm2::command) struct CommandFrame<'a> {
     pub(in crate::library::tpm2::command) handles: Vec<u32>,
     pub(in crate::library::tpm2::command) parameters: &'a [u8],
+    pub(in crate::library::tpm2::command) cancellation: Cancellation<'a>,
 }
 
 pub(in crate::library::tpm2) fn dispatch(
     runtime: &mut Tpm2Runtime,
     command: &Command<'_>,
+    cancellation: Cancellation<'_>,
 ) -> Response {
     let Some(descriptor) = registry::find(command.command_code) else {
         return Response::error(TPM_RC_COMMAND_CODE);
@@ -49,7 +52,7 @@ pub(in crate::library::tpm2) fn dispatch(
         return Response::error(TPM_RC_INITIALIZE);
     }
     clear_session_associations(runtime);
-    let response = match run(runtime, descriptor, command) {
+    let response = match run(runtime, descriptor, command, cancellation) {
         Ok(response) => response,
         Err(code) => Response::error(code),
     };
@@ -61,6 +64,7 @@ fn run(
     runtime: &mut Tpm2Runtime,
     descriptor: &CommandDescriptor,
     command: &Command<'_>,
+    cancellation: Cancellation<'_>,
 ) -> Result<Response, TpmResult> {
     let (handles, rest) = parse_handles(descriptor, command.payload)?;
     check_load_status(runtime, descriptor, &handles)?;
@@ -78,6 +82,7 @@ fn run(
         let frame = CommandFrame {
             handles,
             parameters: rest,
+            cancellation,
         };
         let transaction = audit_cp_hash.as_ref().map(|_| transaction::begin(runtime));
         let (out_handles, mut out_parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
@@ -122,6 +127,7 @@ fn run(
     let frame = CommandFrame {
         handles,
         parameters: decrypted.as_deref().unwrap_or(parameters),
+        cancellation,
     };
     let transaction = transaction::begin(runtime);
     let (out_handles, mut out_parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
@@ -336,7 +342,7 @@ mod tests {
         let mut runtime = empty_state_runtime();
         let input = command(code);
         let parsed = parse_command(&input).expect("a valid header");
-        dispatch(&mut runtime, &parsed)
+        dispatch(&mut runtime, &parsed, Cancellation::disabled())
     }
 
     #[track_caller]
@@ -345,7 +351,7 @@ mod tests {
         runtime.startup_received = true;
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        dispatch(&mut runtime, &parsed).code()
+        dispatch(&mut runtime, &parsed, Cancellation::disabled()).code()
     }
 
     fn framed(tag: u16, code: u32, payload: &[u8]) -> Vec<u8> {
@@ -364,12 +370,12 @@ mod tests {
     const SIZE: u32 = 0x095;
 
     #[test]
-    fn unknown_command_code_answers_command_code() {
+    fn unknown_code_command_code_error() {
         assert_eq!(dispatch_code(0x2000_0000).code(), TPM_RC_COMMAND_CODE);
     }
 
     #[test]
-    fn a_command_the_reference_profile_disables_answers_command_code() {
+    fn profile_disabled_command_command_code_error() {
         for code in [
             0x0000_012f,
             0x0000_0141,
@@ -391,41 +397,50 @@ mod tests {
     }
 
     #[test]
-    fn startup_routes_to_the_startup_handler() {
+    fn startup_handler_routing() {
         use crate::library::constants::TPM_RC_FAILURE;
         let mut runtime = empty_state_runtime();
         let bytes = framed(0x8001, TPM_CC_STARTUP, &[0x00, 0x00]);
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
-        assert_eq!(dispatch(&mut runtime, &parsed).code(), TPM_RC_FAILURE);
+        assert_eq!(
+            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            TPM_RC_FAILURE
+        );
     }
 
     #[test]
-    fn started_tpm_rejects_startup_before_parsing_its_payload() {
+    fn started_tpm_startup_rejection_before_parse() {
         let mut runtime = empty_state_runtime();
         runtime.startup_received = true;
         let input = command(TPM_CC_STARTUP);
         let parsed = parse_command(&input).unwrap();
-        assert_eq!(dispatch(&mut runtime, &parsed).code(), TPM_RC_INITIALIZE);
+        assert_eq!(
+            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            TPM_RC_INITIALIZE
+        );
     }
 
     #[test]
-    fn unstarted_tpm_rejects_shutdown_before_parsing_its_payload() {
+    fn unstarted_tpm_shutdown_rejection_before_parse() {
         let mut runtime = empty_state_runtime();
         let input = command(TPM_CC_SHUTDOWN);
         let parsed = parse_command(&input).unwrap();
-        assert_eq!(dispatch(&mut runtime, &parsed).code(), TPM_RC_INITIALIZE);
+        assert_eq!(
+            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
+            TPM_RC_INITIALIZE
+        );
     }
 
     #[test]
-    fn shutdown_routes_to_the_shutdown_handler() {
+    fn shutdown_handler_routing() {
         use crate::library::constants::TPM_RC_FAILURE;
         let bytes = framed(0x8001, TPM_CC_SHUTDOWN, &[0x00, 0x00]);
         assert_eq!(started_dispatch(&bytes), TPM_RC_FAILURE);
     }
 
     #[test]
-    fn every_profile_disabled_command_matches_the_oracle() {
+    fn profile_disabled_command_oracle_match() {
         use crate::library::tpm2::command::attestation::builder::test_support::{
             ready_runtime, run,
         };
@@ -470,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_response_serializes_like_c() {
+    fn unsupported_response_c_serialization_parity() {
         let response = dispatch_code(0x2000_0000);
         assert_eq!(
             serialize_response(&response).unwrap(),
@@ -479,13 +494,13 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_commands_do_not_mutate_the_runtime() {
+    fn unsupported_command_runtime_preservation() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
         for code in [0x2000_0000, 0x0000_019f, 0xffff_ffff, 0x0000_0000] {
             let input = command(code);
             let parsed = parse_command(&input).unwrap();
-            let response = dispatch(&mut runtime, &parsed);
+            let response = dispatch(&mut runtime, &parsed, Cancellation::disabled());
             assert_eq!(response.code(), TPM_RC_COMMAND_CODE, "code {code:#x}");
             assert!(!runtime.manufactured);
             assert!(!runtime.was_manufactured);
@@ -497,19 +512,19 @@ mod tests {
     }
 
     #[test]
-    fn session_tagged_commands_take_the_same_path() {
+    fn session_tagged_command_path_parity() {
         let bytes = framed(0x8002, 0x0000_019f, &[0x00; 4]);
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).unwrap();
         let mut runtime = empty_state_runtime();
-        let response = dispatch(&mut runtime, &parsed);
+        let response = dispatch(&mut runtime, &parsed, Cancellation::disabled());
         assert_eq!(response.code(), TPM_RC_COMMAND_CODE);
         let bytes = serialize_response(&response).unwrap();
         assert_eq!(&bytes[..2], &TPM_ST_NO_SESSIONS.to_be_bytes());
     }
 
     #[test]
-    fn handles_are_extracted_before_the_authorization_size() {
+    fn handle_extraction_before_authorization_size() {
         for payload in [&[][..], &[0x00][..], &[0x00, 0x00, 0x00][..]] {
             assert_eq!(
                 started_dispatch(&framed(0x8002, TPM_CC_PCR_EXTEND, payload)),
@@ -520,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_first_handle_is_reported_before_the_authorization_area() {
+    fn invalid_first_handle_report_before_authorization_area() {
         let mut payload = 0x0000_0018u32.to_be_bytes().to_vec();
         payload.extend_from_slice(&0x20u32.to_be_bytes());
         assert_eq!(
@@ -531,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_without_handles_keep_their_authorization_layout() {
+    fn handleless_command_authorization_layout_preservation() {
         let mut payload = 0x09u32.to_be_bytes().to_vec();
         payload.extend_from_slice(&[0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]);
         payload.extend_from_slice(&[0x00; 12]);
@@ -544,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_size_is_insufficient() {
+    fn missing_authorization_size_insufficiency() {
         let payload = 0x0000_000au32.to_be_bytes().to_vec();
         assert_eq!(
             started_dispatch(&framed(0x8002, TPM_CC_PCR_EXTEND, &payload)),
@@ -562,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn an_authorization_size_below_the_minimum_is_a_size_error() {
+    fn authorization_size_below_minimum_size_error() {
         for auth_size in 0..9u32 {
             let mut payload = 0x0000_000au32.to_be_bytes().to_vec();
             payload.extend_from_slice(&auth_size.to_be_bytes());
@@ -576,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn an_authorization_size_beyond_the_command_is_a_size_error() {
+    fn authorization_size_beyond_command_size_error() {
         for auth_size in [10u32, 0x20, 0x1000, u32::MAX] {
             let mut payload = 0x0000_000au32.to_be_bytes().to_vec();
             payload.extend_from_slice(&auth_size.to_be_bytes());
@@ -590,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_without_sessions_that_needs_authorization_is_auth_missing() {
+    fn sessionless_command_auth_missing_error() {
         let mut payload = 0x0000_000au32.to_be_bytes().to_vec();
         payload.extend_from_slice(&0u32.to_be_bytes());
         assert_eq!(
@@ -600,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_area_mutations_do_not_panic() {
+    fn parameter_area_mutation_panic_safety() {
         let mut valid = 0x0000_000au32.to_be_bytes().to_vec();
         valid.extend_from_slice(&0x09u32.to_be_bytes());
         valid.extend_from_slice(&[0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -616,7 +631,11 @@ mod tests {
                         let parsed = parse_command(&input).expect("the header parses");
                         let mut runtime = empty_state_runtime();
                         runtime.startup_received = true;
-                        let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                        let _ = serialize_response(&dispatch(
+                            &mut runtime,
+                            &parsed,
+                            Cancellation::disabled(),
+                        ));
                     }
                 }
             }
@@ -648,7 +667,7 @@ mod tests {
             Ok(())
         }
 
-        fn manufactured_runtime() -> Box<Tpm2Runtime> {
+        fn manufactured_runtime() -> Tpm2Runtime {
             let profile = validate_user_profile(None).expect("the null profile validates");
             let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
             let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -659,10 +678,11 @@ mod tests {
         fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
             let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
             let parsed = parse_command(&input).expect("the header parses");
-            serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+            serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+                .expect("the response serializes")
         }
 
-        fn started_runtime_with_restored_audit() -> Box<Tpm2Runtime> {
+        fn started_runtime_with_restored_audit() -> Tpm2Runtime {
             let mut runtime = manufactured_runtime();
             let bytes = [
                 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
@@ -698,7 +718,7 @@ mod tests {
         }
 
         #[test]
-        fn a_successful_command_without_sessions_clears_a_restored_exclusive_audit_session() {
+        fn sessionless_success_restored_session_clearing() {
             let mut runtime = started_runtime_with_restored_audit();
             let response = dispatch_bytes(&mut runtime, &cap_command());
             assert_eq!(response[6..10], [0, 0, 0, 0], "GetCapability succeeds");
@@ -721,7 +741,7 @@ mod tests {
         }
 
         #[test]
-        fn a_command_that_forbids_sessions_preserves_the_exclusive_audit_session() {
+        fn session_forbidding_command_preservation() {
             let mut runtime = manufactured_runtime();
             set_restored_audit(&mut runtime);
             let bytes = [
@@ -740,7 +760,7 @@ mod tests {
         }
 
         #[test]
-        fn a_failed_command_preserves_the_exclusive_audit_session() {
+        fn failed_command_preservation() {
             let mut runtime = started_runtime_with_restored_audit();
             let mut truncated = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0e];
             truncated.extend_from_slice(&TPM_CC_GET_CAPABILITY.to_be_bytes());
@@ -755,7 +775,7 @@ mod tests {
         }
 
         #[test]
-        fn a_successful_password_session_command_clears_and_still_acknowledges_the_session() {
+        fn password_session_success_clearing_and_acknowledgement() {
             let mut runtime = started_runtime_with_restored_audit();
             let mut bytes = vec![0x80, 0x02, 0x00, 0x00, 0x00, 0x00];
             bytes.extend_from_slice(&TPM_CC_HIERARCHY_CHANGE_AUTH.to_be_bytes());

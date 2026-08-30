@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (code, record, expected, handles, encrypt) in [
             (
                 CC_POLICY_SECRET,
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_secret_extends_the_digest_with_the_authorizing_name() {
+    fn policy_secret_authorizing_name_digest_extension() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             secret(
@@ -636,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_secret_covers_the_cp_hash_and_the_policy_ref() {
+    fn policy_secret_cp_hash_and_policy_ref_coverage() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             secret(
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_nonce_and_a_short_cp_hash_are_reported_by_parameter() {
+    fn wrong_nonce_short_cp_hash_parameter_errors() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             secret(
@@ -675,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn a_negative_expiration_produces_a_timeout_and_a_ticket() {
+    fn negative_expiration_timeout_and_ticket() {
         let mut runtime = restored("POLICY_FRESH");
         let response = secret(
             &mut runtime,
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn a_positive_expiration_only_sets_the_session_timeout() {
+    fn positive_expiration_session_timeout_only() {
         let mut runtime = restored("POLICY_FRESH");
         let response = secret(
             &mut runtime,
@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_hierarchy_is_not_a_policy_secret_entity() {
+    fn null_hierarchy_policy_secret_entity_rejection() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             secret(
@@ -725,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn the_timeout_arithmetic_follows_the_nonce() {
+    fn timeout_arithmetic_nonce_dependence() {
         let runtime = restored("POLICY_FRESH");
         let start = session_of(&runtime, POLICY_SESSION_0).start_time;
         assert_eq!(compute_auth_timeout(&runtime, start, 0, true), 0);
@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_never_produces_a_ticket() {
+    fn trial_session_no_ticket_production() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(
             secret(
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_may_not_use_a_ticket() {
+    fn trial_session_ticket_use_rejection() {
         let mut runtime = restored("TRIAL_FRESH");
         let mut ticket = 0x8023u16.to_be_bytes().to_vec();
         ticket.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_replaces_the_authorization_it_was_issued_for() {
+    fn ticket_authorization_replacement() {
         let (timeout, ticket) = produced_timeout_and_ticket();
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
@@ -795,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ticket_digest_reproduces_the_policy_secret_digest() {
+    fn ticket_digest_policy_secret_digest_match() {
         let mut runtime = restored("POLICY_FRESH");
         let produced = secret(
             &mut runtime,
@@ -823,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn a_modified_or_mismatched_ticket_is_refused() {
+    fn modified_or_mismatched_ticket_rejection() {
         let (timeout, ticket) = produced_timeout_and_ticket();
         let mut runtime = restored("POLICY_FRESH");
         let mut modified = ticket.clone();
@@ -868,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_ticket_is_reported_by_parameter() {
+    fn malformed_ticket_parameter_error() {
         let mut runtime = restored("POLICY_FRESH");
         let mut ticket = 0x8023u16.to_be_bytes().to_vec();
         ticket.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
@@ -914,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn a_genuine_signature_authorizes_the_policy() {
+    fn genuine_signature_policy_authorization() {
         let mut runtime = restored("SIGNED_READY");
         let signature = response_parameters(vector("SIGN_AHASH"));
         assert_eq!(
@@ -925,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn the_signed_digest_covers_the_expiration() {
+    fn signed_digest_expiration_coverage() {
         let signature = response_parameters(vector("SIGN_AHASH"));
         let mut accepted = restored("SIGNED_READY");
         assert_eq!(
@@ -943,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_signature_or_scheme_is_reported_by_parameter() {
+    fn wrong_signature_or_scheme_parameter_error() {
         let mut runtime = restored("SIGNED_READY");
         let mut wrong = 0x0014u16.to_be_bytes().to_vec();
         wrong.extend_from_slice(&0x000bu16.to_be_bytes());
@@ -987,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_authorization_leaves_the_session_untouched() {
+    fn failed_authorization_session_unchanged() {
         let mut runtime = restored("POLICY_FRESH");
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         for extra in [
@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = command(
             CC_POLICY_SECRET,
             &[TPM_RH_OWNER, POLICY_SESSION_0],

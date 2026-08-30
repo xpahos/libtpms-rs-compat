@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let encrypt = find(TPM_CC_ECC_ENCRYPT).expect("TPM2_ECC_Encrypt is registered");
         assert_eq!(encrypt.attributes, 0x0200_0199);
         assert_eq!((encrypt.decrypt_size, encrypt.encrypt_size), (2, 2));
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ciphertexts_match_the_reference_for_every_message_size() {
+    fn ciphertext_reference_match_all_message_sizes() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         expect(
             &mut runtime,
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn an_encryption_round_trips_through_the_decrypt_command() {
+    fn encrypt_decrypt_round_trip() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         let response = expect(
             &mut runtime,
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn the_recovered_plain_text_matches_the_reference() {
+    fn recovered_plaintext_reference_match() {
         let mut runtime = restored("ENC_AFTER");
         for (record, ephemeral, plain_text, scheme, hash) in [
             (
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_field_ciphertext_point_matches_the_reference() {
+    fn out_of_field_ciphertext_point_reference_match() {
         use crate::library::tpm2::crypto::{BigUint, curve_parameters};
         let curve = curve_parameters(CURVE_P256).expect("NIST P256");
         let mut runtime = restored("ENC_AFTER");
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn a_modified_ciphertext_never_returns_plain_text() {
+    fn modified_ciphertext_no_plaintext() {
         let mut runtime = restored("ENC_AFTER");
         let cipher = ciphertext(&EPHEMERAL_ONE, &message(32), SHA256);
         let mut broken_c1 = ciphertext(&EPHEMERAL_ONE, &message(32), SHA256);
@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scheme_selection_matches_the_reference() {
+    fn scheme_selection_reference_match() {
         let mut runtime = restored("ENC_AFTER");
         expect(
             &mut runtime,
@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn the_framing_failures_match_the_reference() {
+    fn framing_failure_reference_match() {
         let mut runtime = restored("ENC_AFTER");
         let mut oversize = max_message();
         oversize.push(0x00);
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn the_key_checks_match_the_reference() {
+    fn key_check_reference_match() {
         let cipher = ciphertext(&EPHEMERAL_ONE, &message(32), SHA256);
         let mut runtime = ready_with(&[sign_key()]);
         expect(
@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_encryption_leaves_the_generator_alone() {
+    fn rejected_encryption_generator_unchanged() {
         let mut runtime = restored("ENC_AFTER");
         let before = runtime.live.orderly.drbg_state.seed.expose().to_vec();
         for packet in [
@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn an_encryption_advances_the_generator_exactly_once() {
+    fn encryption_single_generator_advance() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         let before = runtime.live.orderly.drbg_state.reseed_counter;
         dispatch_bytes(&mut runtime, &encrypt(&message(32), &KDF2_SHA256));
@@ -643,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_decryption_leaves_the_state_untouched() {
+    fn failed_decryption_state_unchanged() {
         let mut runtime = restored("ENC_AFTER");
         let mut broken = ciphertext(&EPHEMERAL_ONE, &message(32), SHA256);
         broken.c3[0] ^= 0x01;

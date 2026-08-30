@@ -15,14 +15,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_limits_match_the_reference_build() {
+    fn limits_reference_build_match() {
         assert_eq!(MIN_BUFFER_SIZE, 2808);
         assert_eq!(MAX_BUFFER_SIZE, 4096);
         assert_eq!(DEFAULT_BUFFER_SIZE, 4096);
     }
 
     #[test]
-    fn wanted_sizes_clamp_into_the_inclusive_range() {
+    fn wanted_size_inclusive_range_clamp() {
         assert_eq!(clamp_buffer_size(1), MIN_BUFFER_SIZE);
         assert_eq!(clamp_buffer_size(MIN_BUFFER_SIZE - 1), MIN_BUFFER_SIZE);
         assert_eq!(clamp_buffer_size(MIN_BUFFER_SIZE), MIN_BUFFER_SIZE);

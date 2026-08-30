@@ -1,6 +1,7 @@
 use super::dispatcher::dispatch;
 use super::header::{parse_command, serialize_response};
 use crate::library::CommandInput;
+use crate::library::cancel::Cancellation;
 use crate::library::tpm2::command::session::processing::TPM_RS_PW;
 use crate::library::tpm2::manufacture::manufacture_state;
 use crate::library::tpm2::profile::validate_user_profile;
@@ -20,7 +21,7 @@ fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
     Ok(())
 }
 
-pub(in crate::library::tpm2::command) fn manufactured_runtime() -> Box<Tpm2Runtime> {
+pub(in crate::library::tpm2::command) fn manufactured_runtime() -> Tpm2Runtime {
     let profile = validate_user_profile(None).expect("the null profile validates");
     let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
     let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -29,7 +30,7 @@ pub(in crate::library::tpm2::command) fn manufactured_runtime() -> Box<Tpm2Runti
 }
 
 #[track_caller]
-pub(in crate::library::tpm2::command) fn started_runtime() -> Box<Tpm2Runtime> {
+pub(in crate::library::tpm2::command) fn started_runtime() -> Tpm2Runtime {
     let mut runtime = manufactured_runtime();
     let startup = framed(0x0000_0144, &[0x00, 0x00], false);
     assert_eq!(
@@ -46,9 +47,18 @@ pub(in crate::library::tpm2::command) fn dispatch_bytes(
     runtime: &mut Tpm2Runtime,
     bytes: &[u8],
 ) -> Vec<u8> {
+    dispatch_bytes_with(runtime, bytes, Cancellation::disabled())
+}
+
+#[track_caller]
+pub(in crate::library::tpm2::command) fn dispatch_bytes_with(
+    runtime: &mut Tpm2Runtime,
+    bytes: &[u8],
+    cancellation: Cancellation<'_>,
+) -> Vec<u8> {
     let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
     let parsed = parse_command(&input).expect("the header parses");
-    serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+    serialize_response(&dispatch(runtime, &parsed, cancellation)).expect("the response serializes")
 }
 
 pub(in crate::library::tpm2::command) fn framed(

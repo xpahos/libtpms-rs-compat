@@ -57,7 +57,7 @@ mod tests {
     use crate::library::tpm2::runtime::empty_state_runtime;
 
     #[test]
-    fn a_tcb_group_pcr_holds_the_counter_but_pcr_zero_never_does() {
+    fn tcb_group_counter_preservation_pcr_zero_increment() {
         for pcr in [16usize, 21, 22, 23] {
             assert_eq!(pcr_changed(7, pcr), Ok(7), "PCR {pcr}");
         }
@@ -67,13 +67,13 @@ mod tests {
     }
 
     #[test]
-    fn a_counter_at_its_maximum_is_an_internal_failure() {
+    fn counter_maximum_internal_failure() {
         assert_eq!(pcr_changed(u32::MAX, 10), Err(TPM_RC_FAILURE));
         assert_eq!(pcr_changed(u32::MAX, 21), Ok(u32::MAX), "no increment");
     }
 
     #[test]
-    fn a_runtime_without_state_never_panics() {
+    fn stateless_runtime_panic_safety() {
         let mut runtime = empty_state_runtime();
         assert_eq!(prepare_orderly_clear(&runtime, 10), Err(TPM_RC_FAILURE));
         assert_eq!(
@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_state_reset_never_panics() {
+    fn stateless_runtime_reset_panic_safety() {
         let mut runtime = empty_state_runtime();
         assert_eq!(live_pcr_counter(&runtime), Err(TPM_RC_FAILURE));
         assert_eq!(commit_pcr_counter(&mut runtime, 3), Err(TPM_RC_FAILURE));

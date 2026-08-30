@@ -1401,7 +1401,9 @@ mod tests {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
         serialize_response(&crate::library::tpm2::command::core::dispatcher::dispatch(
-            runtime, &parsed,
+            runtime,
+            &parsed,
+            crate::library::cancel::Cancellation::disabled(),
         ))
         .expect("the response serializes")
     }
@@ -1476,7 +1478,7 @@ mod tests {
     const HCA_CHANGED: &str = "8002000000500000012940000001000000390200000000105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a010020ce5941d36d750dee870ff8f5b13e7adf5238f129c2d344486f986a2c05a52af60003717171";
 
     #[track_caller]
-    fn open_undefine_policy(assertions: &[&str]) -> Box<Tpm2Runtime> {
+    fn open_undefine_policy(assertions: &[&str]) -> Tpm2Runtime {
         let mut runtime = restored("NVUSS_READY");
         for assertion in assertions {
             assert_eq!(
@@ -1519,7 +1521,7 @@ mod tests {
     }
 
     #[test]
-    fn undefine_space_special_succeeds_after_policy_auth_value() {
+    fn undefine_space_special_success_after_policy_auth_value() {
         let mut runtime =
             open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
         assert!(resolve_index(&runtime, NVUSS_INDEX).is_some());
@@ -1535,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_hmac_drops_the_authorization_of_the_deleted_entity() {
+    fn response_hmac_deleted_entity_auth_exclusion() {
         let mut runtime =
             open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
         let response = send(&mut runtime, &hex(NVUSS_CONTINUED));
@@ -1553,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn a_continued_and_a_closed_session_both_survive_the_deletion() {
+    fn continued_and_closed_session_preservation_across_deletion() {
         let mut continued =
             open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
         assert_eq!(
@@ -1583,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_undefine_space_special_keeps_the_index_and_the_policy_state() {
+    fn rejected_undefine_special_index_and_policy_preservation() {
         let mut runtime = open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE]);
         let before = loaded_session(&runtime.live, POLICY_SESSION_FIRST)
             .expect("a policy session")
@@ -1609,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_an_authorization_value_answers_with_the_value_the_command_installed() {
+    fn auth_change_response_hmac_installed_value() {
         let mut runtime = restored("HCA_READY");
         let response = send(&mut runtime, &hex(HCA_CHANGED));
         assert_eq!(response, vector("HCA_CHANGED"));
@@ -1637,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deleted_association_is_recorded_as_the_null_handle() {
+    fn deleted_association_null_handle_record() {
         let mut runtime =
             open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
         assert_eq!(
@@ -1653,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_volatile_state_carries_the_null_handle() {
+    fn volatile_state_null_handle_round_trip() {
         use crate::library::tpm2::clock::RecordingClock;
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{
@@ -1675,7 +1677,7 @@ mod tests {
     }
 
     #[test]
-    fn the_recorded_association_matches_the_vendored_volatile_state() {
+    fn recorded_association_oracle_match() {
         let reference = restored("NVUSS_AFTER_DELETE");
         assert_eq!(
             recorded_association(&reference, 0),
@@ -1696,7 +1698,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_deletion_keeps_the_original_association() {
+    fn rejected_deletion_association_preservation() {
         let mut runtime = open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE]);
         assert_eq!(
             send(&mut runtime, &hex(NVUSS_CONTINUED)),
@@ -1706,7 +1708,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_command_does_not_inherit_a_removed_association() {
+    fn removed_association_no_inheritance() {
         let mut runtime =
             open_undefine_policy(&[NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE]);
         send(&mut runtime, &hex(NVUSS_CONTINUED));
@@ -1723,7 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_that_requires_a_written_index_authorizes_the_read() {
+    fn written_index_policy_read_authorization() {
         assert_flow(
             "FLOW_NV_WRITTEN",
             &[POLICY_NV_WRITTEN_SET, POLICY_COMMAND_CODE_NV_READ],
@@ -1733,7 +1735,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_that_requires_an_unwritten_index_refuses_a_written_one() {
+    fn unwritten_index_policy_written_index_rejection() {
         assert_flow(
             "FLOW_NV_UNWRITTEN",
             &[POLICY_NV_WRITTEN_CLEAR, POLICY_COMMAND_CODE_NV_READ],
@@ -1743,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn a_locality_restriction_is_enforced_when_the_policy_is_used() {
+    fn locality_restriction_enforcement() {
         assert_flow(
             "FLOW_LOCALITY",
             &[POLICY_LOCALITY_ZERO, POLICY_COMMAND_CODE_NV_READ],
@@ -1763,7 +1765,7 @@ mod tests {
     }
 
     #[test]
-    fn a_physical_presence_restriction_is_enforced_when_the_policy_is_used() {
+    fn physical_presence_restriction_enforcement() {
         assert_flow(
             "FLOW_PHYSICAL_PRESENCE",
             &[POLICY_PHYSICAL_PRESENCE, POLICY_COMMAND_CODE_NV_READ],
@@ -1773,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn an_asserted_physical_presence_satisfies_the_policy() {
+    fn asserted_physical_presence_policy_satisfaction() {
         let mut runtime = restored("FLOW_PHYSICAL_PRESENCE");
         for assertion in [POLICY_PHYSICAL_PRESENCE, POLICY_COMMAND_CODE_NV_READ] {
             send(&mut runtime, &hex(assertion));
@@ -1797,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn the_built_flow_digests_are_the_upstream_extension_chain() {
+    fn flow_digest_extension_chain_match() {
         let mut runtime = restored("FLOW_NV_WRITTEN");
         for assertion in [POLICY_NV_WRITTEN_SET, POLICY_COMMAND_CODE_NV_READ] {
             send(&mut runtime, &hex(assertion));
@@ -1815,7 +1817,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_session_is_reset_after_it_authorizes_a_command() {
+    fn policy_session_reset_after_authorization() {
         let mut runtime = restored("FLOW_NV_WRITTEN");
         for assertion in [POLICY_NV_WRITTEN_SET, POLICY_COMMAND_CODE_NV_READ] {
             send(&mut runtime, &hex(assertion));
@@ -1838,7 +1840,7 @@ mod tests {
     }
 
     #[test]
-    fn a_salted_session_authorizes_a_command_and_rolls_its_nonce() {
+    fn salted_session_authorization_and_nonce_roll() {
         let mut runtime = restored("RSA_KEY");
         assert_eq!(
             send(&mut runtime, &hex(SALTED_START)),
@@ -1856,7 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_command_hmac_is_rejected() {
+    fn wrong_command_hmac_rejection() {
         let mut runtime = restored("RSA_KEY");
         send(&mut runtime, &hex(SALTED_START));
         assert_eq!(
@@ -1866,7 +1868,7 @@ mod tests {
     }
 
     #[test]
-    fn clearing_continue_session_flushes_the_session() {
+    fn continue_session_clear_session_flush() {
         let mut runtime = restored("RSA_KEY");
         send(&mut runtime, &hex(SALTED_START));
         send(&mut runtime, &hex(HMAC_AUTH_PCR_EXTEND));
@@ -1887,7 +1889,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unbound_session_with_an_empty_key_authorizes_with_an_empty_hmac() {
+    fn unbound_empty_key_empty_hmac_authorization() {
         let mut runtime = restored("READY");
         assert_eq!(
             send(&mut runtime, &hex(UNSALTED_START)),
@@ -1900,7 +1902,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_session_authorizes_an_index_whose_policy_it_reproduces() {
+    fn policy_session_matching_digest_authorization() {
         let mut runtime = restored("POLICY_NV");
         assert_eq!(
             send(&mut runtime, &hex(POLICY_START)),
@@ -1917,7 +1919,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_session_without_the_matching_policy_is_refused() {
+    fn policy_session_digest_mismatch_rejection() {
         let mut runtime = restored("POLICY_NV");
         send(&mut runtime, &hex(POLICY_START));
         assert_eq!(
@@ -1927,7 +1929,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_can_never_authorize() {
+    fn trial_session_authorization_rejection() {
         let mut runtime = restored("POLICY_NV");
         send(&mut runtime, &hex(TRIAL_START));
         send(&mut runtime, &hex(POLICY_COMMAND_CODE_NV_READ));
@@ -1938,7 +1940,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nv_index_and_its_policy_are_created_like_the_reference() {
+    fn nv_index_and_policy_creation_oracle_match() {
         let mut runtime = restored("READY");
         assert_eq!(
             send(&mut runtime, &hex(NV_DEFINE_POLICY_INDEX)),
@@ -1951,7 +1953,7 @@ mod tests {
     }
 
     #[test]
-    fn password_sessions_reject_the_attributes_the_reference_forbids() {
+    fn password_session_forbidden_attribute_rejection() {
         let mut runtime = restored("THREE_SESSIONS");
         for (record, attributes) in [
             ("PW_WITH_DECRYPT", 0x20u8),
@@ -1978,7 +1980,7 @@ mod tests {
     }
 
     #[test]
-    fn session_handles_of_the_wrong_kind_are_refused() {
+    fn wrong_kind_session_handle_rejection() {
         let mut runtime = restored("THREE_SESSIONS");
         for (record, command) in [
             (
@@ -2010,7 +2012,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_hmac_audit_session_audits_and_answers_like_the_reference() {
+    fn empty_hmac_audit_session_oracle_match() {
         let mut runtime = restored("AUDIT_SESSION");
         assert!(audit_digest(&runtime).is_empty(), "no audit digest yet");
         assert_eq!(
@@ -2046,7 +2048,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unaudited_command_drops_exclusivity_and_the_next_exclusive_audit_fails() {
+    fn unaudited_command_exclusivity_loss_next_audit_failure() {
         let mut runtime = restored("AUDIT_SESSION");
         send(&mut runtime, &hex(AUDIT_GET_RANDOM));
         send(&mut runtime, &hex(AUDIT_GET_RANDOM_EXCLUSIVE));
@@ -2072,7 +2074,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_that_fails_leaves_the_audit_digest_and_nonce_alone() {
+    fn failed_command_audit_digest_and_nonce_unchanged() {
         let mut runtime = restored("AUDIT_SESSION");
         let before = session_of(&runtime, HMAC_SESSION_0).clone();
         assert_eq!(
@@ -2091,7 +2093,7 @@ mod tests {
     }
 
     #[test]
-    fn an_audit_session_always_carries_a_command_hash_into_response_processing() {
+    fn audit_session_cp_hash_before_handler() {
         let mut runtime = restored("AUDIT_SESSION");
         let descriptor =
             crate::library::tpm2::command::core::registry::find(0x0000_017b).expect("GetRandom");
@@ -2154,7 +2156,7 @@ mod tests {
         }
 
         #[track_caller]
-        fn armed_runtime(name_hash: &[u8]) -> Box<Tpm2Runtime> {
+        fn armed_runtime(name_hash: &[u8]) -> Tpm2Runtime {
             let mut runtime = started_runtime();
             let mut parameters = sized(&owner_policy_for(name_hash));
             parameters.extend_from_slice(&0x000bu16.to_be_bytes());
@@ -2230,7 +2232,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pre_v4_profile_records_the_name_hash_without_the_attribute() {
+        fn untagged_record_format() {
             let runtime = armed_runtime(&owner_name_hash());
             assert_eq!(
                 runtime.state().profile.state_format_level,
@@ -2247,7 +2249,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pre_v4_name_hash_authorizes_a_matching_command() {
+        fn matching_command_authorization() {
             let mut runtime = armed_runtime(&owner_name_hash());
             assert_eq!(
                 response_code(&dispatch_bytes(&mut runtime, &change_owner_auth())),
@@ -2257,7 +2259,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pre_v4_name_hash_refuses_a_different_handle_set() {
+        fn different_handle_set_rejection() {
             let mut runtime = armed_runtime(&owner_name_hash());
             let mut public = nv_public(NV_INDEX, 0x0202_0006, 8);
             public.auth_policy = Vec::new();
@@ -2282,7 +2284,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pre_v4_name_hash_survives_a_volatile_round_trip() {
+        fn volatile_round_trip_preservation() {
             use crate::library::tpm2::clock::RecordingClock;
             use crate::library::tpm2::volatile::volatile_all_store;
             use crate::library::tpm2::{
@@ -2308,7 +2310,7 @@ mod tests {
         }
 
         #[test]
-        fn a_current_profile_tags_the_name_hash_and_requires_the_tag() {
+        fn current_profile_tag_requirement() {
             let mut runtime = restored("POLICY_FRESH");
             assert_eq!(
                 runtime.state().profile.state_format_level,
@@ -2335,7 +2337,7 @@ mod tests {
         }
 
         #[test]
-        fn a_current_profile_has_no_untagged_name_hash_fallback() {
+        fn current_profile_no_untagged_fallback() {
             let mut runtime = armed_runtime(&owner_name_hash());
             let state = runtime.state.as_mut().expect("decoded state");
             state.profile.state_format_level = STATE_FORMAT_LEVEL_CURRENT;
@@ -2347,7 +2349,7 @@ mod tests {
         }
 
         #[test]
-        fn duplication_select_follows_the_same_state_format_contract() {
+        fn duplication_select_state_format_contract() {
             let mut parameters = sized(&[0xa1; 34]);
             parameters.extend_from_slice(&sized(&[0xb2; 34]));
             parameters.push(0x01);
@@ -2415,7 +2417,7 @@ mod tests {
             "8002000000230000014e40000001010000410000000940000009000000000000080000";
 
         #[track_caller]
-        fn pin_runtime() -> Box<Tpm2Runtime> {
+        fn pin_runtime() -> Tpm2Runtime {
             use crate::library::tpm2::restore_permanent_blob_for_test;
             let mut runtime = restore_permanent_blob_for_test(nv_vector("PERMALL_BASE"))
                 .expect("the oracle permanent state restores");
@@ -2436,7 +2438,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pin_pass_index_counts_every_authorized_use() {
+        fn pin_pass_authorized_use_count() {
             let mut runtime = pin_runtime();
             replay(
                 &mut runtime,
@@ -2451,7 +2453,7 @@ mod tests {
         }
 
         #[test]
-        fn an_exhausted_pin_pass_index_stops_authorizing() {
+        fn exhausted_pin_pass_authorization_rejection() {
             let mut runtime = pin_runtime();
             replay(
                 &mut runtime,
@@ -2472,7 +2474,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pin_fail_index_counts_failures_and_heals_on_success() {
+        fn pin_fail_count_increment_and_success_reset() {
             let mut runtime = pin_runtime();
             replay(
                 &mut runtime,
@@ -2494,7 +2496,7 @@ mod tests {
         }
 
         #[test]
-        fn an_owner_authorized_read_never_touches_the_counter() {
+        fn owner_authorized_read_counter_unchanged() {
             let mut runtime = pin_runtime();
             replay(
                 &mut runtime,
@@ -2642,7 +2644,7 @@ mod tests {
             bytes
         }
 
-        fn opened(snapshot: &str, starts: &[&str]) -> Box<Tpm2Runtime> {
+        fn opened(snapshot: &str, starts: &[&str]) -> Tpm2Runtime {
             let mut runtime = restored(snapshot);
             for start in starts {
                 assert_eq!(
@@ -2659,7 +2661,7 @@ mod tests {
         }
 
         #[test]
-        fn a_response_nonce_failure_rolls_back_a_pcr_extension() {
+        fn response_nonce_failure_pcr_extend_rollback() {
             assert_mutates("READY", &[UNSALTED_START], &hex(EMPTY_HMAC_PCR_EXTEND));
             let mut runtime = opened("READY", &[UNSALTED_START]);
             let before = observable(&runtime);
@@ -2679,7 +2681,7 @@ mod tests {
         }
 
         #[test]
-        fn a_response_nonce_failure_rolls_back_an_nv_definition() {
+        fn response_nonce_failure_nv_define_rollback() {
             assert_mutates(
                 "READY",
                 &[UNSALTED_START],
@@ -2697,7 +2699,7 @@ mod tests {
         }
 
         #[test]
-        fn a_response_encryption_failure_rolls_back_the_command() {
+        fn response_encryption_failure_rollback() {
             let mut runtime = opened("READY", &[SAS_SYM_AES_CFB]);
             let symmetric = loaded_session(&runtime.live, HMAC_SESSION_0)
                 .expect("the session is loaded")
@@ -2726,7 +2728,7 @@ mod tests {
         }
 
         #[test]
-        fn a_response_hmac_failure_rolls_back_a_pcr_extension() {
+        fn response_hmac_failure_pcr_extend_rollback() {
             let mut runtime = opened("READY", &[UNSALTED_START]);
             let before = observable(&runtime);
             let _guard = FaultGuard::arm(ResponseFault::ResponseHmac);
@@ -2740,7 +2742,7 @@ mod tests {
         }
 
         #[test]
-        fn a_response_hmac_failure_rolls_back_a_policy_authorized_deletion() {
+        fn response_hmac_failure_policy_deletion_rollback() {
             let mut runtime = restored("NVUSS_READY");
             for assertion in [NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE] {
                 send(&mut runtime, &hex(assertion));
@@ -2758,7 +2760,7 @@ mod tests {
         }
 
         #[test]
-        fn a_rolled_back_deletion_restores_the_original_association() {
+        fn rolled_back_deletion_association_restoration() {
             let mut runtime = restored("NVUSS_READY");
             for assertion in [NVUSS_POLICY_COMMAND_CODE, NVUSS_POLICY_AUTH_VALUE] {
                 send(&mut runtime, &hex(assertion));
@@ -2781,7 +2783,7 @@ mod tests {
         }
 
         #[test]
-        fn an_audit_initialization_failure_rolls_back_the_command() {
+        fn audit_init_failure_rollback() {
             let mut runtime = restored("AUDIT_SESSION");
             let before = observable(&runtime);
             let _guard = FaultGuard::arm(ResponseFault::AuditInit);
@@ -2794,7 +2796,7 @@ mod tests {
         }
 
         #[test]
-        fn an_audit_extension_failure_rolls_back_the_command() {
+        fn audit_extension_failure_rollback() {
             let mut runtime = restored("AUDIT_SESSION");
             let before = observable(&runtime);
             let _guard = FaultGuard::arm(ResponseFault::AuditExtend);
@@ -2808,7 +2810,7 @@ mod tests {
         }
 
         #[test]
-        fn a_second_response_session_failure_rolls_back_the_first() {
+        fn second_session_failure_first_session_rollback() {
             assert_mutates(
                 "READY",
                 &[UNSALTED_START, UNSALTED_START],
@@ -2831,7 +2833,7 @@ mod tests {
         }
 
         #[test]
-        fn a_failure_before_the_deferred_flush_keeps_every_session_loaded() {
+        fn pre_flush_failure_session_retention() {
             let mut runtime = opened("READY", &[UNSALTED_START]);
             let before = observable(&runtime);
             let _guard = FaultGuard::arm(ResponseFault::BeforeFlush);
@@ -2847,7 +2849,7 @@ mod tests {
         }
 
         #[test]
-        fn a_rolled_back_command_keeps_the_entropy_latch_and_the_self_test_progress() {
+        fn rollback_entropy_latch_and_self_test_preservation() {
             let mut runtime = opened("READY", &[UNSALTED_START]);
             runtime.entropy_bad = true;
             let pending = runtime.self_test.pending;
@@ -2865,7 +2867,7 @@ mod tests {
         }
 
         #[test]
-        fn a_handler_failure_still_leaves_no_partial_change() {
+        fn handler_failure_no_partial_change() {
             let mut runtime = opened("READY", &[UNSALTED_START]);
             let before = observable(&runtime);
             assert_eq!(
@@ -2876,7 +2878,7 @@ mod tests {
         }
 
         #[test]
-        fn a_successful_command_commits_every_change() {
+        fn successful_command_full_commit() {
             let mut runtime = opened("READY", &[UNSALTED_START]);
             let before = observable(&runtime);
             assert_eq!(
@@ -2888,7 +2890,7 @@ mod tests {
     }
 
     #[test]
-    fn password_comparison_ignores_only_trailing_zeros() {
+    fn password_comparison_trailing_zero_only_tolerance() {
         assert!(password_matches(&[], &[]));
         assert!(password_matches(&[], &[0x00, 0x00]));
         assert!(password_matches(b"pw", &[b'p', b'w', 0x00]));
@@ -2898,7 +2900,7 @@ mod tests {
     }
 
     #[test]
-    fn a_format_zero_code_is_never_decorated() {
+    fn format_zero_code_no_decoration() {
         assert_eq!(
             decorate(TPM_RC_FAILURE, TPM_RC_S + TPM_RC_1),
             TPM_RC_FAILURE
@@ -2914,7 +2916,7 @@ mod tests {
     }
 
     #[test]
-    fn an_internal_failure_never_carries_a_session_decoration() {
+    fn internal_failure_no_session_decoration() {
         let runtime = empty_state_runtime();
         assert_eq!(
             entity_auth_value(&runtime, 0x4000_000c).unwrap_err(),
@@ -2923,7 +2925,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_area_mutations_do_not_panic() {
+    fn authorization_area_mutation_panic_safety() {
         let valid = hex(HMAC_AUTH_PCR_EXTEND);
         for length in 10..valid.len() {
             for byte in [0x00u8, 0x01, 0x80, 0xff] {

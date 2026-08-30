@@ -57,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_responses_are_well_formed_tpm_replies() {
+    fn well_formed_command_responses() {
         for vector in nv_vectors()
             .into_iter()
             .chain(certify_vectors())

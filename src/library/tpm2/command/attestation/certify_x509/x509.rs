@@ -290,7 +290,7 @@ mod tests {
     use crate::library::tpm2::crypto::COMPILED_HASHES;
 
     #[test]
-    fn every_compiled_hash_carries_the_three_object_identifiers() {
+    fn compiled_hash_object_identifier_coverage() {
         for (hash_alg, _) in COMPILED_HASHES {
             assert!(hash_oid(hash_alg).is_some(), "hash {hash_alg:#06x}");
             assert!(pkcs1_oid(hash_alg).is_some(), "pkcs1 {hash_alg:#06x}");
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn every_object_identifier_is_self_describing() {
+    fn object_identifier_self_description() {
         for oid in [
             &OID_SHA1[..],
             &OID_SHA256,
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn the_anonymous_curves_have_no_usable_object_identifier() {
+    fn anonymous_curve_no_usable_oid() {
         assert!(usable_curve_oid(0x0010).is_none(), "BN_P256");
         assert!(usable_curve_oid(TPM_ECC_BN_P638).is_none());
         assert!(usable_curve_oid(TPM_ECC_NIST_P256).is_some());
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_public_key_is_encoded_as_a_pkcs1_subject_public_key_info() {
+    fn rsa_public_key_pkcs1_spki_encoding() {
         let mut modulus = vec![0xaau8; 256];
         modulus[0] = 0x7f;
         let mut writer = DerWriter::new(1024);
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn a_high_bit_modulus_gains_a_leading_zero() {
+    fn high_bit_modulus_leading_zero() {
         let modulus = vec![0x80u8; 256];
         let mut writer = DerWriter::new(1024);
         let public = rsa_public(&modulus, 0);
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_default_exponent_is_encoded_as_written() {
+    fn non_default_exponent_verbatim_encoding() {
         let mut modulus = vec![0x11u8; 128];
         modulus[0] = 0x01;
         let mut writer = DerWriter::new(1024);
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_public_key_is_encoded_as_a_named_curve_point() {
+    fn ecc_public_key_named_curve_point_encoding() {
         let x = [0x11u8; 32];
         let y = [0x22u8; 32];
         let mut writer = DerWriter::new(1024);
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn an_anonymous_curve_cannot_be_encoded() {
+    fn anonymous_curve_encoding_rejection() {
         let public = ecc_public(0x0010, &[0x11; 32], &[0x22; 32]);
         assert!(!public_key_is_encodable(&public));
         let mut writer = DerWriter::new(1024);
@@ -476,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsassa_signing_algorithm_is_a_pkcs1_identifier() {
+    fn rsassa_algorithm_pkcs1_identifier() {
         let public = rsa_public(&[0x11; 256], 0);
         let scheme = SigScheme {
             scheme: TPM_ALG_RSASSA,
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsapss_signing_algorithm_carries_the_hash_mask_and_salt() {
+    fn rsapss_algorithm_hash_mask_salt_parameters() {
         let public = rsa_public(&[0x11; 256], 0);
         let scheme = SigScheme {
             scheme: TPM_ALG_RSAPSS,
@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsapss_over_sha1_uses_the_defaulted_identifier() {
+    fn rsapss_sha1_defaulted_identifier() {
         let public = rsa_public(&[0x11; 256], 0);
         let scheme = SigScheme {
             scheme: TPM_ALG_RSAPSS,
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsapss_salt_follows_the_modulus_and_digest_sizes() {
+    fn rsapss_salt_modulus_digest_size_dependence() {
         for (hash_alg, expected) in [(TPM_ALG_SHA256, 0x20u8), (TPM_ALG_SHA384, 0x30)] {
             let public = rsa_public(&[0x11; 256], 0);
             let scheme = SigScheme {
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecdsa_signing_algorithm_has_no_parameters() {
+    fn ecdsa_algorithm_no_parameters() {
         let public = ecc_public(TPM_ECC_NIST_P256, &[0x11; 32], &[0x22; 32]);
         let scheme = SigScheme {
             scheme: TPM_ALG_ECDSA,
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_signing_scheme_is_not_encodable() {
+    fn unsupported_scheme_unencodable() {
         let public = ecc_public(TPM_ECC_NIST_P256, &[0x11; 32], &[0x22; 32]);
         for scheme in [0x001a_u16, 0x0016, 0x0005] {
             let scheme = SigScheme {
@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn an_algorithm_identifier_sequence_wraps_an_object_identifier_and_a_null() {
+    fn algorithm_identifier_sequence_oid_null_layout() {
         let mut writer = DerWriter::new(64);
         let length = push_algorithm_identifier_sequence(&mut writer, &OID_SHA256);
         assert_eq!(length, 15);

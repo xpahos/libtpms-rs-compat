@@ -38,6 +38,7 @@ fn parse_bytes_requested(parameters: &[u8]) -> Result<u16, TpmResult> {
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -52,6 +53,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -91,7 +93,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -103,11 +105,12 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         let startup = hex("80010000000c0000014400 00");
         assert_eq!(
@@ -211,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn get_random_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         assert_eq!(request(&mut runtime, 4), error_response(TPM_RC_INITIALIZE));
@@ -232,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_bytes_requested_returns_its_indexed_error() {
+    fn truncated_bytes_requested_indexed_error() {
         for parameters in [&[][..], &[0x00][..], &[0xff][..]] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -275,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_shape_matches_the_oracle_for_every_request_size() {
+    fn response_shape_oracle_match_all_sizes() {
         let mut runtime = started_runtime();
         assert_eq!(
             request(&mut runtime, 0),
@@ -307,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_above_the_maximum_return_exactly_sixty_four_bytes() {
+    fn oversized_request_sixty_four_byte_cap() {
         let record = generate_record(false);
         let mut runtime = started_runtime();
 
@@ -328,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_bytes_match_the_vendored_oracle_for_a_known_drbg_state() {
+    fn known_drbg_state_oracle_byte_match() {
         let record = generate_record(false);
         let mut runtime = started_runtime();
         install_initial(&mut runtime, &record);
@@ -349,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_commands_advance_the_runtime_generator() {
+    fn repeated_command_runtime_generator_advancement() {
         let mut runtime = started_runtime();
         let mut seen: Vec<Vec<u8>> = Vec::new();
         let mut counter = runtime.live.orderly.drbg_state.reseed_counter;
@@ -364,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_request_leaves_the_persistent_state_and_nv_alone() {
+    fn success_persistent_state_nv_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         for requested in [0u16, 1, 64, 65, u16::MAX] {
@@ -375,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn session_tagged_requests_match_the_oracle() {
+    fn session_tagged_request_oracle_match() {
         let pw_auth = hex("8002000000190000017b 00000009 40000009 0000 00 0000 0010");
         let no_authsize = hex("8002000000 0c 0000017b 0010");
         let authsize_zero = hex("8002000000 10 0000017b 00000000 0010");
@@ -399,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn a_no_session_request_answers_without_an_authorization_area() {
+    fn sessionless_request_auth_area_omission() {
         let mut runtime = started_runtime();
         let response = request(&mut runtime, 8);
         assert_eq!(&response[..2], &[0x80, 0x01]);
@@ -416,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn a_drbg_failure_answers_a_bare_error_response_and_stops_the_tpm() {
+    fn drbg_failure_bare_error_tpm_stop() {
         for command in [
             get_random_command(&[0x00, 0x00]),
             get_random_command(&[0x00, 0x10]),
@@ -438,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_drbg_magic_stops_the_tpm() {
+    fn foreign_drbg_magic_tpm_stop() {
         let mut runtime = started_runtime();
         runtime.live.orderly.drbg_state.drbg_magic = DRBG_MAGIC ^ 1;
         let before = snapshot(&runtime);
@@ -453,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn the_next_command_after_a_drbg_failure_takes_the_failure_mode_path() {
+    fn post_drbg_failure_failure_mode_path() {
         let mut runtime = started_runtime();
         runtime.live.orderly.drbg_state.seed = OwnedSecret::copy_of(&[0x11; 47]);
         let command = get_random_command(&[0x00, 0x10]);
@@ -496,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_at_the_reseed_threshold_reseeds_and_answers_the_oracle_bytes() {
+    fn reseed_threshold_oracle_match() {
         let record = boundary_record(false);
         let case = &record.cases[1];
         let mut runtime = started_runtime();
@@ -529,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entropy_failure_at_the_reseed_threshold_yields_zero_filled_bytes() {
+    fn reseed_threshold_entropy_failure_zero_bytes() {
         let mut runtime = started_runtime();
         runtime.entropy = failing_entropy;
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
@@ -564,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn get_random_never_invokes_the_nv_commit_callback() {
+    fn get_random_nv_commit_callback_omission() {
         let mut runtime = started_runtime();
         let command = get_random_command(&[0x00, 0x20]);
         let input = CommandInput::new(command.len() as u32, command);
@@ -584,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn short_parameters_return_upstream_error() {
+    fn short_parameter_upstream_error() {
         let filler = [0x00u8, 0xff, 0x80, 0x7f];
         for length in 0..=6usize {
             for &byte in &filler {

@@ -331,7 +331,7 @@ mod tests {
                                   f69f2445df4f9b17ad2b417be66c3710";
 
     #[test]
-    fn the_block_sizes_follow_the_algorithm() {
+    fn algorithm_block_size_mapping() {
         assert_eq!(sym_block_size(TPM_ALG_AES), Some(16));
         assert_eq!(sym_block_size(TPM_ALG_CAMELLIA), Some(16));
         assert_eq!(sym_block_size(TPM_ALG_TDES), Some(8));
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn only_implemented_key_sizes_have_a_block_size() {
+    fn block_size_implemented_key_sizes_only() {
         for (algorithm, sizes, block) in [
             (TPM_ALG_AES, &[128u16, 192, 256][..], 16usize),
             (TPM_ALG_CAMELLIA, &[128, 192, 256][..], 16),
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nist_sp800_38a_aes_vectors_are_reproduced() {
+    fn nist_sp800_38a_aes_vector_match() {
         let plaintext = unhex(NIST_PLAINTEXT);
         let cases: [(&str, u16, &str, &str); 12] = [
             (
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn the_openssl_known_answers_match_for_every_algorithm_and_mode() {
+    fn openssl_kat_match_all_algorithms_and_modes() {
         let key = pattern(32, 0x10);
         let iv16 = pattern(16, 0xa0);
         let iv8 = pattern(8, 0xa0);
@@ -663,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn the_chaining_value_follows_the_reference_rules() {
+    fn chaining_value_reference_rule_parity() {
         let key = pattern(16, 0x10);
         let iv = pattern(16, 0xa0);
         let plaintext = pattern(20, 0x30);
@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn a_carry_propagates_through_the_counter() {
+    fn counter_carry_propagation() {
         let key = pattern(16, 0x10);
         let iv = vec![0xffu8; 16];
         let (_, chaining) = run(
@@ -758,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn chained_calls_reproduce_a_single_call() {
+    fn chained_call_single_call_equivalence() {
         let key = pattern(32, 0x10);
         let iv = pattern(16, 0xa0);
         let plaintext = pattern(48, 0x30);
@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_final_block_truncates_the_stream_modes() {
+    fn partial_final_block_stream_mode_truncation() {
         for (algorithm, key_len, block) in [
             (TPM_ALG_AES, 16usize, 16usize),
             (TPM_ALG_TDES, 16, 8),
@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn unaligned_input_is_rejected_only_by_cbc_and_ecb() {
+    fn unaligned_input_cbc_ecb_only_rejection() {
         let key = pattern(16, 0x11);
         for (mode, iv_len) in [
             (TPM_ALG_CFB, 16usize),
@@ -860,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_input_leaves_the_chaining_value_alone() {
+    fn empty_input_chaining_value_unchanged() {
         let key = pattern(16, 0x11);
         for (mode, iv_len) in [
             (TPM_ALG_CFB, 16usize),
@@ -879,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_key_size_works_and_others_are_rejected() {
+    fn key_size_support_boundary() {
         for (algorithm, sizes, block) in [
             (TPM_ALG_AES, &[16usize, 24, 32][..], 16usize),
             (TPM_ALG_TDES, &[16, 24][..], 8),
@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_chaining_value_length_is_rejected() {
+    fn wrong_chaining_value_length_rejection() {
         for (algorithm, key_len, block) in [
             (TPM_ALG_AES, 16usize, 16usize),
             (TPM_ALG_TDES, 16, 8),
@@ -981,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn modes_outside_the_block_cipher_set_are_rejected() {
+    fn non_block_cipher_mode_rejection() {
         for mode in [TPM_ALG_NULL, 0x0000, 0x003f, 0x0045, 0xffff] {
             let mut iv = [0u8; 16];
             let mut data = [0xaa; 16];
@@ -1002,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn a_round_trip_recovers_every_input_length() {
+    fn round_trip_all_input_lengths() {
         let key = pattern(24, 0x77);
         for algorithm in [TPM_ALG_AES, TPM_ALG_TDES, TPM_ALG_CAMELLIA] {
             let block = sym_block_size(algorithm).expect("a compiled algorithm");
@@ -1047,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn one_buffer_survives_an_in_place_round_trip() {
+    fn in_place_single_buffer_round_trip() {
         let key = pattern(32, 0x77);
         for algorithm in [TPM_ALG_AES, TPM_ALG_TDES, TPM_ALG_CAMELLIA] {
             let block = sym_block_size(algorithm).expect("a compiled algorithm");
@@ -1089,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_symmetric_arguments_are_rejected() {
+    fn invalid_argument_rejection() {
         for algorithm in [0x0000u16, TPM_ALG_AES, TPM_ALG_TDES, 0xffff] {
             for mode in [0x0000u16, TPM_ALG_CFB, TPM_ALG_ECB, 0xffff] {
                 for key_len in [0usize, 1, 16, 33] {

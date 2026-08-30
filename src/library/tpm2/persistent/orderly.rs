@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_order_parity() {
         let mut fixture = vec![
             0x00, 0x02, 0x56, 0x65, 0x78, 0x87, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x2a, 0x01, 0x00, 0x02, 0x6f, 0xe8, 0x3e, 0xa1, 0x00, 0x01, 0x00, 0x00, 0x00,
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_default_roundtrips() {
+    fn fixture_default_round_trip() {
         let data = with_tail().bytes();
         let parsed = parse_orderly_data(&data).unwrap();
         assert_eq!(parsed.remaining, &NEXT_SECTION_SENTINEL);
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn incorrect_section_magic_is_bad_tag() {
+    fn incorrect_section_magic_bad_tag() {
         let mut data = with_tail().bytes();
         data[2] = 0xff;
         let error = parse_orderly_data(&data).unwrap_err();
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn min_version_newer_than_implementation_is_rejected() {
+    fn newer_min_version_rejection() {
         let mut data = with_tail().bytes();
         data[6..8].copy_from_slice(&3u16.to_be_bytes());
         let error = parse_orderly_data(&data).unwrap_err();
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_section_has_no_min_version_and_no_future_block() {
+    fn version_1_section_no_min_version_no_future_block() {
         let data = OrderlyFixture {
             version: 1,
             tail: NEXT_SECTION_SENTINEL.to_vec(),
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn incorrect_drbg_magic_is_bad_tag_with_drbg_identity() {
+    fn incorrect_drbg_magic_bad_tag_drbg_identity() {
         let mut drbg = DrbgFixture::default().bytes();
         drbg[2] = 0x00;
         let data = OrderlyFixture {
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn drbg_in_memory_magic_is_raw_and_never_validated() {
+    fn drbg_in_memory_magic_raw_unvalidated() {
         for magic in [0u32, 0xdead_beef, u32::MAX] {
             let data = OrderlyFixture {
                 drbg: DrbgFixture {
@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_drbg_seed_size_is_a_size_error() {
+    fn drbg_seed_size_mismatch_size_error() {
         for seed_size in [0u16, 47, 49, u16::MAX] {
             let data = OrderlyFixture {
                 drbg: DrbgFixture {
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_drbg_last_value_count_is_a_size_error() {
+    fn drbg_last_value_count_mismatch_size_error() {
         for count in [0u16, 3, 5, u16::MAX] {
             let data = OrderlyFixture {
                 drbg: DrbgFixture {
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_self_heal_block_is_bad_parameter() {
+    fn missing_self_heal_block_bad_parameter() {
         let data = OrderlyFixture {
             self_heal_has_block: 0,
             ..OrderlyFixture::default()
@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn noncanonical_self_heal_block_boolean_is_true() {
+    fn noncanonical_self_heal_boolean_true_interpretation() {
         for byte in [0x02u8, 0x80, 0xff] {
             let data = OrderlyFixture {
                 self_heal_has_block: byte,
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn self_heal_declared_size_is_ignored_when_needed() {
+    fn self_heal_declared_size_ignored() {
         let data = OrderlyFixture {
             self_heal_block_size: Some(0xffff),
             self_heal: [10, 11, 12],
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_empty_and_nonempty_future_blocks_land_at_the_same_boundary() {
+    fn absent_empty_and_nonempty_future_block_boundary_parity() {
         for future in [
             (0u8, 0u16, Vec::new()),
             (1, 0, Vec::new()),
@@ -503,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_fails_safely() {
+    fn strict_prefix_rejection_safety() {
         let full = OrderlyFixture::default().bytes();
         for len in 0..full.len() {
             let error = parse_orderly_data(&full[..len]).unwrap_err();
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_block_byte_mutations_do_not_panic() {
+    fn orderly_block_byte_mutation_panic_safety() {
         let full = OrderlyFixture::default().bytes();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0xff] {

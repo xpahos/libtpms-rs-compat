@@ -2,11 +2,20 @@ use core::ffi::{CStr, c_uchar};
 use core::ptr;
 
 use crate::ffi::memory::MallocBuffer;
-use crate::library::constants::{TPM_FAIL, TPM_RETRY, TPM_SUCCESS};
-use crate::library::state_blob::StateBlobKind;
-use crate::types::{LibtpmsCallbacks, TpmBool, TpmResult};
+use crate::library::{
+    StateBlobKind, Storage, StorageLoad, StorageOperation, StorageProbe, TPM_FAIL, TPM_RETRY,
+    TPM_SUCCESS,
+};
+use crate::types::{TpmBool, TpmResult};
 
 const TPM_NUMBER: u32 = 0;
+
+type NvramInit = unsafe extern "C" fn() -> TpmResult;
+type NvramLoadData =
+    unsafe extern "C" fn(*mut *mut c_uchar, *mut u32, u32, *const core::ffi::c_char) -> TpmResult;
+type NvramStoreData =
+    unsafe extern "C" fn(*const c_uchar, u32, u32, *const core::ffi::c_char) -> TpmResult;
+type NvramDeleteName = unsafe extern "C" fn(u32, *const core::ffi::c_char, TpmBool) -> TpmResult;
 
 unsafe fn adopt_loaddata_buffer(
     data: *mut c_uchar,
@@ -31,55 +40,75 @@ fn state_name(kind: StateBlobKind) -> &'static CStr {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::library::tpm2) enum NvramLoad {
-    NotRegistered,
-    Missing,
-    Data(Vec<u8>),
-    SuccessWithoutData,
+pub(crate) struct CallbackStorage {
+    init: Option<NvramInit>,
+    loaddata: Option<NvramLoadData>,
+    storedata: Option<NvramStoreData>,
+    deletename: Option<NvramDeleteName>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::library::tpm2) enum NvramWrite {
-    NotRegistered,
-    Done,
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::library::tpm2) struct PermanentStateProbe {
-    pub(in crate::library::tpm2) exists: bool,
-    #[allow(dead_code)]
-    pub(in crate::library::tpm2) has_load_callback: bool,
-}
-
-pub(in crate::library) struct HostNvram {
-    callbacks: LibtpmsCallbacks,
-}
-
-impl HostNvram {
-    pub(in crate::library) fn new(callbacks: LibtpmsCallbacks) -> Self {
-        Self { callbacks }
+impl CallbackStorage {
+    pub(crate) fn new(
+        init: Option<NvramInit>,
+        loaddata: Option<NvramLoadData>,
+        storedata: Option<NvramStoreData>,
+        deletename: Option<NvramDeleteName>,
+    ) -> Self {
+        Self {
+            init,
+            loaddata,
+            storedata,
+            deletename,
+        }
     }
+}
 
-    pub(in crate::library::tpm2) fn init(&self) -> Result<NvramWrite, TpmResult> {
-        let Some(init) = self.callbacks.tpm_nvram_init else {
-            return Ok(NvramWrite::NotRegistered);
+impl Storage for CallbackStorage {
+    fn init(&self) -> Result<StorageOperation, TpmResult> {
+        let Some(init) = self.init else {
+            return Ok(StorageOperation::Unsupported);
         };
         // SAFETY: TPMLIB_RegisterCallbacks copied a function pointer with
         // the exact C ABI signature, which must not unwind. The host must
         // keep its code loaded while the callback is registered.
         match unsafe { init() } {
-            TPM_SUCCESS => Ok(NvramWrite::Done),
+            TPM_SUCCESS => Ok(StorageOperation::Done),
             code => Err(code),
         }
     }
 
-    pub(in crate::library::tpm2) fn load(
-        &self,
-        kind: StateBlobKind,
-    ) -> Result<NvramLoad, TpmResult> {
-        let Some(loaddata) = self.callbacks.tpm_nvram_loaddata else {
-            return Ok(NvramLoad::NotRegistered);
+    fn probe_permanent(&self) -> StorageProbe {
+        let Some(loaddata) = self.loaddata else {
+            return StorageProbe {
+                exists: false,
+                load_supported: false,
+            };
+        };
+        let mut data: *mut c_uchar = ptr::null_mut();
+        let mut length: u32 = 0;
+        // SAFETY: same contract as `load`.
+        let result = unsafe {
+            loaddata(
+                &mut data,
+                &mut length,
+                TPM_NUMBER,
+                state_name(StateBlobKind::Permanent).as_ptr(),
+            )
+        };
+        // SAFETY: same ownership-transfer contract as `load`; the guard
+        // frees the buffer on every path, error results included. The
+        // probe never reads the bytes, so an unrepresentable length only
+        // means "free and ignore".
+        let _ = unsafe { adopt_loaddata_buffer(data, length) };
+        StorageProbe {
+            exists: result != TPM_RETRY,
+            load_supported: true,
+        }
+    }
+
+    fn load(&self, kind: StateBlobKind) -> Result<StorageLoad, TpmResult> {
+        let Some(loaddata) = self.loaddata else {
+            return Ok(StorageLoad::Unsupported);
         };
         let mut data: *mut c_uchar = ptr::null_mut();
         let mut length: u32 = 0;
@@ -101,25 +130,21 @@ impl HostNvram {
         let buffer = unsafe { adopt_loaddata_buffer(data, length) }?;
         match result {
             TPM_SUCCESS => match buffer {
-                Some(buffer) => Ok(NvramLoad::Data(buffer.as_slice().to_vec())),
-                None => Ok(NvramLoad::SuccessWithoutData),
+                Some(buffer) => Ok(StorageLoad::Data(buffer.as_slice().to_vec())),
+                None => Ok(StorageLoad::Empty),
             },
-            TPM_RETRY => Ok(NvramLoad::Missing),
+            TPM_RETRY => Ok(StorageLoad::Missing),
             code => Err(code),
         }
     }
 
-    pub(in crate::library::tpm2) fn can_store(&self) -> bool {
-        self.callbacks.tpm_nvram_storedata.is_some()
+    fn can_store(&self) -> bool {
+        self.storedata.is_some()
     }
 
-    pub(in crate::library::tpm2) fn store(
-        &self,
-        kind: StateBlobKind,
-        data: &[u8],
-    ) -> Result<NvramWrite, TpmResult> {
-        let Some(storedata) = self.callbacks.tpm_nvram_storedata else {
-            return Ok(NvramWrite::NotRegistered);
+    fn store(&self, kind: StateBlobKind, data: &[u8]) -> Result<StorageOperation, TpmResult> {
+        let Some(storedata) = self.storedata else {
+            return Ok(StorageOperation::Unsupported);
         };
         let length = u32::try_from(data.len()).map_err(|_| TPM_FAIL)?;
         // SAFETY: same registration and lifetime contract as `init`; the
@@ -128,19 +153,14 @@ impl HostNvram {
         let result =
             unsafe { storedata(data.as_ptr(), length, TPM_NUMBER, state_name(kind).as_ptr()) };
         match result {
-            TPM_SUCCESS => Ok(NvramWrite::Done),
+            TPM_SUCCESS => Ok(StorageOperation::Done),
             code => Err(code),
         }
     }
 
-    #[allow(dead_code)]
-    pub(in crate::library::tpm2) fn delete(
-        &self,
-        kind: StateBlobKind,
-        must_exist: bool,
-    ) -> Result<NvramWrite, TpmResult> {
-        let Some(deletename) = self.callbacks.tpm_nvram_deletename else {
-            return Ok(NvramWrite::NotRegistered);
+    fn delete(&self, kind: StateBlobKind, must_exist: bool) -> Result<StorageOperation, TpmResult> {
+        let Some(deletename) = self.deletename else {
+            return Ok(StorageOperation::Unsupported);
         };
         // SAFETY: same registration and lifetime contract as `init`.
         let result = unsafe {
@@ -151,37 +171,8 @@ impl HostNvram {
             )
         };
         match result {
-            TPM_SUCCESS => Ok(NvramWrite::Done),
+            TPM_SUCCESS => Ok(StorageOperation::Done),
             code => Err(code),
-        }
-    }
-
-    pub(in crate::library::tpm2) fn probe_permanent(&self) -> PermanentStateProbe {
-        let Some(loaddata) = self.callbacks.tpm_nvram_loaddata else {
-            return PermanentStateProbe {
-                exists: false,
-                has_load_callback: false,
-            };
-        };
-        let mut data: *mut c_uchar = ptr::null_mut();
-        let mut length: u32 = 0;
-        // SAFETY: same contract as `load`.
-        let result = unsafe {
-            loaddata(
-                &mut data,
-                &mut length,
-                TPM_NUMBER,
-                state_name(StateBlobKind::Permanent).as_ptr(),
-            )
-        };
-        // SAFETY: same ownership-transfer contract as `load`; the guard
-        // frees the buffer on every path, error results included. The
-        // probe never reads the bytes, so an unrepresentable length only
-        // means "free and ignore".
-        let _ = unsafe { adopt_loaddata_buffer(data, length) };
-        PermanentStateProbe {
-            exists: result != TPM_RETRY,
-            has_load_callback: true,
         }
     }
 }
@@ -340,12 +331,17 @@ mod tests {
         99
     }
 
-    fn nvram_with(callbacks: LibtpmsCallbacks) -> HostNvram {
-        HostNvram::new(callbacks)
+    fn storage_with(callbacks: crate::types::LibtpmsCallbacks) -> CallbackStorage {
+        CallbackStorage::new(
+            callbacks.tpm_nvram_init,
+            callbacks.tpm_nvram_loaddata,
+            callbacks.tpm_nvram_storedata,
+            callbacks.tpm_nvram_deletename,
+        )
     }
 
     #[test]
-    fn state_names_match_upstream() {
+    fn state_name_upstream_parity() {
         assert_eq!(state_name(StateBlobKind::Permanent).to_bytes(), b"permall");
         assert_eq!(
             state_name(StateBlobKind::Volatile).to_bytes(),
@@ -358,47 +354,50 @@ mod tests {
     }
 
     #[test]
-    fn init_without_callback_is_not_registered() {
-        let nvram = nvram_with(LibtpmsCallbacks::empty());
-        assert_eq!(nvram.init(), Ok(NvramWrite::NotRegistered));
+    fn missing_init_unsupported() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks::empty());
+        assert_eq!(storage.init(), Ok(StorageOperation::Unsupported));
     }
 
     #[test]
-    fn init_invokes_registered_callback() {
-        let nvram = nvram_with(LibtpmsCallbacks {
+    fn init_callback_invocation() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_init: Some(nvram_init_ok),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.init(), Ok(NvramWrite::Done));
+        assert_eq!(storage.init(), Ok(StorageOperation::Done));
     }
 
     #[test]
-    fn init_preserves_callback_error_code() {
-        let nvram = nvram_with(LibtpmsCallbacks {
+    fn init_error_preservation() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_init: Some(nvram_init_fail),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.init(), Err(43));
+        assert_eq!(storage.init(), Err(43));
     }
 
     #[test]
-    fn load_without_callback_is_not_registered() {
-        let nvram = nvram_with(LibtpmsCallbacks::empty());
+    fn missing_load_unsupported() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks::empty());
         assert_eq!(
-            nvram.load(StateBlobKind::Permanent),
-            Ok(NvramLoad::NotRegistered)
+            storage.load(StateBlobKind::Permanent),
+            Ok(StorageLoad::Unsupported)
         );
     }
 
     #[test]
-    fn load_maps_retry_to_missing_and_passes_tpm_number_zero() {
+    fn retry_missing_classification() {
         let _serial = TEST_LOCK.lock().unwrap();
         LOAD_CALLS.lock().unwrap().clear();
-        let nvram = nvram_with(LibtpmsCallbacks {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_retry),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.load(StateBlobKind::Volatile), Ok(NvramLoad::Missing));
+        assert_eq!(
+            storage.load(StateBlobKind::Volatile),
+            Ok(StorageLoad::Missing)
+        );
         assert_eq!(
             *LOAD_CALLS.lock().unwrap(),
             [(0, "volatilestate".to_owned())]
@@ -406,19 +405,19 @@ mod tests {
     }
 
     #[test]
-    fn load_uses_the_exact_upstream_name_for_each_kind() {
+    fn load_argument_passthrough() {
         let _serial = TEST_LOCK.lock().unwrap();
         LOAD_CALLS.lock().unwrap().clear();
-        let nvram = nvram_with(LibtpmsCallbacks {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_retry),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
         for kind in [
             StateBlobKind::Permanent,
             StateBlobKind::Volatile,
             StateBlobKind::SaveState,
         ] {
-            assert_eq!(nvram.load(kind), Ok(NvramLoad::Missing));
+            assert_eq!(storage.load(kind), Ok(StorageLoad::Missing));
         }
         assert_eq!(
             *LOAD_CALLS.lock().unwrap(),
@@ -431,77 +430,82 @@ mod tests {
     }
 
     #[test]
-    fn load_returns_owned_copy_of_host_buffer() {
+    fn load_buffer_copy() {
         let _serial = TEST_LOCK.lock().unwrap();
-        let nvram = nvram_with(LibtpmsCallbacks {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_found),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
         assert_eq!(
-            nvram.load(StateBlobKind::Permanent),
-            Ok(NvramLoad::Data(vec![1, 2, 3]))
+            storage.load(StateBlobKind::Permanent),
+            Ok(StorageLoad::Data(vec![1, 2, 3]))
         );
     }
 
     #[test]
-    fn load_success_without_buffer_stays_distinct_from_data() {
-        let nvram = nvram_with(LibtpmsCallbacks {
+    fn null_load_empty_result() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_success_null),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
         assert_eq!(
-            nvram.load(StateBlobKind::SaveState),
-            Ok(NvramLoad::SuccessWithoutData)
+            storage.load(StateBlobKind::SaveState),
+            Ok(StorageLoad::Empty)
         );
     }
 
     #[test]
-    fn load_preserves_error_code_with_null_buffer() {
-        let nvram = nvram_with(LibtpmsCallbacks {
+    fn load_error_preservation() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_error_null),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.load(StateBlobKind::Permanent), Err(77));
+        assert_eq!(storage.load(StateBlobKind::Permanent), Err(77));
     }
 
     #[test]
-    fn load_frees_host_buffer_even_on_retry() {
-        let nvram = nvram_with(LibtpmsCallbacks {
+    fn retry_buffer_release() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_retry_with_buffer),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.load(StateBlobKind::Permanent), Ok(NvramLoad::Missing));
-    }
-
-    #[test]
-    fn load_frees_host_buffer_even_on_error() {
-        let nvram = nvram_with(LibtpmsCallbacks {
-            tpm_nvram_loaddata: Some(loaddata_error_with_buffer),
-            ..LibtpmsCallbacks::empty()
-        });
-        assert_eq!(nvram.load(StateBlobKind::Permanent), Err(77));
-    }
-
-    #[test]
-    fn store_without_callback_is_not_registered() {
-        let nvram = nvram_with(LibtpmsCallbacks::empty());
         assert_eq!(
-            nvram.store(StateBlobKind::Permanent, &[1]),
-            Ok(NvramWrite::NotRegistered)
+            storage.load(StateBlobKind::Permanent),
+            Ok(StorageLoad::Missing)
         );
     }
 
     #[test]
-    fn store_passes_exact_arguments() {
+    fn error_buffer_release() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
+            tpm_nvram_loaddata: Some(loaddata_error_with_buffer),
+            ..crate::types::LibtpmsCallbacks::empty()
+        });
+        assert_eq!(storage.load(StateBlobKind::Permanent), Err(77));
+    }
+
+    #[test]
+    fn missing_store_unsupported() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks::empty());
+        assert_eq!(
+            storage.store(StateBlobKind::Permanent, &[1]),
+            Ok(StorageOperation::Unsupported)
+        );
+        assert!(!storage.can_store());
+    }
+
+    #[test]
+    fn store_argument_passthrough() {
         let _serial = TEST_LOCK.lock().unwrap();
         STORE_CALLS.lock().unwrap().clear();
-        let nvram = nvram_with(LibtpmsCallbacks {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_storedata: Some(storedata_recording),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
+        assert!(storage.can_store());
         assert_eq!(
-            nvram.store(StateBlobKind::SaveState, &[9, 8, 7]),
-            Ok(NvramWrite::Done)
+            storage.store(StateBlobKind::SaveState, &[9, 8, 7]),
+            Ok(StorageOperation::Done)
         );
         assert_eq!(
             *STORE_CALLS.lock().unwrap(),
@@ -510,38 +514,38 @@ mod tests {
     }
 
     #[test]
-    fn store_preserves_callback_error_code() {
-        let nvram = nvram_with(LibtpmsCallbacks {
+    fn store_error_preservation() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_storedata: Some(storedata_error),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.store(StateBlobKind::Permanent, &[1]), Err(88));
+        assert_eq!(storage.store(StateBlobKind::Permanent, &[1]), Err(88));
     }
 
     #[test]
-    fn delete_without_callback_is_not_registered() {
-        let nvram = nvram_with(LibtpmsCallbacks::empty());
+    fn missing_delete_unsupported() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks::empty());
         assert_eq!(
-            nvram.delete(StateBlobKind::Volatile, true),
-            Ok(NvramWrite::NotRegistered)
+            storage.delete(StateBlobKind::Volatile, true),
+            Ok(StorageOperation::Unsupported)
         );
     }
 
     #[test]
-    fn delete_passes_exact_arguments_and_converts_must_exist() {
+    fn delete_argument_passthrough() {
         let _serial = TEST_LOCK.lock().unwrap();
         DELETE_CALLS.lock().unwrap().clear();
-        let nvram = nvram_with(LibtpmsCallbacks {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_deletename: Some(deletename_recording),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
         assert_eq!(
-            nvram.delete(StateBlobKind::Volatile, true),
-            Ok(NvramWrite::Done)
+            storage.delete(StateBlobKind::Volatile, true),
+            Ok(StorageOperation::Done)
         );
         assert_eq!(
-            nvram.delete(StateBlobKind::Permanent, false),
-            Ok(NvramWrite::Done)
+            storage.delete(StateBlobKind::Permanent, false),
+            Ok(StorageOperation::Done)
         );
         assert_eq!(
             *DELETE_CALLS.lock().unwrap(),
@@ -553,66 +557,107 @@ mod tests {
     }
 
     #[test]
-    fn delete_preserves_callback_error_code() {
-        let nvram = nvram_with(LibtpmsCallbacks {
+    fn delete_error_preservation() {
+        let storage = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_deletename: Some(deletename_error),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         });
-        assert_eq!(nvram.delete(StateBlobKind::SaveState, false), Err(99));
+        assert_eq!(storage.delete(StateBlobKind::SaveState, false), Err(99));
     }
 
     #[test]
-    fn probe_without_load_callback_reports_no_state() {
-        let probe = nvram_with(LibtpmsCallbacks::empty()).probe_permanent();
-        assert!(!probe.exists);
-        assert!(!probe.has_load_callback);
+    fn missing_load_probe_unsupported() {
+        let probe = storage_with(crate::types::LibtpmsCallbacks::empty()).probe_permanent();
+        assert_eq!(
+            probe,
+            StorageProbe {
+                exists: false,
+                load_supported: false,
+            }
+        );
     }
 
     #[test]
-    fn probe_maps_retry_to_no_state_and_asks_for_permall() {
+    fn retry_probe_absence() {
         let _serial = TEST_LOCK.lock().unwrap();
         LOAD_CALLS.lock().unwrap().clear();
-        let probe = nvram_with(LibtpmsCallbacks {
+        let probe = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_retry),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert!(!probe.exists);
-        assert!(probe.has_load_callback);
+        assert_eq!(
+            probe,
+            StorageProbe {
+                exists: false,
+                load_supported: true,
+            }
+        );
         assert_eq!(*LOAD_CALLS.lock().unwrap(), [(0, "permall".to_owned())]);
     }
 
     #[test]
-    fn probe_maps_success_with_buffer_to_existing_state() {
+    fn data_probe_presence() {
         let _serial = TEST_LOCK.lock().unwrap();
-        let probe = nvram_with(LibtpmsCallbacks {
+        let probe = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_found),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert!(probe.exists);
-        assert!(probe.has_load_callback);
+        assert_eq!(
+            probe,
+            StorageProbe {
+                exists: true,
+                load_supported: true,
+            }
+        );
     }
 
     #[test]
-    fn probe_maps_success_with_null_buffer_to_existing_state() {
-        let probe = nvram_with(LibtpmsCallbacks {
+    fn null_probe_presence() {
+        let probe = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_success_null),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert!(probe.exists);
-        assert!(probe.has_load_callback);
+        assert_eq!(
+            probe,
+            StorageProbe {
+                exists: true,
+                load_supported: true,
+            }
+        );
     }
 
     #[test]
-    fn probe_maps_other_errors_to_existing_state() {
-        let probe = nvram_with(LibtpmsCallbacks {
+    fn error_probe_presence() {
+        let probe = storage_with(crate::types::LibtpmsCallbacks {
             tpm_nvram_loaddata: Some(loaddata_error_null),
-            ..LibtpmsCallbacks::empty()
+            ..crate::types::LibtpmsCallbacks::empty()
         })
         .probe_permanent();
-        assert!(probe.exists);
-        assert!(probe.has_load_callback);
+        assert_eq!(
+            probe,
+            StorageProbe {
+                exists: true,
+                load_supported: true,
+            }
+        );
+    }
+
+    #[test]
+    fn error_probe_buffer_release() {
+        let probe = storage_with(crate::types::LibtpmsCallbacks {
+            tpm_nvram_loaddata: Some(loaddata_error_with_buffer),
+            ..crate::types::LibtpmsCallbacks::empty()
+        })
+        .probe_permanent();
+        assert_eq!(
+            probe,
+            StorageProbe {
+                exists: true,
+                load_supported: true,
+            }
+        );
     }
 }

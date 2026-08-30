@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_code_and_attributes_match_the_vendored_table() {
+    fn command_code_attributes_vendored_table_match() {
         assert_eq!(TPM_CC_NV_DEFINE_SPACE, 0x0000_012a);
         let expected = nv_vector("CCATTR_012A");
         let descriptor = find(TPM_CC_NV_DEFINE_SPACE).expect("a registered command");
@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn the_only_handle_is_a_provision_handle_needing_user_authorization() {
+    fn single_provision_handle_user_auth() {
         let descriptor = find(TPM_CC_NV_DEFINE_SPACE).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn define_space_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn an_owner_created_ordinary_index_is_defined_and_survives_serialization() {
+    fn owner_ordinary_index_serialization() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(&mut runtime, TPM_RH_OWNER, &owner_ordinary()),
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn the_defined_index_survives_a_permanent_state_round_trip() {
+    fn defined_index_permanent_state_round_trip() {
         use crate::library::tpm2::persistent::persistent_all_store;
         use crate::library::tpm2::restore_permanent_blob_for_test;
 
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_created_index_needs_platform_authorization() {
+    fn platform_index_platform_auth_requirement() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(&mut runtime, TPM_RH_PLATFORM, &platform_ordinary()),
@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn the_creating_hierarchy_must_match_the_platform_create_attribute() {
+    fn hierarchy_platform_create_attribute_match() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(&mut runtime, TPM_RH_OWNER, &platform_ordinary()),
@@ -410,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicate_handle_is_nv_defined() {
+    fn duplicate_handle_nv_defined_error() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(&mut runtime, TPM_RH_OWNER, &owner_ordinary()),
@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_object_handle_blocks_nothing_because_the_ranges_are_disjoint() {
+    fn persistent_object_handle_disjoint_ranges() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(&mut runtime, TPM_RH_OWNER, &owner_ordinary()),
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_index_type_is_accepted_with_its_required_data_size() {
+    fn supported_index_types_required_size_acceptance() {
         let mut runtime = started_runtime();
         for (index_type, data_size, extra) in [
             (TPM_NT_ORDINARY, 32u16, 0u32),
@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_index_type_is_an_attribute_error() {
+    fn unsupported_index_type_attribute_error() {
         let mut runtime = started_runtime();
         for index_type in [0x3u32, 0x5, 0x6, 0x7, 0xa, 0xf] {
             assert_eq!(
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn each_index_type_enforces_its_own_data_size() {
+    fn per_index_type_data_size_enforcement() {
         let mut runtime = started_runtime();
         for index_type in [TPM_NT_COUNTER, TPM_NT_BITS, TPM_NT_PIN_PASS] {
             for data_size in [0u16, 4, 7, 9, 32] {
@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinary_index_may_be_empty_or_the_maximum_size() {
+    fn ordinary_index_size_boundary_acceptance() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinary_index_above_the_implementation_limit_is_rejected_at_unmarshalling() {
+    fn ordinary_index_over_limit_unmarshal_rejection() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn a_counter_may_not_be_cleared_on_startup() {
+    fn counter_clear_stclear_rejection() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_fail_index_must_be_dictionary_attack_exempt() {
+    fn pin_fail_no_da_requirement() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_index_forbids_auth_write_global_lock_and_write_define() {
+    fn pin_index_forbidden_attributes_rejection() {
         let mut runtime = started_runtime();
         for forbidden in [TPMA_NV_AUTHWRITE, TPMA_NV_GLOBALLOCK, TPMA_NV_WRITEDEFINE] {
             for index_type in [TPM_NT_PIN_PASS, TPM_NT_PIN_FAIL] {
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn definition_time_locks_and_the_written_bit_are_rejected() {
+    fn definition_locks_written_bit_rejection() {
         let mut runtime = started_runtime();
         for attribute in [TPMA_NV_WRITTEN, TPMA_NV_WRITELOCKED, TPMA_NV_READLOCKED] {
             assert_eq!(
@@ -636,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_must_offer_a_way_to_read_and_a_way_to_write() {
+    fn read_write_attribute_requirement() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_stclear_and_write_define_are_mutually_exclusive() {
+    fn clear_stclear_write_define_exclusivity() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_delete_index_may_only_be_created_by_the_platform() {
+    fn policy_delete_platform_only() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -717,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn write_all_is_refused_above_the_nv_buffer_size() {
+    fn write_all_nv_buffer_size_limit() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auth_policy_must_match_the_name_algorithm_digest_size() {
+    fn auth_policy_digest_size_match() {
         let mut runtime = started_runtime();
         for size in [1usize, 20, 31, 33, 48, 64] {
             let mut public = owner_ordinary();
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auth_value_longer_than_the_name_algorithm_digest_is_a_size_error() {
+    fn oversized_auth_value_size_error() {
         let mut runtime = started_runtime();
         assert_eq!(
             define_with_auth(&mut runtime, TPM_RH_OWNER, &[0xaa; 33], &owner_ordinary()),
@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auth_value_is_stored_without_its_trailing_zeros() {
+    fn auth_value_trailing_zero_strip() {
         let mut runtime = started_runtime();
         let mut padded = vec![0x41u8, 0x42];
         padded.extend_from_slice(&[0x00; 40]);
@@ -796,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_index_needs_ph_enable_nv() {
+    fn platform_index_ph_enable_nv_requirement() {
         let mut runtime = started_runtime();
         runtime.live.state_clear.as_mut().unwrap().ph_enable_nv = false;
         assert_eq!(
@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orderly_index_is_backed_by_ram() {
+    fn orderly_index_ram_backing() {
         let mut runtime = started_runtime();
         let public = nv_public(OWNER_INDEX, READ_WRITE | TPMA_NV_ORDERLY, 8);
         assert_eq!(define(&mut runtime, TPM_RH_OWNER, &public), RC_SUCCESS);
@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_definition_leaves_no_trace() {
+    fn failed_definition_state_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         for public in [
@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn definition_without_nv_is_unavailable_and_changes_nothing() {
+    fn nv_unavailable_rejection_unchanged() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime);
@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dynamic_region_runs_out_of_space_before_the_handle_space_does() {
+    fn dynamic_region_space_exhaustion() {
         let mut runtime = started_runtime();
         let mut defined = 0u32;
         loop {
@@ -889,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orderly_ram_runs_out_of_space_independently() {
+    fn orderly_ram_independent_exhaustion() {
         let mut runtime = started_runtime();
         let mut defined = 0u32;
         loop {
@@ -919,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_area_is_auth_missing() {
+    fn missing_auth_area_auth_missing_error() {
         let mut runtime = started_runtime();
         let payload = {
             let mut out = TPM_RH_OWNER.to_be_bytes().to_vec();
@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_owner_password_is_reported_against_the_first_session() {
+    fn wrong_owner_password_session1_error() {
         let mut runtime = started_runtime();
         assert_eq!(
             response_code(&dispatch_bytes(
@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_or_truncated_handle_is_reported_with_its_own_index() {
+    fn invalid_truncated_handle_indexed_error() {
         let mut runtime = started_runtime();
         for (payload, expected) in [
             (&[][..], RC_HANDLE1_INSUFFICIENT),
@@ -969,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_parameters_are_reported_against_their_own_parameter_number() {
+    fn truncated_parameter_indexed_error() {
         let mut runtime = started_runtime();
         let full = define_parameters(b"pw", &owner_ordinary());
         for length in 0..full.len() {
@@ -996,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_size_error() {
         let mut runtime = started_runtime();
         let mut parameters = define_parameters(&[], &owner_ordinary());
         parameters.push(0x00);
@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_range_index_handle_in_the_public_area_is_a_value_error() {
+    fn out_of_range_index_handle_value_error() {
         let mut runtime = started_runtime();
         for handle in [0x0000_0001u32, 0x00ff_ffff, 0x0200_0000, 0x8100_0000] {
             let mut public = owner_ordinary();
@@ -1024,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_name_algorithm_is_a_hash_error() {
+    fn unsupported_name_alg_hash_error() {
         let mut runtime = started_runtime();
         for alg in [0x0000u16, 0x0010, 0x0012, 0xffff] {
             let mut public = owner_ordinary();
@@ -1038,7 +1038,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn profile_runtime(algorithms: &str) -> Box<Tpm2Runtime> {
+    fn profile_runtime(algorithms: &str) -> Tpm2Runtime {
         use crate::library::tpm2::manufacture::manufacture_state;
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -1071,7 +1071,7 @@ mod tests {
                               kdf2,kdf1-sp800-108,ecc,ecc-nist,symcipher,cfb";
 
     #[test]
-    fn a_name_algorithm_disabled_by_the_profile_is_a_hash_error() {
+    fn profile_disabled_name_alg_hash_error() {
         for (disabled, name_alg) in [("sha1", TPM_ALG_SHA1), ("sha512", 0x000du16)] {
             let algorithms: String = ALL_HASHES
                 .split(',')
@@ -1096,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn a_name_algorithm_enabled_by_the_profile_is_accepted() {
+    fn profile_enabled_name_alg_acceptance() {
         for (kept, name_alg, data_size) in
             [("sha1", TPM_ALG_SHA1, 20u16), ("sha512", 0x000du16, 64)]
         {
@@ -1114,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_name_algorithm_is_rejected_before_the_attribute_checks() {
+    fn disabled_name_alg_pre_attribute_rejection() {
         let algorithms: String = ALL_HASHES
             .split(',')
             .map(str::trim)
@@ -1134,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_attribute_bits_are_rejected_at_unmarshalling() {
+    fn reserved_attribute_bits_unmarshal_rejection() {
         let mut runtime = started_runtime();
         for bit in [8u32, 9, 20, 21, 22, 23, 24] {
             let mut public = owner_ordinary();
@@ -1148,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stclear_attributes_are_accepted_at_definition_time() {
+    fn stclear_attributes_definition_acceptance() {
         let mut runtime = started_runtime();
         assert_eq!(
             define(
@@ -1165,7 +1165,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn oracle_runtime(base: &[u8]) -> Box<Tpm2Runtime> {
+    fn oracle_runtime(base: &[u8]) -> Tpm2Runtime {
         use crate::library::tpm2::restore_permanent_blob_for_test;
         let mut runtime =
             restore_permanent_blob_for_test(base).expect("the oracle permanent state restores");
@@ -1182,7 +1182,7 @@ mod tests {
     }
 
     #[test]
-    fn the_oracle_define_and_write_sequence_reproduces_the_permanent_state() {
+    fn oracle_define_write_permanent_state_match() {
         let mut runtime = oracle_runtime(nv_vector("PERMALL_BASE"));
         assert_matches_oracle(&runtime, nv_vector("PERMALL_STARTED"), "startup");
 
@@ -1215,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn the_oracle_orderly_sequence_reproduces_the_permanent_state() {
+    fn oracle_orderly_sequence_permanent_state_match() {
         let mut runtime = oracle_runtime(nv_vector("PERMALL_ORDERLY_BASE"));
         let orderly = nv_public(0x0100_0020, READ_WRITE | TPMA_NV_ORDERLY, 8);
         assert_eq!(
@@ -1267,7 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let full = define_parameters(b"pw", &owner_ordinary());
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {

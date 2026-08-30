@@ -407,6 +407,7 @@ fn nv_counter_avail(state: &OwnedPersistentState, live: &LiveState) -> u32 {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::{dispatch, parse_command};
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::persistent::{
@@ -424,7 +425,7 @@ mod tests {
         Ok(())
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -435,7 +436,7 @@ mod tests {
         let input = CommandInput::new(bytes.len() as u32, core::mem::take(&mut bytes));
         let parsed = parse_command(&input).expect("the header parses");
         assert_eq!(
-            dispatch(&mut runtime, &parsed).code(),
+            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
             0,
             "Startup succeeds"
         );
@@ -505,7 +506,7 @@ mod tests {
     ];
 
     #[test]
-    fn fixed_properties_match_the_oracle_values() {
+    fn fixed_property_oracle_value_parity() {
         let runtime = started_runtime();
         for (property, expected) in ORACLE_FIXED {
             assert_eq!(
@@ -525,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_and_response_size_properties_follow_the_configured_buffer_size() {
+    fn command_response_size_properties_buffer_config() {
         use crate::library::tpm2::buffer_size::{DEFAULT_BUFFER_SIZE, MIN_BUFFER_SIZE};
 
         let mut runtime = started_runtime();
@@ -549,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn the_full_fixed_group_is_returned_in_order() {
+    fn full_fixed_group_order() {
         let runtime = started_runtime();
         let page = page_of(&runtime, 0, 1000);
         assert!(!page.more_data);
@@ -563,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn the_full_variable_group_is_returned_in_order() {
+    fn full_variable_group_order() {
         let runtime = started_runtime();
         let page = page_of(&runtime, PT_VAR, 1000);
         assert!(!page.more_data);
@@ -573,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_variable_properties_match_the_oracle_values() {
+    fn fresh_variable_property_oracle_value_parity() {
         let runtime = started_runtime();
         let expected = [
             (0x200, 0x400),
@@ -608,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn a_start_below_the_fixed_group_clamps_to_pt_fixed() {
+    fn start_below_fixed_group_pt_fixed_clamp() {
         let runtime = started_runtime();
         let page = page_of(&runtime, 0x50, 2);
         assert!(page.more_data);
@@ -617,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gap_at_0x115_is_skipped() {
+    fn gap_0x115_skip() {
         let runtime = started_runtime();
         let page = page_of(&runtime, 0x115, 2);
         assert_eq!(page.entries[0].property, TPM_PT_NV_COUNTERS_MAX);
@@ -626,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scan_never_crosses_the_group_boundary() {
+    fn scan_group_boundary_containment() {
         let runtime = started_runtime();
 
         let page = page_of(&runtime, TPM_PT_MAX_CAP_BUFFER, 5);
@@ -643,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn starts_at_or_beyond_the_end_of_the_variable_group_are_empty() {
+    fn variable_group_end_start_empty_page() {
         let runtime = started_runtime();
         for start in [0x215u32, 0x2ff, 0x300, 0x1000, u32::MAX] {
             let page = page_of(&runtime, start, 5);
@@ -657,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn count_zero_reports_more_data_only_when_a_property_remains() {
+    fn count_zero_more_data_remaining_property_only() {
         let runtime = started_runtime();
 
         let page = page_of(&runtime, PT_FIXED, 0);
@@ -670,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_counts_return_the_whole_group() {
+    fn oversized_count_whole_group_result() {
         let runtime = started_runtime();
         let page = page_of(&runtime, PT_FIXED, u32::MAX);
         assert_eq!(page.entries.len(), 46);
@@ -678,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn pagination_within_the_variable_group_reports_more_data() {
+    fn variable_group_pagination_more_data() {
         let runtime = started_runtime();
         let page = page_of(&runtime, PT_VAR, 3);
         let ids: Vec<u32> = page.entries.iter().map(|entry| entry.property).collect();
@@ -687,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_values_track_the_persistent_state() {
+    fn lockout_value_persistent_state_tracking() {
         let mut runtime = started_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -708,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_attributes_track_auths_and_disable_clear() {
+    fn permanent_attribute_auth_and_disable_clear_tracking() {
         let mut runtime = started_runtime();
         assert_eq!(value(&runtime, TPM_PT_PERMANENT), 0x400);
         {
@@ -722,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_clear_attributes_track_the_live_state() {
+    fn startup_clear_attribute_live_state_tracking() {
         let mut runtime = started_runtime();
         assert_eq!(value(&runtime, TPM_PT_STARTUP_CLEAR), 0x8000_000f);
 
@@ -739,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn session_counts_track_the_live_state() {
+    fn session_count_live_state_tracking() {
         let mut runtime = started_runtime();
         runtime.live.free_session_slots = 1;
         assert_eq!(value(&runtime, TPM_PT_HR_LOADED), 2);
@@ -753,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn context_gap_max_tracks_the_live_slot_mask() {
+    fn context_gap_max_live_slot_mask_tracking() {
         let mut runtime = started_runtime();
         assert_eq!(value(&runtime, TPM_PT_CONTEXT_GAP_MAX), 0xffff);
         runtime.live.context_slot_mask = 0xff;
@@ -761,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_availability_tracks_occupied_objects() {
+    fn transient_availability_occupied_object_tracking() {
         let mut runtime = started_runtime();
         assert_eq!(value(&runtime, TPM_PT_HR_TRANSIENT_AVAIL), 3);
         runtime.live.objects[0].attributes |= 1 << 15;
@@ -814,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_handle_counts_track_the_user_nvram() {
+    fn nv_handle_count_user_nvram_tracking() {
         let mut runtime = started_runtime();
         {
             let user_nvram = &mut runtime.state.as_mut().unwrap().user_nvram;
@@ -830,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_availability_follows_the_upstream_formula() {
+    fn persistent_availability_upstream_formula_parity() {
         let mut runtime = started_runtime();
         assert_eq!(value(&runtime, TPM_PT_HR_PERSISTENT_AVAIL), 64);
 
@@ -864,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn counter_availability_is_limited_by_orderly_ram() {
+    fn counter_availability_orderly_ram_limit() {
         let mut runtime = started_runtime();
         assert_eq!(value(&runtime, TPM_PT_NV_COUNTERS_AVAIL), 25);
 
@@ -893,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_counter_words_track_the_persistent_state() {
+    fn audit_counter_word_persistent_state_tracking() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().persistent.audit_counter = 0x1122_3344_5566_7788;
         assert_eq!(value(&runtime, TPM_PT_AUDIT_COUNTER_0), 0x1122_3344);
@@ -901,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn firmware_versions_track_the_persistent_state() {
+    fn firmware_version_persistent_state_tracking() {
         let mut runtime = started_runtime();
         {
             let persistent = &mut runtime.state.as_mut().unwrap().persistent;
@@ -913,14 +914,14 @@ mod tests {
     }
 
     #[test]
-    fn algorithm_set_tracks_the_persistent_state() {
+    fn algorithm_set_persistent_state_tracking() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().persistent.algorithm_set = 0x55;
         assert_eq!(value(&runtime, TPM_PT_ALGORITHM_SET), 0x55);
     }
 
     #[test]
-    fn the_capacity_constant_matches_the_upstream_padded_struct_size() {
+    fn capacity_constant_upstream_struct_size_match() {
         assert_eq!(MAX_TPM_PROPERTIES, 127);
     }
 }

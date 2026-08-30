@@ -106,9 +106,9 @@ pub(in crate::library::tpm2::command) fn execute_commit(
 
     let private = ecc_private_scalar(&key).unwrap_or_default();
     self_test_algorithm(runtime, TPM_ALG_ECDH)?;
-    let cancel = runtime.cancel.clone();
+    let cancellation = frame.cancellation;
     let (k, l, e) = commit_compute(curve_id, p1, p2.as_ref(), private, &r, &|| {
-        cancel.is_signaled()
+        cancellation.check().is_err()
     })?;
     let counter = commit.commit();
     commit.publish(runtime)?;
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let commit = find(TPM_CC_COMMIT).expect("TPM2_Commit is registered");
         assert_eq!(commit.attributes, 0x0200_018b);
         assert_eq!((commit.decrypt_size, commit.encrypt_size), (2, 2));
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ephemeral_points_and_counters_match_the_reference() {
+    fn ephemeral_points_counters_reference_match() {
         let mut runtime = ready();
         for (record, curve) in [
             ("ECEPH_FIRST", CURVE_P256),
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ephemeral_failures_match_the_reference() {
+    fn ephemeral_failures_reference_match() {
         let mut runtime = ready();
         for (record, curve) in [("ECEPH_UNKNOWN_CURVE", 0x0006u16), ("ECEPH_NONE", 0x0000)] {
             expect(
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_ephemeral_request_allocates_no_counter() {
+    fn rejected_ephemeral_no_counter_allocation() {
         let mut runtime = ready();
         let before = CommitState::load(&runtime).expect("the commitment state loads");
         for packet in [
@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commit_outputs_match_the_reference_for_every_operand_shape() {
+    fn commit_outputs_operand_shape_reference_match() {
         let (s2, y2) = commit_operand("commit-point-");
         let mut runtime = ready_with(&[ecdaa_key(true)]);
         let empty = [0x00, 0x04, 0x00, 0x00, 0x00, 0x00];
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commit_failures_match_the_reference() {
+    fn commit_failures_reference_match() {
         let (s2, y2) = commit_operand("commit-point-");
         let mut runtime = restored("COMMIT_AFTER");
         expect(
@@ -496,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_field_commit_operands_are_reduced_like_the_reference() {
+    fn out_of_field_operand_reference_reduction() {
         use crate::library::tpm2::crypto::{BigUint, curve_parameters};
         let curve = curve_parameters(CURVE_P256).expect("NIST P256");
         let plus_prime = |coordinate: &[u8]| {
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_commit_allocates_no_counter() {
+    fn rejected_commit_no_counter_allocation() {
         let (_, y2) = commit_operand("commit-point-");
         let mut runtime = restored("COMMIT_AFTER");
         let before = CommitState::load(&runtime).expect("the commitment state loads");
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commit_key_checks_match_the_reference() {
+    fn commit_key_checks_reference_match() {
         let mut runtime = ready_with(&[sign_key()]);
         expect(
             &mut runtime,
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_only_commitment_key_can_not_be_authorized() {
+    fn public_only_key_authorization_rejection() {
         let (s2, y2) = commit_operand("commit-point-");
         let mut runtime = ready_with(&[ecdaa_key(false)]);
         expect(
@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn the_derived_commit_point_is_on_the_curve() {
+    fn derived_commit_point_curve_membership() {
         let (s2, y2) = commit_operand("commit-point-");
         let point = commit_point_from_s2(CURVE_P256, SHA256, &s2, &y2).expect("a point");
         assert!(point_is_on_curve(CURVE_P256, &point));

@@ -77,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_order_parity() {
         let fixture = [
             0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
             0x00, 0x04, 0x01, 0x00, 0x01, 0xaa, 0xdc,
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn each_counter_is_decoded_big_endian_at_its_own_position() {
+    fn counter_big_endian_positional_decoding() {
         let data = LockoutFixture {
             failed_tries: 0x0102_0304,
             max_tries: 0x0506_0708,
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_and_maximum_values_are_preserved() {
+    fn zero_and_maximum_value_preservation() {
         let zero_bytes = LockoutFixture::default().bytes();
         let zero = parse(&zero_bytes).unwrap();
         assert_eq!(zero.failed_tries, 0);
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_auth_enabled_decodes_canonical_and_noncanonical_values() {
+    fn lockout_auth_enabled_canonical_noncanonical_decoding() {
         for (byte, expected) in [(0x00u8, false), (0x01, true), (0x02, true), (0xff, true)] {
             let data = LockoutFixture {
                 lockout_auth_enabled: byte,
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_state_is_raw_and_zero_is_not_rejected() {
+    fn orderly_state_raw_zero_acceptance() {
         for state in [0x0000u16, 0x0001, 0x00ff, 0x1234, u16::MAX] {
             let data = LockoutFixture {
                 orderly_state: state,
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn remainder_begins_exactly_at_the_audit_commands_sentinel() {
+    fn remainder_audit_commands_sentinel_boundary() {
         let data = LockoutFixture {
             tail: vec![0xde, 0xad, 0xbe],
             ..LockoutFixture::default()
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_is_truncated_and_never_panics() {
+    fn strict_prefix_truncation_panic_safety() {
         let full = LockoutFixture {
             failed_tries: 0x11111111,
             max_tries: 0x22222222,
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn lockout_byte_mutations_do_not_panic() {
+    fn lockout_byte_mutation_panic_safety() {
         for len in 0..20usize {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {
                 let _ = parse(&vec![byte; len]);

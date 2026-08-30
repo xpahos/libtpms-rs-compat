@@ -194,6 +194,7 @@ fn marshal_response(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -208,6 +209,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -260,7 +262,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -272,11 +274,12 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         let startup = hex("80010000000c0000014400 00");
         assert_eq!(
@@ -382,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_read_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &pcr_read_command(&0u32.to_be_bytes())),
@@ -397,14 +400,14 @@ mod tests {
     }
 
     #[test]
-    fn pcr_read_is_dispatched_after_startup() {
+    fn post_startup_dispatch() {
         let mut runtime = started_runtime();
         let response = dispatch_bytes(&mut runtime, &pcr_read_command(&0u32.to_be_bytes()));
         assert_eq!(&response[6..10], &[0, 0, 0, 0], "TPM_RC_SUCCESS");
     }
 
     #[test]
-    fn zero_selections_match_the_oracle_bytes() {
+    fn zero_selection_oracle_byte_parity() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &pcr_read_command(&0u32.to_be_bytes())),
@@ -413,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn one_sha256_selection_matches_the_oracle_bytes() {
+    fn single_sha256_selection_oracle_byte_parity() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -428,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn every_truncated_parameter_returns_insufficient_param1() {
+    fn truncated_parameter_insufficient_param1() {
         let full = one_bank_params(TPM_ALG_SHA256, [1, 0, 0]);
         for len in 0..full.len() {
             let mut runtime = started_runtime();
@@ -443,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn count_above_hash_count_is_a_size_error_without_allocation() {
+    fn count_above_hash_count_size_error_no_allocation() {
         for count in [5u32, 100, u32::MAX] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -457,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_hash_algorithms_return_hash_param1() {
+    fn unsupported_hash_algorithm_hash_param1() {
         for alg in [0x0000u16, 0x0010, 0x0012, 0x0027, 0xffff] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -474,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_disabled_hash_algorithm_returns_hash_param1() {
+    fn profile_disabled_hash_algorithm_hash_param1() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().profile.algorithms =
             b"sha1,sha256,sha384,hmac,null".to_vec();
@@ -494,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_sizeof_select_is_value_param1() {
+    fn out_of_range_sizeof_select_value_param1() {
         for (size, bitmap_len) in [(0u8, 0usize), (1, 1), (2, 2), (4, 4), (255, 3)] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -512,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_selection_error_is_reported_with_param1() {
+    fn second_selection_error_param1_attribution() {
         let mut runtime = started_runtime();
         let mut params = 2u32.to_be_bytes().to_vec();
         params.extend_from_slice(&hex("000b03010000"));
@@ -524,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_return_size() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let mut params = one_bank_params(TPM_ALG_SHA256, [1, 0, 0]);
@@ -537,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn session_tagged_requests_match_the_oracle() {
+    fn session_tagged_request_oracle_parity() {
         let pw_auth =
             hex("80020000002100 00017e 00000009 40000009 0000 00 0000 00000001 000b 03 010000");
         let no_authsize = hex("80020000000a0000017e");
@@ -560,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let valid = pcr_read_command(&one_bank_params(TPM_ALG_SHA256, [1, 0, 0]));
         for len in 10..=valid.len() {
             for index in 6..len {
@@ -571,14 +574,18 @@ mod tests {
                     let mut runtime = started_runtime();
                     let input = CommandInput::new(mutated.len() as u32, mutated);
                     let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                    let _ = serialize_response(&dispatch(
+                        &mut runtime,
+                        &parsed,
+                        Cancellation::disabled(),
+                    ));
                 }
             }
         }
     }
 
     #[test]
-    fn one_selected_pcr_returns_the_live_digest() {
+    fn single_selected_pcr_live_digest() {
         let mut runtime = started_runtime();
         let marker: Vec<u8> = (0..32).map(|i| 0xd0 ^ i as u8).collect();
         runtime.live.pcrs[5].banks[SHA256_SLOT] = Some(marker.clone());
@@ -592,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_pcrs_from_one_bank_return_in_ascending_order() {
+    fn multiple_pcr_single_bank_ascending_order() {
         let mut runtime = started_runtime();
         for pcr in [1usize, 3, 9] {
             runtime.live.pcrs[pcr].banks[SHA256_SLOT] = Some(vec![pcr as u8; 32]);
@@ -609,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_banks_preserve_the_input_order() {
+    fn multiple_bank_input_order_preservation() {
         let mut runtime = started_runtime();
         let mut params = 2u32.to_be_bytes().to_vec();
         params.extend_from_slice(&hex("000d03010000"));
@@ -626,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_banks_match_the_oracle_bytes() {
+    fn duplicate_bank_oracle_byte_parity() {
         let mut runtime = started_runtime();
         let mut params = 2u32.to_be_bytes().to_vec();
         params.extend_from_slice(&hex("000b03010000"));
@@ -640,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn unallocated_pcr_bits_are_cleared_in_the_selection_out() {
+    fn selection_out_unallocated_bit_clearing() {
         let mut runtime = started_runtime();
         runtime.live_pcr_allocated = Some(crate::library::tpm2::persistent::OwnedPcrAllocation {
             selections: vec![OwnedPcrSelection {
@@ -660,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unallocated_bank_returns_an_empty_selection_and_no_digest() {
+    fn unallocated_bank_empty_selection_no_digest() {
         let mut runtime = started_runtime();
         runtime.live_pcr_allocated = Some(crate::library::tpm2::persistent::OwnedPcrAllocation {
             selections: vec![OwnedPcrSelection {
@@ -681,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_with_no_bits_set_matches_the_oracle_bytes() {
+    fn empty_bit_selection_oracle_match() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -701,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_for_exactly_eight_digests_returns_all_eight() {
+    fn eight_digest_request_full_return() {
         let mut runtime = started_runtime();
         let response = dispatch_bytes(
             &mut runtime,
@@ -712,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn more_than_eight_digests_clear_the_unreturned_bits() {
+    fn over_eight_digest_unreturned_bit_clearing() {
         for bitmap in [[0xffu8, 0xff, 0xff], [0xff, 0x01, 0x00]] {
             let mut runtime = started_runtime();
             assert_eq!(
@@ -727,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn an_overflow_mid_selection_clears_later_selections_like_the_oracle() {
+    fn mid_selection_overflow_later_selection_clearing() {
         let mut runtime = started_runtime();
         let mut params = 3u32.to_be_bytes().to_vec();
         params.extend_from_slice(&hex("0004033f0000"));
@@ -746,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn an_overflow_at_a_selection_boundary_clears_the_next_selection() {
+    fn boundary_overflow_next_selection_clearing() {
         let mut runtime = started_runtime();
         let mut params = 2u32.to_be_bytes().to_vec();
         params.extend_from_slice(&hex("000403ff0000"));
@@ -761,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn digest_sizes_match_every_supported_bank() {
+    fn supported_bank_digest_size_parity() {
         for (alg, size, fill) in [
             (TPM_ALG_SHA1, 20usize, 0x00u8),
             (TPM_ALG_SHA256, 32, 0x00),
@@ -782,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_carries_the_current_pcr_update_counter() {
+    fn response_pcr_update_counter() {
         let mut runtime = started_runtime();
         assert_eq!(
             runtime.live.state_reset.as_ref().unwrap().pcr_counter,
@@ -794,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_read_neither_mutates_the_runtime_nor_commits_nv() {
+    fn pcr_read_runtime_and_nv_preservation() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         let command = pcr_read_command(&one_bank_params(TPM_ALG_SHA256, [0xff, 0xff, 0xff]));
@@ -808,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_internal_bank_data_fails_without_panicking() {
+    fn missing_internal_bank_data_panic_free_failure() {
         let mut runtime = started_runtime();
         runtime.live.pcrs[0].banks[SHA256_SLOT] = None;
         assert_eq!(
@@ -821,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_length_internal_bank_data_fails_without_panicking() {
+    fn wrong_length_internal_bank_data_panic_free_failure() {
         let mut runtime = started_runtime();
         runtime.live.pcrs[0].banks[SHA256_SLOT] = Some(vec![0u8; 31]);
         assert_eq!(
@@ -834,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upstream_initial_pcr_read_matches_byte_for_byte() {
+    fn upstream_initial_read_byte_match() {
         let mut runtime = started_runtime();
         let request = hex(
             "80010000002600 00017e 00000004 000403010010 000b03010010 000c03010010 000d03010010",
@@ -859,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn tis_hashing_is_observable_through_pcr_read() {
+    fn tis_hashing_visibility() {
         let mut runtime = started_runtime();
         assert_eq!(tis::hash_start(&mut runtime), TPM_SUCCESS);
         assert_eq!(tis::hash_data(&mut runtime, b"abc"), TPM_SUCCESS);
@@ -881,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn sha1_bank_reads_the_sha1_slot() {
+    fn sha1_bank_sha1_slot_mapping() {
         let mut runtime = started_runtime();
         let marker: Vec<u8> = (0..20).map(|i| 0xa0 | i as u8).collect();
         runtime.live.pcrs[2].banks[SHA1_SLOT] = Some(marker.clone());

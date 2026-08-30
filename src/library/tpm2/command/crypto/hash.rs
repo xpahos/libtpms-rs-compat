@@ -117,6 +117,7 @@ fn parse_parameters<'a>(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -131,6 +132,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -188,7 +190,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         Ok(())
     }
 
-    fn manufactured_runtime(profile: Option<&[u8]>) -> Box<Tpm2Runtime> {
+    fn manufactured_runtime(profile: Option<&[u8]>) -> Tpm2Runtime {
         let profile = validate_user_profile(profile).expect("the profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -200,11 +202,12 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime(profile: Option<&[u8]>) -> Box<Tpm2Runtime> {
+    fn started_runtime(profile: Option<&[u8]>) -> Tpm2Runtime {
         let mut runtime = manufactured_runtime(profile);
         let startup = hex("80010000000c0000014400 00");
         assert_eq!(
@@ -224,7 +227,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[track_caller]
-    fn oracle_runtime() -> Box<Tpm2Runtime> {
+    fn oracle_runtime() -> Tpm2Runtime {
         let mut runtime = started_runtime(None);
         install_oracle_proofs(&mut runtime);
         runtime
@@ -258,7 +261,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[track_caller]
-    fn recording_runtime(runner: fn(PrimitiveTest) -> bool) -> Box<Tpm2Runtime> {
+    fn recording_runtime(runner: fn(PrimitiveTest) -> bool) -> Tpm2Runtime {
         let mut runtime = oracle_runtime();
         runtime.self_test.set_runner(runner);
         take_self_tests_run();
@@ -411,7 +414,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn hash_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime(None);
         let before = snapshot(&runtime);
         for parameters in [
@@ -429,7 +432,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn every_oracle_case_reproduces_the_vendored_response_parameters() {
+    fn oracle_response_parameter_parity() {
         let record = hash_ticket_record();
         let mut runtime = oracle_runtime();
         for case in &record.cases {
@@ -443,7 +446,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn every_digest_has_the_length_of_its_algorithm() {
+    fn digest_length_per_algorithm() {
         let record = hash_ticket_record();
         let mut runtime = oracle_runtime();
         for case in &record.cases {
@@ -465,7 +468,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_null_hierarchy_answers_an_empty_ticket() {
+    fn null_hierarchy_empty_ticket() {
         let record = hash_ticket_record();
         let mut runtime = oracle_runtime();
         for case in record
@@ -485,7 +488,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_exact_generated_value_prefix_suppresses_the_ticket() {
+    fn generated_value_prefix_ticket_suppression() {
         let mut runtime = oracle_runtime();
         for data in [
             hex("ff544347"),
@@ -508,7 +511,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn shorter_generated_value_prefixes_still_produce_a_real_ticket() {
+    fn shorter_generated_value_prefix_real_ticket() {
         let mut runtime = oracle_runtime();
         for data in [hex("ff"), hex("ff54"), hex("ff5443"), hex("ff544348")] {
             for hierarchy in [TPM_RH_OWNER, TPM_RH_PLATFORM, TPM_RH_ENDORSEMENT] {
@@ -533,7 +536,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn each_hierarchy_keys_the_ticket_with_its_own_proof() {
+    fn per_hierarchy_ticket_proof_keying() {
         let record = hash_ticket_record();
         let mut runtime = oracle_runtime();
         let mut tickets = Vec::new();
@@ -560,7 +563,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_changed_proof_changes_the_ticket() {
+    fn proof_change_ticket_change() {
         let record = hash_ticket_record();
         let case = record
             .cases
@@ -589,7 +592,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn changing_the_hash_algorithm_changes_both_the_digest_and_the_ticket() {
+    fn digest_ticket_hash_algorithm_dependence() {
         let record = hash_ticket_record();
         let sha384 = record
             .cases
@@ -618,7 +621,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn changing_the_data_changes_the_digest_and_the_ticket() {
+    fn digest_ticket_data_dependence() {
         let mut runtime = oracle_runtime();
         let first = response_parameters(&dispatch_bytes(
             &mut runtime,
@@ -633,7 +636,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn every_input_size_up_to_the_maximum_is_accepted() {
+    fn input_sizes_up_to_maximum_acceptance() {
         let mut runtime = oracle_runtime();
         for length in 0..=MAX_DIGEST_BUFFER {
             let data: Vec<u8> = (0..length).map(|index| index as u8).collect();
@@ -647,7 +650,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_input_above_the_maximum_returns_the_indexed_size_error() {
+    fn oversized_input_indexed_size_error() {
         let mut runtime = oracle_runtime();
         let before = snapshot(&runtime);
         for length in [MAX_DIGEST_BUFFER + 1, 1030, 2048, 4000] {
@@ -665,7 +668,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_declared_size_is_checked_before_the_payload_length() {
+    fn declared_size_check_before_payload_length() {
         let mut runtime = oracle_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &command_with(&hex("ffff"))),
@@ -674,7 +677,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn every_compiled_algorithm_is_accepted_under_the_null_profile() {
+    fn compiled_algorithm_null_profile_acceptance() {
         let record = hash_ticket_record();
         let mut runtime = oracle_runtime();
         for hash_alg in [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512] {
@@ -692,7 +695,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_profile_disabled_algorithm_returns_the_indexed_hash_error() {
+    fn disabled_algorithm_indexed_hash_error() {
         let profile = format!(r#"{{"Name":"custom","Algorithms":"{MINIMAL_ALGORITHMS}"}}"#);
         let mut runtime = started_runtime(Some(profile.as_bytes()));
         install_oracle_proofs(&mut runtime);
@@ -713,7 +716,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_null_and_unknown_algorithms_return_the_indexed_hash_error() {
+    fn null_unknown_algorithm_indexed_hash_error() {
         let mut runtime = oracle_runtime();
         let before = snapshot(&runtime);
         for hash_alg in [
@@ -738,7 +741,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn every_accepted_hierarchy_is_dispatched() {
+    fn accepted_hierarchy_dispatch() {
         let mut runtime = oracle_runtime();
         for hierarchy in [
             TPM_RH_OWNER,
@@ -759,7 +762,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_invalid_hierarchy_returns_the_indexed_value_error() {
+    fn invalid_hierarchy_indexed_value_error() {
         let mut runtime = oracle_runtime();
         let before = snapshot(&runtime);
         for hierarchy in [
@@ -788,7 +791,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_truncated_parameter_area_returns_the_indexed_error_of_the_missing_field() {
+    fn truncated_parameters_missing_field_indexed_error() {
         let mut runtime = oracle_runtime();
         let before = snapshot(&runtime);
         let cases: [(&[u8], u32); 9] = [
@@ -816,7 +819,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn trailing_parameter_bytes_return_size() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = oracle_runtime();
         let before = snapshot(&runtime);
         for tail in [&[0x00u8][..], &[0xff, 0xff][..], &[0x00; 8][..]] {
@@ -832,7 +835,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_algorithm_is_validated_before_the_hierarchy() {
+    fn algorithm_validation_before_hierarchy() {
         let mut runtime = oracle_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -844,7 +847,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_successful_hash_leaves_every_runtime_and_persistent_field_alone() {
+    fn success_runtime_persistent_state_preservation() {
         let record = hash_ticket_record();
         let mut runtime = oracle_runtime();
         let before = snapshot(&runtime);
@@ -866,7 +869,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failed_hash_leaves_every_runtime_and_persistent_field_alone() {
+    fn failure_runtime_persistent_state_preservation() {
         let mut runtime = oracle_runtime();
         let before = snapshot(&runtime);
         for parameters in [
@@ -892,7 +895,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn session_tagged_requests_are_answered_from_the_session_area() {
+    fn session_tagged_request_session_area_response() {
         let pw_auth = {
             let mut out = vec![0x80, 0x02];
             let parameters = parameters_of(b"abc", TPM_ALG_SHA256, TPM_RH_OWNER);
@@ -923,7 +926,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn short_parameters_return_framed_responses() {
+    fn short_parameter_framed_responses() {
         let filler = [0x00u8, 0xff, 0x80, 0x7f, 0x01, 0x40];
         let mut runtime = oracle_runtime();
         for length in 0..=10usize {
@@ -941,7 +944,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_first_hash_runs_the_requested_algorithms_pending_self_test() {
+    fn first_hash_pending_self_test_execution() {
         let mut runtime = recording_runtime(recording_runner);
         assert!(
             runtime
@@ -967,7 +970,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_later_hash_with_the_same_algorithm_does_not_rerun_the_self_test() {
+    fn repeated_algorithm_no_self_test_rerun() {
         let mut runtime = recording_runtime(recording_runner);
         for algorithm in [TPM_ALG_SHA1, TPM_ALG_SHA384] {
             let command = hash_command(b"abc", algorithm, TPM_RH_NULL);
@@ -988,7 +991,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn hashing_with_one_algorithm_leaves_the_other_pending_tests_alone() {
+    fn single_algorithm_other_pending_tests_preservation() {
         let mut runtime = recording_runtime(recording_runner);
         let before = runtime.self_test.pending_algorithms();
 
@@ -1007,7 +1010,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failed_requested_algorithm_self_test_stops_the_tpm_without_answering_a_digest() {
+    fn failed_self_test_tpm_stop_no_digest() {
         let mut runtime = recording_runtime(recording_runner_failing_sha256);
         let before = snapshot(&runtime);
 
@@ -1037,7 +1040,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_next_command_after_a_self_test_failure_takes_the_failure_mode_path() {
+    fn post_self_test_failure_command_failure_mode() {
         let mut runtime = recording_runtime(recording_runner_failing_sha256);
         let command = hash_command(b"abc", TPM_ALG_SHA256, TPM_RH_OWNER);
         let input = CommandInput::new(command.len() as u32, command);
@@ -1064,7 +1067,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn rejected_parameters_run_no_self_test_and_leave_the_pending_set_alone() {
+    fn rejected_parameters_no_self_test_pending_preservation() {
         let mut runtime = recording_runtime(never_runs);
         let pending = runtime.self_test.pending_algorithms();
 
@@ -1104,7 +1107,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_empty_ticket_path_runs_only_the_requested_hash_self_test() {
+    fn empty_ticket_path_requested_self_test_only() {
         for (label, data, hierarchy) in [
             ("null hierarchy", &b"abc"[..], TPM_RH_NULL),
             (
@@ -1130,7 +1133,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_real_ticket_path_also_runs_the_context_integrity_self_test() {
+    fn real_ticket_path_context_integrity_self_test() {
         let mut runtime = recording_runtime(recording_runner);
         let response = dispatch_bytes(
             &mut runtime,
@@ -1156,7 +1159,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_sha512_request_with_a_ticket_runs_its_self_test_once() {
+    fn sha512_ticket_single_self_test() {
         let mut runtime = recording_runtime(recording_runner);
         let response = dispatch_bytes(
             &mut runtime,
@@ -1167,7 +1170,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failed_context_integrity_self_test_stops_the_tpm() {
+    fn failed_context_integrity_self_test_tpm_stop() {
         let mut runtime = recording_runtime(recording_runner_failing_sha512);
         let before = snapshot(&runtime);
 
@@ -1199,7 +1202,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_profile_without_the_context_integrity_algorithm_still_tickets() {
+    fn missing_context_integrity_algorithm_ticket_success() {
         let record = hash_ticket_record();
         let case = record
             .cases
@@ -1235,7 +1238,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_oracle_responses_are_unchanged_by_the_lazy_self_tests() {
+    fn lazy_self_tests_oracle_responses_unchanged() {
         let record = hash_ticket_record();
         let mut runtime = recording_runtime(recording_runner);
         for case in &record.cases {

@@ -74,6 +74,7 @@ fn commit_reset(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -88,6 +89,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -154,7 +156,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -166,11 +168,12 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex("80010000000c0000014400 00")),
@@ -181,7 +184,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn runtime_at(locality: u8) -> Box<Tpm2Runtime> {
+    fn runtime_at(locality: u8) -> Tpm2Runtime {
         let mut runtime = started_runtime();
         runtime.locality = locality;
         runtime
@@ -324,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_reset_before_startup_returns_initialize() {
+    fn pcr_reset_pre_startup_initialize_rejection() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -340,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_twenty_resets_from_locality_two() {
+    fn pcr_twenty_locality_two_reset() {
         let mut runtime = runtime_at(2);
         assert_ne!(bank(&runtime, 20, SHA256_SLOT), vec![0u8; 32]);
         assert_eq!(
@@ -351,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_twenty_is_not_resettable_from_locality_one() {
+    fn pcr20_locality1_rejection() {
         let mut runtime = runtime_at(1);
         let before = snapshot(&runtime);
         assert_eq!(
@@ -362,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upstream_swtpm_locality_flow_matches_byte_for_byte() {
+    fn upstream_swtpm_locality_flow_byte_match() {
         let mut runtime = runtime_at(2);
         let reset = hex("8002 0000001b 0000013d 00000014 00000009 40000009 0000 00 0000");
         assert_eq!(reset.len(), 0x1b, "the upstream command size");
@@ -381,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn the_successful_response_is_the_exact_nineteen_upstream_bytes() {
+    fn success_response_upstream_19_bytes() {
         let mut runtime = runtime_at(2);
         let response = dispatch_bytes(&mut runtime, &authorized_reset(20));
         assert_eq!(
@@ -400,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reset_locality_matrix_matches_the_upstream_platform_table() {
+    fn locality_matrix_upstream_table_match() {
         const RESET_LOCALITY: [u8; IMPLEMENTATION_PCR] = [
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x0f, 0x10, 0x10, 0x10, 0x1c, 0x1c, 0x1c, 0x0f,
@@ -430,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn locality_four_never_resets_a_pcr() {
+    fn locality_four_pcr_reset_denial() {
         for pcr in 0..IMPLEMENTATION_PCR as u32 {
             let mut runtime = runtime_at(4);
             let before = snapshot(&runtime);
@@ -444,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn the_drtm_pcrs_are_never_resettable_by_command() {
+    fn drtm_pcrs_command_reset_rejection() {
         for pcr in [17u32, 18, 19] {
             for locality in 0..5u8 {
                 let mut runtime = runtime_at(locality);
@@ -458,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn every_allocated_bank_is_reset_to_an_all_zero_digest() {
+    fn allocated_banks_zero_digest_reset() {
         for pcr in RESETTABLE_PCRS {
             let mut runtime = runtime_at(2);
             assert_eq!(
@@ -477,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unallocated_bank_is_left_untouched() {
+    fn unallocated_bank_value_preservation() {
         let mut runtime = runtime_at(2);
         runtime.live_pcr_allocated = Some(OwnedPcrAllocation {
             selections: vec![OwnedPcrSelection {
@@ -499,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unallocated_bank_stays_unallocated() {
+    fn unallocated_bank_none_preservation() {
         let mut runtime = runtime_at(2);
         runtime.live_pcr_allocated = Some(OwnedPcrAllocation {
             selections: vec![OwnedPcrSelection {
@@ -517,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_with_no_allocated_bank_still_moves_the_counter_once() {
+    fn empty_pcr_allocation_single_counter_increment() {
         let mut runtime = runtime_at(2);
         runtime.live_pcr_allocated = Some(OwnedPcrAllocation {
             selections: Vec::new(),
@@ -536,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn the_counter_advances_once_per_command_outside_the_tcb_group() {
+    fn counter_increment_per_command_outside_tcb() {
         let mut runtime = runtime_at(2);
         for round in 1..=3u32 {
             assert_eq!(
@@ -549,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn do_not_increment_pcrs_preserve_the_counter() {
+    fn non_incrementing_pcr_counter_preservation() {
         for pcr in [16u32, 21, 22, 23] {
             let mut runtime = runtime_at(2);
             let before = pcr_counter(&runtime);
@@ -572,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn a_counter_at_its_maximum_fails_without_panicking() {
+    fn counter_overflow_panic_safety() {
         let mut runtime = runtime_at(2);
         runtime.live.state_reset.as_mut().unwrap().pcr_counter = u32::MAX;
         let before = snapshot(&runtime);
@@ -585,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_state_reset_fails_without_panicking() {
+    fn missing_state_reset_panic_safety() {
         let mut runtime = runtime_at(2);
         runtime.live.state_reset = None;
         assert_eq!(
@@ -595,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_live_pcr_fails_without_panicking() {
+    fn missing_live_pcr_panic_safety() {
         let mut runtime = runtime_at(2);
         runtime.live.pcrs.clear();
         assert_eq!(
@@ -605,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resettable_pcr_never_touches_the_orderly_state_or_nv() {
+    fn resettable_pcr_no_orderly_nv_mutation() {
         for pcr in RESETTABLE_PCRS {
             let mut runtime = runtime_at(2);
             make_orderly(&mut runtime, 0x0001);
@@ -626,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_reset_never_invokes_the_nv_commit_callback() {
+    fn pcr_reset_no_nv_commit_callback() {
         let mut runtime = runtime_at(2);
         make_orderly(&mut runtime, 0x0001);
         let command = authorized_reset(20);
@@ -639,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn a_state_saved_pcr_would_apply_the_upstream_orderly_rules() {
+    fn state_saved_pcr_orderly_rules() {
         let mut runtime = started_runtime();
         assert_eq!(
             prepare_reset(&runtime, 10).map(|prepared| prepared.orderly_state),
@@ -668,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn the_null_handle_is_rejected() {
+    fn null_handle_rejection() {
         let mut runtime = runtime_at(2);
         let before = snapshot(&runtime);
         assert_eq!(
@@ -680,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_and_non_pcr_handles_are_rejected() {
+    fn out_of_range_handle_rejection() {
         for handle in [
             IMPLEMENTATION_PCR as u32,
             25,
@@ -705,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_handle_is_reported_with_the_handle_decoration() {
+    fn truncated_handle_decorated_error() {
         for len in 0..4usize {
             let mut runtime = runtime_at(2);
             let mut command = hex("8002 00000000 0000013d");
@@ -721,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_return_size() {
+    fn trailing_parameter_bytes_size_error() {
         for parameters in [&[0x00u8][..], &[0xee][..], &[0x00; 4][..], &[0xaa; 32][..]] {
             let mut runtime = runtime_at(2);
             let before = snapshot(&runtime);
@@ -739,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameters_are_rejected_before_the_locality_check() {
+    fn trailing_parameters_pre_locality_rejection() {
         let mut runtime = runtime_at(1);
         let before = snapshot(&runtime);
         assert_eq!(
@@ -754,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_area_is_auth_missing() {
+    fn missing_auth_area_auth_missing_error() {
         let mut runtime = runtime_at(2);
         let before = snapshot(&runtime);
         assert_eq!(
@@ -765,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn one_valid_empty_password_session_succeeds() {
+    fn single_empty_password_session_success() {
         let mut runtime = runtime_at(2);
         assert_eq!(
             dispatch_bytes(&mut runtime, &authorized_reset(20)),
@@ -774,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_empty_password_against_an_empty_auth_value_fails() {
+    fn nonempty_password_empty_auth_value_rejection() {
         let mut runtime = runtime_at(2);
         let before = snapshot(&runtime);
         let auth = password_session(TPM_RS_PW, &[], 0x00, b"wrong");
@@ -787,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn a_password_of_only_trailing_zeros_matches_the_empty_auth_value() {
+    fn trailing_zero_password_empty_auth_match() {
         let mut runtime = runtime_at(2);
         for password in [&[0x00][..], &[0x00, 0x00][..], &[0x00; 32][..]] {
             let auth = password_session(TPM_RS_PW, &[], 0x00, password);
@@ -801,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_authorization_areas_match_the_oracle_codes() {
+    fn malformed_authorization_area_oracle_code_parity() {
         let declared_password_size = |size: u16| {
             let mut session = password_session(TPM_RS_PW, &[], 0x00, &[0xaa; 8]);
             session[7..9].copy_from_slice(&size.to_be_bytes());
@@ -867,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_second_session_is_reported_against_that_session() {
+    fn truncated_second_session_indexed_error() {
         let mut auth = empty_password_session();
         auth.extend_from_slice(&empty_password_session());
         for len in 10..auth.len() {
@@ -883,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn extra_password_sessions_have_no_handle_to_authorize() {
+    fn extra_password_session_handle_error() {
         let mut auth = empty_password_session();
         auth.extend_from_slice(&empty_password_session());
         let mut runtime = runtime_at(2);
@@ -896,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_command_handle_is_reported_before_the_session_area() {
+    fn invalid_handle_pre_session_error() {
         let mut runtime = runtime_at(2);
         let before = snapshot(&runtime);
         assert_eq!(
@@ -915,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_reset_consumes_no_runtime_session_slots() {
+    fn pcr_reset_zero_session_slot_consumption() {
         let mut runtime = runtime_at(2);
         let free_before = runtime.live.free_session_slots;
         for round in 0..4 {
@@ -933,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn bit_flips_do_not_panic() {
+    fn bit_flip_panic_safety() {
         let valid = authorized_reset(20);
         for index in 6..valid.len() {
             for flip in [0x01u8, 0x80, 0xff] {
@@ -942,13 +945,14 @@ mod tests {
                 let mut runtime = runtime_at(2);
                 let input = CommandInput::new(mutated.len() as u32, mutated);
                 let parsed = parse_command(&input).expect("the header parses");
-                let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                let _ =
+                    serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()));
             }
         }
     }
 
     #[test]
-    fn every_truncated_prefix_of_a_valid_command_is_rejected_safely() {
+    fn truncated_prefix_rejection_safety() {
         let valid = authorized_reset(20);
         for len in 10..valid.len() {
             let mut runtime = runtime_at(2);
@@ -957,7 +961,9 @@ mod tests {
             truncated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
             let input = CommandInput::new(truncated.len() as u32, truncated);
             let parsed = parse_command(&input).expect("the header parses");
-            let response = serialize_response(&dispatch(&mut runtime, &parsed)).unwrap();
+            let response =
+                serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()))
+                    .unwrap();
             assert_ne!(&response[6..10], &RC_SUCCESS.to_be_bytes(), "length {len}");
             assert_unchanged(&runtime, &before);
         }

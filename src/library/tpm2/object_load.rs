@@ -541,7 +541,7 @@ pub(in crate::library::tpm2) mod replay {
     pub(in crate::library::tpm2) fn runtime_at(
         snapshot: &str,
         clock: &SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         runtime_from(
             vector(&format!("PERMALL_{snapshot}")),
             vector(&format!("VOLATILE_{snapshot}")),
@@ -553,7 +553,7 @@ pub(in crate::library::tpm2) mod replay {
         permanent: &[u8],
         volatile: &[u8],
         clock: &SteppingClock,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(permanent)
             .expect("the oracle permanent state restores");
         attach_volatile_blob(
@@ -581,6 +581,7 @@ pub(in crate::library::tpm2) mod replay {
             &input,
             clock,
             |_| Ok(()),
+            crate::library::cancel::Cancellation::disabled(),
         )
         .expect("the command processes")
     }
@@ -936,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn the_modifier_follows_the_upstream_safe_addition_rule() {
+    fn modifier_upstream_safe_addition_rule() {
         assert_eq!(add_modifier(0x08a, 0x140), 0x1ca);
         assert_eq!(add_modifier(0x1ca, 0x140), 0x1ca, "already decorated");
         assert_eq!(add_modifier(0x145, 0x140), 0x145, "not a format-one code");
@@ -944,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sensitive_area_rejects_an_unknown_type() {
+    fn sensitive_area_unknown_type_rejection() {
         for sensitive_type in [0x0000u16, 0x0010, 0x0004, 0xffff] {
             let bytes = sensitive_bytes(sensitive_type, &[], &[], &[]);
             let mut reader = TemplateReader::new(&bytes);
@@ -953,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_a_sensitive_area_is_insufficient() {
+    fn sensitive_area_strict_prefix_insufficiency() {
         let bytes = sensitive_bytes(TPM_ALG_KEYEDHASH, b"auth", &[0x11; 32], b"payload");
         for length in 0..bytes.len() {
             let mut reader = TemplateReader::new(&bytes[..length]);
@@ -970,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_sensitive_fields_are_size_errors() {
+    fn oversized_sensitive_field_size_errors() {
         for (sensitive_type, secret) in [
             (TPM_ALG_KEYEDHASH, vec![0u8; MAX_SYM_DATA + 1]),
             (TPM_ALG_SYMCIPHER, vec![0u8; MAX_SYM_KEY_BYTES + 1]),
@@ -988,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sized_sensitive_area_checks_its_declared_length() {
+    fn sized_sensitive_area_declared_length_check() {
         let inner = sensitive_bytes(TPM_ALG_KEYEDHASH, &[], &[0x11; 32], b"data");
         let mut exact = (inner.len() as u16).to_be_bytes().to_vec();
         exact.extend_from_slice(&inner);

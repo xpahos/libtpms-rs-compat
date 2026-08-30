@@ -20,6 +20,7 @@ pub(in crate::library::tpm2::command) fn execute(
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{
@@ -31,10 +32,11 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = empty_state_runtime();
         runtime.startup_received = true;
         runtime
@@ -45,7 +47,7 @@ mod tests {
     }
 
     #[test]
-    fn get_test_result_is_registered_with_the_vendored_attributes() {
+    fn command_registration_vendored_attributes() {
         let descriptor = find(TPM_CC_GET_TEST_RESULT).expect("registered");
         assert_eq!(descriptor.attributes, 0x0000_017c, "the vendored TPMA_CC");
         assert!(descriptor.handles.is_empty());
@@ -60,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn the_success_response_matches_the_oracle_bytes() {
+    fn success_response_oracle_match() {
         let mut runtime = started_runtime();
         assert_eq!(dispatch_bytes(&mut runtime, &command()), vector("GTR_OK"));
         assert_eq!(
@@ -71,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn the_success_response_never_reruns_or_reports_pending_self_tests() {
+    fn success_response_no_rerun_no_pending_report() {
         let mut runtime = started_runtime();
         runtime
             .self_test
@@ -85,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn a_query_before_startup_matches_the_oracle_bytes() {
+    fn pre_startup_query_oracle_match() {
         let mut runtime = empty_state_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &command()),
@@ -95,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_trailing_parameters_match_the_oracle_bytes() {
+    fn declared_trailing_parameter_oracle_parity() {
         let mut runtime = started_runtime();
         let mut bytes = command();
         bytes[5] = 0x0b;
@@ -108,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn session_tagged_requests_match_the_oracle_bytes() {
+    fn session_tagged_request_oracle_parity() {
         let pw_auth: &[u8] = &[
             0x80, 0x02, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x01, 0x7c, 0x00, 0x00, 0x00, 0x09,
             0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -132,14 +134,14 @@ mod tests {
     }
 
     #[test]
-    fn the_response_respects_the_configured_buffer_size() {
+    fn response_buffer_size_limit() {
         use crate::library::tpm2::buffer_size::MIN_BUFFER_SIZE;
         use crate::library::tpm2::command::core::header::serialize_response_within;
         let mut runtime = started_runtime();
         runtime.buffer_size = MIN_BUFFER_SIZE;
         let input = CommandInput::new(10, command());
         let parsed = parse_command(&input).expect("the header parses");
-        let response = dispatch(&mut runtime, &parsed);
+        let response = dispatch(&mut runtime, &parsed, Cancellation::disabled());
         assert_eq!(
             serialize_response_within(&response, MIN_BUFFER_SIZE).expect("fits"),
             vector("GTR_OK"),
@@ -148,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let valid = command();
         for length in 0..=valid.len() {
             for index in 0..length {
@@ -158,7 +160,11 @@ mod tests {
                     let mut runtime = started_runtime();
                     let input = CommandInput::new(mutated.len() as u32, mutated);
                     if let Ok(parsed) = parse_command(&input) {
-                        let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                        let _ = serialize_response(&dispatch(
+                            &mut runtime,
+                            &parsed,
+                            Cancellation::disabled(),
+                        ));
                     }
                 }
             }

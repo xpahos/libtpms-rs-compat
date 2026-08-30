@@ -78,14 +78,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kind_maps_exact_c_values() {
+    fn kind_exact_c_value_mapping() {
         assert_eq!(StateBlobKind::from_c(1), Some(StateBlobKind::Permanent));
         assert_eq!(StateBlobKind::from_c(2), Some(StateBlobKind::Volatile));
         assert_eq!(StateBlobKind::from_c(4), Some(StateBlobKind::SaveState));
     }
 
     #[test]
-    fn kind_rejects_invalid_values() {
+    fn kind_invalid_value_rejection() {
         for value in [0, 3, -1, -4, 5, 6, 7, 8, i32::MAX, i32::MIN] {
             assert_eq!(StateBlobKind::from_c(value), None, "value {value}");
         }
@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_mask_selects_nothing() {
+    fn zero_mask_empty_selection() {
         assert_eq!(mask(0), (false, false, false));
         assert_eq!(StateValidationMask::from_c(0), StateValidationMask::NONE);
         assert_eq!(StateValidationMask::default(), StateValidationMask::NONE);
@@ -105,14 +105,14 @@ mod tests {
     }
 
     #[test]
-    fn every_known_bit_selects_exactly_its_own_state() {
+    fn known_bit_single_state_selection() {
         assert_eq!(mask(1), (true, false, false));
         assert_eq!(mask(2), (false, true, false));
         assert_eq!(mask(4), (false, false, true));
     }
 
     #[test]
-    fn known_bits_combine() {
+    fn known_bit_combination() {
         assert_eq!(mask(1 | 2), (true, true, false));
         assert_eq!(mask(1 | 4), (true, false, true));
         assert_eq!(mask(2 | 4), (false, true, true));
@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_bits_are_ignored() {
+    fn unknown_bits_ignored() {
         for value in [8, 16, 0x4000, i32::MIN, 1 << 30] {
             assert_eq!(
                 StateValidationMask::from_c(value),
@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn the_save_state_bit_selects_the_permanent_blob_like_upstream() {
+    fn save_state_bit_permanent_blob_selection() {
         for (value, what) in [(4, "the save-state bit"), (1, "the permanent bit")] {
             assert!(
                 StateValidationMask::from_c(value).selects_permanent_blob(),
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_state_is_distinct_from_a_zero_length_blob() {
+    fn empty_state_zero_length_distinction() {
         assert_ne!(StateInput::Empty, StateInput::Data(Vec::new()));
         assert_ne!(StateOutput::Empty, StateOutput::Data(Vec::new()));
     }

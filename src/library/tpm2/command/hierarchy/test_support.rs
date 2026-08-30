@@ -1,4 +1,5 @@
 use crate::library::CommandInput;
+use crate::library::cancel::Cancellation;
 use crate::library::tpm2::clock::SteppingClock;
 pub(super) use crate::library::tpm2::command::core::test_support::{command, framed};
 use crate::library::tpm2::crypto::Hasher;
@@ -504,7 +505,7 @@ pub(super) fn replay_clock() -> SteppingClock {
     SteppingClock::new(1_700_000_000_000, 4_000_000)
 }
 
-pub(super) fn oracle_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+pub(super) fn oracle_runtime(clock: &SteppingClock) -> Tpm2Runtime {
     let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_READY"))
         .expect("the reference permanent state restores");
     attach_volatile_blob_for_replay(&mut runtime, vector("VOLATILE_READY"), clock)
@@ -522,6 +523,7 @@ pub(super) fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: &[u8
         &input,
         clock,
         |_| Ok(()),
+        Cancellation::disabled(),
     )
     .expect("the command processes")
 }
@@ -543,6 +545,7 @@ pub(super) fn exec_counting(
             commits.set(commits.get() + 1);
             Ok(())
         },
+        Cancellation::disabled(),
     )
     .expect("the command processes")
 }
@@ -562,7 +565,7 @@ pub(super) fn expect(runtime: &mut Tpm2Runtime, clock: &SteppingClock, label: &s
 }
 
 #[track_caller]
-pub(super) fn replay(steps: &[(&str, Vec<u8>)]) -> Box<Tpm2Runtime> {
+pub(super) fn replay(steps: &[(&str, Vec<u8>)]) -> Tpm2Runtime {
     let clock = replay_clock();
     let mut runtime = oracle_runtime(&clock);
     for (label, bytes) in steps {
@@ -572,7 +575,7 @@ pub(super) fn replay(steps: &[(&str, Vec<u8>)]) -> Box<Tpm2Runtime> {
 }
 
 #[track_caller]
-pub(super) fn reboot(runtime: &Tpm2Runtime, clock: &SteppingClock) -> Box<Tpm2Runtime> {
+pub(super) fn reboot(runtime: &Tpm2Runtime, clock: &SteppingClock) -> Tpm2Runtime {
     let blob = persistent_all_store(runtime.state()).expect("the permanent state serializes");
     let _ = clock;
     let mut rebooted =

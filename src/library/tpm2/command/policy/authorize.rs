@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (code, record, expected, handles, decrypt) in [
             (
                 CC_POLICY_AUTHORIZE,
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn a_verified_ticket_replaces_the_policy_digest() {
+    fn verified_ticket_policy_digest_replacement() {
         let mut runtime = restored("SIGNED_READY");
         assert_eq!(
             authorize(
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn the_replaced_digest_is_the_zero_digest_extended_with_the_key_name() {
+    fn replaced_digest_zero_digest_key_name_extension() {
         let mut runtime = restored("SIGNED_READY");
         authorize(
             &mut runtime,
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn a_real_session_needs_the_current_digest_and_a_valid_ticket() {
+    fn real_session_current_digest_valid_ticket_requirement() {
         let mut runtime = restored("SIGNED_READY");
         assert_eq!(
             authorize(
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_replaces_the_digest_without_a_ticket() {
+    fn trial_session_ticketless_digest_replacement() {
         let mut runtime = restored("TRIAL_FRESH");
         let mut key_name = 0x000bu16.to_be_bytes().to_vec();
         key_name.extend_from_slice(&[0x22; 32]);
@@ -421,14 +421,14 @@ mod tests {
     }
 
     #[test]
-    fn policy_authorize_nv_reads_the_stored_policy() {
+    fn policy_authorize_nv_stored_policy_read() {
         let mut runtime = restored("AUTHORIZE_NV_READY");
         assert_eq!(authorize_nv(&mut runtime, &[]), vector("PANV_ACCEPTED"));
         assert_eq!(digest(&mut runtime), vector("PGD_AFTER_AUTHORIZE_NV"));
     }
 
     #[test]
-    fn policy_authorize_nv_refuses_a_mismatched_stored_policy() {
+    fn authorize_nv_mismatched_stored_policy_rejection() {
         let mut runtime = restored("AUTHORIZE_NV_READY");
         dispatch_bytes(
             &mut runtime,
@@ -443,14 +443,14 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_authorize_nv_never_reads_the_index() {
+    fn trial_authorize_nv_no_index_read() {
         let mut runtime = restored("AUTHORIZE_NV_TRIAL");
         assert_eq!(authorize_nv(&mut runtime, &[]), vector("TRIAL_PANV"));
         assert_eq!(digest(&mut runtime), vector("TRIAL_PGD_AFTER_AUTHORIZE_NV"));
     }
 
     #[test]
-    fn a_failed_authorize_leaves_the_session_untouched() {
+    fn failed_authorize_session_unchanged() {
         let mut runtime = restored("SIGNED_READY");
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         for extra in [
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = command(
             CC_POLICY_AUTHORIZE,
             &[POLICY_SESSION_0],

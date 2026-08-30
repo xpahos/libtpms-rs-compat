@@ -600,7 +600,7 @@ pub(in crate::library::tpm2::command) mod test_support {
     }
 
     #[track_caller]
-    pub(in crate::library::tpm2::command) fn ready_runtime() -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2::command) fn ready_runtime() -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_READY"))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector("VOLATILE_READY"))
@@ -763,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attestation_tags_match_upstream() {
+    fn attestation_tag_upstream_match() {
         assert_eq!(TPM_ST_ATTEST_NV, 0x8014);
         assert_eq!(TPM_ST_ATTEST_COMMAND_AUDIT, 0x8015);
         assert_eq!(TPM_ST_ATTEST_SESSION_AUDIT, 0x8016);
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn the_common_header_precedes_every_variant() {
+    fn common_header_prefix_across_variants() {
         let variants = [
             Attested::Certify {
                 name: vec![0x01],
@@ -827,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn every_variant_marshals_in_the_upstream_order() {
+    fn variant_upstream_marshal_order_parity() {
         assert_eq!(
             &marshal_attest(&attest(Attested::Certify {
                 name: vec![0x11, 0x22],
@@ -910,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_qualifying_data_hashes_the_attestation_once() {
+    fn empty_qualifying_data_single_hash() {
         let data = [0xaa, 0xbb, 0xcc];
         let mut hasher = Hasher::new(0x000b).expect("a compiled hash");
         hasher.update(&data);
@@ -921,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn a_residual_qualifying_data_rehashes_the_attestation_digest() {
+    fn residual_qualifying_data_digest_rehash() {
         let data = [0xaa, 0xbb, 0xcc];
         let qualifying = [0x01, 0x02];
         let mut hasher = Hasher::new(0x000b).expect("a compiled hash");
@@ -937,14 +937,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unimplemented_hash_is_a_hash_error() {
+    fn unimplemented_hash_algorithm_error() {
         for hash_alg in [0x0000u16, 0x0010, 0xffff] {
             assert_eq!(attest_digest(hash_alg, &[0x00], &[]), Err(TPM_RC_HASH));
         }
     }
 
     #[test]
-    fn the_response_carries_a_sized_attestation_and_the_signature() {
+    fn response_sized_attestation_and_signature() {
         let output = attestation_response(&[0xaa, 0xbb], &Signature::Null)
             .expect("the response marshals")
             .into_parameters();
@@ -991,7 +991,7 @@ mod parameter_encryption {
     }
 
     #[track_caller]
-    fn encrypting_runtime() -> Box<Tpm2Runtime> {
+    fn encrypting_runtime() -> Tpm2Runtime {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -1010,7 +1010,7 @@ mod parameter_encryption {
     }
 
     #[test]
-    fn every_attestation_command_encrypts_its_first_response_parameter() {
+    fn attestation_command_first_response_parameter_encryption() {
         for (record, code, handles, sessions) in [
             (
                 "CERTIFY_RESPONSE_ENCRYPTED",
@@ -1056,7 +1056,7 @@ mod parameter_encryption {
     }
 
     #[test]
-    fn the_encrypted_attestation_still_starts_with_the_generated_value_once_decrypted() {
+    fn decrypted_attestation_generated_value_prefix() {
         let plain = attested_bytes(vector("QUOTE_PCR0_SHA256"));
         let encrypted = attested_bytes(vector("QUOTE_RESPONSE_ENCRYPTED"));
         assert_eq!(
@@ -1085,7 +1085,7 @@ mod oracle_state {
     }
 
     #[test]
-    fn the_restored_snapshot_carries_the_reference_random_generator() {
+    fn restored_snapshot_reference_random_generator() {
         let mut runtime = ready_runtime();
         assert_eq!(
             run(&mut runtime, &get_random()),

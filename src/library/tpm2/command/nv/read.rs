@@ -158,7 +158,7 @@ mod tests {
     const DATA8: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
     #[test]
-    fn the_read_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = nv_vector("CCATTR_014E");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         let descriptor = find(TPM_CC_NV_READ).expect("a registered command");
@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_public_command_attributes_match_the_oracle() {
+    fn read_public_command_attributes_oracle_match() {
         let expected = nv_vector("CCATTR_0169");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         let descriptor = find(TPM_CC_NV_READ_PUBLIC).expect("a registered command");
@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_and_windows_match_the_oracle() {
+    fn read_window_oracle_parity() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         let mut parameters = 8u16.to_be_bytes().to_vec();
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_length_read_returns_an_empty_buffer() {
+    fn zero_length_read_empty_buffer() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         write(&mut runtime, INDEX, &[0xaa; 32]);
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_range_errors_match_the_oracle() {
+    fn range_errors_oracle_match() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         write(&mut runtime, INDEX, &[0xaa; 32]);
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_max_nv_buffer_read_is_accepted() {
+    fn max_nv_buffer_read_acceptance() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 2048));
         write(&mut runtime, INDEX, &[0xaa; 1024]);
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_authorization_attributes_are_enforced() {
+    fn authorization_attribute_enforcement() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unwritten_index_cannot_be_read() {
+    fn unwritten_index_read_rejection() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         assert_eq!(
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_locked_index_cannot_be_read() {
+    fn read_locked_index_rejection() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_may_authorize_its_own_read_when_auth_read_is_set() {
+    fn auth_read_index_self_authorization() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         define(
@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_authorization_gates_match_the_oracle() {
+    fn authorization_gates_oracle_match() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         define(&mut runtime, &nv_public(0x0100_0010, READ_WRITE, 8));
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_public_response_matches_the_oracle_before_and_after_a_write() {
+    fn read_public_response_oracle_match_across_write() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert_eq!(
@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_public_name_is_the_computed_index_name() {
+    fn read_public_computed_index_name() {
         let mut runtime = started_runtime();
         let public = nv_public(INDEX, READ_WRITE, 32);
         define(&mut runtime, &public);
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_public_response_of_an_orderly_index_matches_the_oracle() {
+    fn orderly_index_read_public_oracle_match() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn read_public_needs_no_session_and_no_parameters() {
+    fn read_public_no_session_no_parameters() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert_eq!(
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn read_public_reports_an_undefined_index_against_its_own_handle() {
+    fn read_public_undefined_index_own_handle_blame() {
         let mut runtime = started_runtime();
         assert_eq!(
             response_code(&read_public(&mut runtime, INDEX)),
@@ -501,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_without_an_authorization_area_is_auth_missing() {
+    fn missing_authorization_area_auth_missing() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         write(&mut runtime, INDEX, &DATA8);
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_read_parameters_carry_their_own_parameter_number() {
+    fn truncated_read_parameter_number_attribution() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         write(&mut runtime, INDEX, &DATA8);
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn reading_never_touches_nv() {
+    fn read_no_nv_access() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         write(&mut runtime, INDEX, &DATA8);
@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn every_written_index_type_reads_back_its_stored_bytes() {
+    fn written_index_type_read_back_coverage() {
         let mut runtime = started_runtime();
         for (index_type, data_size, handle) in [
             (0u32, 32u16, 0x0100_0021u32),
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let full = [0x00u8, 0x08, 0x00, 0x00];
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {

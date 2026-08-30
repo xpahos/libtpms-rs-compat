@@ -84,6 +84,7 @@ pub(in crate::library::tpm2::command) fn execute(
         false,
         &secrets,
         &mut rand,
+        frame.cancellation,
     );
     let created = created.and_then(|created| {
         let out_private = sensitive_to_private(
@@ -142,6 +143,7 @@ pub(in crate::library::tpm2::command) fn execute(
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::clock::SteppingClock;
     use crate::library::tpm2::command::core::registry::{self, HandleKind, TPM_CC_CREATE};
     use crate::library::tpm2::golden_responses::create::vector;
@@ -316,7 +318,7 @@ mod tests {
         panic!("the replay must not draw host entropy");
     }
 
-    fn restored_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn restored_runtime(clock: &SteppingClock) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
         crate::library::tpm2::attach_volatile_blob(
@@ -339,6 +341,7 @@ mod tests {
             &input,
             clock,
             |_| Ok(()),
+            Cancellation::disabled(),
         )
         .expect("the command processes")
     }
@@ -349,7 +352,7 @@ mod tests {
         assert_eq!(response, vector(label), "{label}");
     }
 
-    fn replay_case(steps: &[(&str, Vec<u8>)]) -> Box<Tpm2Runtime> {
+    fn replay_case(steps: &[(&str, Vec<u8>)]) -> Tpm2Runtime {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restored_runtime(&clock);
         for (label, bytes) in steps {
@@ -359,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         assert_eq!(TPM_CC_CREATE, 0x0000_0153);
         let descriptor = registry::find(TPM_CC_CREATE).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0200_0153);
@@ -375,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn the_object_handle_kind_accepts_only_transient_and_persistent_handles() {
+    fn object_handle_kind_transient_persistent_only() {
         let kind = registry::find(TPM_CC_CREATE).unwrap().handles[0].kind;
         for handle in [
             0x8000_0000u32,
@@ -403,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let oracle = vector("CAP_CC_CREATE");
         assert_eq!(
             &oracle[oracle.len() - 4..],
@@ -414,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_pagination_keeps_the_sorted_neighbours() {
+    fn capability_pagination_sorted_neighbour_preservation() {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restored_runtime(&clock);
         let response = exec_raw(&mut runtime, &clock, cap_cc_command(0x14f, 3));
@@ -430,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
@@ -443,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn children_under_a_storage_parent_match_the_oracle() {
+    fn storage_parent_child_oracle_parity() {
         let runtime = replay_case(&[
             (
                 "CP_STORAGE_PARENT",
@@ -515,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_child_under_a_storage_parent_is_created_deterministically() {
+    fn rsa_child_storage_parent_deterministic_creation() {
         let decode = |response: &[u8]| {
             assert_eq!(response[6..10], [0, 0, 0, 0], "the creation succeeds");
             let parameter_size = u32::from_be_bytes(response[10..14].try_into().unwrap()) as usize;
@@ -585,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_is_framed_without_a_handle_or_name() {
+    fn response_framing_no_handle_no_name() {
         let oracle = vector("CREATE_AES_CHILD");
         assert_eq!(&oracle[..2], &0x8002u16.to_be_bytes());
         assert_eq!(&oracle[6..10], &[0, 0, 0, 0], "the command succeeded");
@@ -613,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn the_creation_data_carries_the_parent_name_and_qualified_name() {
+    fn creation_data_parent_name_qualified_name() {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restored_runtime(&clock);
         exec(
@@ -656,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_errors_match_the_oracle() {
+    fn parameter_error_oracle_parity() {
         replay_case(&[
             (
                 "CP_STORAGE_PARENT",
@@ -744,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_commands_match_the_oracle() {
+    fn truncated_command_oracle_parity() {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restored_runtime(&clock);
         exec(
@@ -768,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn unsuitable_parents_match_the_oracle() {
+    fn unsuitable_parent_oracle_parity() {
         replay_case(&[
             (
                 "CP_SIGNING_KEY",
@@ -792,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_validation_matches_the_oracle() {
+    fn handle_validation_oracle_parity() {
         replay_case(&[
             (
                 "CREATE_UNDER_OWNER_HIERARCHY",
@@ -814,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_parent_matches_the_oracle() {
+    fn persistent_parent_oracle_match() {
         let runtime = replay_case(&[
             (
                 "CP_PERSISTENT_PARENT",
@@ -838,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_hierarchy_parent_matches_the_oracle() {
+    fn null_hierarchy_parent_oracle_match() {
         let oracle = vector("CREATE_UNDER_NULL_PARENT");
         replay_case(&[
             (
@@ -865,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_behaviour_matches_the_oracle() {
+    fn authorization_behaviour_oracle_parity() {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restored_runtime(&clock);
         let response = exec_raw(
@@ -901,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_attack_protection_matches_the_oracle() {
+    fn dictionary_attack_protection_oracle_parity() {
         replay_case(&[
             (
                 "CP_DA_PARENT",
@@ -933,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_object_table_matches_the_oracle() {
+    fn full_object_table_oracle_match() {
         let full_table = vector("CREATE_FULL_TABLE");
         assert_eq!(full_table[6..10], [0, 0, 0x09, 0x02]);
         let runtime = replay_case(&[
@@ -952,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn one_free_slot_still_creates_a_child_and_leaves_it_free() {
+    fn single_free_slot_creation_slot_unoccupied() {
         assert_eq!(
             vector("CREATE_ONE_FREE_SLOT"),
             vector("CREATE_AES_CHILD"),
@@ -974,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_parent_with_one_free_slot_matches_the_oracle() {
+    fn persistent_parent_one_free_slot_oracle_match() {
         let one_free = vector("CREATE_PERSISTENT_ONE_FREE");
         assert_eq!(one_free[6..10], [0, 0, 0x09, 0x02]);
         let runtime = replay_case(&[
@@ -1002,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_parent_with_two_free_slots_matches_the_oracle() {
+    fn persistent_parent_two_free_slots_oracle_match() {
         assert_eq!(
             vector("CREATE_PERSISTENT_TWO_FREE"),
             vector("CREATE_UNDER_PERSISTENT_PARENT")
@@ -1035,7 +1038,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parent_type_error_precedes_the_full_table_error() {
+    fn parent_type_error_precedence_over_full_table() {
         let non_parent = vector("CREATE_NONPARENT_FULL_TABLE");
         assert_eq!(non_parent[6..10], [0, 0, 0x01, 0x8a]);
         replay_case(&[
@@ -1092,7 +1095,7 @@ mod tests {
         }
 
         #[test]
-        fn a_created_child_leaves_the_object_slots_untouched() {
+        fn created_child_object_slots_unchanged() {
             let runtime = replay_case(&[
                 (
                     "CP_STORAGE_PARENT",
@@ -1130,7 +1133,7 @@ mod tests {
         }
 
         #[test]
-        fn a_persistent_parent_creation_matches_the_oracle_state() {
+        fn persistent_parent_creation_oracle_state_match() {
             let runtime = replay_case(&[
                 (
                     "CP_PERSISTENT_PARENT",
@@ -1158,7 +1161,7 @@ mod tests {
         }
 
         #[test]
-        fn failed_creations_leave_the_oracle_state() {
+        fn failed_creation_oracle_state_preservation() {
             let runtime = replay_case(&[
                 (
                     "CP_STORAGE_PARENT",
@@ -1192,7 +1195,7 @@ mod tests {
         }
 
         #[test]
-        fn slot_exhaustion_boundaries_match_the_oracle_state() {
+        fn slot_exhaustion_boundary_oracle_state_parity() {
             let full = replay_case(&[
                 (
                     "CP_STORAGE_PARENT",
@@ -1241,7 +1244,7 @@ mod tests {
         }
 
         #[test]
-        fn persistent_parent_slot_exhaustion_matches_the_oracle_state() {
+        fn persistent_parent_slot_exhaustion_oracle_state_parity() {
             let one_free = replay_case(&[
                 (
                     "CP_PERSISTENT_PARENT",

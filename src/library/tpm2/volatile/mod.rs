@@ -815,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_writer_version_decodes() {
+    fn supported_writer_version_decode_coverage() {
         for version in [1u16, 2, 3, 4] {
             let fixture = VolatileFixture {
                 version,
@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_has_no_min_version_and_no_tail_chain() {
+    fn version1_min_version_tail_chain_absence() {
         let fixture = VolatileFixture {
             version: 1,
             min_version: None,
@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_magic_is_bad_tag() {
+    fn bad_magic_bad_tag() {
         let fixture = VolatileFixture {
             magic: 0xdead_beef,
             ..VolatileFixture::default()
@@ -863,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn version_zero_decodes_like_a_pre_tail_stream() {
+    fn version_zero_pre_tail_stream_decoding() {
         let fixture = VolatileFixture {
             version: 0,
             min_version: None,
@@ -876,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn newer_version_with_supported_min_version_decodes() {
+    fn newer_version_supported_min_version_decoding() {
         let fixture = VolatileFixture {
             version: 5,
             min_version: Some(1),
@@ -889,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn min_version_newer_than_supported_is_rejected() {
+    fn newer_min_version_rejection() {
         let fixture = VolatileFixture {
             min_version: Some(VOLATILE_STATE_VERSION + 1),
             ..VolatileFixture::default()
@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn every_truncated_header_prefix_fails_safely() {
+    fn truncated_header_prefix_rejection_safety() {
         let full = VolatileFixture::default().bytes();
         for len in 0..12 {
             let error = parse(&full[..len]).unwrap_err();
@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn scalars_decode_exactly() {
+    fn scalar_decoding_exactness() {
         let blob = VolatileFixture::default().bytes();
         let decoded = parse(&blob).unwrap();
         assert_eq!(decoded.exclusive_audit_session, 0x0300_0000);
@@ -976,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_session_process_array_size_is_bad_parameter() {
+    fn session_process_array_size_bad_parameter() {
         for declared in [0u16, 2, 4, 64] {
             let mut fixture = VolatileFixture {
                 session_array_size: declared,
@@ -1000,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_session_attribute_bits_are_rejected() {
+    fn reserved_session_attribute_bits_rejection() {
         let mut fixture = VolatileFixture::default();
         fixture.session_entries[1].1 = 0x18;
         let error = parse(&fixture.bytes()).unwrap_err();
@@ -1015,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_volatile_tpm2bs_are_size_errors() {
+    fn oversized_tpm2b_size_error() {
         let oversized = vec![0u8; 65];
         let fixtures = [
             VolatileFixture {
@@ -1039,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_orderly_ram_size_is_bad_parameter() {
+    fn orderly_ram_size_bad_parameter() {
         for declared in [0u16, 511, 513] {
             let fixture = VolatileFixture {
                 orderly_ram_size: declared,
@@ -1060,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_object_pcr_and_session_slot_counts_are_bad_parameter() {
+    fn slot_count_mismatch_bad_parameter() {
         for (fixture, expected) in [
             (
                 VolatileFixture {
@@ -1096,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_required_block_is_bad_parameter() {
+    fn missing_block_bad_parameter() {
         let mut payload = VolatileFixture::default().payload();
         assert_eq!(payload[28], 1, "fixture layout: DA block flag");
         payload[28] = 0;
@@ -1112,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_tie_mismatch_identifies_the_hierarchy() {
+    fn seed_tie_mismatch_hierarchy_identification() {
         for (field, wrong) in [
             (PersistentField::EpSeed, 0usize),
             (PersistentField::SpSeed, 1),
@@ -1131,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_length_mismatch_is_a_tie_mismatch_and_oversize_is_size() {
+    fn seed_length_tie_mismatch_oversize_size_error() {
         let fixture = VolatileFixture {
             ep_seed: FIXTURE_EP_SEED[..16].to_vec(),
             ..VolatileFixture::default()
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_stream_skips_the_tail_chain_entirely() {
+    fn version_2_stream_tail_chain_omission() {
         let mut payload = VolatileFixture {
             version: 2,
             ..VolatileFixture::default()
@@ -1174,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_trailing_magic_is_bad_tag() {
+    fn bad_trailing_magic_bad_tag() {
         let fixture = VolatileFixture {
             trailing_magic: 0x1234_5678,
             ..VolatileFixture::default()
@@ -1191,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn blob_shorter_than_the_digest_is_insufficient() {
+    fn blob_below_digest_size_insufficient() {
         for len in 0..SHA1_DIGEST_SIZE {
             let error = parse(&vec![0u8; len]).unwrap_err();
             assert_eq!(error.tpm_result(), TPM_RC_INSUFFICIENT, "length {len}");
@@ -1199,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupted_payload_fails_the_digest_when_the_decode_cannot_see_it() {
+    fn unseen_payload_corruption_digest_failure() {
         let mut blob = VolatileFixture::default().bytes();
         let ramp: Vec<u8> = (0..RAM_INDEX_SPACE).map(|i| i as u8).collect();
         let at = blob
@@ -1212,7 +1212,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupted_digest_is_a_hash_error() {
+    fn corrupted_digest_hash_error() {
         let mut blob = VolatileFixture::default().bytes();
         let last = blob.len() - 1;
         blob[last] ^= 0x01;
@@ -1222,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn future_bytes_before_the_digest_are_skipped_and_hash_covered() {
+    fn future_bytes_hash_coverage_exclusion() {
         let fixture = VolatileFixture {
             post_magic: vec![0xf0, 0xf1, 0xf2, 0xf3, 0xf4],
             ..VolatileFixture::default()
@@ -1240,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn digest_over_wrong_range_is_rejected() {
+    fn wrong_range_digest_rejection() {
         let payload = VolatileFixture::default().payload();
         let mut blob = payload.clone();
         let digest = Sha1::digest(&payload[..payload.len() - 4]);
@@ -1252,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn occupied_objects_in_the_volatile_stream_decode() {
+    fn occupied_object_volatile_stream_decoding() {
         let mut fixture = VolatileFixture::default();
         fixture.objects[0] = super::super::object::fixtures::any_rsa_object(4);
         let blob = fixture.bytes();
@@ -1280,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn c_fixtures_decode_for_every_layout_version() {
+    fn c_fixture_layout_version_decode_coverage() {
         for (blob, version) in [
             (C_FIXTURE_V1, 1u16),
             (C_FIXTURE_V2, 2),
@@ -1296,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn c_v4_fixture_carries_the_expected_values_in_every_section() {
+    fn c_v4_fixture_section_value_coverage() {
         let decoded = parse_c_fixture(C_FIXTURE_V4);
 
         assert_eq!(decoded.exclusive_audit_session, 0x0300_0abc);
@@ -1421,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    fn c_future_fixture_pins_the_exact_hash_coverage() {
+    fn c_future_fixture_hash_coverage_pinning() {
         let decoded = parse_c_fixture(C_FIXTURE_V4_FUTURE);
         assert_eq!(decoded.header_version, 4);
         assert_eq!(
@@ -1446,7 +1446,7 @@ mod tests {
     }
 
     #[test]
-    fn c_fixture_strict_prefixes_fail_safely() {
+    fn c_fixture_strict_prefix_rejection_safety() {
         let payload = &C_FIXTURE_V4[..C_FIXTURE_V4.len() - SHA1_DIGEST_SIZE];
         for len in (0..payload.len()).step_by(13) {
             let mut blob = payload[..len].to_vec();
@@ -1467,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_stream_reads_monotonic_then_realtime_exactly_once() {
+    fn v4_stream_monotonic_then_realtime_read_order() {
         let blob = VolatileFixture::default().bytes();
         let host = scripted_clock();
         let decoded = parse_recording(&blob, &host).expect("the v4 fixture decodes");
@@ -1484,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_v4_streams_read_realtime_then_monotonic_exactly_once() {
+    fn pre_v4_stream_realtime_then_monotonic_read_order() {
         for version in [1u16, 2, 3] {
             let fixture = VolatileFixture {
                 version,
@@ -1514,7 +1514,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_header_performs_no_clock_reads() {
+    fn invalid_header_no_clock_reads() {
         let fixture = VolatileFixture {
             magic: 0xdead_beef,
             ..VolatileFixture::default()
@@ -1529,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_before_the_versioned_tail_performs_no_clock_reads() {
+    fn pre_versioned_tail_failure_no_clock_reads() {
         let fixture = VolatileFixture {
             ep_seed: vec![0xaa; 32],
             ..VolatileFixture::default()
@@ -1549,7 +1549,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_v4_truncated_inside_the_first_sample_performs_no_clock_reads() {
+    fn tail_v4_first_sample_truncation_no_clock_reads() {
         let payload = VolatileFixture::default().payload();
         let tail_at = tail_v4_offset(&payload);
         for available in [0usize, 1, 7] {
@@ -1565,7 +1565,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_v4_truncated_after_the_sample_has_already_read_monotonic() {
+    fn tail_v4_truncation_post_monotonic_insufficient() {
         let payload = VolatileFixture::default().payload();
         let tail_at = tail_v4_offset(&payload);
         for available in [8usize, 15, 16, 24, 31] {
@@ -1585,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_tail_v4_with_a_malformed_future_block_reads_monotonic_only() {
+    fn complete_tail_v4_malformed_future_block_monotonic_only() {
         let payload = VolatileFixture::default().payload();
         let tail_at = tail_v4_offset(&payload);
         for available in [32usize, 33, 34] {
@@ -1605,7 +1605,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_before_the_trailing_magic_skips_the_realtime_read() {
+    fn pre_trailing_magic_failure_realtime_read_skip() {
         let fixture = VolatileFixture {
             trailing_magic: 0x0bad_0bad,
             ..VolatileFixture::default()
@@ -1627,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_digest_fails_after_the_upstream_reads() {
+    fn bad_digest_failure_after_upstream_reads() {
         let mut blob = VolatileFixture::default().bytes();
         let last = blob.len() - 1;
         blob[last] ^= 0xff;
@@ -1640,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_parses_with_the_same_script_are_deterministic() {
+    fn repeated_parse_determinism() {
         let blob = VolatileFixture::default().bytes();
         let run = || {
             let host = scripted_clock();
@@ -1651,7 +1651,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_the_payload_fails_safely() {
+    fn payload_strict_prefix_rejection_safety() {
         let payload = VolatileFixture::default().payload();
         for len in (0..payload.len()).step_by(7) {
             let mut blob = payload[..len].to_vec();
@@ -1662,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn volatile_blob_byte_mutations_do_not_panic() {
+    fn volatile_blob_byte_mutation_panic_safety() {
         let blob = VolatileFixture::default().bytes();
         for index in (0..blob.len()).step_by(3) {
             for byte in [0x00u8, 0x01, 0xff] {

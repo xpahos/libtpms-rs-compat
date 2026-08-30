@@ -44,6 +44,7 @@ fn parse_parameters(parameters: &[u8]) -> Result<Vec<u8>, TpmResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_CHANGE_AUTH, find,
     };
@@ -95,12 +96,13 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![INDEX],
             parameters: &change_auth_frame(new_auth),
+            cancellation: Cancellation::disabled(),
         };
         execute(runtime, &frame).map(|_| ())
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = nv_vector("CCATTR_013B");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         let descriptor = find(TPM_CC_NV_CHANGE_AUTH).expect("a registered command");
@@ -124,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn a_password_session_is_refused_like_upstream() {
+    fn password_session_upstream_rejection() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         define(&mut runtime, &auth_read_write());
@@ -156,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn an_undefined_index_is_reported_against_its_own_handle() {
+    fn undefined_index_handle_decorated_error() {
         let mut runtime = started_runtime();
         assert_eq!(
             response_code(&dispatch_bytes(
@@ -173,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_secret_replaces_the_stored_one() {
+    fn new_secret_replacement() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         assert_eq!(change_auth(&mut runtime, b"secret"), Ok(()));
@@ -185,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_secret_authorizes_the_index_afterwards() {
+    fn new_secret_subsequent_authorization() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         define(&mut runtime, &auth_read_write());
@@ -211,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_zeros_are_stripped_from_the_new_secret() {
+    fn new_secret_trailing_zero_strip() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         let mut padded = b"ab".to_vec();
@@ -228,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_longer_than_the_name_algorithm_digest_is_a_size_error() {
+    fn secret_above_name_alg_digest_size_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         assert_eq!(change_auth(&mut runtime, &[0xaa; 33]), Err(RC_PARAM1_SIZE));
@@ -242,19 +244,20 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![0x0100_0002],
             parameters: &change_auth_frame(&[0xaa; 21]),
+            cancellation: Cancellation::disabled(),
         };
         assert_eq!(execute(&mut runtime, &frame).err(), Some(RC_PARAM1_SIZE));
     }
 
     #[test]
-    fn an_oversized_tpm2b_is_a_size_error() {
+    fn oversized_tpm2b_size_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         assert_eq!(change_auth(&mut runtime, &[0xaa; 65]), Err(RC_PARAM1_SIZE));
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         let mut parameters = change_auth_frame(b"pass");
@@ -262,12 +265,13 @@ mod tests {
         let frame = CommandFrame {
             handles: vec![INDEX],
             parameters: &parameters,
+            cancellation: Cancellation::disabled(),
         };
         assert_eq!(execute(&mut runtime, &frame).err(), Some(TPM_RC_SIZE));
     }
 
     #[test]
-    fn a_failed_change_leaves_the_old_secret_in_place() {
+    fn failed_change_old_secret_preservation() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         assert_eq!(change_auth(&mut runtime, b"secret"), Ok(()));
@@ -284,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn rewriting_the_same_secret_needs_no_nv_access() {
+    fn same_secret_rewrite_no_nv_access() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         assert_eq!(change_auth(&mut runtime, b"secret"), Ok(()));
@@ -295,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_secret_survives_a_permanent_state_round_trip() {
+    fn new_secret_permanent_state_round_trip() {
         use crate::library::tpm2::persistent::persistent_all_store;
         use crate::library::tpm2::restore_permanent_blob_for_test;
 
@@ -318,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn the_debug_output_never_exposes_the_secret() {
+    fn debug_output_secret_redaction() {
         let mut runtime = started_runtime();
         define(&mut runtime, &auth_read_write());
         assert_eq!(change_auth(&mut runtime, b"Zaphod"), Ok(()));
@@ -344,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let full = change_auth_frame(b"pass");
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {
@@ -355,6 +359,7 @@ mod tests {
                 let frame = CommandFrame {
                     handles: vec![INDEX],
                     parameters: &parameters,
+                    cancellation: Cancellation::disabled(),
                 };
                 let _ = execute(&mut runtime, &frame);
             }

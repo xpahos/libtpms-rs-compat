@@ -165,7 +165,7 @@ mod tests {
     use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
 
     #[test]
-    fn trailing_zeros_are_stripped_like_upstream() {
+    fn trailing_zero_strip_upstream_match() {
         assert_eq!(strip_trailing_zeros(&[]), &[] as &[u8]);
         assert_eq!(strip_trailing_zeros(&[0, 0, 0]), &[] as &[u8]);
         assert_eq!(strip_trailing_zeros(&[1, 2, 0, 0]), &[1, 2]);
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_handles_name_themselves() {
+    fn permanent_handle_self_naming() {
         let runtime = empty_state_runtime();
         for handle in [TPM_RH_OWNER, TPM_RH_PLATFORM, TPM_RH_NULL, TPM_RH_LOCKOUT] {
             assert_eq!(
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_handles_name_themselves() {
+    fn pcr_handle_self_naming() {
         let runtime = empty_state_runtime();
         for pcr in 0..IMPLEMENTATION_PCR as u32 {
             assert_eq!(entity_name(&runtime, pcr).unwrap(), pcr.to_be_bytes());
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_nv_handle_normalizes_to_the_platform_hierarchy() {
+    fn platform_nv_handle_hierarchy_normalization() {
         assert_eq!(
             normalize_hierarchy_handle(TPM_RH_PLATFORM_NV),
             TPM_RH_PLATFORM
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn every_pcr_handle_and_the_null_handle_have_an_empty_auth_value() {
+    fn pcr_null_handle_empty_auth_value() {
         let runtime = empty_state_runtime();
         for pcr in 0..IMPLEMENTATION_PCR as u32 {
             assert_eq!(entity_auth_value(&runtime, pcr), Ok(&[][..]), "PCR {pcr}");
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_state_clear_is_an_undecorated_internal_failure() {
+    fn missing_state_clear_undecorated_failure() {
         let runtime = empty_state_runtime();
         assert!(runtime.live.state_clear.is_none());
         assert_eq!(auth_value_group(&runtime, 0), Err(TPM_RC_FAILURE));

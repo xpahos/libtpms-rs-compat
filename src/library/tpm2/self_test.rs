@@ -855,51 +855,51 @@ mod tests {
     }
 
     #[test]
-    fn every_implemented_primitive_test_passes_its_own_vectors() {
+    fn implemented_primitive_vector_success() {
         for test in PrimitiveTest::ALL {
             assert!(test.run(), "{test:?}");
         }
     }
 
     #[test]
-    fn sha1_known_answer_vectors_match() {
+    fn sha1_known_answer_vector_match() {
         assert_eq!(SHA1_VECTORS.len(), 3);
         assert!(run_hash_vectors(0, &SHA1_VECTORS));
     }
 
     #[test]
-    fn sha256_known_answer_vectors_match() {
+    fn sha256_known_answer_vector_match() {
         assert_eq!(SHA256_VECTORS.len(), 3);
         assert!(run_hash_vectors(1, &SHA256_VECTORS));
     }
 
     #[test]
-    fn sha384_known_answer_vectors_match() {
+    fn sha384_known_answer_vector_match() {
         assert_eq!(SHA384_VECTORS.len(), 3);
         assert!(run_hash_vectors(2, &SHA384_VECTORS));
     }
 
     #[test]
-    fn sha512_known_answer_vectors_match() {
+    fn sha512_known_answer_vector_match() {
         assert_eq!(SHA512_VECTORS.len(), 3);
         assert!(run_hash_vectors(3, &SHA512_VECTORS));
     }
 
     #[test]
-    fn aes256_known_answer_vectors_match() {
+    fn aes256_known_answer_vector_match() {
         assert_eq!(AES256_VECTORS.len(), 3);
         assert!(run_block_cipher_vectors(&AES256_VECTORS));
     }
 
     #[test]
-    fn the_multi_block_message_is_reassembled_without_the_source_indentation() {
+    fn multi_block_message_reassembly_without_indentation() {
         assert_eq!(SHA384_MULTI_BLOCK_MESSAGE.len(), 112);
         assert!(!SHA384_MULTI_BLOCK_MESSAGE.contains(&b' '));
         assert_eq!(SHA1_VECTORS[2].message.len(), 56);
     }
 
     #[test]
-    fn each_hash_vector_binds_to_the_bank_the_pcr_code_uses() {
+    fn hash_vector_pcr_bank_binding() {
         assert_eq!(PCR_SLOT_BANKS[0].0, TPM_ALG_SHA1);
         assert_eq!(PCR_SLOT_BANKS[1].0, TPM_ALG_SHA256);
         assert_eq!(PCR_SLOT_BANKS[2].0, TPM_ALG_SHA384);
@@ -911,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_wrong_digest_bit_is_rejected() {
+    fn wrong_digest_bit_rejection() {
         let corrupted = [HashVector {
             message: b"abc",
             digest: hex_bytes::<20>(b"a9993e364706816aba3e25717850c26c9cd0d89c"),
@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn a_digest_from_another_bank_is_rejected() {
+    fn cross_bank_digest_rejection() {
         let mismatched = [HashVector {
             message: b"abc",
             digest: hex_bytes::<20>(b"a9993e364706816aba3e25717850c26c9cd0d89d"),
@@ -929,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_wrong_ciphertext_bit_is_rejected() {
+    fn wrong_ciphertext_bit_rejection() {
         let corrupted = [BlockCipherVector {
             key: hex_bytes(b"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
             plaintext: hex_bytes(b"00112233445566778899aabbccddeeff"),
@@ -939,18 +939,18 @@ mod tests {
     }
 
     #[test]
-    fn an_unimplemented_bank_slot_fails_instead_of_reporting_success() {
+    fn unimplemented_bank_slot_failure() {
         assert!(!run_hash_vectors(PCR_SLOT_BANKS.len(), &SHA1_VECTORS));
     }
 
     #[test]
-    fn hex_bytes_decodes_digits_and_letters() {
+    fn hex_bytes_digit_letter_decoding() {
         assert_eq!(hex_bytes::<4>(b"00ff107f"), [0x00, 0xff, 0x10, 0x7f]);
         assert_eq!(hex_bytes::<3>(b"0123ab"), [0x01, 0x23, 0xab]);
     }
 
     #[test]
-    fn the_default_profile_makes_every_compiled_test_pending() {
+    fn default_profile_all_tests_pending() {
         let state = default_state();
         for test in PrimitiveTest::ALL {
             assert!(state.pending.contains(test), "{test:?}");
@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn each_primitive_maps_to_its_exact_profile_token() {
+    fn primitive_exact_profile_token_mapping() {
         assert_eq!(PrimitiveTest::Sha1.profile_name(), b"sha1");
         assert_eq!(PrimitiveTest::Sha256.profile_name(), b"sha256");
         assert_eq!(PrimitiveTest::Sha384.profile_name(), b"sha384");
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_sha1_excludes_the_sha1_self_test() {
+    fn sha1_disabled_profile_exclusion() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha1");
         let state = SelfTestState::for_algorithms(&algorithms);
         assert!(!state.implemented.contains(PrimitiveTest::Sha1));
@@ -991,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_sha512_excludes_the_sha512_self_test() {
+    fn sha512_disabled_profile_exclusion() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
         let state = SelfTestState::for_algorithms(&algorithms);
         assert!(!state.implemented.contains(PrimitiveTest::Sha512));
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_aes_excludes_the_aes_self_test() {
+    fn aes_disabled_profile_exclusion() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"aes");
         let state = SelfTestState::for_algorithms(&algorithms);
         assert!(!state.implemented.contains(PrimitiveTest::Aes256));
@@ -1015,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mandatory_algorithms_stay_included_when_optional_ones_are_dropped() {
+    fn mandatory_algorithm_retention_without_optional() {
         let algorithms = without(&without(DEFAULT_ALGORITHMS_PROFILE, b"sha1"), b"sha512");
         let state = SelfTestState::for_algorithms(&algorithms);
         assert!(state.implemented.contains(PrimitiveTest::Sha256));
@@ -1029,7 +1029,7 @@ mod tests {
 ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ecc-nist-p384";
 
     #[test]
-    fn a_validated_custom_profile_drives_the_pending_set() {
+    fn custom_profile_pending_set() {
         let json = format!(r#"{{"Name":"custom","Algorithms":"{MINIMAL_ALGORITHMS}"}}"#);
         let profile = validate_user_profile(Some(json.as_bytes()))
             .expect("the minimal algorithm set validates");
@@ -1043,7 +1043,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_null_profile_enables_every_primitive_test() {
+    fn null_profile_full_enablement() {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = SelfTestState::for_profile(&profile);
         for test in PrimitiveTest::ALL {
@@ -1052,7 +1052,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_empty_algorithm_profile_leaves_nothing_pending() {
+    fn empty_profile_empty_pending_set() {
         let mut state = SelfTestState::for_algorithms(b"");
         assert!(state.implemented.is_empty());
         assert!(state.pending.is_empty());
@@ -1061,7 +1061,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn profile_matching_rejects_substrings_and_prefixes() {
+    fn profile_matching_substring_prefix_rejection() {
         for algorithms in [&b"sha"[..], b"sha5121", b"1sha512", b"xsha512,sha51"] {
             let state = SelfTestState::for_algorithms(algorithms);
             assert!(
@@ -1076,7 +1076,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_disabled_primitive_is_never_passed_to_the_runner() {
+    fn disabled_primitive_runner_exclusion() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
         let mut state = SelfTestState::for_algorithms(&algorithms);
         state.set_runner(rejects_sha512);
@@ -1086,7 +1086,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_non_full_test_runs_only_the_profile_enabled_pending_primitives() {
+    fn non_full_test_pending_enabled_only() {
         let algorithms = without(&without(DEFAULT_ALGORITHMS_PROFILE, b"sha1"), b"sha512");
         let mut state = SelfTestState::for_algorithms(&algorithms);
         state.set_runner(counting_runner);
@@ -1097,7 +1097,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_full_test_resets_only_the_profile_enabled_primitive_set() {
+    fn full_test_profile_scoped_reset() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha1");
         let mut state = SelfTestState::for_algorithms(&algorithms);
         assert_eq!(state.run(false), Ok(()));
@@ -1116,7 +1116,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_debug_output_exposes_no_vector_material() {
+    fn debug_output_no_vector_material() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(state.run(true), Err(TPM_RC_FAILURE));
@@ -1137,7 +1137,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn every_test_owns_a_distinct_bit() {
+    fn test_bit_distinctness() {
         for (index, test) in PrimitiveTest::ALL.iter().enumerate() {
             for other in &PrimitiveTest::ALL[index + 1..] {
                 assert_ne!(test.bit(), other.bit(), "{test:?} and {other:?}");
@@ -1146,7 +1146,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_successful_run_clears_every_pending_test() {
+    fn successful_run_pending_clearance() {
         let mut state = default_state();
         assert_eq!(state.run(false), Ok(()));
         assert!(state.pending.is_empty());
@@ -1154,7 +1154,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_second_run_without_full_test_reruns_nothing() {
+    fn second_non_full_run_no_reruns() {
         let mut state = default_state();
         assert_eq!(state.run(false), Ok(()));
         state.set_runner(always_fails);
@@ -1167,7 +1167,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_full_test_marks_every_test_pending_again() {
+    fn full_test_pending_reset() {
         let mut state = default_state();
         assert_eq!(state.run(false), Ok(()));
         state.set_runner(always_fails);
@@ -1178,7 +1178,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failure_keeps_the_failed_and_unreached_tests_pending() {
+    fn failed_and_unreached_pending_retention() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(state.run(false), Err(TPM_RC_FAILURE));
@@ -1196,7 +1196,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_run_after_a_failure_retries_only_the_tests_left_pending() {
+    fn post_failure_retry_pending_only() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(state.run(false), Err(TPM_RC_FAILURE));
@@ -1207,7 +1207,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_full_test_clears_the_previous_failure_before_executing() {
+    fn full_test_prior_failure_clearance() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(state.run(false), Err(TPM_RC_FAILURE));
@@ -1218,7 +1218,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_later_failure_replaces_the_recorded_primitive() {
+    fn later_failure_record_replacement() {
         let mut state = default_state();
         state.set_runner(always_fails);
         assert_eq!(state.run(true), Err(TPM_RC_FAILURE));
@@ -1251,7 +1251,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_canonical_order_follows_ascending_tpm_algorithm_ids() {
+    fn canonical_order_ascending_algorithm_ids() {
         let algorithms: Vec<u16> = PrimitiveTest::ALL
             .into_iter()
             .map(PrimitiveTest::algorithm)
@@ -1272,7 +1272,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_selection_runs_aes_before_sha256() {
+    fn selection_aes_before_sha256_order() {
         let mut state = default_state();
         state.set_runner(fails_on_aes256_and_sha256);
         assert_eq!(
@@ -1294,7 +1294,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_full_test_runs_sha1_before_the_failing_aes_test() {
+    fn full_test_sha1_before_failing_aes_order() {
         let mut state = default_state();
         state.set_runner(fails_on_aes256);
         assert_eq!(state.run(true), Err(TPM_RC_FAILURE));
@@ -1324,7 +1324,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn every_primitive_maps_to_its_tpm_algorithm_id() {
+    fn primitive_tpm_algorithm_id_mapping() {
         assert_eq!(PrimitiveTest::Sha1.algorithm(), TPM_ALG_SHA1);
         assert_eq!(PrimitiveTest::Sha256.algorithm(), TPM_ALG_SHA256);
         assert_eq!(PrimitiveTest::Sha384.algorithm(), TPM_ALG_SHA384);
@@ -1339,7 +1339,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_empty_selection_runs_nothing_and_keeps_the_pending_set() {
+    fn empty_selection_no_run_pending_preservation() {
         let mut state = default_state();
         state.set_runner(never_runs);
         assert_eq!(state.run_selected(&[]), Ok(()));
@@ -1348,7 +1348,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_selection_runs_only_the_requested_primitives() {
+    fn selection_requested_primitives_only() {
         let mut state = default_state();
         state.set_runner(counting_runner);
         RUN_COUNT.with(|count| count.set(0));
@@ -1362,7 +1362,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_duplicated_algorithm_runs_its_primitive_once() {
+    fn duplicated_algorithm_single_run() {
         let mut state = default_state();
         state.set_runner(counting_runner);
         RUN_COUNT.with(|count| count.set(0));
@@ -1374,7 +1374,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_completed_primitive_runs_again_when_it_is_requested_explicitly() {
+    fn completed_primitive_explicit_rerun() {
         let mut state = default_state();
         assert_eq!(state.run(true), Ok(()));
         assert!(state.pending.is_empty());
@@ -1386,7 +1386,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_algorithm_outside_the_registry_is_rejected_before_anything_runs() {
+    fn unregistered_algorithm_pre_run_rejection() {
         let mut state = default_state();
         state.set_runner(never_runs);
         for algorithm in [0x0002u16, 0x0009, 0x0027, 0x0045, 0xffff] {
@@ -1401,7 +1401,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_profile_disabled_algorithm_is_rejected_before_anything_runs() {
+    fn profile_disabled_algorithm_pre_run_rejection() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
         let mut state = SelfTestState::for_algorithms(&algorithms);
         state.set_runner(never_runs);
@@ -1413,7 +1413,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_enabled_algorithm_without_a_rust_test_runs_nothing() {
+    fn enabled_algorithm_without_rust_test_no_run() {
         let mut state = default_state();
         state.set_runner(never_runs);
         assert_eq!(state.run_selected(&[TPM_ALG_RSA, TPM_ALG_HMAC]), Ok(()));
@@ -1422,7 +1422,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_selected_failure_records_the_primitive_and_keeps_the_rest_pending() {
+    fn selected_failure_record_and_pending_retention() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(
@@ -1443,7 +1443,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_successful_retry_clears_the_recorded_failure() {
+    fn successful_retry_failure_clearance() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(
@@ -1458,7 +1458,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_rejected_selection_leaves_a_recorded_failure_untouched() {
+    fn rejected_selection_recorded_failure_unchanged() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(
@@ -1476,7 +1476,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_pending_algorithms_are_reported_in_ascending_order() {
+    fn pending_algorithms_ascending_order() {
         let mut state = default_state();
         assert_eq!(
             state.pending_algorithms(),
@@ -1510,7 +1510,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_profile_without_sha1_never_reports_or_accepts_it() {
+    fn sha1_disabled_report_and_selection_rejection() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha1");
         let mut state = SelfTestState::for_algorithms(&algorithms);
         assert_eq!(
@@ -1531,7 +1531,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_restarted_state_keeps_the_profile_for_validation() {
+    fn restarted_state_profile_retention() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
         let mut source = SelfTestState::for_algorithms(&algorithms);
         assert_eq!(source.run(true), Ok(()));
@@ -1582,7 +1582,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_ecdh_known_answer_test_reproduces_the_vendored_vector() {
+    fn ecdh_known_answer_vendored_vector_match() {
         assert!(
             PrimitiveTest::Ecdh.run(),
             "the vendored TestECDH vector reproduces"
@@ -1598,7 +1598,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_profile_without_ecdh_never_reports_or_accepts_it() {
+    fn ecdh_disabled_report_and_selection_rejection() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"ecdh");
         let mut state = SelfTestState::for_algorithms(&algorithms);
         assert!(!state.pending_algorithms().contains(&TPM_ALG_ECDH));
@@ -1610,7 +1610,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failing_ecdh_test_is_recorded_and_stops_being_retried_once_it_passes() {
+    fn ecdh_failure_record_and_retry_until_pass() {
         let mut state = default_state();
         state.set_runner(fails_on_ecdh);
         assert_eq!(state.run(true), Err(TPM_RC_FAILURE));
@@ -1633,7 +1633,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_restart_makes_the_ecdh_test_pending_again() {
+    fn restart_ecdh_pending_reset() {
         let mut state = default_state();
         assert_eq!(state.run(true), Ok(()));
         assert!(!state.pending.contains(PrimitiveTest::Ecdh));
@@ -1642,7 +1642,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_vendored_cancellation_checkpoints_match_the_generated_fixture() {
+    fn vendored_cancellation_checkpoints_fixture_match() {
         let checkpoints = vendored_checkpoints();
         assert_eq!(
             checkpoints,
@@ -1697,7 +1697,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn no_vendored_checkpoint_sits_in_a_self_test_path_this_port_implements() {
+    fn vendored_checkpoint_self_test_path_absence() {
         const IMPLEMENTED_SELF_TEST_PATHS: [&str; 8] = [
             "CryptSelfTest",
             "CryptIncrementalSelfTest",
@@ -1721,10 +1721,9 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_commit_computation_is_the_only_cancelable_path_this_port_implements() {
-        const POLLED_BY_THIS_PORT: [&str; 1] = ["CryptEccCommitCompute"];
-        const STILL_UNIMPLEMENTED: [&str; 3] =
-            ["<macro>", "TestEccSignAndVerify", "CryptRsaGenerateKey"];
+    fn commit_and_rsa_keygen_cancelability() {
+        const POLLED_BY_THIS_PORT: [&str; 2] = ["CryptEccCommitCompute", "CryptRsaGenerateKey"];
+        const STILL_UNIMPLEMENTED: [&str; 2] = ["<macro>", "TestEccSignAndVerify"];
 
         let checkpoints = vendored_checkpoints();
         let polled: Vec<u32> = checkpoints
@@ -1734,8 +1733,9 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             .collect();
         assert_eq!(
             polled,
-            [305, 325],
-            "TPM2_Commit polls both CryptEccCommitCompute checkpoints"
+            [305, 325, 1490],
+            "TPM2_Commit polls both CryptEccCommitCompute checkpoints and \
+             RSA key generation polls the CryptRsaGenerateKey checkpoint"
         );
         for checkpoint in &checkpoints {
             assert!(
@@ -1754,7 +1754,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_only_self_test_checkpoint_is_gated_on_a_caller_supplied_list() {
+    fn self_test_checkpoint_caller_list_gating() {
         let macros: Vec<_> = vendored_checkpoints()
             .into_iter()
             .filter(|checkpoint| checkpoint.function == "<macro>")
@@ -1769,7 +1769,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_pending_algorithm_runs_once_and_stops_being_pending() {
+    fn pending_algorithm_single_run_and_clearance() {
         let mut state = default_state();
         state.set_runner(counting_runner);
         RUN_COUNT.with(|count| count.set(0));
@@ -1784,7 +1784,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_pending_algorithm_leaves_the_other_primitives_pending() {
+    fn pending_algorithm_other_primitives_unchanged() {
         let mut state = default_state();
         assert_eq!(state.run_pending_algorithm(TPM_ALG_SHA256), Ok(()));
         assert_eq!(
@@ -1801,7 +1801,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_algorithm_without_a_primitive_test_runs_nothing() {
+    fn algorithm_without_primitive_test_no_run() {
         let mut state = default_state();
         state.set_runner(never_runs);
         for algorithm in [TPM_ALG_RSA, TPM_ALG_HMAC, TPM_ALG_ERROR, 0x0027, 0xffff] {
@@ -1816,7 +1816,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_algorithm_outside_the_profile_runs_nothing_and_is_not_an_error() {
+    fn out_of_profile_algorithm_no_run_no_error() {
         let algorithms = without(DEFAULT_ALGORITHMS_PROFILE, b"sha512");
         let mut state = SelfTestState::for_algorithms(&algorithms);
         state.set_runner(never_runs);
@@ -1831,7 +1831,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failed_pending_algorithm_stays_pending_and_records_the_primitive() {
+    fn failed_pending_algorithm_retention_and_record() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(
@@ -1849,7 +1849,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_retry_after_a_failed_pending_algorithm_can_succeed() {
+    fn failed_pending_algorithm_retry_success() {
         let mut state = default_state();
         state.set_runner(fails_on_sha384);
         assert_eq!(
@@ -1862,7 +1862,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_first_failing_test_stops_the_run() {
+    fn first_failure_run_termination() {
         let mut state = default_state();
         state.set_runner(always_fails);
         assert_eq!(state.run(true), Err(TPM_RC_FAILURE));

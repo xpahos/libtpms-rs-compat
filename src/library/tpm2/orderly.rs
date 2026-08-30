@@ -53,37 +53,37 @@ mod tests {
     use crate::library::tpm2::runtime::empty_state_runtime;
 
     #[test]
-    fn the_marker_values_match_upstream() {
+    fn marker_value_upstream_match() {
         assert_eq!(SU_NONE_VALUE, 0xffff);
         assert_eq!(SU_DA_USED_VALUE, 0xfffe);
     }
 
     #[test]
-    fn values_below_the_da_used_marker_are_orderly() {
+    fn below_da_used_orderly_classification() {
         for orderly_state in [0x0000u16, 0x0001, 0x8001, 0x4001, SU_DA_USED_VALUE - 1] {
             assert!(is_orderly(orderly_state), "state {orderly_state:#06x}");
         }
     }
 
     #[test]
-    fn the_da_used_marker_is_not_orderly() {
+    fn da_used_marker_non_orderly() {
         assert!(!is_orderly(SU_DA_USED_VALUE));
     }
 
     #[test]
-    fn the_none_marker_is_not_orderly() {
+    fn none_marker_non_orderly() {
         assert!(!is_orderly(SU_NONE_VALUE));
     }
 
     #[test]
-    fn the_boundary_is_exact() {
+    fn boundary_exactness() {
         assert!(is_orderly(SU_DA_USED_VALUE - 1));
         assert!(!is_orderly(SU_DA_USED_VALUE));
         assert!(!is_orderly(SU_NONE_VALUE));
     }
 
     #[test]
-    fn a_runtime_without_state_never_panics() {
+    fn stateless_runtime_panic_safety() {
         let mut runtime = empty_state_runtime();
         assert_eq!(prepare_clear_orderly(&runtime), Err(TPM_RC_FAILURE));
         assert_eq!(

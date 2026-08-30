@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn the_constants_match_upstream() {
+    fn upstream_constant_match() {
         assert_eq!(TPM_ST_VERIFIED, 0x8022);
         assert_eq!(TPM_ST_HASHCHECK, 0x8024);
         assert_eq!(TPM_GENERATED_VALUE, 0xff54_4347);
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn a_buffer_shorter_than_the_generated_value_is_never_safe() {
+    fn undersized_buffer_unsafe() {
         assert!(!ticket_is_safe(&[]));
         assert!(!ticket_is_safe(&[0xff]));
         assert!(!ticket_is_safe(&[0xff, 0x54]));
@@ -151,14 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn a_leading_generated_value_is_not_safe() {
+    fn leading_generated_value_unsafe() {
         assert!(!ticket_is_safe(&[0xff, 0x54, 0x43, 0x47]));
         assert!(!ticket_is_safe(&[0xff, 0x54, 0x43, 0x47, 0x00]));
         assert!(!ticket_is_safe(&[0xff, 0x54, 0x43, 0x47, 0xff, 0xff]));
     }
 
     #[test]
-    fn any_other_four_leading_bytes_are_safe() {
+    fn other_leading_bytes_safe() {
         assert!(ticket_is_safe(&[0xff, 0x54, 0x43, 0x48]));
         assert!(ticket_is_safe(&[0xff, 0x54, 0x43, 0x46]));
         assert!(ticket_is_safe(&[0xfe, 0x54, 0x43, 0x47]));
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_ticket_is_a_null_hierarchy_hashcheck() {
+    fn empty_ticket_null_hierarchy_hashcheck() {
         let ticket = Ticket::empty(TPM_ST_HASHCHECK);
         assert_eq!(ticket.tag, TPM_ST_HASHCHECK);
         assert_eq!(ticket.hierarchy, TPM_RH_NULL);
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn a_computed_ticket_matches_the_vendored_oracle() {
+    fn computed_ticket_vendored_oracle_match() {
         let record = hash_ticket_record();
         for case in record.cases.iter().filter(|case| case.expects_a_ticket()) {
             let proof = record.proof_for(case.hierarchy).expect("a real hierarchy");
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_digest_is_a_full_sha512_mac() {
+    fn ticket_digest_full_sha512_mac() {
         let ticket = compute_hash_check(TPM_RH_OWNER, &[0x5a; 64], 0x000b, &[0x11; 32])
             .expect("the compiled integrity algorithm");
         assert_eq!(ticket.digest.len(), 64);
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_any_input_changes_the_ticket_digest() {
+    fn ticket_digest_input_sensitivity() {
         let base = compute_hash_check(TPM_RH_OWNER, &[0x5a; 64], 0x000b, &[0x11; 32])
             .expect("the compiled integrity algorithm");
         for other in [
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hierarchy_travels_with_the_ticket_without_entering_the_mac() {
+    fn hierarchy_transport_outside_mac() {
         let owner = compute_hash_check(TPM_RH_OWNER, &[0x5a; 64], 0x000b, &[0x11; 32])
             .expect("the compiled integrity algorithm");
         let endorsement = compute_hash_check(TPM_RH_ENDORSEMENT, &[0x5a; 64], 0x000b, &[0x11; 32])
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_verified_ticket_is_a_null_hierarchy_tag_only_ticket() {
+    fn empty_verified_ticket_null_hierarchy_tag_only() {
         let ticket = Ticket::empty(TPM_ST_VERIFIED);
         assert_eq!(
             ticket.into_bytes().expect("the ticket marshals"),
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn a_verified_ticket_macs_the_tag_the_digest_and_the_key_name() {
+    fn verified_ticket_mac_over_tag_digest_key_name() {
         let proof = [0x5a; 64];
         let digest = [0x11; 32];
         let name = [0x22; 34];
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_the_digest_or_the_key_name_changes_the_verified_ticket() {
+    fn verified_ticket_digest_key_name_sensitivity() {
         let base = compute_verified(TPM_RH_OWNER, &[0x5a; 64], &[0x11; 32], &[0x22; 34])
             .expect("the compiled integrity algorithm");
         for other in [
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn a_verified_ticket_is_not_a_hash_check_over_the_same_inputs() {
+    fn verified_ticket_hash_check_distinction() {
         let verified = compute_verified(TPM_RH_OWNER, &[0x5a; 64], &[0x11; 32], &[])
             .expect("the compiled integrity algorithm");
         let hash_check =
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_marshalled_ticket_is_the_tag_the_hierarchy_and_a_sized_digest() {
+    fn marshalled_ticket_tag_hierarchy_sized_digest() {
         let ticket = compute_hash_check(TPM_RH_PLATFORM, &[0x01; 64], 0x0004, &[0x22; 20])
             .expect("the compiled integrity algorithm");
         let bytes = ticket_bytes(&ticket);

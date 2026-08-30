@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn restored(snapshot: &str) -> Box<Tpm2Runtime> {
+    fn restored(snapshot: &str) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
@@ -372,32 +372,32 @@ mod tests {
     }
 
     #[track_caller]
-    fn asym_runtime() -> Box<Tpm2Runtime> {
+    fn asym_runtime() -> Tpm2Runtime {
         restored("ASYM")
     }
 
     #[track_caller]
-    fn mixed_runtime() -> Box<Tpm2Runtime> {
+    fn mixed_runtime() -> Tpm2Runtime {
         restored("MIXED")
     }
 
     #[track_caller]
-    fn misc_runtime() -> Box<Tpm2Runtime> {
+    fn misc_runtime() -> Tpm2Runtime {
         restored("MISC")
     }
 
     #[track_caller]
-    fn no_sha1_runtime() -> Box<Tpm2Runtime> {
+    fn no_sha1_runtime() -> Tpm2Runtime {
         restored("NO_SHA1")
     }
 
     #[track_caller]
-    fn persistent_runtime() -> Box<Tpm2Runtime> {
+    fn persistent_runtime() -> Tpm2Runtime {
         restored("PERSISTENT")
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_015D");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
         assert_eq!(TPM_CC_SIGN, 0x0000_015d);
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_carries_the_upstream_role() {
+    fn handle_upstream_role() {
         let descriptor = find(TPM_CC_SIGN).expect("a registered command");
         assert_eq!(descriptor.handles.len(), 1);
         assert!(descriptor.handles[0].user_auth);
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_list_advertises_sign() {
+    fn capability_list_advertisement() {
         use crate::library::tpm2::capability::commands::implemented;
         let page = implemented(TPM_CC_SIGN, 1);
         assert_eq!(page.entries, [0x0200_015d]);
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn started_from(permall: &str) -> Box<Tpm2Runtime> {
+    fn started_from(permall: &str) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(permall))
             .expect("the oracle permanent state restores");
         assert_eq!(
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn every_signing_key_is_generated_like_the_oracle() {
+    fn signing_key_generation_oracle_match() {
         for (permall, group) in [
             (
                 "PERMALL_BASE",
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsassa_signatures_match_the_oracle() {
+    fn rsassa_signature_oracle_match() {
         let digest = sha256();
         let mut runtime = asym_runtime();
         assert_eq!(
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ticket_errors_match_the_oracle() {
+    fn ticket_error_oracle_match() {
         let digest = sha256();
         let mut runtime = asym_runtime();
         for (name, validation) in [
@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scheme_and_digest_errors_match_the_oracle() {
+    fn scheme_digest_error_oracle_match() {
         let mut runtime = asym_runtime();
         for (name, digest, scheme, hash_alg) in [
             (
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parameter_errors_match_the_oracle() {
+    fn parameter_error_oracle_match() {
         let mut runtime = asym_runtime();
         let mut trailing = sign_parameters(&sha256(), TPM_ALG_NULL_ID, 0, &null_ticket());
         trailing.push(0x00);
@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_errors_match_the_oracle() {
+    fn handle_error_oracle_match() {
         let digest = sha256();
         let mut runtime = asym_runtime();
         for (name, handle) in [
@@ -726,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn the_randomized_signatures_consume_the_live_drbg() {
+    fn randomized_signature_drbg_consumption() {
         let digest = sha256();
         let mut runtime = asym_runtime();
         let pss_first = sign(&mut runtime, TRANSIENT[1], &digest, TPM_ALG_NULL_ID, 0);
@@ -742,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scheme_hash_that_disagrees_with_the_key_is_rejected() {
+    fn scheme_hash_key_mismatch_rejection() {
         let mut runtime = asym_runtime();
         assert_eq!(
             sign(
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn the_persistent_key_signs_like_the_oracle() {
+    fn persistent_key_oracle_match() {
         let digest = sha256();
         let mut runtime = persistent_runtime();
         assert_matches_oracle(&runtime, vector("PERMALL_PERSISTENT"), "after eviction");
@@ -789,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn the_restricted_and_keyed_hash_keys_match_the_oracle() {
+    fn restricted_keyedhash_key_oracle_match() {
         let digest = sha256();
         let sha1 = digest_of(TPM_ALG_SHA1, b"abc");
         let mut runtime = mixed_runtime();
@@ -865,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn the_x509_and_scheme_selection_errors_match_the_oracle() {
+    fn x509_scheme_selection_error_oracle_match() {
         let digest = sha256();
         let mut runtime = misc_runtime();
         for (name, handle, scheme, hash_alg) in [
@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn every_selected_scheme_signs_like_the_oracle() {
+    fn per_selected_scheme_signature_oracle_parity() {
         let mut runtime = misc_runtime();
         for (name, scheme, hash_alg) in [
             ("SIGN_NO_SCHEME_ECDSA", TPM_ALG_ECDSA, TPM_ALG_SHA256),
@@ -961,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha1_restrictions_match_the_oracle() {
+    fn sha1_restriction_oracle_match() {
         let mut runtime = no_sha1_runtime();
         assert_eq!(
             sign(
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_failure_matches_the_oracle() {
+    fn authorization_failure_oracle_match() {
         let digest = sha256();
         let mut runtime = asym_runtime();
         let response = dispatch_bytes(
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_signature_records_the_dictionary_attack_marker() {
+    fn successful_signature_da_marker() {
         let mut runtime = asym_runtime();
         assert_matches_oracle(&runtime, vector("PERMALL_ASYM"), "before signing");
         assert_eq!(
@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_area_is_auth_missing() {
+    fn missing_auth_area_auth_missing() {
         const RC_AUTH_MISSING: u32 = 0x125;
         let mut runtime = asym_runtime();
         let mut payload = TRANSIENT[0].to_be_bytes().to_vec();
@@ -1066,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let full = sign_parameters(&sha256(), TPM_ALG_RSASSA, TPM_ALG_SHA256, &owner_ticket());
         let mut runtime = asym_runtime();
         for index in 0..full.len() {
@@ -1102,7 +1102,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn profile_runtime(algorithms: &str, attributes: &str) -> Box<Tpm2Runtime> {
+    fn profile_runtime(algorithms: &str, attributes: &str) -> Tpm2Runtime {
         use crate::library::tpm2::manufacture::manufacture_state;
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -1156,7 +1156,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn commitable_ecc_runtime(attributes: &str) -> (Box<Tpm2Runtime>, u32) {
+    fn commitable_ecc_runtime(attributes: &str) -> (Tpm2Runtime, u32) {
         let mut runtime = profile_runtime(&all_algorithms(), attributes);
         let (key, _) = create_primary(
             &mut runtime,
@@ -1190,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn a_committed_ecdaa_signature_consumes_its_commitment() {
+    fn ecdaa_commitment_consumption() {
         let (mut runtime, key) = commitable_ecc_runtime("");
         let response = sign_split(&mut runtime, key, 0);
         assert_eq!(response_code(&response), RC_SUCCESS);
@@ -1207,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_signature_publishes_the_signing_state() {
+    fn successful_signature_state_publication() {
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
         let before = signing_snapshot(&runtime);
         assert_eq!(
@@ -1231,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn signing_never_clears_the_orderly_state() {
+    fn signing_orderly_state_preservation() {
         let (mut runtime, key) = commitable_ecc_runtime("");
         let nv_memory_before = runtime.nv_memory.clone();
         assert_eq!(
@@ -1254,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_signature_leaves_the_signing_state_untouched() {
+    fn rejected_signature_state_unchanged() {
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
         let before = signing_snapshot(&runtime);
         let nv_memory_before = runtime.nv_memory.clone();
@@ -1296,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_test_failure_during_signing_is_fatal_and_publishes_nothing() {
+    fn continuous_test_failure_fatal_no_publication() {
         use crate::library::tpm2::crypto::Drbg;
         use crate::library::tpm2::failure_mode::FailureLocation;
 
@@ -1337,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reseed_due_signature_draw_follows_the_live_drbg_policy() {
+    fn reseed_due_draw_drbg_policy() {
         use crate::library::tpm2::crypto::CTR_DRBG_MAX_REQUESTS_PER_RESEED;
 
         fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_scheme_or_hash_is_reported_against_the_scheme_parameter() {
+    fn profile_disabled_scheme_hash_scheme_parameter_error() {
         const RC_PARAM2_HASH: u32 = 0x2c3;
         for (dropped, scheme, hash_alg, expected) in [
             (
@@ -1422,7 +1422,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_signing_object_is_resolved_from_both_stores() {
+    fn loaded_object_dual_store_resolution() {
         let mut runtime = persistent_runtime();
         let persistent = signing_object(&runtime, PERSISTENT)
             .expect("the persistent object resolves")
@@ -1443,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transient_and_a_persistent_copy_of_one_key_sign_identically() {
+    fn transient_persistent_copy_identical_signatures() {
         let digest = sha256();
         let mut transient = asym_runtime();
         let from_transient = sign(&mut transient, TRANSIENT[0], &digest, TPM_ALG_NULL_ID, 0);
@@ -1458,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_body_carries_the_expected_attributes() {
+    fn loaded_body_expected_attributes() {
         let runtime = misc_runtime();
         let x509 = loaded_body(&runtime, TRANSIENT[0]);
         assert_ne!(x509.public.object_attributes & TPMA_OBJECT_X509_SIGN, 0);

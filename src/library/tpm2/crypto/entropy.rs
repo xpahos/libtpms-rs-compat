@@ -32,7 +32,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_length_request_is_a_no_op() {
+    fn zero_length_request_no_op() {
         os_entropy(&mut []).expect("empty request");
     }
 }

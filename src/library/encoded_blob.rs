@@ -136,17 +136,17 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_initstate_block_decodes() {
+    fn valid_initstate_block_decoding() {
         assert_eq!(decode_payload("QUJD").unwrap(), b"ABC");
     }
 
     #[test]
-    fn tags_without_any_separator_decode() {
+    fn separatorless_tag_decoding() {
         assert_eq!(decode(&format!("{BEGIN}QUJD{END}")).unwrap(), b"ABC");
     }
 
     #[test]
-    fn wrapped_base64_lines_decode() {
+    fn wrapped_base64_line_decoding() {
         assert_eq!(
             decode_payload("QUJD\nRUZH\nSElK").unwrap(),
             b"ABCEFGHIJ".to_vec()
@@ -154,14 +154,14 @@ mod tests {
     }
 
     #[test]
-    fn spaces_tabs_cr_and_lf_inside_the_payload_are_ignored() {
+    fn payload_interior_whitespace_ignored() {
         assert_eq!(decode_payload("Q U\tJ\rD\n").unwrap(), b"ABC");
         assert_eq!(decode_payload("\r\nQUJD\r\n").unwrap(), b"ABC");
         assert_eq!(decode_payload("Q\u{b}U\u{c}JD").unwrap(), b"ABC");
     }
 
     #[test]
-    fn whitespace_after_the_begin_tag_is_skipped() {
+    fn post_begin_tag_whitespace_skip() {
         assert_eq!(
             decode(&format!("{BEGIN} \t\r\n QUJD\n{END}")).unwrap(),
             b"ABC"
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn every_padding_variant_decodes_to_its_exact_length() {
+    fn padding_variant_exact_length_decode() {
         assert_eq!(decode_payload("QUJD").unwrap(), b"ABC");
         assert_eq!(decode_payload("QUJDRA==").unwrap(), b"ABCD");
         assert_eq!(decode_payload("QUJDRUY=").unwrap(), b"ABCEF");
@@ -178,13 +178,13 @@ mod tests {
     }
 
     #[test]
-    fn non_canonical_trailing_bits_are_accepted_like_upstream() {
+    fn non_canonical_trailing_bits_upstream_acceptance() {
         assert_eq!(decode_payload("QR==").unwrap(), b"A");
         assert_eq!(decode_payload("QUL=").unwrap(), b"AB");
     }
 
     #[test]
-    fn the_whole_base64_alphabet_decodes() {
+    fn full_base64_alphabet_decoding() {
         assert_eq!(decode_payload("+/+/").unwrap(), [0xfb, 0xff, 0xbf]);
         assert_eq!(
             decode_payload("aA0+/z==").unwrap(),
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn text_around_the_tagged_block_is_ignored() {
+    fn surrounding_text_ignored() {
         assert_eq!(
             decode(&format!("junk before\n{BEGIN}\nQUJD\n{END}\njunk after\n")).unwrap(),
             b"ABC"
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_begin_tag_fails() {
+    fn missing_begin_tag_rejection() {
         assert_eq!(decode(&format!("QUJD\n{END}")), Err(TPM_FAIL));
         assert_eq!(decode("-----BEGIN INITSTATE----\nQUJD\n"), Err(TPM_FAIL));
         assert_eq!(decode("hello world"), Err(TPM_FAIL));
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_end_tag_fails() {
+    fn missing_end_tag_rejection() {
         assert_eq!(decode(&format!("{BEGIN}\nQUJD\n")), Err(TPM_FAIL));
         assert_eq!(
             decode(&format!("{BEGIN}\nQUJD\n-----END INITSTATE----")),
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn an_end_tag_before_the_begin_tag_fails() {
+    fn end_tag_before_begin_tag_rejection() {
         assert_eq!(
             decode(&format!("{END}\nQUJD\n{BEGIN}\nQUJD\n")),
             Err(TPM_FAIL)
@@ -227,14 +227,14 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_payload_fails() {
+    fn empty_payload_rejection() {
         assert_eq!(decode(&format!("{BEGIN}{END}")), Err(TPM_FAIL));
         assert_eq!(decode(&format!("{BEGIN}\n{END}")), Err(TPM_FAIL));
         assert_eq!(decode(&format!("{BEGIN}  \t\r\n  {END}")), Err(TPM_FAIL));
     }
 
     #[test]
-    fn invalid_base64_characters_are_dropped_from_the_payload() {
+    fn invalid_base64_character_filtering() {
         assert_eq!(decode_payload("QU!JD").unwrap(), b"ABC");
         assert_eq!(decode_payload("Q-U-J-D").unwrap(), b"ABC");
         assert_eq!(
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn parsing_stops_at_the_first_nul_like_a_c_string() {
+    fn first_nul_c_string_parse_stop() {
         let block = tagged("QUJD");
         for (what, data) in [
             (
@@ -280,20 +280,20 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_of_only_invalid_characters_fails() {
+    fn fully_invalid_payload_rejection() {
         assert_eq!(decode_payload("!!!!"), Err(TPM_FAIL));
         assert_eq!(decode_payload("-----"), Err(TPM_FAIL));
     }
 
     #[test]
-    fn a_base64_length_that_is_not_a_multiple_of_four_fails() {
+    fn unaligned_base64_length_rejection() {
         for payload in ["Q", "QQ", "QUJ", "QUJDRA", "QUJDRUZH SElKS"] {
             assert_eq!(decode_payload(payload), Err(TPM_FAIL), "payload {payload}");
         }
     }
 
     #[test]
-    fn truncated_and_misplaced_padding_fails() {
+    fn truncated_and_misplaced_padding_failure() {
         for payload in [
             "Q===", "====", "AAAA====", "QUJDRA=", "QQ==QQ==", "QQ==QUJD", "QQ=A", "=QUJD",
             "AAAA==",
@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_tagged_block_wins() {
+    fn first_tagged_block_precedence() {
         assert_eq!(
             decode(&format!("{BEGIN}\nQUJD\n{END}\n{BEGIN}\nRUZH\n{END}")).unwrap(),
             b"ABC"
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_begin_tag_becomes_payload() {
+    fn repeated_begin_tag_payload_inclusion() {
         assert_eq!(
             decode(&format!("{BEGIN}\n{BEGIN}\nQUJD\n{END}")),
             Err(TPM_FAIL),
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn a_large_wrapped_blob_decodes_to_its_exact_length() {
+    fn large_wrapped_blob_exact_length_decode() {
         let blob: Vec<u8> = (0..3000u32).map(|index| (index % 251) as u8).collect();
         let encoded = encode_base64(&blob);
         let wrapped: Vec<String> = encoded
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_every_length_up_to_four_groups() {
+    fn round_trip_coverage_up_to_four_groups() {
         for length in 1..=12usize {
             let blob: Vec<u8> = (0..length).map(|index| (index * 37 + 1) as u8).collect();
             assert_eq!(
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn random_blob_corpus_does_not_panic() {
+    fn random_blob_corpus_panic_safety() {
         let mut seed = 0x1234_5678u32;
         let mut next = move || {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn every_c_oracle_record_is_replayed() {
+    fn c_oracle_record_replay() {
         let records = oracle_records();
         assert!(!records.is_empty(), "the oracle fixture has no records");
         let mut names: Vec<&str> = records.iter().map(|record| record.name.as_str()).collect();

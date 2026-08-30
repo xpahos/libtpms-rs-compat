@@ -82,7 +82,7 @@ mod tests {
     };
 
     #[test]
-    fn the_command_is_registered_with_the_reference_attributes() {
+    fn command_registration_reference_attributes() {
         let descriptor = find(TPM_CC_PCR_SET_AUTH_VALUE).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0200_0183);
         assert_eq!(
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_needs_a_started_tpm() {
+    fn unstarted_tpm_rejection() {
         let clock = replay_clock();
         let mut runtime = manufactured(&clock);
         expect(
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn no_implemented_pcr_belongs_to_an_authorization_group() {
+    fn implemented_pcr_authorization_group_absence() {
         for pcr in 0..IMPLEMENTATION_PCR {
             assert_eq!(
                 pcr_auth_value_group(pcr),
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn every_pcr_is_rejected_like_the_reference() {
+    fn full_pcr_range_rejection_reference_match() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         let before = snapshot(&runtime);
@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_value_shapes_match_the_reference() {
+    fn auth_value_shape_reference_match() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         let before = snapshot(&runtime);
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn handles_outside_the_pcr_range_are_rejected_by_the_interface() {
+    fn out_of_range_handle_interface_rejection() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         let before = snapshot(&runtime);
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pcr_bank_and_locality_rules_are_untouched_by_the_rejected_commands() {
+    fn rejected_command_bank_locality_unchanged() {
         let clock = replay_clock();
         let mut runtime = ready(&clock);
         expect(
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn a_group_authorization_value_is_stored_without_its_trailing_zeros() {
+    fn group_auth_value_trailing_zero_trim() {
         let clock = replay_clock();
         let runtime = ready(&clock);
         let stored = runtime
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = pcr_set_auth_value(20, &DIGEST32, &[]);
         for len in 0..=valid.len() {

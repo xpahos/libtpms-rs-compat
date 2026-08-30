@@ -81,7 +81,7 @@ mod tests {
     };
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         assert_eq!(TPM_CC_SEQUENCE_UPDATE, 0x0000_015c);
         let descriptor = registry::find(TPM_CC_SEQUENCE_UPDATE).expect("registered");
         assert_eq!(descriptor.attributes, 0x0200_015c);
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         let mut params = 2u32.to_be_bytes().to_vec();
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_updates_hash_the_concatenated_input() {
+    fn repeated_update_concatenated_input_hashing() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_sequence_no_longer_accepts_updates() {
+    fn completed_sequence_update_rejection() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn an_event_sequence_accepts_updates() {
+    fn event_sequence_update_acceptance() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_and_handles_report_the_indexed_errors() {
+    fn malformed_parameter_and_handle_indexed_errors() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_handle_kinds_report_the_reference_errors() {
+    fn wrong_handle_kind_reference_errors() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinary_object_is_not_a_sequence() {
+    fn ordinary_object_non_sequence_rejection() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sequence_authorization_is_enforced() {
+    fn sequence_authorization_enforcement() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         exec(

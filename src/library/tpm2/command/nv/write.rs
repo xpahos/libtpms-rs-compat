@@ -343,7 +343,7 @@ mod tests {
     const DATA8: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
     #[test]
-    fn the_command_codes_and_attributes_match_the_oracle() {
+    fn command_codes_attributes_oracle_match() {
         for (code, oracle) in [
             (TPM_CC_NV_INCREMENT, nv_vector("CCATTR_0134")),
             (TPM_CC_NV_SET_BITS, nv_vector("CCATTR_0135")),
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nv_auth_handle_takes_owner_platform_and_any_index() {
+    fn auth_handle_owner_platform_index_acceptance() {
         let kind = find(TPM_CC_NV_WRITE).unwrap().handles[0].kind;
         assert!(kind.accepts(TPM_RH_OWNER));
         assert!(kind.accepts(TPM_RH_PLATFORM));
@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_write_and_the_reads_that_follow_match_the_oracle() {
+    fn partial_write_read_oracle_match() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert_eq!(
@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn the_write_range_errors_match_the_oracle() {
+    fn write_range_error_oracle_match() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert_eq!(
@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_write_buffer_is_a_size_error() {
+    fn oversized_write_buffer_size_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 2048));
         assert_eq!(
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn write_all_demands_the_whole_index() {
+    fn write_all_whole_index_requirement() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_length_write_marks_the_index_written() {
+    fn zero_length_write_written_flag() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert!(!resolved(&runtime, INDEX).is_written());
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn the_typed_indexes_reject_a_plain_write() {
+    fn typed_index_plain_write_rejection() {
         let mut runtime = started_runtime();
         for (index_type, data_size, handle) in [
             (TPM_NT_COUNTER, 8u16, 0x0100_0011u32),
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn a_counter_starts_from_the_max_counter_and_increments() {
+    fn counter_max_counter_seed_increment() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_counter_never_rolls_back_below_a_deleted_one() {
+    fn new_counter_no_rollback_below_deleted() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn incrementing_a_non_counter_is_an_indexed_attribute_error() {
+    fn non_counter_increment_indexed_attribute_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert_eq!(
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn set_bits_starts_from_zero_and_ors() {
+    fn set_bits_zero_start_or_accumulation() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_bits_on_a_non_bit_field_is_an_indexed_attribute_error() {
+    fn non_bit_field_set_bits_indexed_attribute_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert_eq!(
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn extend_hashes_the_old_value_with_the_new_data() {
+    fn extend_old_value_new_data_hashing() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn extending_a_non_extend_index_is_an_indexed_attribute_error() {
+    fn non_extend_index_extend_indexed_attribute_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         assert_eq!(
@@ -651,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn the_write_authorization_attributes_are_enforced() {
+    fn write_authorization_attribute_enforcement() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_may_authorize_its_own_write_but_no_other_index() {
+    fn index_self_write_authorization_only() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         define(
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_index_password_is_reported_against_the_first_session() {
+    fn wrong_password_first_session_report() {
         let mut runtime = started_runtime();
         let mut parameters = 4u16.to_be_bytes().to_vec();
         parameters.extend_from_slice(b"pass");
@@ -758,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dictionary_attack_protected_index_matches_the_oracle_failure_code() {
+    fn da_protected_index_oracle_failure_code() {
         let mut runtime = started_runtime();
         let mut parameters = 4u16.to_be_bytes().to_vec();
         parameters.extend_from_slice(b"test");
@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn the_index_authorization_gates_match_the_oracle() {
+    fn index_authorization_gate_oracle_match() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         define(&mut runtime, &nv_public(0x0100_0010, READ_WRITE, 8));
@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_password_on_a_dictionary_attack_index_matches_the_oracle() {
+    fn da_index_wrong_password_oracle_match() {
         let mut runtime = started_runtime();
         runtime.live.da_used = true;
         let mut parameters = 4u16.to_be_bytes().to_vec();
@@ -875,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orderly_write_response_matches_the_oracle() {
+    fn orderly_write_response_oracle_match() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -888,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn a_global_lock_leaves_unmarked_indexes_writable() {
+    fn global_lock_unmarked_index_writability() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -909,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn an_undefined_index_handle_is_reported_with_its_own_index() {
+    fn undefined_index_handle_decorated_error() {
         let mut runtime = started_runtime();
         assert_eq!(
             response_code(&write(&mut runtime, TPM_RH_OWNER, INDEX, &[], 0)),
@@ -918,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         let mut parameters = write_parameters(&[], 0);
@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn a_write_lock_stops_every_modification_command() {
+    fn write_lock_modification_command_rejection() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn writing_an_orderly_index_clears_the_orderly_state() {
+    fn orderly_index_write_orderly_state_clearing() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn writing_a_non_orderly_index_leaves_the_orderly_state_alone() {
+    fn non_orderly_index_write_orderly_state_unchanged() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         runtime.state.as_mut().unwrap().persistent.orderly_state = 0;
@@ -1015,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_write_leaves_no_trace() {
+    fn failed_write_rollback() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
         runtime.nv_update_pending = false;
@@ -1035,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn rewriting_identical_bytes_needs_no_nv_access() {
+    fn identical_byte_rewrite_no_nv_access() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         assert_eq!(
@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let full = write_parameters(&DATA8, 4);
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0x7f, 0xff] {
@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn every_orderly_index_type_round_trips_through_its_ram_copy() {
+    fn orderly_index_type_ram_copy_round_trip() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,

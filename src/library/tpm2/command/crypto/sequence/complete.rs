@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         assert_eq!(TPM_CC_SEQUENCE_COMPLETE, 0x0000_013e);
         let descriptor = registry::find(TPM_CC_SEQUENCE_COMPLETE).expect("registered");
         assert_eq!(descriptor.attributes, 0x0300_013e);
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         let mut params = 2u32.to_be_bytes().to_vec();
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn an_untouched_sequence_completes_to_the_empty_digest() {
+    fn untouched_sequence_empty_digest() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         for (label, hash_alg) in [
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn every_hierarchy_produces_its_own_ticket() {
+    fn per_hierarchy_ticket_distinction() {
         let seed_clock = fresh_clock();
         let mut seed = base_runtime(&seed_clock);
         exec(
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn ticket_generation_follows_the_reference_safety_rule() {
+    fn ticket_generation_reference_safety_rule() {
         let seed_clock = fresh_clock();
         let mut seed = base_runtime(&seed_clock);
         exec(
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsafe_first_update_suppresses_the_ticket_for_the_whole_sequence() {
+    fn unsafe_first_update_ticket_suppression() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_first_update_leaves_the_sequence_unsafe() {
+    fn short_first_update_unsafe_state() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_hierarchy_is_rejected_and_keeps_the_sequence() {
+    fn invalid_hierarchy_rejection_sequence_preservation() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_report_the_indexed_errors() {
+    fn malformed_parameter_indexed_errors() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_handle_kinds_report_the_reference_errors() {
+    fn wrong_handle_kind_reference_errors() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn an_event_sequence_is_refused_with_the_handle_indexed_mode_error() {
+    fn event_sequence_mode_error_rejection() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinary_object_is_refused_with_the_handle_indexed_mode_error() {
+    fn ordinary_object_mode_error_rejection() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sequence_authorization_is_enforced() {
+    fn sequence_authorization_enforcement() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -563,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = fresh_clock();
         let mut runtime = base_runtime(&clock);
         exec(
@@ -630,7 +630,7 @@ mod tests {
         }
 
         #[test]
-        fn a_sha1_hash_sequence_survives_a_state_round_trip() {
+        fn sha1_sequence_state_round_trip() {
             hash_sequence_survives(
                 TPM_ALG_SHA1,
                 "B_START_SHA1",
@@ -640,7 +640,7 @@ mod tests {
         }
 
         #[test]
-        fn a_sha256_hash_sequence_survives_a_state_round_trip() {
+        fn sha256_sequence_state_round_trip() {
             hash_sequence_survives(
                 TPM_ALG_SHA256,
                 "B_START_SHA256",
@@ -650,7 +650,7 @@ mod tests {
         }
 
         #[test]
-        fn a_sha384_hash_sequence_survives_a_state_round_trip() {
+        fn sha384_sequence_state_round_trip() {
             hash_sequence_survives(
                 TPM_ALG_SHA384,
                 "B_START_SHA384",
@@ -660,7 +660,7 @@ mod tests {
         }
 
         #[test]
-        fn a_sha512_hash_sequence_survives_a_state_round_trip() {
+        fn sha512_sequence_state_round_trip() {
             hash_sequence_survives(
                 TPM_ALG_SHA512,
                 "B_START_SHA512",
@@ -670,7 +670,7 @@ mod tests {
         }
 
         #[test]
-        fn an_hmac_sequence_survives_a_state_round_trip() {
+        fn hmac_sequence_state_round_trip() {
             let clock = fresh_clock();
             let mut runtime = base_runtime(&clock);
             exec(
@@ -713,7 +713,7 @@ mod tests {
         }
 
         #[test]
-        fn an_event_sequence_survives_a_state_round_trip() {
+        fn event_sequence_state_round_trip() {
             let clock = fresh_clock();
             let mut runtime = base_runtime(&clock);
             exec(
@@ -756,7 +756,7 @@ mod tests {
         }
 
         #[test]
-        fn the_serialized_sequence_object_matches_the_reference_bytes() {
+        fn serialized_sequence_reference_byte_match() {
             let clock = fresh_clock();
             let mut runtime = base_runtime(&clock);
             for (label, command, snapshot) in [
@@ -811,7 +811,7 @@ mod tests {
         }
 
         #[test]
-        fn every_sequence_kind_serializes_like_the_reference() {
+        fn per_sequence_kind_reference_serialization() {
             let clock = fresh_clock();
             let mut runtime = base_runtime(&clock);
             exec(
@@ -862,7 +862,7 @@ mod tests {
         }
 
         #[test]
-        fn a_filled_object_array_serializes_like_the_reference() {
+        fn filled_object_array_reference_serialization() {
             let clock = fresh_clock();
             let mut runtime = base_runtime(&clock);
             for (label, hash_alg) in [

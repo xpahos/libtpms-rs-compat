@@ -62,7 +62,7 @@ fn marshal_to_do_list(algorithms: &[u16]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::CancelSignal;
+    use crate::library::cancel::Cancellation;
     use crate::library::constants::TPM_RC_INITIALIZE;
     use crate::library::tpm2::algorithm::{
         TPM_ALG_AES, TPM_ALG_ECC, TPM_ALG_ERROR, TPM_ALG_RSA, TPM_ALG_SHA1, TPM_ALG_SHA256,
@@ -119,7 +119,7 @@ mod tests {
             .collect()
     }
 
-    fn recording_runtime() -> Box<Tpm2Runtime> {
+    fn recording_runtime() -> Tpm2Runtime {
         EXECUTED.with(|executed| executed.set(0));
         RUN_COUNT.with(|count| count.set(0));
         let mut runtime = started_runtime();
@@ -143,7 +143,7 @@ mod tests {
         out
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the default profile validates");
         let state =
             manufacture_state(profile, deterministic_entropy).expect("the state is manufactured");
@@ -163,21 +163,48 @@ mod tests {
 
     #[track_caller]
     fn run(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
+        run_with(runtime, bytes, Cancellation::disabled())
+    }
+
+    #[track_caller]
+    fn run_with(
+        runtime: &mut Tpm2Runtime,
+        bytes: &[u8],
+        cancellation: Cancellation<'_>,
+    ) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response fits")
+        serialize_response(&dispatch(runtime, &parsed, cancellation)).expect("the response fits")
     }
 
     #[track_caller]
     fn run_code(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> u32 {
+        run_code_with(runtime, bytes, Cancellation::disabled())
+    }
+
+    #[track_caller]
+    fn run_code_with(
+        runtime: &mut Tpm2Runtime,
+        bytes: &[u8],
+        cancellation: Cancellation<'_>,
+    ) -> u32 {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        dispatch(runtime, &parsed).code()
+        dispatch(runtime, &parsed, cancellation).code()
     }
 
     #[track_caller]
     fn to_do_list(runtime: &mut Tpm2Runtime, algorithms: &[u16]) -> Vec<u16> {
-        let response = run(runtime, &framed(0x8001, &to_test(algorithms)));
+        to_do_list_with(runtime, algorithms, Cancellation::disabled())
+    }
+
+    #[track_caller]
+    fn to_do_list_with(
+        runtime: &mut Tpm2Runtime,
+        algorithms: &[u16],
+        cancellation: Cancellation<'_>,
+    ) -> Vec<u16> {
+        let response = run_with(runtime, &framed(0x8001, &to_test(algorithms)), cancellation);
         assert_eq!(
             &response[6..10],
             &[0x00, 0x00, 0x00, 0x00],
@@ -220,10 +247,13 @@ mod tests {
     #[track_caller]
     fn stays_uncancelable(algorithm: u16, primitive: PrimitiveTest) {
         let mut runtime = recording_runtime();
-        runtime.cancel = CancelSignal::signaled();
         let snapshot_before = snapshot(&runtime);
 
-        let response = run(&mut runtime, &framed(0x8001, &to_test(&[algorithm])));
+        let response = run_with(
+            &mut runtime,
+            &framed(0x8001, &to_test(&[algorithm])),
+            Cancellation::requested(),
+        );
         assert_eq!(
             &response[6..10],
             &[0x00, 0x00, 0x00, 0x00],
@@ -238,39 +268,38 @@ mod tests {
             snapshot_before,
             "no NVRAM write is scheduled"
         );
-        assert!(
-            runtime.cancel.is_signaled(),
-            "dispatch neither consults nor clears the pin"
-        );
     }
 
     #[test]
-    fn a_raised_pin_does_not_cancel_an_incremental_sha1_test() {
+    fn raised_pin_sha1_no_cancellation() {
         stays_uncancelable(TPM_ALG_SHA1, PrimitiveTest::Sha1);
     }
 
     #[test]
-    fn a_raised_pin_does_not_cancel_an_incremental_sha256_test() {
+    fn raised_pin_sha256_no_cancellation() {
         stays_uncancelable(TPM_ALG_SHA256, PrimitiveTest::Sha256);
     }
 
     #[test]
-    fn a_raised_pin_does_not_cancel_an_incremental_aes_test() {
+    fn raised_pin_aes_no_cancellation() {
         stays_uncancelable(TPM_ALG_AES, PrimitiveTest::Aes256);
     }
 
     #[test]
-    fn a_raised_pin_does_not_cancel_an_incremental_sha384_or_sha512_test() {
+    fn raised_pin_sha384_sha512_no_cancellation() {
         stays_uncancelable(TPM_ALG_SHA384, PrimitiveTest::Sha384);
         stays_uncancelable(TPM_ALG_SHA512, PrimitiveTest::Sha512);
     }
 
     #[test]
-    fn a_raised_pin_leaves_a_whole_incremental_list_running_to_completion() {
+    fn raised_pin_full_list_completion() {
         let mut runtime = recording_runtime();
-        runtime.cancel = CancelSignal::signaled();
         assert_eq!(
-            to_do_list(&mut runtime, &[TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_AES]),
+            to_do_list_with(
+                &mut runtime,
+                &[TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_AES],
+                Cancellation::requested(),
+            ),
             [TPM_ALG_SHA384, TPM_ALG_SHA512, TPM_ALG_OAEP, TPM_ALG_ECDH]
         );
         assert_eq!(RUN_COUNT.with(Cell::get), 3, "every selected test ran");
@@ -278,20 +307,26 @@ mod tests {
     }
 
     #[test]
-    fn a_raised_pin_does_not_change_a_rejected_list_or_a_failing_test() {
+    fn raised_pin_rejection_and_failure_unchanged() {
         let mut runtime = recording_runtime();
-        runtime.cancel = CancelSignal::signaled();
         assert_eq!(
-            run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_ERROR]))),
+            run_code_with(
+                &mut runtime,
+                &framed(0x8001, &to_test(&[TPM_ALG_ERROR])),
+                Cancellation::requested(),
+            ),
             VALUE_PARAMETER_1
         );
         assert!(!runtime.failure_mode);
 
         let mut runtime = started_runtime();
-        runtime.cancel = CancelSignal::signaled();
         runtime.self_test.set_runner(always_fails);
         assert_eq!(
-            run_code(&mut runtime, &framed(0x8001, &to_test(&[TPM_ALG_SHA256]))),
+            run_code_with(
+                &mut runtime,
+                &framed(0x8001, &to_test(&[TPM_ALG_SHA256])),
+                Cancellation::requested(),
+            ),
             FAILURE,
             "a genuine self-test failure is unaffected by the pin"
         );
@@ -305,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn the_swtpm_bios_request_answers_the_remaining_rust_self_tests() {
+    fn swtpm_bios_request_remaining_tests_report() {
         let mut runtime = started_runtime();
         assert_eq!(run(&mut runtime, &SWTPM_BIOS_COMMAND), SWTPM_BIOS_RESPONSE);
         assert!(!runtime.failure_mode);
@@ -313,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn the_swtpm_bios_request_carries_one_sha256_entry() {
+    fn swtpm_bios_request_single_sha256_entry() {
         assert_eq!(
             &SWTPM_BIOS_COMMAND[10..],
             to_test(&[TPM_ALG_SHA256]).as_slice()
@@ -321,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn an_incremental_test_before_startup_is_rejected() {
+    fn pre_startup_rejection() {
         let mut runtime = empty_state_runtime();
         assert_eq!(
             run_code(&mut runtime, &SWTPM_BIOS_COMMAND),
@@ -334,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_list_runs_nothing_and_reports_the_current_pending_tests() {
+    fn empty_list_no_runs_pending_report() {
         let mut runtime = recording_runtime();
         assert_eq!(
             to_do_list(&mut runtime, &[]),
@@ -352,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_algorithm_runs_only_its_mapped_primitive() {
+    fn single_algorithm_mapped_primitive_only() {
         for (algorithm, expected) in [
             (TPM_ALG_SHA1, PrimitiveTest::Sha1),
             (TPM_ALG_SHA256, PrimitiveTest::Sha256),
@@ -369,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn several_algorithms_run_exactly_the_selected_primitives() {
+    fn multi_algorithm_selected_primitive_coverage() {
         let mut runtime = recording_runtime();
         assert_eq!(
             to_do_list(&mut runtime, &[TPM_ALG_SHA512, TPM_ALG_AES]),
@@ -385,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_algorithm_ids_run_the_primitive_once() {
+    fn duplicate_algorithm_id_single_primitive_run() {
         let mut runtime = recording_runtime();
         assert_eq!(
             to_do_list(
@@ -427,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicitly_requested_completed_primitive_is_tested_again() {
+    fn completed_primitive_explicit_rerun() {
         let mut runtime = started_runtime();
         assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_SHA256]).len(), 6);
         assert!(!runtime.self_test.pending.contains(PrimitiveTest::Sha256));
@@ -441,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pending_list_is_reported_in_ascending_algorithm_order() {
+    fn pending_list_ascending_order() {
         let mut runtime = started_runtime();
         let reported = to_do_list(&mut runtime, &[]);
         assert!(
@@ -463,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_test_run_reports_an_empty_list() {
+    fn completed_run_empty_list_report() {
         let mut runtime = started_runtime();
         assert_eq!(
             to_do_list(
@@ -491,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_algorithm_is_a_parameter_one_value_error() {
+    fn unknown_algorithm_parameter_one_value_error() {
         let mut runtime = recording_runtime();
         for algorithm in [TPM_ALG_ERROR, 0x0002, 0x0027, 0x00ff, 0x7fff, 0xffff] {
             assert_eq!(
@@ -505,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_disabled_algorithm_is_a_parameter_one_value_error() {
+    fn profile_disabled_algorithm_parameter_one_value_error() {
         const MINIMAL_ALGORITHMS: &str = "rsa,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,null,oaep,\
 ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ecc-nist-p384";
 
@@ -529,7 +564,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_enabled_algorithm_without_a_rust_test_succeeds_without_being_reported() {
+    fn untested_enabled_algorithm_success_unreported() {
         let mut runtime = recording_runtime();
         let reported = to_do_list(&mut runtime, &[TPM_ALG_ECC]);
         assert!(executed().is_empty());
@@ -549,7 +584,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn an_rsa_request_runs_no_primitive_test_and_is_never_reported() {
+    fn rsa_request_no_primitive_run_unreported() {
         let mut runtime = recording_runtime();
         let reported = to_do_list(&mut runtime, &[TPM_ALG_RSA]);
         assert!(
@@ -595,7 +630,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
         }
 
-        fn counting_runtime() -> Box<Tpm2Runtime> {
+        fn counting_runtime() -> Tpm2Runtime {
             RAW_CALLS.with(|calls| calls.set(0));
             PADDED_CALLS.with(|calls| calls.set(0));
             let mut runtime = started_runtime();
@@ -614,7 +649,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_explicit_rsa_request_runs_the_raw_known_answer_test() {
+        fn explicit_rsa_request_raw_kat_run() {
             let mut runtime = counting_runtime();
             assert!(runtime.self_test.raw_rsa_pending);
             let requests = runtime.live.orderly.drbg_state.reseed_counter;
@@ -637,7 +672,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn the_framed_command_runs_the_raw_known_answer_test() {
+        fn framed_command_raw_kat_run() {
             let mut runtime = counting_runtime();
             let reported = to_do_list(&mut runtime, &[TPM_ALG_RSA]);
             assert_eq!(raw_calls(), 1);
@@ -649,7 +684,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_explicitly_requested_completed_raw_test_is_run_again() {
+        fn completed_raw_test_explicit_rerun() {
             let mut runtime = counting_runtime();
             assert_eq!(
                 run_incremental_self_test(&mut runtime, &[TPM_ALG_RSA]),
@@ -674,7 +709,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_failing_raw_test_stops_the_tpm_at_its_own_vendored_site() {
+        fn failing_raw_test_vendored_failure_site() {
             for (stage, location) in [
                 (RawRsaSelfTestStage::Encrypt, FailureLocation::RsaRawEncrypt),
                 (
@@ -704,7 +739,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_failing_raw_test_answers_failure_through_the_framed_command() {
+        fn failing_raw_test_framed_failure_response() {
             let mut runtime = started_runtime();
             runtime
                 .self_test
@@ -717,7 +752,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_higher_level_rsa_test_in_the_same_list_covers_the_raw_primitive() {
+        fn higher_level_rsa_test_raw_coverage() {
             for companion in [TPM_ALG_RSAES, TPM_ALG_OAEP] {
                 let mut runtime = counting_runtime();
                 runtime.self_test.set_raw_rsa_runner(unreachable_raw);
@@ -735,7 +770,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_signature_scheme_in_the_same_list_does_not_cover_the_raw_primitive() {
+        fn signature_scheme_no_raw_coverage() {
             const TPM_ALG_RSASSA: u16 = 0x0014;
             let mut runtime = counting_runtime();
             assert_eq!(
@@ -751,7 +786,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_failing_covering_test_leaves_the_raw_state_pending() {
+        fn failing_covering_test_raw_state_pending() {
             for companion in [TPM_ALG_RSAES, TPM_ALG_OAEP] {
                 let mut runtime = counting_runtime();
                 runtime.self_test.set_raw_rsa_runner(unreachable_raw);
@@ -782,7 +817,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_unsupported_algorithm_is_rejected_before_any_test_runs() {
+        fn unsupported_algorithm_pre_run_rejection() {
             let mut runtime = counting_runtime();
             runtime.self_test.set_raw_rsa_runner(unreachable_raw);
             assert_eq!(
@@ -810,7 +845,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             crate::library::tpm2::rsa_vectors::run_rsaes_known_answer(padding)
         }
 
-        fn counting_runtime() -> Box<Tpm2Runtime> {
+        fn counting_runtime() -> Tpm2Runtime {
             CALLS.with(|calls| calls.set(0));
             let mut runtime = started_runtime();
             runtime.self_test.set_rsaes_runner(counting_runner);
@@ -818,7 +853,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_explicit_rsaes_request_runs_the_known_answer_test() {
+        fn explicit_rsaes_request_kat_run() {
             let mut runtime = counting_runtime();
             let requests = runtime.live.orderly.drbg_state.reseed_counter;
             assert!(runtime.self_test.rsaes_pending);
@@ -837,7 +872,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn the_reported_to_do_list_never_names_the_rsa_encryption_tests() {
+        fn to_do_list_rsa_encryption_omission() {
             let mut runtime = counting_runtime();
             let reported = to_do_list(&mut runtime, &[]);
             assert!(!reported.contains(&TPM_ALG_RSAES));
@@ -852,7 +887,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_full_self_test_clears_every_rsa_encryption_test() {
+        fn full_self_test_rsa_encryption_clearance() {
             let mut runtime = counting_runtime();
             let requests = runtime.live.orderly.drbg_state.reseed_counter;
             assert_eq!(run_code(&mut runtime, &framed(0x8001, &to_test(&[]))), 0);
@@ -891,7 +926,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
         }
 
-        fn counting_runtime() -> Box<Tpm2Runtime> {
+        fn counting_runtime() -> Tpm2Runtime {
             CALLS.with(|calls| calls.set(0));
             let mut runtime = started_runtime();
             runtime.self_test.set_oaep_runner(counting_runner);
@@ -903,7 +938,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_explicit_oaep_request_runs_the_known_answer_test() {
+        fn explicit_oaep_request_kat_run() {
             let mut runtime = counting_runtime();
             let requests = runtime.live.orderly.drbg_state.reseed_counter;
             let reported = to_do_list(&mut runtime, &[TPM_ALG_OAEP]);
@@ -918,7 +953,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_explicit_oaep_request_also_clears_the_default_test_hash() {
+        fn explicit_oaep_request_default_hash_clearance() {
             let mut runtime = counting_runtime();
             assert!(runtime.self_test.pending.contains(PrimitiveTest::Sha512));
             assert_eq!(
@@ -935,7 +970,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_explicitly_requested_completed_oaep_test_is_run_again() {
+        fn completed_oaep_test_explicit_rerun() {
             let mut runtime = counting_runtime();
             assert_eq!(to_do_list(&mut runtime, &[TPM_ALG_OAEP]).len(), 5);
             assert_eq!(calls(), 1);
@@ -944,7 +979,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_list_carrying_oaep_runs_the_hash_tests_first() {
+        fn oaep_list_hash_tests_first() {
             let mut runtime = counting_runtime();
             runtime.self_test.set_runner(recording_runner);
             EXECUTED.with(|executed| executed.set(0));
@@ -964,7 +999,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_failing_known_answer_test_fails_the_tpm_at_its_own_vendored_site() {
+        fn failing_kat_vendored_failure_site() {
             for (runner, location) in table() {
                 let mut runtime = started_runtime();
                 runtime.self_test.set_oaep_runner(runner);
@@ -981,7 +1016,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn the_sha512_dependency_fails_before_the_known_answer_test() {
+        fn sha512_dependency_failure_before_kat() {
             let mut runtime = counting_runtime();
             runtime.self_test.set_runner(fails_on_sha512);
             assert_eq!(
@@ -997,7 +1032,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn an_unusable_drbg_fails_the_known_answer_test_before_it_starts() {
+        fn unusable_drbg_pre_kat_failure() {
             let mut runtime = counting_runtime();
             runtime.live.orderly.drbg_state.drbg_magic ^= 0xffff_ffff;
             assert_eq!(
@@ -1013,7 +1048,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         }
 
         #[test]
-        fn a_profile_without_rsa_rejects_an_oaep_request_before_anything_runs() {
+        fn missing_rsa_profile_oaep_pre_run_rejection() {
             let algorithms: Vec<u8> = DEFAULT_ALGORITHMS_PROFILE
                 .split(|&byte| byte == b',')
                 .filter(|token| *token != b"oaep")
@@ -1056,7 +1091,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_whole_list_is_validated_before_any_test_runs() {
+    fn full_list_validation_before_runs() {
         let mut runtime = recording_runtime();
         assert_eq!(
             run_code(
@@ -1074,7 +1109,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_missing_count_is_an_insufficient_parameter_one() {
+    fn missing_count_insufficient_parameter_one() {
         let mut runtime = started_runtime();
         for length in 0..4usize {
             assert_eq!(
@@ -1086,7 +1121,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_truncated_algorithm_entry_is_an_insufficient_parameter_one() {
+    fn truncated_entry_insufficient_parameter_one() {
         let mut runtime = started_runtime();
         for payload in [
             &[0x00, 0x00, 0x00, 0x01][..],
@@ -1103,7 +1138,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_count_above_the_upstream_maximum_is_a_size_parameter_one() {
+    fn count_over_maximum_size_parameter_one() {
         let mut runtime = started_runtime();
         for count in [65u32, 100, 0xffff, u32::MAX] {
             let mut payload = count.to_be_bytes().to_vec();
@@ -1117,7 +1152,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_upstream_maximum_count_is_accepted_and_validated() {
+    fn maximum_count_acceptance_and_validation() {
         let mut runtime = started_runtime();
         let algorithms = [TPM_ALG_SHA256; 64];
         assert_eq!(to_do_list(&mut runtime, &algorithms).len(), 6);
@@ -1128,7 +1163,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = started_runtime();
         for extra in [&[0x00][..], &[0x00, 0x0b][..], &[0xee, 0xee, 0xee][..]] {
             let mut payload = to_test(&[TPM_ALG_SHA256]);
@@ -1148,7 +1183,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_rejected_request_never_enters_failure_mode() {
+    fn rejected_request_no_failure_mode() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(always_fails);
         for payload in [
@@ -1165,7 +1200,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failing_known_answer_test_records_the_primitive_and_fails_the_tpm() {
+    fn failing_kat_primitive_record_and_failure_mode() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(fails_on_sha384);
         assert_eq!(
@@ -1189,14 +1224,14 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_failure_answers_the_bare_failure_response() {
+    fn failure_bare_failure_response() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(always_fails);
         assert_eq!(run_code(&mut runtime, &SWTPM_BIOS_COMMAND), FAILURE);
     }
 
     #[test]
-    fn a_failure_does_not_touch_unrelated_runtime_state() {
+    fn failure_unrelated_state_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         runtime.self_test.set_runner(always_fails);
@@ -1205,7 +1240,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_successful_test_does_not_touch_unrelated_runtime_state() {
+    fn success_unrelated_state_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(run(&mut runtime, &SWTPM_BIOS_COMMAND), SWTPM_BIOS_RESPONSE);
@@ -1214,7 +1249,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn a_session_tagged_request_answers_through_the_session_response_path() {
+    fn session_tagged_request_session_response_path() {
         let mut runtime = started_runtime();
         let mut payload = 0x09u32.to_be_bytes().to_vec();
         payload.extend_from_slice(&[0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -1228,7 +1263,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn the_default_profile_enables_every_mapped_algorithm() {
+    fn default_profile_mapped_algorithm_coverage() {
         let state = SelfTestState::for_algorithms(DEFAULT_ALGORITHMS_PROFILE);
         assert_eq!(
             state.pending_algorithms(),
@@ -1245,7 +1280,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn parsing_decodes_big_endian_lists() {
+    fn big_endian_list_decoding() {
         assert_eq!(parse_to_test(&[0x00, 0x00, 0x00, 0x00]), Ok(Vec::new()));
         assert_eq!(
             parse_to_test(&[0x00, 0x00, 0x00, 0x02, 0x00, 0x0b, 0x01, 0x02]),
@@ -1262,7 +1297,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn short_command_bodies_do_not_panic() {
+    fn short_command_body_panic_safety() {
         for length in 0..=6usize {
             for byte in 0..=u8::MAX {
                 let payload: Vec<u8> = (0..length).map(|_| byte).collect();
@@ -1271,14 +1306,18 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
                     let bytes = framed(tag, &payload);
                     let input = CommandInput::new(bytes.len() as u32, bytes);
                     let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                    let _ = serialize_response(&dispatch(
+                        &mut runtime,
+                        &parsed,
+                        Cancellation::disabled(),
+                    ));
                 }
             }
         }
     }
 
     #[test]
-    fn an_oversized_count_never_allocates_ahead_of_the_payload() {
+    fn oversized_count_no_preallocation() {
         for count in [0x0000_0041u32, 0x00ff_ffff, u32::MAX] {
             assert_eq!(parse_to_test(&count.to_be_bytes()), Err(SIZE_PARAMETER_1));
         }

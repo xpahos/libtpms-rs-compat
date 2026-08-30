@@ -44,14 +44,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_empty_output_carries_no_handles_and_no_parameters() {
+    fn empty_output_no_handles_no_parameters() {
         let (handles, parameters) = CommandOutput::empty().into_parts();
         assert!(handles.is_empty());
         assert!(parameters.is_empty());
     }
 
     #[test]
-    fn encoded_parameters_survive_the_wrapper_unchanged() {
+    fn encoded_parameter_wrapper_preservation() {
         let encoded = vec![0x00, 0x01, 0x02, 0xff, 0x80, 0x00];
         assert_eq!(
             CommandOutput::from_parameters(encoded.clone()).into_parameters(),
@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn a_response_handle_is_encoded_big_endian_ahead_of_the_parameters() {
+    fn response_handle_big_endian_before_parameters() {
         let (handles, parameters) =
             CommandOutput::with_handle(0x8000_0000, vec![0xaa, 0xbb]).into_parts();
         assert_eq!(handles, [0x80, 0x00, 0x00, 0x00]);

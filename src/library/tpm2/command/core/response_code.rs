@@ -13,7 +13,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_error_index_constants_match_the_vendored_response_code_layout() {
+    fn error_index_constants_vendored_layout_match() {
         assert_eq!(TPM_RC_H, 0x000);
         assert_eq!(TPM_RC_P, 0x040);
         assert_eq!(TPM_RC_1, 0x100);

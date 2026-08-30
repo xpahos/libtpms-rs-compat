@@ -79,6 +79,7 @@ fn change_platform_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmResu
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_CHANGE_PPS, find,
     };
@@ -100,7 +101,7 @@ mod tests {
     };
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = find(TPM_CC_CHANGE_PPS).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x02c0_0125);
         assert!(descriptor.physical_presence);
@@ -118,12 +119,12 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_command_attributes_match_the_reference() {
+    fn reported_attributes_reference_match() {
         replay(&[("CCATTR_0125", cap_command_attributes(TPM_CC_CHANGE_PPS))]);
     }
 
     #[test]
-    fn the_handle_and_parameter_errors_match_the_reference() {
+    fn handle_parameter_error_reference_match() {
         let runtime = replay(&[
             ("PPS_BY_OWNER", change_pps(TPM_RH_OWNER, &[])),
             ("PPS_BY_LOCKOUT", change_pps(TPM_RH_LOCKOUT, &[])),
@@ -146,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_successful_change_requests_an_nv_commit() {
+    fn nv_commit_successful_change_only() {
         assert_eq!(commits_for(&change_pps(TPM_RH_PLATFORM, &[])), 1);
         for rejected in [
             change_pps(TPM_RH_OWNER, &[]),
@@ -158,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_request_leaves_the_platform_seed_and_proof_alone() {
+    fn rejected_request_seed_proof_unchanged() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -176,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_hierarchy_is_reseeded_and_the_others_survive() {
+    fn platform_reseed_other_hierarchies_preservation() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         for (label, bytes) in [
@@ -305,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_seed_change_clears_the_orderly_state() {
+    fn seed_change_orderly_state_clearing() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         exec(&mut runtime, &clock, &shutdown(1));
@@ -325,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_platform_seed_survives_a_permanent_state_round_trip() {
+    fn new_seed_permanent_state_round_trip() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         expect(
@@ -350,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_command_without_touching_the_state() {
+    fn unavailable_nv_rejection_state_unchanged() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         runtime.nv_available = false;
@@ -361,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_host_commit_fails_the_tpm() {
+    fn host_commit_failure_tpm_failure_mode() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let bytes = change_pps(TPM_RH_PLATFORM, &[]);
@@ -372,6 +373,7 @@ mod tests {
             &input,
             &clock,
             |_| Err(crate::library::constants::TPM_RC_FAILURE),
+            Cancellation::disabled(),
         )
         .expect("the command processes");
         assert_eq!(response, error_response(0x101));
@@ -380,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_nv_image_keeps_the_consumed_draws_and_rolls_back_the_rest() {
+    fn nv_image_failure_draw_consumption_rollback() {
         use crate::library::tpm2::nv::build_nv_image;
 
         let clock = replay_clock();
@@ -417,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = change_pps(TPM_RH_PLATFORM, &[]);
         for len in 0..=valid.len() {
@@ -433,6 +435,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
+                        Cancellation::disabled(),
                     );
                 }
             }

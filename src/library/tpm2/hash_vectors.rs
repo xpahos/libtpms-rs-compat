@@ -118,7 +118,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_fixture_carries_three_distinct_full_length_proofs() {
+    fn fixture_three_distinct_full_length_proofs() {
         let record = hash_ticket_record();
         assert_eq!(record.ph_proof.len(), 64);
         assert_eq!(record.sh_proof.len(), 64);
@@ -129,14 +129,14 @@ mod tests {
     }
 
     #[test]
-    fn the_null_hierarchy_has_no_proof() {
+    fn null_hierarchy_no_proof() {
         let record = hash_ticket_record();
         assert!(record.proof_for(TPM_RH_NULL).is_none());
         assert!(record.proof_for(0x4000_000a).is_none());
     }
 
     #[test]
-    fn every_case_covers_a_compiled_algorithm_and_an_accepted_hierarchy() {
+    fn case_compiled_algorithm_accepted_hierarchy_coverage() {
         let record = hash_ticket_record();
         assert_eq!(record.cases.len(), 9 * 4 * 4);
         for case in &record.cases {
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn the_recorded_data_sizes_cover_the_documented_range() {
+    fn recorded_data_size_range_coverage() {
         let record = hash_ticket_record();
         let mut sizes: Vec<usize> = record.cases.iter().map(|case| case.data.len()).collect();
         sizes.sort_unstable();
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn every_case_carries_a_digest_and_a_marshalled_ticket() {
+    fn case_digest_and_marshalled_ticket_presence() {
         let record = hash_ticket_record();
         for case in &record.cases {
             let expected = match case.hash_alg {
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_is_recorded_exactly_for_the_hierarchies_and_inputs_upstream_allows() {
+    fn ticket_recording_upstream_hierarchy_input_match() {
         let record = hash_ticket_record();
         for case in &record.cases {
             let suppressed = case.hierarchy == TPM_RH_NULL

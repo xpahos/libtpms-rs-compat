@@ -50,7 +50,7 @@ mod tests {
     }
 
     #[test]
-    fn each_slot_selects_its_compiled_algorithm() {
+    fn per_slot_compiled_algorithm_selection() {
         for (slot, &(hash_alg, _)) in PCR_SLOT_BANKS.iter().enumerate() {
             let hasher = BankHasher::new(slot).expect("a compiled bank slot");
             assert_eq!(hasher.hash_alg(), hash_alg, "slot {slot}");
@@ -58,7 +58,7 @@ mod tests {
     }
 
     #[test]
-    fn slots_beyond_the_compiled_banks_are_rejected() {
+    fn out_of_range_slot_rejection() {
         for slot in [PCR_SLOT_BANKS.len(), 4, 5, 100, usize::MAX] {
             assert!(
                 BankHasher::new(slot).is_none(),
@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn each_slot_produces_its_compiled_digest_size() {
+    fn per_slot_compiled_digest_size() {
         for (slot, &(_, digest_size)) in PCR_SLOT_BANKS.iter().enumerate() {
             let hasher = BankHasher::new(slot).expect("a compiled bank slot");
             assert_eq!(hasher.finalize().len(), digest_size, "slot {slot}");
@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn extend_produces_a_digest_of_the_slot_size() {
+    fn extend_digest_slot_size() {
         for (slot, &(_, digest_size)) in PCR_SLOT_BANKS.iter().enumerate() {
             let extended =
                 BankHasher::extend(slot, &vec![0u8; digest_size], &vec![0xaa; digest_size])
@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn extend_concatenates_the_old_value_before_the_input() {
+    fn extend_old_value_input_concatenation_order() {
         for (slot, &(_, digest_size)) in PCR_SLOT_BANKS.iter().enumerate() {
             let old = vec![0u8; digest_size];
             let mut input = b"1234".to_vec();
@@ -108,12 +108,12 @@ mod tests {
     }
 
     #[test]
-    fn the_infallible_set_covers_every_supported_bank() {
+    fn infallible_set_bank_coverage() {
         assert_eq!(BankHasher::all().len(), PCR_SLOT_BANKS.len());
     }
 
     #[test]
-    fn the_infallible_set_matches_the_fallible_constructor_slot_for_slot() {
+    fn infallible_fallible_constructor_match() {
         for (slot, hasher) in BankHasher::all().into_iter().enumerate() {
             let expected = BankHasher::new(slot).expect("a compiled bank slot");
             assert_eq!(hasher.hash_alg(), expected.hash_alg(), "slot {slot}");
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn every_hasher_in_the_set_matches_its_bank_algorithm_and_digest_size() {
+    fn hasher_set_bank_algorithm_and_digest_size_match() {
         const EMPTY_DIGESTS: [&str; PCR_SLOT_BANKS.len()] = [
             "da39a3ee5e6b4b0d3255bfef95601890afd80709",
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn every_slot_reachable_from_a_hash_algorithm_has_a_hasher() {
+    fn hash_algorithm_slot_hasher_coverage() {
         for (slot, &(hash_alg, digest_size)) in PCR_SLOT_BANKS.iter().enumerate() {
             assert_eq!(
                 bank_slot(hash_alg),
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha256_extend_matches_the_upstream_vector() {
+    fn sha256_extend_upstream_vector_match() {
         let mut input = b"1234".to_vec();
         input.resize(32, 0);
         let extended = BankHasher::extend(1, &[0u8; 32], &input).expect("the SHA-256 slot");

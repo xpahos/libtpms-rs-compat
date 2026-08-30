@@ -37,6 +37,7 @@ pub(in crate::library::tpm2) fn vectors() -> Vec<GoldenVector<'static>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use core::cell::RefCell;
 
     use super::*;
@@ -691,6 +692,7 @@ mod tests {
                         .map_err(|_| TPM_FAIL)?;
                 Ok(())
             },
+            Cancellation::disabled(),
         )
         .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
         assert_eq!(response, vector(label), "{label}");
@@ -701,7 +703,7 @@ mod tests {
         permall: &[u8],
         clock: &SteppingClock,
         first_boundary: &str,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         use crate::library::tpm2::live::RestoredVolatile;
 
         let envelope = PersistentAllEnvelope::parse(permall).expect("the stored envelope parses");
@@ -724,7 +726,7 @@ mod tests {
         runtime
     }
 
-    fn restore(permall: &[u8], volatile: &[u8], clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn restore(permall: &[u8], volatile: &[u8], clock: &SteppingClock) -> Tpm2Runtime {
         let envelope = PersistentAllEnvelope::parse(permall).expect("the stored envelope parses");
         let decoded = parse_persistent_all_payload(&envelope).expect("the payload decodes");
         let state = materialize_persistent_state(decoded).expect("the state materializes");
@@ -757,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn the_full_oracle_sequence_replays_byte_for_byte() {
+    fn full_oracle_sequence_byte_replay() {
         let permall = RefCell::new(Vec::new());
         let boot_state = materialize_permanent(vector("PERMALL_MANUFACTURED"))
             .expect("the manufactured permall decodes");
@@ -1308,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_field_mutations_are_detected() {
+    fn permanent_field_mutation_detection() {
         let expected = vector("PERMALL_AT_LOCKOUT");
         for (name, mutate) in PERMANENT_MUTATORS {
             let mut state = materialize_permanent(expected).expect("the record decodes");
@@ -1324,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn volatile_field_mutations_are_detected() {
+    fn volatile_field_mutation_detection() {
         let expected = vector("VOLATILE_AT_LOCKOUT");
         let permall = vector("PERMALL_AT_LOCKOUT");
         for (name, mutate) in VOLATILE_MUTATORS {
@@ -1344,7 +1346,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unrelated_persistent_mutation_is_detected() {
+    fn unrelated_persistent_mutation_detection() {
         let expected = vector("PERMALL_AT_LOCKOUT");
         let mut state = materialize_permanent(expected).expect("the record decodes");
         state.persistent.owner_auth = OwnedSecret::from_vec(vec![0x42; 8]);
@@ -1356,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unrelated_volatile_mutation_is_detected() {
+    fn unrelated_volatile_mutation_detection() {
         let expected = vector("VOLATILE_AT_LOCKOUT");
         let permall = vector("PERMALL_AT_LOCKOUT");
         let mut state = decode_volatile(permall, expected).expect("the record decodes");
@@ -1369,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_entropy_reseeded_fields_are_normalized() {
+    fn entropy_reseed_field_normalization_scope() {
         let expected = vector("VOLATILE_BEFORE_SAVE");
         let permall = vector("PERMALL_BEFORE_SAVE");
         let mut state = decode_volatile(permall, expected).expect("the record decodes");
@@ -1414,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_state_partner_fails_the_comparison() {
+    fn missing_state_partner_comparison_failure() {
         let volatile = vector("VOLATILE_BEFORE_SAVE");
         assert!(
             compare_volatile("WITHOUT_PARTNER", volatile, volatile).is_err(),
@@ -1423,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    fn the_fixture_parses_into_the_expected_records() {
+    fn fixture_record_parse() {
         let all = vectors();
         assert_eq!(all.len(), 88);
         let responses = all
@@ -1452,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn every_record_validates_against_its_declared_kind() {
+    fn record_declared_kind_validation() {
         for vector in vectors() {
             validate_record(vector.name, vector.bytes)
                 .unwrap_or_else(|error| panic!("{}: {error}", vector.name));
@@ -1460,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn state_records_round_trip_through_the_production_codecs() {
+    fn state_record_production_codec_round_trip() {
         for boundary in STATE_BOUNDARIES {
             let permall = vector(&format!("PERMALL_{boundary}"));
             let state = materialize_permanent(permall)
@@ -1483,7 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn state_records_are_not_interpreted_as_responses() {
+    fn state_record_response_distinction() {
         for vector in vectors() {
             if record_kind(vector.name) == RecordKind::Response {
                 continue;
@@ -1503,14 +1505,14 @@ mod tests {
     }
 
     #[test]
-    fn response_records_are_not_valid_state_records() {
+    fn response_record_state_record_rejection() {
         let response = vector("FIRST_DA_AUTH");
         assert!(validate_record("PERMALL_FIRST_DA_AUTH", response).is_err());
         assert!(validate_record("VOLATILE_FRESH_STARTUP", response).is_err());
     }
 
     #[test]
-    fn a_mislabelled_state_record_is_rejected() {
+    fn mislabelled_state_record_rejection() {
         let permall = vector("PERMALL_FRESH_STARTUP");
         let volatile = vector("VOLATILE_FRESH_STARTUP");
         assert!(
@@ -1528,7 +1530,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupted_state_record_is_rejected() {
+    fn corrupted_state_record_rejection() {
         for name in ["PERMALL_FRESH_STARTUP", "VOLATILE_FRESH_STARTUP"] {
             let bytes = vector(name);
             let mut truncated = bytes.to_vec();
@@ -1550,7 +1552,7 @@ mod tests {
     }
 
     #[test]
-    fn the_captured_state_relations_match_the_upstream_da_arithmetic() {
+    fn captured_state_upstream_da_arithmetic_match() {
         let fresh = volatile_record("FRESH_STARTUP");
         let fresh_permanent = permanent_record("FRESH_STARTUP");
         assert_eq!(
@@ -1704,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_use_and_lockout_vectors_carry_the_upstream_warning_codes() {
+    fn first_use_lockout_upstream_warning_codes() {
         for (name, code) in [
             ("FIRST_DA_AUTH", 0x0000_098eu32),
             ("FIRST_USE_BEFORE_UNORDERLY", 0x0000_098e),

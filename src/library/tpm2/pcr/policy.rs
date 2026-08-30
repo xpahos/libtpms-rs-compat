@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_built_fixture_matches_the_upstream_marshal_order() {
+    fn hand_built_fixture_upstream_marshal_order_parity() {
         let fixture = [
             0x01, 0x00, 0x13, 0x00, 0x02, 0x17, 0x6b, 0xe6, 0x26, 0x00, 0x01, 0x00, 0x01, 0x00,
             0x0b, 0x00, 0x02, 0xe1, 0xe2, 0x01, 0x00, 0x00, 0x99, 0x98,
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn default_fixture_parses_and_stops_at_the_sentinel() {
+    fn default_fixture_parse_sentinel_stop() {
         let data = PcrPoliciesFixture {
             tail: vec![0xaa, 0xbb],
             ..PcrPoliciesFixture::default()
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_required_outer_block_is_bad_parameter() {
+    fn absent_required_outer_block_bad_parameter() {
         let error = parse(&[0x00, 0x00, 0x00]).unwrap_err();
         assert_eq!(
             error,
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn noncanonical_nonzero_outer_booleans_are_true() {
+    fn noncanonical_outer_boolean_true_coercion() {
         for boolean in [0x01u8, 0x02, 0x80, 0xff] {
             let data = PcrPoliciesFixture {
                 outer_has_block: boolean,
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_outer_framing_is_insufficient() {
+    fn truncated_outer_framing_insufficiency() {
         for data in [&[] as &[u8], &[0x01], &[0x01, 0x00]] {
             let error = parse(data).unwrap_err();
             assert_eq!(
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn misleading_outer_declared_sizes_do_not_affect_the_nested_parse() {
+    fn misleading_outer_declared_size_nested_parse_isolation() {
         for declared in [0u16, 1, 5, 0x0100, u16::MAX] {
             let data = PcrPoliciesFixture {
                 outer_block_size: Some(declared),
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn huge_outer_declared_size_neither_allocates_nor_skips() {
+    fn huge_outer_declared_size_no_allocation_or_skip() {
         let data = PcrPoliciesFixture {
             outer_block_size: Some(u16::MAX),
             ..PcrPoliciesFixture::default()
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn incorrect_nested_magic_is_bad_tag() {
+    fn incorrect_nested_magic_bad_tag() {
         let mut data = PcrPoliciesFixture::default().bytes();
         data[6] = 0xff;
         let error = parse(&data).unwrap_err();
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_header_fields_are_insufficient() {
+    fn truncated_header_fields_insufficiency() {
         let full = PcrPoliciesFixture::default().bytes();
         for len in [3usize, 4, 5, 8, 10] {
             let error = parse(&full[..len]).unwrap_err();
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_uses_a_six_byte_header_without_future_block() {
+    fn version_1_six_byte_header_no_future_block() {
         let data = PcrPoliciesFixture {
             version: 1,
             future_block: None,
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_uses_an_eight_byte_header() {
+    fn version_2_eight_byte_header() {
         let data = PcrPoliciesFixture::default().bytes();
         let parsed = parse(&data).unwrap();
         assert_eq!(parsed.header.version, 2);
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn future_version_with_supported_min_version_is_accepted() {
+    fn future_version_supported_min_acceptance() {
         for min_version in [0u16, 1, 2] {
             let data = PcrPoliciesFixture {
                 version: 9,
@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn min_version_newer_than_2_is_rejected() {
+    fn min_version_above_2_rejection() {
         let data = PcrPoliciesFixture {
             version: 9,
             min_version: 3,
@@ -386,12 +386,12 @@ mod tests {
     }
 
     #[test]
-    fn declared_count_1_is_accepted() {
+    fn declared_count_1_acceptance() {
         assert!(parse(&PcrPoliciesFixture::default().bytes()).is_ok());
     }
 
     #[test]
-    fn mismatching_counts_are_size_errors_without_reading_entries() {
+    fn count_mismatch_size_error_without_entry_read() {
         for declared in [0u16, 2, u16::MAX] {
             let fixture = PcrPoliciesFixture {
                 array_size: declared,
@@ -415,13 +415,13 @@ mod tests {
     }
 
     #[test]
-    fn truncated_count_is_insufficient() {
+    fn truncated_count_insufficiency() {
         let full = PcrPoliciesFixture::default().bytes();
         assert_eq!(parse(&full[..12]).unwrap_err(), truncated());
     }
 
     #[test]
-    fn every_raw_hash_algorithm_id_is_accepted_and_preserved() {
+    fn raw_hash_algorithm_id_preservation() {
         for alg in [
             0x0000u16,
             0x0004,
@@ -446,13 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn truncated_hash_algorithm_is_insufficient() {
+    fn truncated_hash_algorithm_insufficiency() {
         let full = PcrPoliciesFixture::default().bytes();
         assert_eq!(parse(&full[..14]).unwrap_err(), truncated());
     }
 
     #[test]
-    fn nonempty_policy_digest_borrows_the_input() {
+    fn nonempty_policy_digest_input_borrow() {
         let data = PcrPoliciesFixture {
             policy: vec![0x5c; 5],
             ..PcrPoliciesFixture::default()
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_capacity_policy_digest_is_accepted() {
+    fn exact_capacity_digest_acceptance() {
         let data = PcrPoliciesFixture {
             policy: vec![0x11; MAX_DIGEST_SIZE],
             ..PcrPoliciesFixture::default()
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_policy_digest_is_a_size_error() {
+    fn oversized_digest_size_error() {
         let data = PcrPoliciesFixture {
             policy: vec![0x11; MAX_DIGEST_SIZE + 1],
             ..PcrPoliciesFixture::default()
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn attacker_controlled_digest_length_neither_allocates_nor_panics() {
+    fn attacker_controlled_digest_length_safety() {
         let fixture = PcrPoliciesFixture {
             future_block: None,
             ..PcrPoliciesFixture::default()
@@ -515,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_policy_digest_is_insufficient() {
+    fn truncated_digest_insufficiency() {
         let full = PcrPoliciesFixture {
             policy: vec![0x33; 8],
             future_block: None,
@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_consumes_no_future_block_framing() {
+    fn version_1_no_future_block_framing() {
         let data = PcrPoliciesFixture {
             version: 1,
             future_block: None,
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_absent_future_block_continues() {
+    fn version_2_absent_future_block_continuation() {
         let data = PcrPoliciesFixture {
             future_block: Some((0, 0, Vec::new())),
             tail: vec![0x66],
@@ -554,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_present_future_blocks_are_skipped_exactly() {
+    fn version_2_future_block_exact_skip() {
         for payload in [vec![], vec![0xf1, 0xf2, 0xf3]] {
             let data = PcrPoliciesFixture {
                 future_block: Some((1, payload.len() as u16, payload.clone())),
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn noncanonical_nonzero_future_block_booleans_are_true() {
+    fn noncanonical_future_block_boolean_true_coercion() {
         for boolean in [0x02u8, 0x80, 0xff] {
             let data = PcrPoliciesFixture {
                 future_block: Some((boolean, 1, vec![0xee])),
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_future_block_framing_is_insufficient() {
+    fn truncated_future_block_framing_insufficiency() {
         let full = PcrPoliciesFixture::default().bytes();
         for len in [full.len() - 3, full.len() - 2, full.len() - 1] {
             assert_eq!(parse(&full[..len]).unwrap_err(), truncated(), "cut {len}");
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn future_block_size_beyond_input_is_insufficient() {
+    fn future_block_size_beyond_input_insufficiency() {
         let data = PcrPoliciesFixture {
             future_block: Some((1, 4, vec![0x11, 0x22])),
             ..PcrPoliciesFixture::default()
@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_of_a_valid_section_fails_without_panic() {
+    fn strict_prefix_rejection_panic_safety() {
         let full = PcrPoliciesFixture {
             policy: vec![0x2b; 3],
             future_block: Some((1, 2, vec![0xd1, 0xd2])),

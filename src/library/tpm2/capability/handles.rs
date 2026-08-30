@@ -273,6 +273,7 @@ mod tests {
     use super::test_state::*;
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::{dispatch, parse_command};
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::validate_user_profile;
@@ -287,7 +288,7 @@ mod tests {
         Ok(())
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -298,7 +299,7 @@ mod tests {
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).expect("the header parses");
         assert_eq!(
-            dispatch(&mut runtime, &parsed).code(),
+            dispatch(&mut runtime, &parsed, Cancellation::disabled()).code(),
             0,
             "Startup succeeds"
         );
@@ -318,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_range_constants_match_upstream() {
+    fn handle_range_constant_upstream_match() {
         assert_eq!(PCR_FIRST, 0x0000_0000);
         assert_eq!(HMAC_SESSION_FIRST, 0x0200_0000);
         assert_eq!(POLICY_SESSION_FIRST, 0x0300_0000);
@@ -330,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_handle_types_have_no_collector() {
+    fn unimplemented_handle_type_no_collector() {
         let runtime = started_runtime();
         let state = runtime.state.as_ref().expect("state present");
         for handle_type in [
@@ -344,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn every_implemented_handle_type_has_a_collector() {
+    fn implemented_handle_type_collector_coverage() {
         let runtime = started_runtime();
         let state = runtime.state.as_ref().expect("state present");
         for handle_type in [
@@ -364,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn a_freshly_started_tpm_reports_only_static_handles() {
+    fn fresh_tpm_static_handles_only() {
         let runtime = started_runtime();
         assert!(
             entries(&runtime, 0x0100_0000, 1000).is_empty(),
@@ -391,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_handles_are_filtered_by_the_start_handle() {
+    fn permanent_handle_start_handle_filter() {
         let runtime = started_runtime();
         assert_eq!(
             entries(&runtime, 0x4000_0000, 1000),
@@ -422,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_handles_span_the_implemented_pcrs() {
+    fn pcr_handle_implemented_pcr_coverage() {
         let runtime = started_runtime();
         assert_eq!(entries(&runtime, 0, 1000), (0..24).collect::<Vec<u32>>());
         assert_eq!(entries(&runtime, 0x0000_000a, 3), [10, 11, 12]);
@@ -438,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_index_handles_are_sorted_filtered_and_paged() {
+    fn nv_index_handle_sort_filter_pagination() {
         let mut runtime = started_runtime();
         push_nvram(
             &mut runtime,
@@ -468,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_handles_come_from_the_user_nvram() {
+    fn persistent_handle_user_nvram_origin() {
         let mut runtime = started_runtime();
         push_nvram(
             &mut runtime,
@@ -487,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_indexes_and_persistent_objects_do_not_leak_into_each_other() {
+    fn nv_index_persistent_object_isolation() {
         let mut runtime = started_runtime();
         push_nvram(
             &mut runtime,
@@ -498,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_handles_track_occupied_object_slots() {
+    fn transient_handle_occupied_slot_tracking() {
         let mut runtime = started_runtime();
         occupy_object(&mut runtime, 0);
         occupy_object(&mut runtime, 2);
@@ -514,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn the_start_handle_selects_a_context_slot_across_free_slots() {
+    fn start_handle_context_slot_selection_across_free_slots() {
         let mut runtime = started_runtime();
         load_session(&mut runtime, 1, 0, false);
         assert_eq!(entries(&runtime, 0x0200_0000, 10), [0x0200_0001]);
@@ -539,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_sessions_are_typed_by_the_is_policy_attribute() {
+    fn loaded_session_policy_attribute_typing() {
         let mut runtime = started_runtime();
         load_session(&mut runtime, 0, 0, false);
         load_session(&mut runtime, 1, 1, true);
@@ -561,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_sessions_are_reported_in_the_hmac_range() {
+    fn saved_session_hmac_range_report() {
         let mut runtime = started_runtime();
         load_session(&mut runtime, 1, 1, true);
         save_session(&mut runtime, 0, MAX_LOADED_SESSIONS as u16 + 1);
@@ -571,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_state_reset_reports_no_sessions() {
+    fn missing_state_reset_no_sessions() {
         let mut runtime = started_runtime();
         runtime.live.state_reset = None;
         assert!(entries(&runtime, 0x0200_0000, 10).is_empty());
@@ -579,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn a_count_of_zero_reports_more_data_only_when_a_handle_exists() {
+    fn zero_count_more_data_existing_handle_condition() {
         let runtime = started_runtime();
         for property in [0x0000_0000u32, 0x4000_0000] {
             let paged = page(&runtime, property, 0);
@@ -600,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_size_limit_caps_the_handle_list() {
+    fn response_size_limit_handle_list_cap() {
         let mut runtime = started_runtime();
         push_nvram(
             &mut runtime,

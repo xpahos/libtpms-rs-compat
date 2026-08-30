@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_are_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let zgen = find(TPM_CC_ECDH_ZGEN).expect("TPM2_ECDH_ZGen is registered");
         assert_eq!(zgen.attributes, 0x0200_0154);
         assert_eq!((zgen.decrypt_size, zgen.encrypt_size), (2, 2));
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agreement_matches_the_reference_for_every_peer_point() {
+    fn agreement_oracle_match_all_peer_points() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         for (record, scalar) in [("ZGEN_G2", 2u64), ("ZGEN_G3", 3), ("ZGEN_G5", 5)] {
             let peer = generator_multiple(scalar);
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agreement_is_symmetric_in_the_two_private_scalars() {
+    fn agreement_scalar_symmetry() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         let peer = generator_multiple(3);
         let response = expect(&mut runtime, "ZGEN_G3", &zgen(KEY_AUTH, &point2b(&peer)));
@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_field_peer_point_answers_the_canonical_agreement() {
+    fn out_of_field_peer_point_canonical_agreement() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         let peer = generator_multiple(2);
         let canonical = expect(&mut runtime, "ZGEN_G2", &zgen(KEY_AUTH, &point2b(&peer)));
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_field_two_phase_point_passes_the_curve_check() {
+    fn out_of_field_two_phase_point_curve_check_acceptance() {
         let mut runtime = restored("ZGEN2_AFTER");
         let qs_b = generator_multiple(2);
         let qe_b = generator_multiple(3);
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_failures_match_the_reference() {
+    fn authorization_failure_oracle_match() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         let peer = point2b(&generator_multiple(2));
         expect(&mut runtime, "ZGEN_BAD_AUTH", &zgen(b"bad", &peer));
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn the_point_failures_match_the_reference() {
+    fn point_failure_oracle_match() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         let peer = point2b(&generator_multiple(2));
         expect(
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_failures_match_the_reference() {
+    fn handle_failure_oracle_match() {
         let mut runtime = ready_with(&[decrypt_key(KEY_AUTH)]);
         let peer = point2b(&generator_multiple(2));
         expect(
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn the_key_checks_match_the_reference() {
+    fn key_check_oracle_match() {
         let peer = point2b(&generator_multiple(2));
         let mut runtime = ready_with(&[sign_key()]);
         expect(&mut runtime, "ZGEN_NO_DECRYPT", &zgen(&[], &peer));
@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecdh_scheme_key_is_accepted_by_the_two_phase_command() {
+    fn ecdh_scheme_key_two_phase_acceptance() {
         let mut runtime = ready_with(&[scheme_key(&SCHEME_ECDH)]);
         expect(
             &mut runtime,
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn the_two_phase_validation_matches_the_reference() {
+    fn two_phase_validation_oracle_match() {
         let mut runtime = restored("ZGEN2_AFTER");
         let qs_b = point2b(&generator_multiple(2));
         let qe_b = point2b(&generator_multiple(3));
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sm2_exchange_returns_one_point_and_an_empty_second_point() {
+    fn sm2_exchange_single_point_empty_second() {
         let mut runtime = ready_with(&[
             decrypt_key(&[]),
             cmd(CC_EC_EPHEMERAL, &[], None, &CURVE_P256.to_be_bytes()),
@@ -621,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn a_two_phase_attribute_failure_matches_the_reference() {
+    fn two_phase_attribute_failure_oracle_match() {
         let mut runtime = ready_with(&[
             sign_key(),
             cmd(CC_EC_EPHEMERAL, &[], None, &CURVE_P256.to_be_bytes()),
@@ -640,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ephemeral_key_pair_matches_the_reference() {
+    fn ephemeral_key_pair_oracle_match() {
         let mut runtime = ready_with(&[decrypt_key(&[])]);
         for record in ["KEYGEN_FIRST", "KEYGEN_SECOND"] {
             let response = expect(&mut runtime, record, &cmd(CC_ECDH_KEYGEN, &[H0], None, &[]));
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn the_key_generation_failures_match_the_reference() {
+    fn key_generation_failure_oracle_match() {
         let mut runtime = ready_with(&[decrypt_key(&[])]);
         expect(
             &mut runtime,
@@ -680,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_key_generation_still_publishes_the_generator_state() {
+    fn failed_key_generation_generator_state_publication() {
         let (private, public) = keyed_object();
         let mut runtime = ready_with(&[load_external(&private, &public)]);
         let before = runtime.live.orderly.drbg_state.seed.expose().to_vec();
@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_two_phase_exchange_leaves_the_commitment_untouched() {
+    fn failed_two_phase_exchange_commitment_unchanged() {
         let mut runtime = restored("ZGEN2_AFTER");
         let before = CommitState::load(&runtime).expect("the commitment state loads");
         let qs_b = point2b(&generator_multiple(2));
@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecmqv_scheme_reaches_the_vendored_divide_by_zero() {
+    fn ecmqv_vendored_divide_by_zero_reproduction() {
         let mut runtime = ready_with(&[
             decrypt_key(&[]),
             cmd(CC_EC_EPHEMERAL, &[], None, &CURVE_P256.to_be_bytes()),

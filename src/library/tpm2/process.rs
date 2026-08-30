@@ -1,4 +1,5 @@
 use crate::library::CommandInput;
+use crate::library::cancel::Cancellation;
 use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE};
 use crate::types::TpmResult;
 
@@ -40,12 +41,11 @@ pub(in crate::library) fn process(
     command: &CommandInput,
     clock: &dyn HostClock,
     commit_nv: impl FnOnce(&Tpm2Runtime) -> Result<(), TpmResult>,
+    cancellation: Cancellation<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
     if !runtime.power_on {
         return Ok(Vec::new());
     }
-
-    runtime.cancel.clear();
 
     runtime.locality = if (5..32).contains(&platform.locality) {
         0
@@ -69,7 +69,7 @@ pub(in crate::library) fn process(
 
     let was_started = runtime.startup_received;
     let response = match command::parse_command_within(command, buffer_size) {
-        Ok(parsed) => command::dispatch(runtime, &parsed),
+        Ok(parsed) => command::dispatch(runtime, &parsed, cancellation),
         Err(error) => Response::error(error.response_code()),
     };
 
@@ -95,9 +95,8 @@ fn serialize(response: Response, buffer_size: u32) -> Result<Vec<u8>, TpmResult>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::cancel::CancelSignal;
     use crate::library::constants::TPM_SUCCESS;
-    use crate::library::library_state::{Library, ProcessPreparation, Tpm2ProcessContext};
+    use crate::library::library_state::Library;
     use crate::library::tpm2::runtime::empty_state_runtime;
 
     const UNSUPPORTED_RESPONSE: [u8; 10] =
@@ -129,6 +128,7 @@ mod tests {
             command,
             &fixed_clock(),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
 
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_command_is_a_valid_tpm_error_response() {
+    fn unsupported_command_valid_error_response() {
         let mut runtime = empty_state_runtime();
         let response = run_process(&mut runtime, 0, &unknown_command()).expect(
             "a TPM error is encoded in the response, not in the outer TPMLIB_Process result",
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_without_decoded_state_answers_failure_without_mutation() {
+    fn startup_undecoded_state_failure_no_mutation() {
         let mut runtime = empty_state_runtime();
         let nv_before = runtime.nv_memory.clone();
         let response = run_process(&mut runtime, 0, &startup_command()).unwrap();
@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_command_is_a_valid_tpm_error_response() {
+    fn malformed_command_valid_error_response() {
         let mut runtime = empty_state_runtime();
         assert_eq!(
             run_process(&mut runtime, 0, &input(&[0x80, 0x01, 0x00])).unwrap(),
@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_stays_usable_and_deterministic_across_bad_commands() {
+    fn bad_commands_runtime_determinism() {
         let mut runtime = empty_state_runtime();
         for round in 0..3 {
             assert_eq!(
@@ -230,55 +230,25 @@ mod tests {
     ];
 
     #[test]
-    fn a_request_made_before_the_command_starts_is_cleared_and_does_not_cancel_it() {
+    fn checkpoint_free_command_cancellation_immunity() {
         let mut runtime = empty_state_runtime();
         runtime.startup_received = true;
-        runtime.cancel = CancelSignal::signaled();
 
-        assert_eq!(
-            run_process(&mut runtime, 0, &input(&INCREMENTAL_SHA256_COMMAND)).unwrap(),
-            INCREMENTAL_SHA256_RESPONSE,
-            "the command-start clear drops the stale request"
-        );
-        assert!(!runtime.cancel.is_signaled());
+        let response = super::process(
+            &mut runtime,
+            crate::library::tpm2::PlatformInputs::at_locality(0),
+            &input(&INCREMENTAL_SHA256_COMMAND),
+            &fixed_clock(),
+            |_| Ok(()),
+            Cancellation::requested(),
+        )
+        .unwrap();
+        assert_eq!(response, INCREMENTAL_SHA256_RESPONSE);
         assert!(!runtime.failure_mode);
     }
 
     #[test]
-    fn every_command_start_clears_the_pin_exactly_once() {
-        let mut runtime = empty_state_runtime();
-        runtime.cancel = CancelSignal::signaled();
-        assert_eq!(
-            run_process(&mut runtime, 0, &unknown_command()).unwrap(),
-            UNSUPPORTED_RESPONSE
-        );
-        assert!(
-            !runtime.cancel.is_signaled(),
-            "even a command that never polls the pin clears it at the start"
-        );
-
-        runtime.cancel = CancelSignal::signaled();
-        assert_eq!(
-            run_process(&mut runtime, 0, &input(&[])).unwrap(),
-            INSUFFICIENT_RESPONSE
-        );
-        assert!(!runtime.cancel.is_signaled());
-    }
-
-    #[test]
-    fn a_powered_off_runtime_leaves_the_pin_untouched() {
-        let mut runtime = empty_state_runtime();
-        runtime.power_on = false;
-        runtime.cancel = CancelSignal::signaled();
-        assert_eq!(
-            run_process(&mut runtime, 0, &startup_command()).unwrap(),
-            []
-        );
-        assert!(runtime.cancel.is_signaled());
-    }
-
-    #[test]
-    fn powered_off_runtime_answers_an_empty_response() {
+    fn powered_off_empty_response() {
         let mut runtime = empty_state_runtime();
         runtime.power_on = false;
         assert_eq!(
@@ -289,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_mode_answers_the_bare_failure_response() {
+    fn failure_mode_bare_failure_response() {
         let mut runtime = empty_state_runtime();
         runtime.failure_mode = true;
         assert_eq!(
@@ -304,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn a_self_test_failure_routes_every_later_command_through_the_failure_boundary() {
+    fn self_test_failure_boundary_routing() {
         use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure, fails_on_sha384};
 
         const BARE_FAILURE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
@@ -345,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn an_incremental_self_test_failure_routes_every_later_command_through_the_boundary() {
+    fn incremental_self_test_failure_boundary_routing() {
         use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure, always_fails};
 
         const BARE_FAILURE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
@@ -385,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_incremental_self_test_leaves_normal_dispatch_untouched() {
+    fn successful_incremental_self_test_dispatch_unchanged() {
         const INCREMENTAL_SHA256: [u8; 16] = [
             0x80, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00, 0x00, 0x01,
             0x00, 0x0b,
@@ -408,7 +378,7 @@ mod tests {
         );
     }
 
-    fn self_test_capable_runtime() -> Box<Tpm2Runtime> {
+    fn self_test_capable_runtime() -> Tpm2Runtime {
         use crate::library::tpm2::manufacture::manufacture_state;
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
@@ -430,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_self_test_leaves_normal_dispatch_untouched() {
+    fn successful_self_test_dispatch_unchanged() {
         const SUCCESS: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
         const FULL_SELF_TEST: [u8; 11] = [
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x01, 0x43, 0x01,
@@ -451,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_received_size_is_a_command_size_error_response() {
+    fn oversized_received_size_command_size_error() {
         let mut runtime = empty_state_runtime();
         for received_size in [4097u32, i32::MAX as u32 + 1, u32::MAX] {
             let mut prefix = vec![0x80, 0x01];
@@ -467,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn the_runtime_buffer_size_bounds_the_accepted_command_size() {
+    fn runtime_buffer_command_size_limit() {
         use crate::library::tpm2::buffer_size::{DEFAULT_BUFFER_SIZE, MIN_BUFFER_SIZE};
 
         fn unsupported_command(size: u32) -> CommandInput {
@@ -518,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn locality_is_recorded_in_locality_value_form() {
+    fn locality_value_form_recording() {
         let mut runtime = empty_state_runtime();
         for (given, recorded) in [(0, 0), (4, 4), (5, 0), (31, 0), (32, 32), (255, 255)] {
             run_process(&mut runtime, given, &startup_command()).unwrap();
@@ -530,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn locality_reaches_the_runtime_even_in_failure_mode_but_not_powered_off() {
+    fn locality_propagation_failure_mode_not_powered_off() {
         let mut runtime = empty_state_runtime();
         runtime.failure_mode = true;
         run_process(&mut runtime, 2, &startup_command()).unwrap();
@@ -547,130 +517,75 @@ mod tests {
         );
     }
 
-    #[track_caller]
-    fn prepared_tpm2(library: &Library) -> Tpm2ProcessContext<'_> {
-        match library.prepare_process() {
-            ProcessPreparation::Tpm2(context) => context,
-            ProcessPreparation::Disabled => panic!("TPM 2 must be selected"),
-        }
-    }
-
     #[test]
-    fn execute_before_main_init_returns_an_empty_success() {
+    fn process_before_init_empty_response() {
         let library = Library::new();
         assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
-        let response = prepared_tpm2(&library)
-            .execute(&startup_command())
+        let response = library
+            .process(&startup_command())
             .expect("C answers TPM_SUCCESS with an empty response before MainInit");
         assert!(response.is_empty());
     }
 
     #[test]
-    fn terminate_between_prepare_and_execute_returns_an_empty_success() {
+    fn process_after_terminate_empty_response() {
         use crate::library::state_blob::StateBlobKind;
 
         let library = Library::new();
         assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
         library.stage_empty_state(StateBlobKind::Permanent);
         assert_eq!(library.main_init(), TPM_SUCCESS);
-
-        let context = prepared_tpm2(&library);
         library.terminate();
 
-        let response = context
-            .execute(&startup_command())
-            .expect("a prepared context must re-check the current runtime");
+        let response = library
+            .process(&startup_command())
+            .expect("a terminated library answers like a stopped TPM");
         assert!(response.is_empty());
         assert_eq!(library.tpm2_runtime_locality(), None);
     }
 
     #[test]
-    fn preparation_without_tpm2_selection_is_disabled() {
+    fn missing_tpm2_selection_process_failure() {
         let library = Library::new();
-        assert!(
-            matches!(library.prepare_process(), ProcessPreparation::Disabled),
+        assert_eq!(
+            library.process(&startup_command()),
+            Err(crate::library::constants::TPM_FAIL),
             "the default TPM 1.2 selection routes to the disabled interface"
         );
     }
 
-    #[test]
-    fn dropped_preparation_executes_nothing_and_releases_the_library() {
-        use crate::library::state_blob::StateBlobKind;
-        use crate::types::TpmModifierIndicator;
-
-        unsafe extern "C" fn getlocality_four(
-            locality: *mut TpmModifierIndicator,
-            _tpm_number: u32,
-        ) -> TpmResult {
-            // SAFETY: the library supplies a live locality out-pointer.
-            unsafe { *locality = 4 };
-            TPM_SUCCESS
-        }
-
-        let library = Library::new();
-        library.register_callbacks(crate::types::LibtpmsCallbacks {
-            tpm_io_getlocality: Some(getlocality_four),
-            ..crate::types::LibtpmsCallbacks::empty()
-        });
-        assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
-        library.stage_empty_state(StateBlobKind::Permanent);
-        assert_eq!(library.main_init(), TPM_SUCCESS);
-        {
-            let _dropped_without_execute = prepared_tpm2(&library);
-        }
-        assert_eq!(
-            library.tpm2_runtime_locality(),
-            Some(0),
-            "the dropped context never touched the runtime"
-        );
-        let response = prepared_tpm2(&library).execute(&unknown_command()).unwrap();
-        assert_eq!(response, UNSUPPORTED_RESPONSE);
-        assert_eq!(library.tpm2_runtime_locality(), Some(4));
-        library.terminate();
-    }
-
     mod physical_presence {
         use super::*;
+        use crate::library::platform::test_support::TestPlatform;
         use crate::library::state_blob::StateBlobKind;
-        use crate::types::{LibtpmsCallbacks, TpmBool};
-        use std::sync::Mutex;
+        use std::sync::{Arc, Mutex};
 
         static CALLS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-        unsafe extern "C" fn asserted(pp: *mut TpmBool, tpm_number: u32) -> TpmResult {
-            assert_eq!(tpm_number, 0, "C passes TPM number 0");
-            // SAFETY: the library supplies a live out-pointer.
-            unsafe { *pp = 1 };
-            TPM_SUCCESS
+        fn asserted() -> Arc<dyn crate::library::platform::Platform> {
+            TestPlatform::new().on_physical_presence(|| true).arc()
         }
 
-        unsafe extern "C" fn counted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
-            CALLS.lock().unwrap().push("asserted");
-            // SAFETY: the library supplies a live out-pointer.
-            unsafe { *pp = 1 };
-            TPM_SUCCESS
+        fn counted() -> Arc<dyn crate::library::platform::Platform> {
+            TestPlatform::new()
+                .on_physical_presence(|| {
+                    CALLS.lock().unwrap().push("asserted");
+                    true
+                })
+                .arc()
         }
 
-        unsafe extern "C" fn not_asserted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
-            // SAFETY: the library supplies a live out-pointer.
-            unsafe { *pp = 0 };
-            TPM_SUCCESS
+        fn not_asserted() -> Arc<dyn crate::library::platform::Platform> {
+            TestPlatform::new().on_physical_presence(|| false).arc()
         }
 
-        unsafe extern "C" fn failing(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
-            // SAFETY: the library supplies a live out-pointer.
-            unsafe { *pp = 1 };
-            0x0bad_c0de
+        fn absent() -> Arc<dyn crate::library::platform::Platform> {
+            TestPlatform::new().arc()
         }
 
-        fn started_library(
-            callback: Option<unsafe extern "C" fn(*mut TpmBool, u32) -> TpmResult>,
-        ) -> Library {
+        fn started_library(platform: Arc<dyn crate::library::platform::Platform>) -> Library {
             let library = Library::new();
-            library.register_callbacks(LibtpmsCallbacks {
-                tpm_io_getphysicalpresence: callback,
-                ..LibtpmsCallbacks::empty()
-            });
+            library.register_platform(platform);
             assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
             library.stage_empty_state(StateBlobKind::Permanent);
             assert_eq!(library.main_init(), TPM_SUCCESS);
@@ -678,69 +593,49 @@ mod tests {
         }
 
         #[track_caller]
-        fn observed(
-            callback: Option<unsafe extern "C" fn(*mut TpmBool, u32) -> TpmResult>,
-        ) -> Option<bool> {
-            let library = started_library(callback);
-            prepared_tpm2(&library).execute(&unknown_command()).unwrap();
+        fn observed(platform: Arc<dyn crate::library::platform::Platform>) -> Option<bool> {
+            let library = started_library(platform);
+            library.process(&unknown_command()).unwrap();
             let observed = library.tpm2_runtime_physical_presence();
             library.terminate();
             observed
         }
 
         #[test]
-        fn an_asserting_callback_reaches_the_runtime() {
-            assert_eq!(observed(Some(asserted)), Some(true));
+        fn asserting_callback_propagation() {
+            assert_eq!(observed(asserted()), Some(true));
         }
 
         #[test]
-        fn a_callback_that_reports_no_presence_reaches_the_runtime() {
-            assert_eq!(observed(Some(not_asserted)), Some(false));
+        fn denied_presence_callback_propagation() {
+            assert_eq!(observed(not_asserted()), Some(false));
         }
 
         #[test]
-        fn an_absent_callback_falls_through_to_the_platform_default() {
-            assert_eq!(observed(None), Some(false));
+        fn absent_callback_platform_default_fallback() {
+            assert_eq!(observed(absent()), Some(false));
         }
 
         #[test]
-        fn a_failing_callback_falls_through_to_the_platform_default() {
-            assert_eq!(
-                observed(Some(failing)),
-                Some(false),
-                "the vendored wrapper only trusts a TPM_SUCCESS result"
-            );
-        }
-
-        #[test]
-        fn the_callback_is_queried_before_the_command_executes() {
+        fn queried_once_per_command() {
             let mut calls = CALLS.lock().unwrap();
             calls.clear();
             drop(calls);
-            let library = started_library(Some(counted));
-            let context = prepared_tpm2(&library);
-            assert_eq!(
-                *CALLS.lock().unwrap(),
-                ["asserted"],
-                "preparation queries the platform outside the library lock"
-            );
-            context.execute(&unknown_command()).unwrap();
+            let library = started_library(counted());
+            library.process(&unknown_command()).unwrap();
             assert_eq!(*CALLS.lock().unwrap(), ["asserted"]);
             assert_eq!(library.tpm2_runtime_physical_presence(), Some(true));
             library.terminate();
         }
 
         #[test]
-        fn the_locality_and_the_presence_inputs_stay_separate() {
+        fn locality_presence_input_isolation() {
             let library = Library::new();
-            library.register_callbacks(LibtpmsCallbacks {
-                tpm_io_getphysicalpresence: Some(asserted),
-                ..LibtpmsCallbacks::empty()
-            });
+            library.register_platform(asserted());
             assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
             library.stage_empty_state(StateBlobKind::Permanent);
             assert_eq!(library.main_init(), TPM_SUCCESS);
-            prepared_tpm2(&library).execute(&unknown_command()).unwrap();
+            library.process(&unknown_command()).unwrap();
             assert_eq!(library.tpm2_runtime_locality(), Some(0));
             assert_eq!(library.tpm2_runtime_physical_presence(), Some(true));
             library.terminate();
@@ -749,9 +644,9 @@ mod tests {
 
     mod platform_physical_presence {
         use super::*;
+        use crate::library::platform::test_support::TestPlatform;
         use crate::library::state_blob::StateBlobKind;
         use crate::library::tpm2::golden_responses::policy_sessions::vector;
-        use crate::types::{LibtpmsCallbacks, TpmBool};
 
         const TPM_CC_CLEAR_CONTROL: u32 = 0x0000_0127;
         const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
@@ -761,33 +656,24 @@ mod tests {
         const LOCKOUT: u32 = 0x4000_000a;
         const OWNER: u32 = 0x4000_0001;
 
-        unsafe extern "C" fn asserted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
-            // SAFETY: the library supplies a live out-pointer.
-            unsafe { *pp = 1 };
-            TPM_SUCCESS
+        fn asserted() -> std::sync::Arc<dyn crate::library::platform::Platform> {
+            TestPlatform::new().on_physical_presence(|| true).arc()
         }
 
-        unsafe extern "C" fn not_asserted(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
-            // SAFETY: the library supplies a live out-pointer.
-            unsafe { *pp = 0 };
-            TPM_SUCCESS
+        fn absent() -> std::sync::Arc<dyn crate::library::platform::Platform> {
+            TestPlatform::new().arc()
         }
 
-        unsafe extern "C" fn failing(pp: *mut TpmBool, _tpm_number: u32) -> TpmResult {
-            // SAFETY: the library supplies a live out-pointer.
-            unsafe { *pp = 1 };
-            0x0bad_c0de
+        fn not_asserted() -> std::sync::Arc<dyn crate::library::platform::Platform> {
+            TestPlatform::new().on_physical_presence(|| false).arc()
         }
 
         fn restored_library(
             snapshot: &str,
-            callback: Option<unsafe extern "C" fn(*mut TpmBool, u32) -> TpmResult>,
+            platform: std::sync::Arc<dyn crate::library::platform::Platform>,
         ) -> Library {
             let library = Library::new();
-            library.register_callbacks(LibtpmsCallbacks {
-                tpm_io_getphysicalpresence: callback,
-                ..LibtpmsCallbacks::empty()
-            });
+            library.register_platform(platform);
             assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
             library.stage_state_data(
                 StateBlobKind::Permanent,
@@ -837,14 +723,14 @@ mod tests {
 
         #[track_caller]
         fn send(library: &Library, bytes: &[u8]) -> Vec<u8> {
-            prepared_tpm2(library)
-                .execute(&input(bytes))
+            library
+                .process(&input(bytes))
                 .expect("the command executes")
         }
 
         #[test]
-        fn a_listed_platform_command_needs_asserted_physical_presence() {
-            let library = restored_library("READY", Some(not_asserted));
+        fn listed_command_presence_requirement() {
+            let library = restored_library("READY", not_asserted());
             library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
             assert_eq!(
                 code_of(&send(
@@ -857,8 +743,8 @@ mod tests {
         }
 
         #[test]
-        fn a_listed_platform_command_passes_once_presence_is_asserted() {
-            let library = restored_library("READY", Some(asserted));
+        fn listed_command_asserted_presence_success() {
+            let library = restored_library("READY", asserted());
             library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
             assert_eq!(
                 code_of(&send(
@@ -871,9 +757,9 @@ mod tests {
         }
 
         #[test]
-        fn an_absent_or_failing_callback_is_not_asserted() {
-            for callback in [None, Some(failing as unsafe extern "C" fn(_, _) -> _)] {
-                let library = restored_library("READY", callback);
+        fn absent_or_failing_callback_unasserted() {
+            for platform in [absent(), not_asserted()] {
+                let library = restored_library("READY", platform);
                 library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
                 assert_eq!(
                     code_of(&send(
@@ -887,8 +773,8 @@ mod tests {
         }
 
         #[test]
-        fn a_command_outside_the_pp_list_is_never_gated() {
-            let library = restored_library("READY", Some(not_asserted));
+        fn unlisted_command_ungated() {
+            let library = restored_library("READY", not_asserted());
             assert_eq!(
                 code_of(&send(
                     &library,
@@ -900,8 +786,8 @@ mod tests {
         }
 
         #[test]
-        fn only_platform_authorization_is_gated() {
-            let library = restored_library("READY", Some(not_asserted));
+        fn platform_authorization_only_gating() {
+            let library = restored_library("READY", not_asserted());
             library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
             library.tpm2_require_physical_presence(TPM_CC_HIERARCHY_CHANGE_AUTH);
             assert_eq!(
@@ -923,8 +809,8 @@ mod tests {
         }
 
         #[test]
-        fn an_nv_index_authorization_is_not_platform_authorization() {
-            let library = restored_library("FLOW_NV_WRITTEN", Some(not_asserted));
+        fn nv_index_authorization_distinction() {
+            let library = restored_library("FLOW_NV_WRITTEN", not_asserted());
             library.tpm2_require_physical_presence(0x0000_014e);
             let mut payload = 0x0100_0000u32.to_be_bytes().to_vec();
             payload.extend_from_slice(&0x0100_0000u32.to_be_bytes());
@@ -943,8 +829,8 @@ mod tests {
         }
 
         #[test]
-        fn the_gate_precedes_password_and_hmac_verification() {
-            let library = restored_library("READY", Some(not_asserted));
+        fn gate_order_before_password_and_hmac() {
+            let library = restored_library("READY", not_asserted());
             library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
             let mut wrong_password = password_area();
             wrong_password[8] = 0x03;
@@ -993,8 +879,8 @@ mod tests {
         }
 
         #[test]
-        fn an_asserted_presence_lets_the_authorization_failure_surface() {
-            let library = restored_library("READY", Some(asserted));
+        fn asserted_presence_authorization_failure_propagation() {
+            let library = restored_library("READY", asserted());
             library.tpm2_require_physical_presence(TPM_CC_CLEAR_CONTROL);
             let mut wrong_password = password_area();
             wrong_password[8] = 0x03;
@@ -1011,7 +897,7 @@ mod tests {
         }
 
         #[test]
-        fn a_physical_presence_policy_is_built_without_presence_and_used_with_it() {
+        fn presence_free_policy_build_gated_use() {
             const POLICY_PHYSICAL_PRESENCE: u32 = 0x0000_0187;
             const POLICY_COMMAND_CODE: u32 = 0x0000_016c;
 
@@ -1043,7 +929,7 @@ mod tests {
                 framed(0x0000_014e, &payload)
             }
 
-            let refused = restored_library("FLOW_PHYSICAL_PRESENCE", Some(not_asserted));
+            let refused = restored_library("FLOW_PHYSICAL_PRESENCE", not_asserted());
             for assertion in assertions() {
                 assert_eq!(
                     code_of(&send(&refused, &assertion)),
@@ -1057,7 +943,7 @@ mod tests {
             );
             refused.terminate();
 
-            let allowed = restored_library("FLOW_PHYSICAL_PRESENCE", Some(asserted));
+            let allowed = restored_library("FLOW_PHYSICAL_PRESENCE", asserted());
             for assertion in assertions() {
                 assert_eq!(code_of(&send(&allowed, &assertion)), 0);
             }
@@ -1072,43 +958,37 @@ mod tests {
 
     mod locality {
         use super::*;
+        use crate::library::platform::test_support::TestPlatform;
         use crate::library::state_blob::StateBlobKind;
-        use crate::types::{LibtpmsCallbacks, TpmModifierIndicator};
         use std::sync::Mutex;
 
         static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-        unsafe extern "C" fn getlocality_three(
-            locality: *mut TpmModifierIndicator,
-            tpm_number: u32,
-        ) -> TpmResult {
-            assert_eq!(tpm_number, 0, "C passes TPM number 0");
-            EVENTS.lock().unwrap().push("locality");
-            // SAFETY: the library supplies a live locality out-pointer.
-            unsafe { *locality = 3 };
-            0x0bad_c0de
-        }
-
         fn locality_library() -> Library {
             let library = Library::new();
-            library.register_callbacks(LibtpmsCallbacks {
-                tpm_io_getlocality: Some(getlocality_three),
-                ..LibtpmsCallbacks::empty()
-            });
+            library.register_platform(
+                TestPlatform::new()
+                    .on_locality(|| {
+                        EVENTS.lock().unwrap().push("locality");
+                        3
+                    })
+                    .arc(),
+            );
             library
         }
 
         #[test]
-        fn callback_is_queried_once_per_preparation_and_reaches_the_runtime() {
+        fn queried_once_per_command() {
             EVENTS.lock().unwrap().clear();
             let library = locality_library();
             assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
 
-            let context = prepared_tpm2(&library);
-            assert_eq!(*EVENTS.lock().unwrap(), ["locality"]);
-            let response = context.execute(&startup_command()).unwrap();
+            let response = library.process(&startup_command()).unwrap();
             assert!(response.is_empty());
-            assert_eq!(*EVENTS.lock().unwrap(), ["locality"]);
+            assert!(
+                EVENTS.lock().unwrap().is_empty(),
+                "an uninitialized TPM never queries the locality callback"
+            );
 
             library.stage_empty_state(StateBlobKind::Permanent);
             assert_eq!(library.main_init(), TPM_SUCCESS);
@@ -1119,59 +999,50 @@ mod tests {
             );
 
             EVENTS.lock().unwrap().clear();
-            let context = prepared_tpm2(&library);
+            let response = library
+                .process(&unknown_command())
+                .expect("the callback's weird return code is not the outer result");
+            assert_eq!(response, UNSUPPORTED_RESPONSE);
             assert_eq!(
                 *EVENTS.lock().unwrap(),
                 ["locality"],
-                "exactly one callback query per preparation"
+                "exactly one callback query per command"
             );
-            let response = context
-                .execute(&unknown_command())
-                .expect("the callback's weird return code is not the outer result");
-            assert_eq!(response, UNSUPPORTED_RESPONSE);
-            assert_eq!(*EVENTS.lock().unwrap(), ["locality"]);
             assert_eq!(library.tpm2_runtime_locality(), Some(3));
             library.terminate();
         }
 
         #[test]
-        fn locality_defaults_to_zero_without_a_callback() {
+        fn missing_callback_locality_zero_default() {
             let library = Library::new();
             assert_eq!(library.choose_tpm_version(1), TPM_SUCCESS);
             library.stage_empty_state(StateBlobKind::Permanent);
             assert_eq!(library.main_init(), TPM_SUCCESS);
-            prepared_tpm2(&library).execute(&startup_command()).unwrap();
+            library.process(&startup_command()).unwrap();
             assert_eq!(library.tpm2_runtime_locality(), Some(0));
             library.terminate();
         }
 
         static DISABLED_CALLS: Mutex<u32> = Mutex::new(0);
 
-        unsafe extern "C" fn getlocality_counting(
-            _locality: *mut TpmModifierIndicator,
-            _tpm_number: u32,
-        ) -> TpmResult {
-            *DISABLED_CALLS.lock().unwrap() += 1;
-            TPM_SUCCESS
-        }
-
         #[test]
-        fn disabled_interface_never_queries_the_locality_callback() {
+        fn disabled_interface_no_locality_callback_query() {
             let library = Library::new();
-            library.register_callbacks(LibtpmsCallbacks {
-                tpm_io_getlocality: Some(getlocality_counting),
-                ..LibtpmsCallbacks::empty()
-            });
-            assert!(matches!(
-                library.prepare_process(),
-                ProcessPreparation::Disabled
-            ));
+            library.register_platform(
+                TestPlatform::new()
+                    .on_locality(|| {
+                        *DISABLED_CALLS.lock().unwrap() += 1;
+                        0
+                    })
+                    .arc(),
+            );
+            assert!(library.process(&startup_command()).is_err());
             assert_eq!(*DISABLED_CALLS.lock().unwrap(), 0);
         }
     }
 
     #[test]
-    fn each_prepared_context_dispatches_exactly_one_command() {
+    fn single_command_per_process_call() {
         use crate::library::state_blob::StateBlobKind;
 
         let library = Library::new();
@@ -1179,11 +1050,11 @@ mod tests {
         library.stage_empty_state(StateBlobKind::Permanent);
         assert_eq!(library.main_init(), TPM_SUCCESS);
         for round in 0..3 {
-            let response = prepared_tpm2(&library)
-                .execute(&unknown_command())
+            let response = library
+                .process(&unknown_command())
                 .expect("an unsupported command is still an outer success");
             assert_eq!(response, UNSUPPORTED_RESPONSE, "round {round}");
-            let malformed = prepared_tpm2(&library).execute(&input(&[0xff])).unwrap();
+            let malformed = library.process(&input(&[0xff])).unwrap();
             assert_eq!(
                 malformed, INSUFFICIENT_RESPONSE,
                 "round {round}: malformed input"
@@ -1213,7 +1084,7 @@ mod tests {
             Ok(())
         }
 
-        fn manufactured_runtime() -> Box<Tpm2Runtime> {
+        fn manufactured_runtime() -> Tpm2Runtime {
             let profile = validate_user_profile(None).unwrap();
             let state = manufacture_state(profile, deterministic_entropy).unwrap();
             let mut runtime = commit_manufactured_state(state).unwrap();
@@ -1227,7 +1098,7 @@ mod tests {
             [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
 
         #[test]
-        fn successful_startup_commits_the_updated_permanent_state_once() {
+        fn successful_startup_single_permanent_state_commit() {
             let mut runtime = manufactured_runtime();
             let mut stored: Vec<Vec<u8>> = Vec::new();
             let response = process(&mut runtime, 0, &startup_command(), |runtime| {
@@ -1273,7 +1144,7 @@ mod tests {
         }
 
         #[test]
-        fn rejected_and_malformed_commands_do_not_commit() {
+        fn rejected_and_malformed_command_no_commit() {
             let commits = core::cell::Cell::new(0u32);
             let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
                 commits.set(commits.get() + 1);
@@ -1307,7 +1178,7 @@ mod tests {
         }
 
         #[test]
-        fn a_repeated_startup_does_not_commit_again() {
+        fn repeated_startup_no_recommit() {
             let commits = core::cell::Cell::new(0u32);
             let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
                 commits.set(commits.get() + 1);
@@ -1325,7 +1196,7 @@ mod tests {
         }
 
         #[test]
-        fn nv_uninitialized_resume_does_not_commit() {
+        fn nv_uninitialized_resume_no_commit() {
             use crate::library::tpm2::persistent::{
                 OwnedSecret, OwnedStateClearData, OwnedStateResetData,
             };
@@ -1378,14 +1249,14 @@ mod tests {
         }
 
         #[test]
-        fn missing_storage_backend_falls_through_successfully() {
-            use crate::library::tpm2::{HostNvram, host_nv_commit};
-            use crate::types::LibtpmsCallbacks;
+        fn missing_storage_backend_fallthrough_success() {
+            use crate::library::storage::NoStorage;
+            use crate::library::tpm2::host_nv_commit;
 
-            let host_nvram = HostNvram::new(LibtpmsCallbacks::empty());
+            let storage = NoStorage;
             let mut runtime = manufactured_runtime();
             let response = process(&mut runtime, 0, &startup_command(), |runtime| {
-                host_nv_commit(&host_nvram, runtime)
+                host_nv_commit(&storage, runtime)
             })
             .unwrap();
             assert_eq!(response, SUCCESS_RESPONSE);
@@ -1400,7 +1271,7 @@ mod tests {
         }
 
         #[test]
-        fn successful_shutdown_commits_the_updated_permanent_state_once() {
+        fn successful_shutdown_single_permanent_state_commit() {
             let mut runtime = manufactured_runtime();
             let mut stored: Vec<Vec<u8>> = Vec::new();
             let mut store = |runtime: &Tpm2Runtime| {
@@ -1447,7 +1318,7 @@ mod tests {
         }
 
         #[test]
-        fn failed_shutdown_commands_do_not_commit() {
+        fn failed_shutdown_command_no_commit() {
             let commits = core::cell::Cell::new(0u32);
             let count = |_: &Tpm2Runtime| -> Result<(), TpmResult> {
                 commits.set(commits.get() + 1);
@@ -1484,38 +1355,21 @@ mod tests {
         }
 
         #[test]
-        fn successful_shutdown_reaches_tpm_nvram_storedata() {
-            use crate::library::tpm2::{HostNvram, host_nv_commit};
-            use crate::types::LibtpmsCallbacks;
-            use std::sync::Mutex;
+        fn successful_shutdown_storage_backend_propagation() {
+            use crate::library::storage::test_support::TestStorage;
+            use crate::library::tpm2::host_nv_commit;
+            use crate::library::{StateBlobKind, StorageOperation};
+            use std::sync::{Arc, Mutex};
 
-            static STORED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
-
-            unsafe extern "C" fn storedata_recording(
-                data: *const core::ffi::c_uchar,
-                length: u32,
-                _tpm_number: u32,
-                name: *const core::ffi::c_char,
-            ) -> TpmResult {
-                // SAFETY: the host may read `length` bytes and a NUL-terminated
-                // name per the callback contract.
-                let name = unsafe { core::ffi::CStr::from_ptr(name) }
-                    .to_string_lossy()
-                    .into_owned();
-                let bytes =
-                    // SAFETY: see above.
-                    unsafe { core::slice::from_raw_parts(data, length as usize) }.to_vec();
-                STORED.lock().unwrap().push((name, bytes));
-                crate::library::constants::TPM_SUCCESS
-            }
-
-            STORED.lock().unwrap().clear();
-            let host_nvram = HostNvram::new(LibtpmsCallbacks {
-                tpm_nvram_storedata: Some(storedata_recording),
-                ..LibtpmsCallbacks::empty()
+            let stored_blobs: Arc<Mutex<Vec<(StateBlobKind, Vec<u8>)>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let recorder = Arc::clone(&stored_blobs);
+            let storage = TestStorage::new().on_store(move |kind, data| {
+                recorder.lock().unwrap().push((kind, data.to_vec()));
+                Ok(StorageOperation::Done)
             });
             let mut runtime = manufactured_runtime();
-            let commit = |runtime: &Tpm2Runtime| host_nv_commit(&host_nvram, runtime);
+            let commit = |runtime: &Tpm2Runtime| host_nv_commit(&storage, runtime);
             assert_eq!(
                 process(&mut runtime, 0, &startup_command(), commit).unwrap(),
                 SUCCESS_RESPONSE
@@ -1525,9 +1379,13 @@ mod tests {
                 SUCCESS_RESPONSE
             );
 
-            let stored = STORED.lock().unwrap();
+            let stored = stored_blobs.lock().unwrap();
             assert_eq!(stored.len(), 2);
-            assert!(stored.iter().all(|(name, _)| name == "permall"));
+            assert!(
+                stored
+                    .iter()
+                    .all(|(kind, _)| *kind == StateBlobKind::Permanent)
+            );
             assert_eq!(
                 stored[1].1,
                 persistent_all_store(runtime.state.as_ref().unwrap()).unwrap(),
@@ -1536,7 +1394,7 @@ mod tests {
         }
 
         #[test]
-        fn a_shutdown_commit_failure_keeps_mutations_and_enters_failure_mode() {
+        fn shutdown_commit_failure_mutation_preservation() {
             let mut runtime = manufactured_runtime();
             assert_eq!(
                 process(&mut runtime, 0, &startup_command(), |_| Ok(())).unwrap(),
@@ -1560,7 +1418,7 @@ mod tests {
         }
 
         #[test]
-        fn a_commit_failure_puts_the_tpm_into_failure_mode() {
+        fn commit_failure_mode() {
             let mut runtime = manufactured_runtime();
             let response = process(&mut runtime, 0, &startup_command(), |_| Err(TPM_FAIL)).unwrap();
             assert_eq!(

@@ -1104,12 +1104,12 @@ mod tests {
     }
 
     #[test]
-    fn a_null_scheme_carries_no_details() {
+    fn null_scheme_no_details() {
         assert_eq!(parse(&[0x00, 0x10]), Ok(SigScheme::NULL));
     }
 
     #[test]
-    fn every_signature_scheme_parses_with_its_hash() {
+    fn signature_scheme_hash_parsing_coverage() {
         for algorithm in [
             TPM_ALG_RSASSA,
             TPM_ALG_RSAPSS,
@@ -1129,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn ecdaa_carries_a_count() {
+    fn ecdaa_count_field() {
         let mut bytes = TPM_ALG_ECDAA.to_be_bytes().to_vec();
         bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
         bytes.extend_from_slice(&7u16.to_be_bytes());
@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_signature_scheme_is_a_scheme_error() {
+    fn non_signature_scheme_scheme_error() {
         for algorithm in [0x0015u16, 0x0017, 0x0019, 0x0023, 0xffff] {
             let mut bytes = algorithm.to_be_bytes().to_vec();
             bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_hash_is_a_hash_error() {
+    fn unsupported_hash_hash_error() {
         for algorithm in [0x0010u16, 0x0012, 0xffff] {
             let mut bytes = TPM_ALG_RSASSA.to_be_bytes().to_vec();
             bytes.extend_from_slice(&algorithm.to_be_bytes());
@@ -1162,12 +1162,12 @@ mod tests {
     }
 
     #[test]
-    fn the_null_signature_marshals_to_its_selector_only() {
+    fn null_signature_selector_only_marshal() {
         assert_eq!(marshal_signature(&Signature::Null), [0x00, 0x10]);
     }
 
     #[test]
-    fn an_rsa_signature_marshals_as_a_sized_buffer() {
+    fn rsa_signature_sized_buffer_marshal() {
         let signature = Signature::Rsa {
             scheme: TPM_ALG_RSASSA,
             hash_alg: TPM_ALG_SHA256,
@@ -1179,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_signature_marshals_both_coordinates() {
+    fn ecc_signature_coordinate_marshal() {
         let signature = Signature::Ecc {
             scheme: TPM_ALG_ECDSA,
             hash_alg: TPM_ALG_SHA256,
@@ -1193,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn an_hmac_signature_marshals_as_a_bare_digest() {
+    fn hmac_signature_bare_digest_marshal() {
         let signature = Signature::Hmac {
             hash_alg: TPM_ALG_SHA256,
             digest: vec![0x33; 32],
@@ -1204,7 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn the_der_tags_match_the_vendored_oid_table() {
+    fn der_tag_oid_table_match() {
         assert_eq!(
             der_tag(TPM_ALG_SHA256).unwrap(),
             [
@@ -1225,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pkcs1_encoding_is_the_upstream_layout() {
+    fn pkcs1_encoding_upstream_layout() {
         let digest = vec![0x5a; 32];
         let encoded = rsassa_encode(256, TPM_ALG_SHA256, &digest).unwrap();
         assert_eq!(encoded.len(), 256);
@@ -1239,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn a_digest_that_disagrees_with_the_scheme_hash_is_a_value_error() {
+    fn digest_scheme_hash_mismatch_value_error() {
         assert_eq!(
             rsassa_encode(256, TPM_ALG_SHA256, &[0x5a; 20]),
             Err(TPM_RC_VALUE)
@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn a_modulus_too_small_for_the_padding_is_a_size_error() {
+    fn undersized_modulus_size_error() {
         assert_eq!(
             rsassa_encode(48, TPM_ALG_SHA512, &[0x5a; 64]),
             Err(TPM_RC_SIZE)
@@ -1255,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pss_salt_size_matches_the_vendored_formula() {
+    fn pss_salt_size_vendored_formula_match() {
         assert_eq!(pss_salt_size(32, 256), 32);
         assert_eq!(pss_salt_size(64, 256), 64);
         assert_eq!(pss_salt_size(64, 128), 62);
@@ -1264,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pss_encoding_ends_with_the_trailer_and_has_a_clear_top_bit() {
+    fn pss_encoding_trailer_clear_top_bit() {
         let digest = vec![0x5a; 32];
         let salt = vec![0x77; 32];
         let encoded = pss_encode(256, TPM_ALG_SHA256, &digest, &salt).unwrap();
@@ -1292,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn limbs_are_read_least_significant_first() {
+    fn limb_read_order_least_significant_first() {
         let mut data = 1u64.to_be_bytes().to_vec();
         data.extend_from_slice(&2u64.to_be_bytes());
         let value = limbs_to_big(&data);
@@ -1304,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_digest_is_not_truncated() {
+    fn short_digest_no_truncation() {
         assert_eq!(truncate_digest(&[0xaa; 20], 256), vec![0xaa; 20]);
         assert_eq!(truncate_digest(&[0xaa; 32], 256), vec![0xaa; 32]);
         assert_eq!(truncate_digest(&[0xaa; 64], 256), vec![0xaa; 32]);
@@ -1312,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecdsa_digest_is_truncated_and_shifted_to_the_order() {
+    fn ecdsa_digest_truncation_order_shift() {
         assert_eq!(
             ecdsa_digest(&[0xaa; 64], 256),
             BigUint::from_be_bytes(&[0xaa; 32]),
@@ -1336,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schnorr_s_value_rejects_a_zero_result() {
+    fn schnorr_s_zero_result_rejection() {
         let order = BigUint::from_u64(23);
         let d = BigUint::from_u64(5);
         assert_eq!(
@@ -1357,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn every_signature_scheme_needs_its_profile_token() {
+    fn signature_scheme_profile_token_requirement() {
         for algorithm in [
             TPM_ALG_RSASSA,
             TPM_ALG_RSAPSS,
@@ -1389,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_hash_is_a_hash_error() {
+    fn disabled_hash_hash_error() {
         assert_eq!(
             parse_with(
                 &scheme_bytes(TPM_ALG_RSASSA, TPM_ALG_SHA512),
@@ -1407,7 +1407,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha1_restrictions_follow_the_key_type() {
+    fn sha1_restriction_key_type_dependence() {
         for (attributes, rsa, ecc, keyed_hash) in [
             ("", false, false, false),
             ("no-sha1-signing", true, true, false),
@@ -1436,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn the_anonymous_and_split_schemes_are_ecdaa_only() {
+    fn anonymous_split_schemes_ecdaa_only() {
         for algorithm in [
             TPM_ALG_RSASSA,
             TPM_ALG_RSAPSS,
@@ -1454,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scheme_is_only_valid_for_its_own_key_type() {
+    fn scheme_key_type_exclusivity() {
         for (object_type, valid) in [
             (TPM_ALG_RSA, vec![TPM_ALG_RSASSA, TPM_ALG_RSAPSS]),
             (
@@ -1490,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_signing_key_selects_the_null_scheme() {
+    fn null_signing_key_null_scheme_selection() {
         assert_eq!(
             select_sign_scheme(None, scheme(TPM_ALG_RSASSA, TPM_ALG_SHA256)),
             Some(SigScheme::NULL)
@@ -1519,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_signature_parses_as_a_scheme_a_hash_and_a_sized_buffer() {
+    fn rsa_signature_parse_layout() {
         for algorithm in [TPM_ALG_RSASSA, TPM_ALG_RSAPSS] {
             let mut bytes = algorithm.to_be_bytes().to_vec();
             bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1536,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn every_ecc_signature_parses_as_two_sized_coordinates() {
+    fn ecc_signature_sized_coordinate_pair_parsing() {
         for algorithm in [TPM_ALG_ECDSA, TPM_ALG_ECDAA, TPM_ALG_ECSCHNORR, TPM_ALG_SM2] {
             let mut bytes = algorithm.to_be_bytes().to_vec();
             bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1556,7 +1556,7 @@ mod tests {
     }
 
     #[test]
-    fn an_hmac_signature_parses_as_a_bare_digest_of_the_selected_size() {
+    fn hmac_signature_bare_digest_parse() {
         for (hash_alg, size) in COMPILED_HASHES {
             let mut bytes = TPM_ALG_HMAC.to_be_bytes().to_vec();
             bytes.extend_from_slice(&hash_alg.to_be_bytes());
@@ -1572,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parsed_signature_round_trips_through_the_marshaller() {
+    fn parsed_signature_marshal_round_trip() {
         for signature in [
             Signature::Rsa {
                 scheme: TPM_ALG_RSASSA,
@@ -1596,12 +1596,12 @@ mod tests {
     }
 
     #[test]
-    fn a_null_signature_selector_is_rejected() {
+    fn null_signature_selector_rejection() {
         assert_eq!(parse_sig(&[0x00, 0x10]), Err(TPM_RC_SCHEME));
     }
 
     #[test]
-    fn a_non_signature_selector_is_a_scheme_error() {
+    fn non_signature_selector_scheme_error() {
         for algorithm in [0x0015u16, 0x0017, 0x0023, 0xffff] {
             let mut bytes = algorithm.to_be_bytes().to_vec();
             bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1610,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_signature_scheme_is_a_scheme_error() {
+    fn disabled_scheme_scheme_error() {
         let profile = custom_profile(&without("ecschnorr"), "");
         let mut bytes = TPM_ALG_ECSCHNORR.to_be_bytes().to_vec();
         bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1620,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_or_disabled_signature_hash_is_a_hash_error() {
+    fn null_or_disabled_hash_hash_error() {
         for algorithm in [TPM_ALG_NULL, 0x0012, 0xffff] {
             let mut bytes = TPM_ALG_RSASSA.to_be_bytes().to_vec();
             bytes.extend_from_slice(&algorithm.to_be_bytes());
@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_signature_field_is_a_size_error() {
+    fn oversized_signature_field_size_error() {
         let mut bytes = TPM_ALG_RSASSA.to_be_bytes().to_vec();
         bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
         bytes.extend_from_slice(&((MAX_RSA_KEY_BYTES + 1) as u16).to_be_bytes());
@@ -1653,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_signature_is_an_insufficient_error() {
+    fn truncated_signature_insufficient_error() {
         let mut prefix = TPM_ALG_RSASSA.to_be_bytes().to_vec();
         prefix.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
         prefix.extend_from_slice(&256u16.to_be_bytes());
@@ -1673,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn parsing_never_reads_past_the_declared_signature() {
+    fn signature_parse_declared_boundary() {
         let mut bytes = TPM_ALG_ECDSA.to_be_bytes().to_vec();
         bytes.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
         bytes.extend_from_slice(&tpm2b(&[0x11; 32]));
@@ -1685,7 +1685,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pss_decoder_accepts_what_the_pss_encoder_produced() {
+    fn pss_encode_decode_round_trip() {
         let digest = vec![0x5a; 32];
         let salt = vec![0x77; 32];
         let encoded = pss_encode(256, TPM_ALG_SHA256, &digest, &salt).unwrap();
@@ -1714,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pss_decoder_accepts_a_short_salt() {
+    fn pss_decode_short_salt_acceptance() {
         let digest = vec![0x5a; 32];
         for salt_len in [0usize, 1, 16, 32] {
             let salt = vec![0x77; salt_len];
@@ -1728,7 +1728,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rsassa_decoder_accepts_what_the_rsassa_encoder_produced() {
+    fn rsassa_encode_decode_round_trip() {
         let digest = vec![0x5a; 32];
         let encoded = rsassa_encode(256, TPM_ALG_SHA256, &digest).unwrap();
         assert_eq!(rsassa_decode(TPM_ALG_SHA256, &digest, &encoded), Ok(()));
@@ -1764,7 +1764,7 @@ mod tests {
     }
 
     #[test]
-    fn every_ecc_scheme_verifies_the_signature_it_produced() {
+    fn ecc_scheme_sign_verify_round_trip() {
         let curve = nist_p256();
         let profile = default_profile();
         let private = BigUint::from_u64(0x0123_4567_89ab_cdef);
@@ -1811,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ecc_verifiers_honour_the_sha1_verification_restriction() {
+    fn ecc_verify_sha1_restriction() {
         let curve = nist_p256();
         let profile = custom_profile(&all_algorithms(), "no-sha1-verification");
         let private = BigUint::from_u64(0x0123_4567_89ab_cdef);
@@ -1851,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn an_hmac_verification_accepts_only_the_matching_mac() {
+    fn hmac_verification_matching_mac_only() {
         let key = b"a keyed-hash secret";
         let digest = sha256_of(b"abc");
         let mut hmac = HmacState::new(TPM_ALG_SHA256, key).expect("a compiled hash");
@@ -1895,7 +1895,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sha1_verification_restrictions_follow_the_upstream_split() {
+    fn sha1_verification_restriction_upstream_split() {
         for (attributes, verification, hmac_verification) in [
             ("", false, false),
             ("no-sha1-signing", false, false),
@@ -1920,7 +1920,7 @@ mod tests {
     }
 
     #[test]
-    fn the_obfuscation_mask_is_two_native_words_of_the_key_stream() {
+    fn obfuscation_mask_two_native_words() {
         let stream = kdfa(TPM_ALG_SHA256, b"proof", b"OBFUSCATE", b"name", &[], 128).unwrap();
         let mask = obfuscation_mask(TPM_ALG_SHA256, b"proof", b"name").unwrap();
         assert_eq!(

@@ -76,16 +76,16 @@ pub(in crate::library::tpm2) mod test_runtime {
         Ok(())
     }
 
-    pub(in crate::library::tpm2) fn started() -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2) fn started() -> Tpm2Runtime {
         started_with_profile(None)
     }
 
-    pub(in crate::library::tpm2) fn started_with_algorithms(algorithms: &str) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2) fn started_with_algorithms(algorithms: &str) -> Tpm2Runtime {
         let json = format!(r#"{{"Name":"custom","Algorithms":"{algorithms}"}}"#);
         started_with_profile(Some(json))
     }
 
-    fn started_with_profile(json: Option<String>) -> Box<Tpm2Runtime> {
+    fn started_with_profile(json: Option<String>) -> Tpm2Runtime {
         let profile = validate_user_profile(json.as_ref().map(|text| text.as_bytes()))
             .expect("the profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
@@ -97,7 +97,12 @@ pub(in crate::library::tpm2) mod test_runtime {
         let input = CommandInput::new(bytes.len() as u32, bytes);
         let parsed = parse_command(&input).expect("the header parses");
         assert_eq!(
-            dispatch(&mut runtime, &parsed).code(),
+            dispatch(
+                &mut runtime,
+                &parsed,
+                crate::library::cancel::Cancellation::disabled()
+            )
+            .code(),
             0,
             "Startup succeeds"
         );
@@ -111,42 +116,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pagination_returns_at_most_the_requested_count() {
+    fn pagination_requested_count_cap() {
         let page = paginate(0u32..10, 3, 100);
         assert_eq!(page.entries, [0, 1, 2]);
         assert!(page.more_data);
     }
 
     #[test]
-    fn pagination_caps_the_count_at_the_capacity() {
+    fn pagination_capacity_count_cap() {
         let page = paginate(0u32..10, 1000, 4);
         assert_eq!(page.entries, [0, 1, 2, 3]);
         assert!(page.more_data);
     }
 
     #[test]
-    fn count_zero_reports_more_data_when_an_entry_exists() {
+    fn count_zero_existing_entry_more_data() {
         let page = paginate(0u32..10, 0, 100);
         assert!(page.entries.is_empty());
         assert!(page.more_data);
     }
 
     #[test]
-    fn count_zero_with_no_eligible_entries_reports_no_more_data() {
+    fn count_zero_no_eligible_entries_no_more_data() {
         let page = paginate(core::iter::empty::<u32>(), 0, 100);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
-    fn an_exactly_consumed_iterator_reports_no_more_data() {
+    fn exactly_consumed_iterator_no_more_data() {
         let page = paginate(0u32..4, 4, 100);
         assert_eq!(page.entries, [0, 1, 2, 3]);
         assert!(!page.more_data);
     }
 
     #[test]
-    fn oversized_counts_do_not_over_allocate() {
+    fn oversized_count_allocation_bound() {
         let page = paginate(core::iter::empty::<u32>(), u32::MAX, 254);
         assert!(page.entries.capacity() <= 254);
         assert!(page.entries.is_empty());

@@ -1,4 +1,5 @@
 use crate::library::CommandInput;
+use crate::library::cancel::Cancellation;
 use crate::library::tpm2::clock::SteppingClock;
 pub(super) use crate::library::tpm2::command::core::test_support::{command, framed};
 use crate::library::tpm2::crypto::Hasher;
@@ -82,7 +83,7 @@ pub(super) fn replay_clock() -> SteppingClock {
 }
 
 #[track_caller]
-pub(super) fn restored(checkpoint: &str, clock: &SteppingClock) -> Box<Tpm2Runtime> {
+pub(super) fn restored(checkpoint: &str, clock: &SteppingClock) -> Tpm2Runtime {
     let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{checkpoint}")))
         .expect("the reference permanent state restores");
     attach_volatile_blob_for_replay(
@@ -96,12 +97,12 @@ pub(super) fn restored(checkpoint: &str, clock: &SteppingClock) -> Box<Tpm2Runti
 }
 
 #[track_caller]
-pub(super) fn ready(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+pub(super) fn ready(clock: &SteppingClock) -> Tpm2Runtime {
     restored("READY", clock)
 }
 
 #[track_caller]
-pub(super) fn manufactured(_clock: &SteppingClock) -> Box<Tpm2Runtime> {
+pub(super) fn manufactured(_clock: &SteppingClock) -> Tpm2Runtime {
     restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
         .expect("the reference manufactured state restores")
 }
@@ -166,6 +167,7 @@ pub(super) fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: &[u8
         &input,
         clock,
         |_| Ok(()),
+        Cancellation::disabled(),
     )
     .expect("the command processes")
 }
@@ -205,6 +207,7 @@ impl Host {
                 *self.stored.borrow_mut() = persistent_all_store(committed.state())?;
                 Ok(())
             },
+            Cancellation::disabled(),
         )
         .expect("the command processes")
     }
@@ -221,7 +224,7 @@ impl Host {
     }
 
     #[track_caller]
-    pub(in crate::library::tpm2::command) fn reboot(&self) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2::command) fn reboot(&self) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(&self.stored.borrow())
             .expect("the stored permanent state restores");
         runtime.entropy = deterministic_entropy;

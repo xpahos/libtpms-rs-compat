@@ -397,7 +397,7 @@ pub(in crate::library::tpm2::command) mod test_support {
     pub(in crate::library::tpm2::command) const CC_POLICY_PARAMETERS: u32 = 0x0000_019c;
 
     #[track_caller]
-    pub(in crate::library::tpm2::command) fn restored(snapshot: &str) -> Box<Tpm2Runtime> {
+    pub(in crate::library::tpm2::command) fn restored(snapshot: &str) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
             .expect("the oracle permanent state restores");
         attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
@@ -422,7 +422,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_comparison_operators_match_the_vendored_selectors() {
+    fn comparison_operator_vendored_selector_match() {
         assert_eq!(TPM_EO_EQ, 0x0000);
         assert_eq!(TPM_EO_NEQ, 0x0001);
         assert_eq!(TPM_EO_SIGNED_GT, 0x0002);
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_comparisons_treat_the_buffers_as_big_endian_magnitudes() {
+    fn unsigned_comparison_big_endian_magnitude_semantics() {
         let a = [0x80u8, 0x00];
         let b = [0x00u8, 0x01];
         assert!(check_condition(TPM_EO_UNSIGNED_GT, &a, &b).unwrap());
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_comparisons_read_the_leading_sign_bit() {
+    fn signed_comparison_leading_sign_bit_semantics() {
         let negative = [0x80u8, 0x00];
         let positive = [0x00u8, 0x01];
         assert!(check_condition(TPM_EO_SIGNED_LT, &negative, &positive).unwrap());
@@ -474,14 +474,14 @@ mod tests {
     }
 
     #[test]
-    fn different_lengths_order_by_length_first() {
+    fn unequal_length_comparison_precedence() {
         assert!(check_condition(TPM_EO_UNSIGNED_GT, &[0x00, 0x00], &[0xff]).unwrap());
         assert!(check_condition(TPM_EO_UNSIGNED_LT, &[0xff], &[0x00, 0x00]).unwrap());
         assert!(check_condition(TPM_EO_EQ, &[], &[]).unwrap());
     }
 
     #[test]
-    fn the_bit_operations_test_every_byte() {
+    fn bit_operation_all_byte_coverage() {
         assert!(check_condition(TPM_EO_BITSET, &[0xff, 0x0f], &[0x0f, 0x0f]).unwrap());
         assert!(!check_condition(TPM_EO_BITSET, &[0xff, 0x0e], &[0x0f, 0x0f]).unwrap());
         assert!(check_condition(TPM_EO_BITCLEAR, &[0xf0, 0xf0], &[0x0f, 0x0f]).unwrap());
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_operation_is_an_internal_failure() {
+    fn unsupported_operation_internal_failure() {
         assert_eq!(
             check_condition(0x000c, &[0x00], &[0x00]),
             Err(TPM_RC_FAILURE)
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn the_expiration_bit_is_the_most_significant_timeout_bit() {
+    fn expiration_bit_timeout_msb() {
         assert_eq!(EXPIRATION_BIT, 0x8000_0000_0000_0000);
     }
 }

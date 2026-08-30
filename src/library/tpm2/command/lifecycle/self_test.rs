@@ -38,7 +38,7 @@ fn parse_full_test(parameters: &[u8]) -> Result<bool, TpmResult> {
 mod tests {
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::cancel::CancelSignal;
+    use crate::library::cancel::Cancellation;
     use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_INITIALIZE};
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
@@ -104,7 +104,7 @@ mod tests {
         out
     }
 
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the default profile validates");
         let state =
             manufacture_state(profile, deterministic_entropy).expect("the state is manufactured");
@@ -124,16 +124,30 @@ mod tests {
 
     #[track_caller]
     fn run(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
+        run_with(runtime, bytes, Cancellation::disabled())
+    }
+
+    #[track_caller]
+    fn run_with(
+        runtime: &mut Tpm2Runtime,
+        bytes: &[u8],
+        cancellation: Cancellation<'_>,
+    ) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response fits")
+        serialize_response(&dispatch(runtime, &parsed, cancellation)).expect("the response fits")
+    }
+
+    #[track_caller]
+    fn response_code_of(response: &[u8]) -> u32 {
+        u32::from_be_bytes(response[6..10].try_into().expect("a complete header"))
     }
 
     #[track_caller]
     fn run_code(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> u32 {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        dispatch(runtime, &parsed).code()
+        dispatch(runtime, &parsed, Cancellation::disabled()).code()
     }
 
     #[derive(Debug, Eq, PartialEq)]
@@ -162,37 +176,32 @@ mod tests {
     }
 
     #[test]
-    fn a_raised_pin_never_cancels_a_self_test() {
+    fn raised_pin_no_cancellation() {
         for command in [FULL_TEST_COMMAND, PARTIAL_TEST_COMMAND] {
             let mut runtime = started_runtime();
-            runtime.cancel = CancelSignal::signaled();
             let snapshot_before = snapshot(&runtime);
             assert_eq!(
-                run(&mut runtime, &command),
+                run_with(&mut runtime, &command, Cancellation::requested()),
                 SUCCESS_RESPONSE,
                 "TPM2_SelfTest runs against g_toTest and is never cancelable"
             );
             assert!(runtime.self_test.pending.is_empty());
             assert!(!runtime.failure_mode);
             assert_eq!(snapshot(&runtime), snapshot_before);
-            assert!(
-                runtime.cancel.is_signaled(),
-                "the command neither consults nor clears the pin"
-            );
         }
     }
 
     #[test]
-    fn a_raised_pin_leaves_a_failing_self_test_unchanged() {
+    fn raised_pin_failing_test_unchanged() {
         let mut runtime = started_runtime();
-        runtime.cancel = CancelSignal::signaled();
         runtime.self_test.set_runner(always_fails);
-        assert_eq!(run_code(&mut runtime, &FULL_TEST_COMMAND), TPM_RC_FAILURE);
+        let response = run_with(&mut runtime, &FULL_TEST_COMMAND, Cancellation::requested());
+        assert_eq!(response_code_of(&response), TPM_RC_FAILURE);
         assert!(runtime.failure_mode);
     }
 
     #[test]
-    fn self_test_before_startup_is_rejected() {
+    fn pre_startup_rejection() {
         let mut runtime = empty_state_runtime();
         assert_eq!(
             run_code(&mut runtime, &FULL_TEST_COMMAND),
@@ -209,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_test_answers_the_upstream_success_bytes() {
+    fn full_test_upstream_success_bytes() {
         let mut runtime = started_runtime();
         assert_eq!(run(&mut runtime, &FULL_TEST_COMMAND), SUCCESS_RESPONSE);
         assert!(runtime.self_test.pending.is_empty());
@@ -217,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_test_answers_the_upstream_success_bytes() {
+    fn partial_test_upstream_success_bytes() {
         let mut runtime = started_runtime();
         assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
         assert!(runtime.self_test.pending.is_empty());
@@ -225,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_test_after_a_full_test_reruns_nothing() {
+    fn partial_after_full_no_rerun() {
         let mut runtime = started_runtime();
         assert_eq!(run(&mut runtime, &FULL_TEST_COMMAND), SUCCESS_RESPONSE);
         runtime.self_test.set_runner(always_fails);
@@ -238,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_test_after_a_partial_test_reruns_everything() {
+    fn full_after_partial_complete_rerun() {
         let mut runtime = started_runtime();
         assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
         runtime.self_test.set_runner(always_fails);
@@ -249,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_full_test_byte_is_an_insufficient_parameter_one() {
+    fn missing_full_test_byte_parameter_one_insufficiency() {
         let mut runtime = started_runtime();
         assert_eq!(
             run_code(&mut runtime, &framed(0x8001, &[])),
@@ -258,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_yes_no_value_is_a_parameter_one_value_error() {
+    fn invalid_yes_no_parameter_one_value_error() {
         let mut runtime = started_runtime();
         for value in [0x02u8, 0x03, 0x7f, 0x80, 0xfe, 0xff] {
             assert_eq!(
@@ -270,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_size_error() {
         let mut runtime = started_runtime();
         for value in [0x00u8, 0x01] {
             assert_eq!(
@@ -287,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_value_is_reported_before_the_trailing_bytes() {
+    fn invalid_value_error_precedence_over_trailing_bytes() {
         let mut runtime = started_runtime();
         assert_eq!(
             run_code(&mut runtime, &framed(0x8001, &[0x02, 0xee])),
@@ -296,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_request_leaves_every_test_pending() {
+    fn rejected_request_tests_pending() {
         let mut runtime = started_runtime();
         for payload in [&[][..], &[0x02][..], &[0x00, 0x00][..]] {
             assert_ne!(run_code(&mut runtime, &framed(0x8001, payload)), 0);
@@ -309,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_parameters_leave_a_recorded_failure_untouched() {
+    fn rejected_parameter_recorded_failure_preservation() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(fails_on_sha384);
         assert_eq!(run_code(&mut runtime, &FULL_TEST_COMMAND), TPM_RC_FAILURE);
@@ -325,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_primitive_test_enters_failure_mode() {
+    fn primitive_test_failure_mode() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(fails_on_sha384);
         assert_eq!(run_code(&mut runtime, &FULL_TEST_COMMAND), TPM_RC_FAILURE);
@@ -333,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_answers_the_failure_mode_response_bytes() {
+    fn failure_mode_response_bytes() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(always_fails);
         assert_eq!(
@@ -343,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_keeps_the_progress_a_later_get_test_result_needs() {
+    fn failure_progress_preservation() {
         let mut runtime = started_runtime();
         runtime.self_test.set_runner(fails_on_sha384);
         assert_eq!(run_code(&mut runtime, &FULL_TEST_COMMAND), TPM_RC_FAILURE);
@@ -355,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_does_not_touch_unrelated_runtime_state() {
+    fn failure_unrelated_state_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         runtime.self_test.set_runner(always_fails);
@@ -364,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_test_does_not_touch_unrelated_runtime_state() {
+    fn success_unrelated_state_unchanged() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
         assert_eq!(run(&mut runtime, &FULL_TEST_COMMAND), SUCCESS_RESPONSE);
@@ -420,7 +429,7 @@ mod tests {
             crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
         }
 
-        fn recording_runtime() -> Box<Tpm2Runtime> {
+        fn recording_runtime() -> Tpm2Runtime {
             taken();
             PRIMITIVES.with(|count| count.set(0));
             let mut runtime = started_runtime();
@@ -432,7 +441,7 @@ mod tests {
         }
 
         #[test]
-        fn a_full_test_runs_the_raw_test_before_the_ordinary_primitives() {
+        fn full_test_raw_before_primitives() {
             let mut runtime = recording_runtime();
             assert_eq!(run(&mut runtime, &FULL_TEST_COMMAND), SUCCESS_RESPONSE);
             assert_eq!(taken(), ["raw", "primitive", "rsaes", "oaep"]);
@@ -442,14 +451,14 @@ mod tests {
         }
 
         #[test]
-        fn a_partial_test_runs_the_raw_test_after_the_ordinary_primitives() {
+        fn partial_test_raw_after_primitives() {
             let mut runtime = recording_runtime();
             assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
             assert_eq!(taken(), ["primitive", "raw", "rsaes", "oaep"]);
         }
 
         #[test]
-        fn a_partial_test_runs_the_raw_test_once_the_padded_tests_are_complete() {
+        fn partial_test_raw_after_padded_completion() {
             let mut runtime = recording_runtime();
             runtime.self_test.raw_rsa_pending = true;
             runtime.self_test.rsaes_pending = false;
@@ -460,7 +469,7 @@ mod tests {
         }
 
         #[test]
-        fn a_padded_test_clears_the_raw_pending_state() {
+        fn padded_test_raw_pending_clear() {
             for (pending, expected) in [("rsaes", "rsaes"), ("oaep", "oaep")] {
                 let mut runtime = recording_runtime();
                 runtime.self_test.raw_rsa_pending = false;
@@ -475,7 +484,7 @@ mod tests {
         }
 
         #[test]
-        fn a_repeated_partial_test_reruns_no_completed_rsa_test() {
+        fn repeated_partial_no_rsa_rerun() {
             let mut runtime = recording_runtime();
             assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
             assert_eq!(taken(), ["primitive", "raw", "rsaes", "oaep"]);
@@ -486,7 +495,7 @@ mod tests {
         }
 
         #[test]
-        fn a_failing_raw_test_stops_a_partial_test_before_the_padded_tests() {
+        fn raw_failure_abort_before_padded() {
             let mut runtime = recording_runtime();
             runtime.self_test.set_raw_rsa_runner(failing_raw);
             assert_eq!(
@@ -505,7 +514,7 @@ mod tests {
         }
 
         #[test]
-        fn a_failing_padded_test_stays_pending_at_its_reference_failure_site() {
+        fn padded_failure_pending_at_reference_site() {
             for scheme in ["rsaes", "oaep"] {
                 let mut runtime = recording_runtime();
                 runtime.self_test.raw_rsa_pending = false;
@@ -552,7 +561,7 @@ mod tests {
             crate::library::tpm2::rsa_vectors::run_oaep_known_answer(seed)
         }
 
-        fn counting_runtime() -> Box<Tpm2Runtime> {
+        fn counting_runtime() -> Tpm2Runtime {
             CALLS.with(|calls| calls.set(0));
             let mut runtime = started_runtime();
             runtime.self_test.set_oaep_runner(counting_runner);
@@ -568,7 +577,7 @@ mod tests {
         }
 
         #[test]
-        fn a_full_test_runs_the_known_answer_test_exactly_once() {
+        fn full_test_single_kat_run() {
             let mut runtime = counting_runtime();
             let requests = drbg_requests(&runtime);
             assert_eq!(run(&mut runtime, &FULL_TEST_COMMAND), SUCCESS_RESPONSE);
@@ -583,7 +592,7 @@ mod tests {
         }
 
         #[test]
-        fn a_partial_test_runs_the_pending_known_answer_test() {
+        fn partial_test_pending_kat_run() {
             let mut runtime = counting_runtime();
             assert!(runtime.self_test.oaep_pending);
             assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
@@ -592,7 +601,7 @@ mod tests {
         }
 
         #[test]
-        fn a_partial_test_after_a_passing_known_answer_test_runs_nothing() {
+        fn partial_after_passed_kat_no_rerun() {
             let mut runtime = counting_runtime();
             assert_eq!(run(&mut runtime, &PARTIAL_TEST_COMMAND), SUCCESS_RESPONSE);
             let requests = drbg_requests(&runtime);
@@ -602,7 +611,7 @@ mod tests {
         }
 
         #[test]
-        fn a_lazily_tested_oaep_is_skipped_by_a_later_partial_test() {
+        fn lazy_kat_partial_test_skip() {
             let mut runtime = counting_runtime();
             assert_eq!(self_test_rsa_oaep(&mut runtime), Ok(()));
             assert_eq!(calls(), 1);
@@ -612,7 +621,7 @@ mod tests {
         }
 
         #[test]
-        fn a_full_test_reruns_a_known_answer_test_that_already_passed() {
+        fn full_test_passed_kat_rerun() {
             let mut runtime = counting_runtime();
             assert_eq!(self_test_rsa_oaep(&mut runtime), Ok(()));
             assert_eq!(calls(), 1);
@@ -622,7 +631,7 @@ mod tests {
         }
 
         #[test]
-        fn a_failing_known_answer_test_fails_the_tpm_at_its_own_vendored_site() {
+        fn kat_failure_vendored_site() {
             for (runner, location) in oaep_failure_table() {
                 for command in [FULL_TEST_COMMAND, PARTIAL_TEST_COMMAND] {
                     let mut runtime = started_runtime();
@@ -647,7 +656,7 @@ mod tests {
         }
 
         #[test]
-        fn the_sha512_dependency_fails_before_the_known_answer_test() {
+        fn sha512_dependency_failure_before_kat() {
             let mut runtime = counting_runtime();
             runtime.self_test.set_runner(fails_on_sha512);
             assert_eq!(run_code(&mut runtime, &FULL_TEST_COMMAND), TPM_RC_FAILURE);
@@ -660,7 +669,7 @@ mod tests {
         }
 
         #[test]
-        fn an_unusable_drbg_fails_the_known_answer_test_before_it_starts() {
+        fn unusable_drbg_kat_prestart_failure() {
             let mut runtime = counting_runtime();
             runtime.self_test.set_runner(|_| true);
             runtime.live.orderly.drbg_state.drbg_magic ^= 0xffff_ffff;
@@ -674,7 +683,7 @@ mod tests {
         }
 
         #[test]
-        fn a_latched_entropy_failure_does_not_stop_the_known_answer_test() {
+        fn latched_entropy_failure_kat_continuation() {
             let mut runtime = counting_runtime();
             runtime.entropy_bad = true;
             assert_eq!(run(&mut runtime, &FULL_TEST_COMMAND), SUCCESS_RESPONSE);
@@ -687,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn a_password_session_is_not_associated_with_a_nonexistent_handle() {
+    fn password_session_nonexistent_handle_rejection() {
         let mut runtime = started_runtime();
         let mut payload = 0x09u32.to_be_bytes().to_vec();
         payload.extend_from_slice(&[0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -702,13 +711,13 @@ mod tests {
     }
 
     #[test]
-    fn a_session_tagged_request_without_an_authorization_size_is_insufficient() {
+    fn session_tag_missing_auth_size_insufficiency() {
         let mut runtime = started_runtime();
         assert_eq!(run_code(&mut runtime, &framed(0x8002, &[])), INSUFFICIENT);
     }
 
     #[test]
-    fn a_session_tagged_request_with_a_short_authorization_area_is_a_size_error() {
+    fn session_tag_short_auth_area_size_error() {
         let mut runtime = started_runtime();
         let mut payload = 0u32.to_be_bytes().to_vec();
         payload.push(0x00);
@@ -716,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn parsing_accepts_only_the_two_defined_yes_no_values() {
+    fn yes_no_parsing_defined_values_only() {
         assert_eq!(parse_full_test(&[0x00]), Ok(false));
         assert_eq!(parse_full_test(&[0x01]), Ok(true));
         assert_eq!(
@@ -733,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn short_command_bodies_do_not_panic() {
+    fn short_command_body_panic_safety() {
         for length in 0..=4usize {
             for byte in 0..=u8::MAX {
                 let payload: Vec<u8> = (0..length).map(|_| byte).collect();
@@ -742,7 +751,11 @@ mod tests {
                     let bytes = framed(tag, &payload);
                     let input = CommandInput::new(bytes.len() as u32, bytes);
                     let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                    let _ = serialize_response(&dispatch(
+                        &mut runtime,
+                        &parsed,
+                        Cancellation::disabled(),
+                    ));
                 }
             }
         }

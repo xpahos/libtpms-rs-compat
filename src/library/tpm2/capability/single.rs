@@ -185,7 +185,7 @@ mod tests {
     const TPM_RH_OWNER: u32 = 0x4000_0001;
 
     #[test]
-    fn a_single_lookup_answers_exactly_what_the_list_of_that_selector_carries() {
+    fn single_lookup_list_selector_equivalence() {
         let runtime = started();
         let state = runtime.state.as_ref().expect("decoded state");
 
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_lookup_answers_nothing_for_a_property_the_list_leaves_out() {
+    fn single_lookup_absent_property_empty_result() {
         let runtime = started();
         for (capability, property) in [
             (TPM_CAP_PCR_PROPERTIES, 0x0000_000bu32),
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pcr_property_and_auth_policy_marshalling_is_the_shared_one() {
+    fn pcr_property_and_auth_policy_shared_marshalling() {
         let runtime = started();
         assert_eq!(
             lookup(&runtime, TPM_CAP_PCR_PROPERTIES, TPM_PT_PCR_SAVE),
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_capability_is_reported_as_such() {
+    fn unsupported_capability_report() {
         let runtime = empty_state_runtime();
         for capability in [0x0000_0005u32, 0x0000_000a, 0x0000_0100, 0xdead_beef] {
             assert_eq!(
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_handle_range_is_reported_as_a_handle_error() {
+    fn unsupported_handle_range_handle_error() {
         let runtime = empty_state_runtime();
         for property in [0x0400_0000u32, 0x8200_0000, 0xff00_0000] {
             assert_eq!(
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_policies_only_answer_for_permanent_handles() {
+    fn auth_policy_response_permanent_handles_only() {
         let runtime = empty_state_runtime();
         assert_eq!(
             lookup(&runtime, TPM_CAP_AUTH_POLICIES, 0x8000_0000),

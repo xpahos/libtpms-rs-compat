@@ -283,14 +283,14 @@ mod tests {
     }
 
     #[test]
-    fn the_compat_level_constants_match_upstream() {
+    fn compat_level_constants_upstream_match() {
         assert_eq!(SEED_COMPAT_LEVEL_ORIGINAL, 0);
         assert_eq!(SEED_COMPAT_LEVEL_RSA_PRIME_ADJUST_FIX, 1);
         assert_eq!(SEED_COMPAT_LEVEL_LAST, 1);
     }
 
     #[test]
-    fn instantiation_is_deterministic_in_all_four_inputs() {
+    fn instantiation_four_input_determinism() {
         let baseline = rand().random_bytes(32).unwrap();
         assert_eq!(rand().random_bytes(32).unwrap(), baseline);
         for changed in [
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn the_seed_compat_level_travels_with_the_state_without_changing_the_output() {
+    fn seed_compat_level_state_round_trip_output_unchanged() {
         let original =
             SeededRand::instantiate(&[0x5a; 64], b"PURPOSE", &[0x11; 34], &[], 0, false).unwrap();
         assert_eq!(original.seed_compat_level(), 0);
@@ -318,12 +318,12 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_derivation_input_has_no_instantiation() {
+    fn empty_derivation_input_no_instantiation() {
         assert!(SeededRand::instantiate(&[], &[], &[], &[], 1, false).is_err());
     }
 
     #[test]
-    fn successive_draws_advance_the_generator() {
+    fn successive_draw_generator_advancement() {
         let mut generator = rand();
         let first = generator.random_bytes(48).unwrap();
         let second = generator.random_bytes(48).unwrap();
@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn a_random_integer_is_masked_to_the_requested_bit_count() {
+    fn random_integer_bit_count_masking() {
         let mut generator = rand();
         for bits in [1usize, 7, 8, 63, 64, 65, 128, 521, 1024] {
             let value = generator.random_integer(bits).unwrap();
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn a_random_integer_draws_exactly_the_rounded_up_byte_count() {
+    fn random_integer_rounded_byte_draw() {
         let mut counted = rand();
         let mut byte_wise = rand();
         let value = counted.random_integer(521).unwrap();
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn a_value_in_range_is_never_zero_and_always_below_the_limit() {
+    fn value_in_range_nonzero_below_limit() {
         let mut generator = rand();
         let limit = BigUint::from_u64(0x1_0000_0001);
         for _ in 0..32 {
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn a_limit_below_two_has_no_value_in_range() {
+    fn limit_below_two_no_value() {
         let mut generator = rand();
         assert!(
             generator
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn additional_data_diverges_the_sequence() {
+    fn additional_data_sequence_divergence() {
         let mut plain = rand();
         let mut stirred = rand();
         stirred.additional_data(&[0x77; 64]).unwrap();
@@ -396,13 +396,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_additional_data_is_rejected_rather_than_drawing_entropy() {
+    fn empty_additional_data_rejection_no_entropy_draw() {
         let mut generator = rand();
         assert!(generator.additional_data(&[]).is_err());
     }
 
     #[test]
-    fn a_seeded_generator_reports_no_live_outcome_and_no_starvation() {
+    fn seeded_generator_no_live_outcome_no_starvation() {
         assert!(!rand().live_entropy_starved());
         assert!(
             rand().into_live().is_none(),
@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_seeded_continuous_test_hit_stays_a_local_error() {
+    fn seeded_continuous_test_hit_local_error() {
         use crate::library::constants::TPM_FAIL;
 
         let base = Drbg::instantiate_seeded(&[&[0x5a; 64]], true).expect("instantiates");

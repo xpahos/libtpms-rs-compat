@@ -115,6 +115,7 @@ fn set_platform_auth(runtime: &mut Tpm2Runtime, new_auth: &[u8]) -> Result<(), T
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -129,6 +130,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -197,7 +199,7 @@ mod tests {
         Ok(())
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -209,11 +211,12 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     #[track_caller]
-    fn started_runtime() -> Box<Tpm2Runtime> {
+    fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex("80010000000c0000014400 00")),
@@ -398,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn hierarchy_change_auth_before_startup_returns_initialize() {
+    fn pre_startup_initialize_rejection() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -409,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn every_hierarchy_authorization_handle_is_accepted() {
+    fn hierarchy_handle_acceptance() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             assert_eq!(
@@ -422,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn each_hierarchy_updates_only_its_own_authorization_value() {
+    fn per_hierarchy_auth_value_isolation() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             assert_eq!(
@@ -442,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_object_session_and_unknown_handles_are_rejected() {
+    fn non_hierarchy_handle_rejection() {
         let mut handles = vec![
             TPM_RH_NULL,
             TPM_RS_PW,
@@ -473,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_handle_is_reported_with_the_handle_decoration() {
+    fn truncated_handle_decoration() {
         for len in 0..4usize {
             let mut runtime = started_runtime();
             let mut bytes = hex("8002 00000000 00000129");
@@ -489,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_authorization_area_is_auth_missing() {
+    fn missing_auth_area_auth_missing() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -503,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_password_for_a_da_exempt_hierarchy_is_bad_auth_without_side_effects() {
+    fn da_exempt_bad_auth_no_side_effects() {
         for handle in DA_EXEMPT_HIERARCHIES {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -517,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_lockout_password_is_a_dictionary_attack_failure() {
+    fn wrong_lockout_password_da_failure() {
         let mut runtime = started_runtime();
         assert!(runtime.state().persistent.lockout_auth_enabled);
         assert_eq!(
@@ -532,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_lockout_attempt_disables_lockout_authorization() {
+    fn lockout_failure_auth_disable() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -545,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn every_later_lockout_authorization_is_refused_while_locked_out() {
+    fn locked_out_lockout_auth_rejection() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_auth(TPM_RH_LOCKOUT, &[], &BIOS_AUTH)),
@@ -582,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lockout_failure_leaves_the_other_hierarchies_usable() {
+    fn lockout_failure_hierarchy_isolation() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -601,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_lockout_attempt_writes_nv_when_lockout_recovery_is_nonzero() {
+    fn lockout_failure_nonzero_recovery_nv_write() {
         let mut runtime = started_runtime();
         assert_ne!(runtime.state().persistent.lockout_recovery, 0);
         let nv_before = runtime.nv_memory.clone();
@@ -642,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_lockout_attempt_skips_nv_when_lockout_recovery_is_zero() {
+    fn lockout_failure_zero_recovery_nv_skip() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().persistent.lockout_recovery = 0;
         runtime.nv_memory = build_nv_image(runtime.state()).expect("the state serializes");
@@ -664,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_lockout_attempt_without_nv_defers_the_da_write() {
+    fn lockout_failure_no_nv_deferred_da_write() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, SU_NONE_VALUE);
         runtime.nv_available = false;
@@ -706,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orderly_tpm_without_nv_refuses_the_lockout_check() {
+    fn orderly_no_nv_lockout_check_rejection() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, 0x0001);
         runtime.nv_available = false;
@@ -720,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_lockout_nv_image_leaves_no_partial_local_mutation() {
+    fn lockout_nv_image_failure_no_partial_mutation() {
         let mut runtime = started_runtime();
         runtime.state.as_mut().unwrap().persistent.owner_policy = vec![0x5a; 4096];
         assert!(
@@ -749,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_nv_commit_failure_after_a_lockout_failure_enters_failure_mode() {
+    fn lockout_nv_commit_failure_mode() {
         let mut runtime = started_runtime();
         let bytes = change_auth(TPM_RH_LOCKOUT, b"wrong", &BIOS_AUTH);
         let input = CommandInput::new(bytes.len() as u32, bytes);
@@ -760,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_password_session_has_no_command_handle_to_authorize() {
+    fn extra_password_session_no_handle() {
         let mut runtime = started_runtime();
         for second in [&[][..], b"wrong"] {
             let mut auth = pw_session(&[]);
@@ -781,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_compares_against_the_old_authorization_value() {
+    fn authorization_old_auth_value_comparison() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             assert_eq!(
@@ -799,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_change_requires_the_new_password_next_time() {
+    fn new_password_requirement() {
         for handle in DA_EXEMPT_HIERARCHIES {
             let mut runtime = started_runtime();
             assert_eq!(
@@ -823,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_new_authorization_value_clears_the_hierarchy() {
+    fn empty_new_auth_clear() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             assert_eq!(
@@ -845,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_zeros_are_removed_before_the_value_is_stored() {
+    fn trailing_zero_trim() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             assert_eq!(
@@ -866,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn an_all_zero_new_authorization_value_normalizes_to_empty() {
+    fn all_zero_auth_empty_normalization() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(
@@ -884,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn the_maximum_sized_authorization_value_is_accepted() {
+    fn max_size_auth_acceptance() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             let maximum = [0xa5u8; MAX_AUTH_SIZE];
@@ -902,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_authorization_value_is_a_first_parameter_size_error() {
+    fn oversized_auth_p1_size_error() {
         for size in [MAX_AUTH_SIZE + 1, MAX_AUTH_SIZE + 2, 128, 0xffff] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -921,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_truncated_size_field_is_a_first_parameter_insufficient_error() {
+    fn truncated_size_field_p1_insufficient() {
         for parameters in [&[][..], &[0x00][..], &[0x14][..]] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -939,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_shorter_than_the_declared_size_is_insufficient() {
+    fn short_payload_insufficient() {
         for present in 0..20usize {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -958,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_return_an_undecorated_size_error() {
+    fn trailing_parameter_bytes_undecorated_size_error() {
         for trailing in [&[0xeeu8][..], &[0x00; 4][..], &[0xaa; 32][..]] {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -978,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn the_context_integrity_hash_limit_carries_the_upstream_parameter_two_decoration() {
+    fn integrity_hash_limit_p2_decoration() {
         assert_eq!(
             RC_HIERARCHY_CHANGE_AUTH_NEW_AUTH + TPM_RC_SIZE,
             RC_PARAM2_SIZE
@@ -993,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn a_change_without_available_nv_is_refused_before_any_mutation() {
+    fn unavailable_nv_rejection_no_mutation() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             runtime.nv_available = false;
@@ -1008,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_unavailability_is_reported_after_the_parameter_area_is_parsed() {
+    fn nv_unavailable_post_parse_order() {
         let mut runtime = started_runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime);
@@ -1024,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_endorsement_and_lockout_changes_rebuild_the_permanent_nv_image() {
+    fn owner_endorsement_lockout_change_permanent_nv_image_rebuild() {
         for handle in [TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT] {
             let mut runtime = started_runtime();
             let nv_before = runtime.nv_memory.clone();
@@ -1041,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_endorsement_and_lockout_changes_schedule_the_host_nvram_commit() {
+    fn owner_endorsement_lockout_change_host_nvram_commit() {
         for handle in [TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT] {
             let mut runtime = started_runtime();
             let bytes = change_auth(handle, &[], &BIOS_AUTH);
@@ -1058,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_change_touches_only_the_state_clear_authorization_value() {
+    fn platform_change_state_clear_auth_only() {
         let mut runtime = started_runtime();
         let nv_before = runtime.nv_memory.clone();
         assert_eq!(
@@ -1078,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_change_never_invokes_the_nv_commit_callback_outside_the_orderly_state() {
+    fn platform_change_no_nv_commit_outside_orderly() {
         let mut runtime = started_runtime();
         let bytes = change_auth(TPM_RH_PLATFORM, &[], &BIOS_AUTH);
         let input = CommandInput::new(bytes.len() as u32, bytes);
@@ -1090,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_change_clears_the_orderly_marker() {
+    fn platform_change_orderly_marker_clear() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, 0x0001);
         assert_eq!(
@@ -1106,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_change_records_da_used_when_the_orderly_marker_is_cleared() {
+    fn platform_change_da_used_marker() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, 0x0001);
         runtime.live.da_used = true;
@@ -1118,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_change_leaves_a_non_orderly_marker_alone() {
+    fn platform_change_non_orderly_marker_unchanged() {
         for orderly_state in [SU_DA_USED_VALUE, SU_NONE_VALUE] {
             let mut runtime = started_runtime();
             make_orderly(&mut runtime, orderly_state);
@@ -1135,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn an_owner_change_leaves_the_orderly_marker_alone() {
+    fn owner_change_orderly_marker_unchanged() {
         let mut runtime = started_runtime();
         make_orderly(&mut runtime, 0x0001);
         assert_eq!(
@@ -1150,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_command_never_schedules_an_nv_update() {
+    fn rejected_command_no_nv_update() {
         let mut runtime = started_runtime();
         for bytes in [
             change_auth(TPM_RH_NULL, &[], &BIOS_AUTH),
@@ -1167,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_change_leaves_unrelated_runtime_state_alone() {
+    fn unrelated_runtime_state_preservation() {
         for handle in HIERARCHY_HANDLES {
             let mut runtime = started_runtime();
             let before = snapshot(&runtime);
@@ -1201,7 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_live_state_clear_fails_without_panicking() {
+    fn missing_state_clear_panic_safety() {
         let mut runtime = started_runtime();
         runtime.live.state_clear = None;
         assert_eq!(
@@ -1211,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_persistent_state_fails_without_panicking() {
+    fn missing_persistent_state_panic_safety() {
         let mut runtime = started_runtime();
         runtime.state = None;
         for handle in [TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT] {
@@ -1224,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_authorization_areas_keep_the_shared_session_codes() {
+    fn malformed_authorization_area_shared_session_codes() {
         for (label, auth, expected) in [
             (
                 "hmac_session",
@@ -1257,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_authorization_value_never_appears_in_debug_output() {
+    fn debug_output_auth_redaction() {
         let mut runtime = started_runtime();
         for handle in HIERARCHY_HANDLES {
             assert_eq!(
@@ -1293,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn bit_flips_do_not_panic() {
+    fn bit_flip_panic_safety() {
         let valid = change_auth(TPM_RH_PLATFORM, &[], &BIOS_AUTH);
         for index in 6..valid.len() {
             for flip in [0x01u8, 0x80, 0xff] {
@@ -1302,13 +1305,14 @@ mod tests {
                 let mut runtime = started_runtime();
                 let input = CommandInput::new(mutated.len() as u32, mutated);
                 let parsed = parse_command(&input).expect("the header parses");
-                let _ = serialize_response(&dispatch(&mut runtime, &parsed));
+                let _ =
+                    serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()));
             }
         }
     }
 
     #[test]
-    fn every_truncated_prefix_of_a_valid_command_is_rejected_safely() {
+    fn truncated_prefix_rejection_safety() {
         let valid = change_auth(TPM_RH_PLATFORM, &[], &BIOS_AUTH);
         for len in 10..valid.len() {
             let mut runtime = started_runtime();
@@ -1317,14 +1321,16 @@ mod tests {
             truncated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
             let input = CommandInput::new(truncated.len() as u32, truncated);
             let parsed = parse_command(&input).expect("the header parses");
-            let response = serialize_response(&dispatch(&mut runtime, &parsed)).unwrap();
+            let response =
+                serialize_response(&dispatch(&mut runtime, &parsed, Cancellation::disabled()))
+                    .unwrap();
             assert_ne!(&response[6..10], &RC_SUCCESS.to_be_bytes(), "length {len}");
             assert_unchanged(&runtime, &before);
         }
     }
 
     #[test]
-    fn the_swtpm_bios_platform_flow_matches_byte_for_byte() {
+    fn swtpm_bios_flow_byte_match() {
         let mut runtime = started_runtime();
         let request = hex(
             "8002 00000031 00000129 4000000c 00000009 40000009 0000 01 0000 \
@@ -1344,7 +1350,7 @@ mod tests {
     }
 
     #[test]
-    fn a_startup_clear_restores_an_empty_platform_authorization_value() {
+    fn startup_clear_platform_auth_reset() {
         let mut runtime = started_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_auth(TPM_RH_PLATFORM, &[], &BIOS_AUTH)),

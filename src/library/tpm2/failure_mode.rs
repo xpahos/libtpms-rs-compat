@@ -283,14 +283,14 @@ mod tests {
         framed(0x8001, TPM_CC_GET_CAPABILITY, &payload)
     }
 
-    fn failed_runtime(location: FailureLocation) -> Box<Tpm2Runtime> {
+    fn failed_runtime(location: FailureLocation) -> Tpm2Runtime {
         let mut runtime = empty_state_runtime();
         enter_failure_mode(&mut runtime, location);
         runtime
     }
 
     #[test]
-    fn a_failed_ecdh_self_test_names_the_vendored_comparison_site() {
+    fn failed_ecdh_self_test_vendored_site() {
         use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure};
         let mut state = SelfTestState::for_algorithms(
             crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE,
@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn every_implemented_command_answers_the_bare_failure_response() {
+    fn implemented_command_bare_failure_response() {
         for descriptor in implemented_commands() {
             let mut runtime = failed_runtime(FailureLocation::NvCommit);
             for payload in [&[][..], &[0x00][..], &[0x00; 12][..]] {
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn the_special_command_codes_are_identified() {
+    fn special_command_code_identification() {
         let bytes = framed(0x8001, TPM_CC_GET_TEST_RESULT, &[]);
         assert_eq!(route(&input(&bytes)), FailureModeRoute::GetTestResult);
 
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_tpm_properties_group_takes_the_restricted_capability_route() {
+    fn restricted_capability_tpm_properties_only() {
         for capability in [
             TPM_CAP_ALGS,
             TPM_CAP_COMMANDS,
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn the_property_and_count_fields_are_not_restricted_by_the_router() {
+    fn property_and_count_fields_unrestricted_routing() {
         for property in [0u32, 1, 0x100, 0x12e, 0x200, 0x7fff_ffff, u32::MAX] {
             for property_count in [0u32, 1, 2, 1000, 0x8000_0000, u32::MAX] {
                 assert_eq!(
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn a_capability_request_of_the_wrong_declared_length_is_a_bare_failure() {
+    fn wrong_length_capability_request_bare_failure() {
         for extra in [&[][..], &[0x00; 4][..], &[0x00; 7][..], &[0x00; 16][..]] {
             let mut payload = TPM_CAP_TPM_PROPERTIES.to_be_bytes().to_vec();
             payload.extend_from_slice(extra);
@@ -400,14 +400,14 @@ mod tests {
     }
 
     #[test]
-    fn a_session_tagged_capability_request_is_a_bare_failure() {
+    fn session_tagged_capability_bare_failure() {
         let mut bytes = get_capability(TPM_CAP_TPM_PROPERTIES, 0x100, 1);
         bytes[..2].copy_from_slice(&0x8002u16.to_be_bytes());
         assert_eq!(route(&input(&bytes)), FailureModeRoute::BareFailure);
     }
 
     #[test]
-    fn session_tagged_and_undersized_requests_fall_back_to_bare_failure() {
+    fn session_tagged_undersized_bare_failure_fallback() {
         for tag in [0x8002u16, 0x0000, 0xffff] {
             let bytes = framed(tag, TPM_CC_GET_TEST_RESULT, &[]);
             assert_eq!(route(&input(&bytes)), FailureModeRoute::BareFailure);
@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn undeclared_trailing_bytes_are_ignored_like_the_c_boundary() {
+    fn undeclared_trailing_bytes_ignored_c_boundary_match() {
         let mut bytes = framed(0x8001, TPM_CC_GET_TEST_RESULT, &[]);
         bytes.extend_from_slice(&[0x00; 4]);
         assert_eq!(route(&input(&bytes)), FailureModeRoute::GetTestResult);
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_size_beyond_the_received_bytes_is_a_bare_failure() {
+    fn declared_size_beyond_received_bare_failure() {
         let mut bytes = framed(0x8001, TPM_CC_GET_TEST_RESULT, &[]);
         bytes[5] = 0x0b;
         assert_eq!(route(&input(&bytes[..10])), FailureModeRoute::BareFailure);
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_declared_size_never_drives_an_allocation() {
+    fn oversized_declared_size_no_allocation() {
         let mut bytes = framed(0x8001, TPM_CC_GET_TEST_RESULT, &[]);
         bytes[2..6].copy_from_slice(&u32::MAX.to_be_bytes());
         let command = CommandInput::new(u32::MAX, bytes[..6].to_vec());
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn get_test_result_reports_the_nv_commit_diagnostics() {
+    fn get_test_result_nv_commit_diagnostics() {
         let mut runtime = failed_runtime(FailureLocation::NvCommit);
         let bytes = framed(0x8001, TPM_CC_GET_TEST_RESULT, &[]);
         assert_eq!(
@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nv_unrecoverable_code_answers_nv_uninitialized() {
+    fn nv_unrecoverable_code_nv_uninitialized_response() {
         let mut runtime = failed_runtime(FailureLocation::NvCommit);
         runtime.failure_diagnostics.code = FATAL_ERROR_NV_UNRECOVERABLE;
         let bytes = framed(0x8001, TPM_CC_GET_TEST_RESULT, &[]);
@@ -501,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn every_other_fatal_code_answers_plain_failure() {
+    fn other_fatal_codes_plain_failure_response() {
         let bytes = framed(0x8001, TPM_CC_GET_TEST_RESULT, &[]);
         for code in [0u32, 1, 2, 3, 4, 5, 6, 7, 9, 500, 600, 1000, u32::MAX] {
             let mut runtime = failed_runtime(FailureLocation::NvCommit);
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn the_diagnostic_fields_encode_big_endian_after_the_twelve_byte_size() {
+    fn diagnostic_fields_big_endian_after_twelve_byte_size() {
         let mut runtime = failed_runtime(FailureLocation::NvCommit);
         runtime.failure_diagnostics = FailureDiagnostics {
             function: 0x0102_0304,
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn the_restricted_capability_matrix_matches_the_oracle() {
+    fn restricted_capability_matrix_oracle_match() {
         let cases: [(&str, u32, u32); 19] = [
             ("FM_CAP_PT000_C1", 0x000, 1),
             ("FM_CAP_PT104_C1", 0x104, 1),
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn the_more_data_byte_tracks_only_the_clamped_property() {
+    fn more_data_byte_clamped_property_only() {
         let mut runtime = failed_runtime(FailureLocation::NvCommit);
         for (property, count, more_data) in [
             (0u32, 1u32, 1u8),
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_capability_variants_stay_bare_failures_like_the_oracle() {
+    fn malformed_capability_variants_bare_failure_parity() {
         let mut runtime = failed_runtime(FailureLocation::NvCommit);
         for name in [
             "FM_CAP_ALGS",
@@ -636,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_mode_queries_do_not_mutate_the_runtime() {
+    fn failure_mode_query_runtime_preservation() {
         let mut runtime = failed_runtime(FailureLocation::NvCommit);
         let diagnostics = runtime.failure_diagnostics;
         let nv_before = runtime.nv_memory.clone();
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn the_oracle_volatile_record_restores_the_diagnostics() {
+    fn oracle_volatile_record_diagnostics_restoration() {
         use crate::library::tpm2::{
             attach_volatile_blob_for_test, restore_permanent_blob_for_test,
         };
@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn the_after_queries_volatile_record_carries_identical_diagnostics() {
+    fn post_query_volatile_record_identical_diagnostics() {
         use crate::library::tpm2::{
             attach_volatile_blob_for_test, restore_permanent_blob_for_test,
         };
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn request_mutations_stay_on_failure_route() {
+    fn request_mutation_failure_route_persistence() {
         let valid = get_capability(TPM_CAP_TPM_PROPERTIES, 0x0000_0100, 1);
         for length in 0..=valid.len() {
             let truncated = &valid[..length];
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_request_is_a_bare_failure() {
+    fn empty_request_bare_failure() {
         let mut runtime = failed_runtime(FailureLocation::NvCommit);
         assert_eq!(route(&input(&[])), FailureModeRoute::BareFailure);
         assert_eq!(process(&mut runtime, &input(&[])).unwrap(), BARE_FAILURE);
@@ -821,7 +821,7 @@ mod tests {
         }
 
         #[test]
-        fn every_mapped_location_matches_a_pinned_vendored_fail_site() {
+        fn mapped_location_vendored_fail_site_parity() {
             let records = records();
             let find = |function: &str, line: u32| {
                 records
@@ -853,7 +853,7 @@ mod tests {
         }
 
         #[test]
-        fn the_symmetric_site_is_the_encrypt_comparison() {
+        fn symmetric_site_encrypt_comparison() {
             let first = records()
                 .into_iter()
                 .filter(|(_, _, f, _)| f == "TestSymmetricAlgorithm")
@@ -864,7 +864,7 @@ mod tests {
         }
 
         #[test]
-        fn the_oracle_wire_bytes_agree_with_the_nv_commit_mapping() {
+        fn oracle_wire_bytes_nv_commit_mapping_match() {
             let response = vector("FM_GTR_OK");
             let diagnostics = FailureLocation::NvCommit.diagnostics();
             assert_eq!(&response[12..16], &diagnostics.function.to_be_bytes());

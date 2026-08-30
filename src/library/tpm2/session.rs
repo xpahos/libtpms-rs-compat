@@ -638,7 +638,7 @@ mod tests {
     const TAIL_SENTINEL: [u8; 3] = [0xb1, 0xb2, 0xb3];
 
     #[test]
-    fn digest_comparison_checks_the_length_before_the_bytes() {
+    fn digest_comparison_length_first_order() {
         assert!(digests_equal(&[], &[]));
         assert!(digests_equal(&[0xa5; 32], &[0xa5; 32]));
         assert!(!digests_equal(&[0xa5; 32], &[0xa5; 20]));
@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attribute_bits_match_the_vendored_little_endian_bitfield() {
+    fn attribute_bits_vendored_bitfield_match() {
         assert_eq!(SESSION_ATTR_IS_POLICY, 0x0000_0001);
         assert_eq!(SESSION_ATTR_IS_AUDIT, 0x0000_0002);
         assert_eq!(SESSION_ATTR_IS_BOUND, 0x0000_0004);
@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn unoccupied_slot_ends_immediately_without_a_future_block() {
+    fn unoccupied_slot_immediate_end_no_future_block() {
         let mut data = SessionSlotFixture::default().bytes();
         data.extend_from_slice(&TAIL_SENTINEL);
         let (slot, remaining) = parse_slot(&data).unwrap();
@@ -688,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn occupied_slot_decodes_the_full_session() {
+    fn occupied_slot_full_session_decode() {
         let mut data = SessionSlotFixture::occupied().bytes();
         data.extend_from_slice(&TAIL_SENTINEL);
         let (slot, remaining) = parse_slot(&data).unwrap();
@@ -713,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn slot_and_session_magic_mismatches_are_bad_tag() {
+    fn slot_session_magic_mismatch_bad_tag() {
         let mut data = SessionSlotFixture::occupied().bytes();
         data[2] ^= 0xff;
         let error = parse_slot(&data).unwrap_err();
@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_epoch_clock_size_is_bad_parameter() {
+    fn wrong_epoch_clock_size_bad_parameter() {
         for clock_size in [0u8, 8, 0xff] {
             let data = SessionSlotFixture {
                 occupied: 1,
@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn xor_and_null_symmetric_defs_read_their_exact_unions() {
+    fn xor_and_null_symmetric_def_union_layout() {
         for (symmetric, algorithm, key_bits, mode) in [
             (vec![0x00, 0x0a, 0x00, 0x04], 0x000a, Some(0x0004), None),
             (vec![0x00, 0x10], 0x0010, None, None),
@@ -789,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_symmetric_algorithm_is_tpm_rc_symmetric() {
+    fn invalid_symmetric_algorithm_rc_symmetric() {
         for algorithm in [0x0013u16, 0x0000] {
             let data = SessionSlotFixture {
                 occupied: 1,
@@ -815,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn xor_hash_outside_the_compiled_set_is_tpm_rc_hash() {
+    fn uncompiled_xor_hash_rc_hash() {
         let data = SessionSlotFixture {
             occupied: 1,
             session: SessionFixture {
@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_session_tpm2bs_are_size_errors() {
+    fn oversized_session_tpm2b_size_errors() {
         for (field, oversized) in [
             ("session_key", 65usize),
             ("nonce_tpm", 65),
@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn session_debug_output_never_contains_secret_bytes() {
+    fn session_debug_output_secret_byte_absence() {
         let data = SessionSlotFixture {
             occupied: 1,
             session: SessionFixture {
@@ -877,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_fails_safely() {
+    fn strict_prefix_rejection_safety() {
         let full = SessionSlotFixture::occupied().bytes();
         for len in 0..full.len() {
             let error = parse_slot(&full[..len]).unwrap_err();
@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn session_slot_byte_mutations_do_not_panic() {
+    fn session_slot_byte_mutation_panic_safety() {
         let full = SessionSlotFixture::occupied().bytes();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0xff] {

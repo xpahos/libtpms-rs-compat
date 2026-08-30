@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn two_signers() -> Box<Tpm2Runtime> {
+    fn two_signers() -> Tpm2Runtime {
         let mut runtime = ready_runtime();
         assert_eq!(
             run(
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_0148");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_CERTIFY, 0x0000_0148);
@@ -205,12 +205,12 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_signer_certifies_an_ecc_object_like_the_oracle() {
+    fn rsa_signer_ecc_object_oracle_match() {
         assert_certify("CERTIFY_RSA", KEY1, KEY0, &QUALIFY, ALG_NULL, 0);
     }
 
     #[test]
-    fn an_ecc_signer_certifies_an_rsa_object_like_the_oracle() {
+    fn ecc_signer_rsa_object_oracle_match() {
         for (record, scheme) in [
             ("CERTIFY_ECC", ALG_NULL),
             ("CERTIFY_ECC_EXPLICIT", ALG_ECDSA),
@@ -286,12 +286,12 @@ mod tests {
     }
 
     #[test]
-    fn a_key_may_certify_itself() {
+    fn self_certification_acceptance() {
         assert_certify("CERTIFY_SELF_RSA", KEY0, KEY0, &QUALIFY, ALG_NULL, 0);
     }
 
     #[test]
-    fn a_null_signer_answers_a_null_signature() {
+    fn null_signer_null_signature() {
         assert_certify(
             "CERTIFY_NULL_SIGNER",
             KEY0,
@@ -309,12 +309,12 @@ mod tests {
     }
 
     #[test]
-    fn the_qualifying_data_may_be_empty() {
+    fn empty_qualifying_data_acceptance() {
         assert_certify("CERTIFY_NO_QUALIFYING", KEY1, KEY0, &[], ALG_NULL, 0);
     }
 
     #[test]
-    fn an_explicit_scheme_that_matches_the_key_is_accepted() {
+    fn matching_explicit_scheme_acceptance() {
         assert_certify(
             "CERTIFY_EXPLICIT_SCHEME",
             KEY1,
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scheme_that_disagrees_with_the_key_is_a_scheme_error() {
+    fn scheme_key_mismatch_scheme_error() {
         assert_certify(
             "CERTIFY_WRONG_SCHEME",
             KEY1,
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attested_data_carries_the_object_name_and_qualified_name() {
+    fn attested_data_name_qualified_name() {
         let mut runtime = two_signers();
         let expected = vector("CERTIFY_RSA");
         replay_clock(&mut runtime, expected);
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn the_signature_verifies_against_the_signing_key() {
+    fn signature_signing_key_verification() {
         use crate::library::tpm2::crypto::{BigUint, Hasher};
         let mut runtime = two_signers();
         let expected = vector("CERTIFY_RSA");
@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn a_decrypt_only_key_cannot_sign() {
+    fn decrypt_only_key_sign_rejection() {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_a_default_scheme_needs_an_explicit_one() {
+    fn missing_default_scheme_explicit_requirement() {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn a_keyed_hash_signer_answers_an_hmac_signature() {
+    fn keyedhash_signer_hmac_signature() {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_errors_match_the_oracle() {
+    fn handle_error_oracle_match() {
         let mut runtime = two_signers();
         assert_eq!(
             run(
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn every_authorization_session_is_required() {
+    fn authorization_session_requirement() {
         let mut runtime = two_signers();
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parameter_limits_match_the_oracle() {
+    fn parameter_limit_oracle_match() {
         let mut runtime = two_signers();
         let oversized: Vec<u8> = (0..67).collect();
         assert_eq!(
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_certification_leaves_no_trace() {
+    fn failed_certification_no_state_change() {
         let mut runtime = two_signers();
         run_ok(
             &mut runtime,
@@ -677,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn certify_parameter_mutations_do_not_panic() {
+    fn certify_parameter_mutation_panic_safety() {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = two_signers();

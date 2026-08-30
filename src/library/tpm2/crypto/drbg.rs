@@ -253,13 +253,13 @@ mod tests {
     }
 
     #[test]
-    fn instantiate_matches_the_vendored_oracle() {
+    fn instantiate_vendored_oracle_parity() {
         assert_instantiate_matches(&vector_record(false), false);
         assert_instantiate_matches(&vector_record(true), true);
     }
 
     #[test]
-    fn generate_sequence_matches_the_vendored_oracle() {
+    fn generate_sequence_vendored_oracle_parity() {
         for continuous in [false, true] {
             let record = vector_record(continuous);
             let mut drbg = assert_instantiate_matches(&record, continuous);
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn continuous_test_tracks_last_value_and_plain_mode_does_not() {
+    fn continuous_test_last_value_tracking_mode_distinction() {
         let plain = vector_record(false);
         let continuous = vector_record(true);
         assert_eq!(plain.final_seed, continuous.final_seed);
@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_block_requests_truncate_the_last_block() {
+    fn partial_block_request_last_block_truncation() {
         let mut long_drbg = Drbg::instantiate(oracle_entropy, false).unwrap();
         let mut short_drbg = Drbg::instantiate(oracle_entropy, false).unwrap();
         let mut long = [0u8; 64];
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn entropy_failure_propagates_from_instantiate() {
+    fn instantiate_entropy_failure_propagation() {
         assert_eq!(
             Drbg::instantiate(failing_entropy, false).map(|_| ()),
             Err(ReseedError::Entropy)
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_entropy_source_is_classified_and_leaves_the_state_alone() {
+    fn entropy_failure_classification_state_unchanged() {
         let mut drbg = Drbg::instantiate(oracle_entropy, true).expect("instantiate");
         let before = snapshot(&drbg);
         assert_eq!(
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_block_during_reseed_is_the_continuous_test_failure() {
+    fn reseed_repeated_block_continuous_test_failure() {
         let drbg = Drbg::instantiate(oracle_entropy, true).expect("instantiate");
         let collision = colliding_last_value(&drbg);
         let mut drbg =
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_block_during_generation_is_the_continuous_test_failure() {
+    fn generation_repeated_block_continuous_test_failure() {
         let source = Drbg::instantiate(oracle_entropy, true).expect("instantiate");
         let collision = colliding_last_value(&source);
         let mut drbg = Drbg::restore(source.seed(), source.reseed_counter(), collision, true)
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn iv_increment_carries_across_bytes() {
+    fn iv_increment_cross_byte_carry() {
         let mut iv = [0xff; DRBG_IV_SIZE];
         increment_iv(&mut iv);
         assert_eq!(iv, [0; DRBG_IV_SIZE], "full wrap");

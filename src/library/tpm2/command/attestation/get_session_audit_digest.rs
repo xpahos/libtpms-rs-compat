@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn session_runtime() -> (Box<Tpm2Runtime>, Vec<u8>) {
+    fn session_runtime() -> (Tpm2Runtime, Vec<u8>) {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn audited_runtime() -> Box<Tpm2Runtime> {
+    fn audited_runtime() -> Tpm2Runtime {
         let (mut runtime, session) = session_runtime();
         assert_eq!(
             run(&mut runtime, &audited_get_random(&session)),
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let expected = vector("CCATTR_014D");
         let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
         assert_eq!(TPM_CC_GET_SESSION_AUDIT_DIGEST, 0x0000_014d);
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_that_never_audited_is_a_type_error() {
+    fn unaudited_session_type_error() {
         let (mut runtime, _) = session_runtime();
         assert_eq!(
             run(
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn an_audited_session_reports_its_digest_like_the_oracle() {
+    fn audited_session_digest_oracle_match() {
         for (record, sign, scheme) in [
             ("SESSION_AUDIT_ONE", KEY0, ALG_NULL),
             ("SESSION_AUDIT_EXPLICIT", KEY0, ALG_RSASSA),
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attested_digest_is_the_extension_of_the_command_and_response_hashes() {
+    fn attested_digest_command_response_hash_extension() {
         use crate::library::tpm2::crypto::Hasher;
 
         let (mut runtime, session) = session_runtime();
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attestation_does_not_disturb_the_audited_session() {
+    fn attestation_audited_session_unchanged() {
         use crate::library::tpm2::session::loaded_session;
         let mut runtime = audited_runtime();
         let before = loaded_session(&runtime.live, HMAC_SESSION)
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn the_session_handle_errors_match_the_oracle() {
+    fn session_handle_error_oracle_match() {
         let mut runtime = audited_runtime();
         for (record, handle, code) in [
             ("SESSION_AUDIT_PASSWORD_HANDLE", TPM_RS_PW, RC_HANDLE3_VALUE),
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn a_flushed_session_is_no_longer_referenced() {
+    fn flushed_session_reference_removal() {
         let mut runtime = audited_runtime();
         run_ok(
             &mut runtime,
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_endorsement_hierarchy_may_authorize_the_attestation() {
+    fn attestation_authorization_endorsement_hierarchy_only() {
         let mut runtime = audited_runtime();
         assert_eq!(
             run(
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_parameter_bytes_are_a_size_error() {
+    fn trailing_parameter_bytes_size_error() {
         let mut runtime = audited_runtime();
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_attestation_leaves_no_trace() {
+    fn failed_attestation_no_state_change() {
         let mut runtime = audited_runtime();
         run_ok(
             &mut runtime,
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = audited_runtime();

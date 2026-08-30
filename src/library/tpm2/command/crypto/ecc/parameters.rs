@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = find(TPM_CC_ECC_PARAMETERS).expect("TPM2_ECC_Parameters is registered");
         assert_eq!(descriptor.attributes, 0x0000_0178);
         assert_eq!(descriptor.decrypt_size, 0);
@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn every_profile_enabled_curve_answers_the_reference_detail() {
+    fn enabled_curve_reference_detail_match() {
         let mut runtime = ready();
         for (name, curve) in ALL_CURVES {
             expect(&mut runtime, &format!("PARM_{name}"), &parameters(curve));
@@ -91,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn the_response_parameters_are_the_marshalled_algorithm_detail() {
+    fn response_parameters_marshalled_detail() {
         let mut runtime = ready();
         for (name, curve) in ALL_CURVES {
             let response = expect(&mut runtime, &format!("PARM_{name}"), &parameters(curve));
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unusable_curve_identifier_is_a_curve_error() {
+    fn unusable_curve_identifier_curve_error() {
         let mut runtime = ready();
         for (record, curve) in [
             ("PARM_NONE", 0x0000u16),
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_framing_matches_the_reference() {
+    fn malformed_framing_reference_parity() {
         let mut runtime = ready();
         expect(
             &mut runtime,
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_on_a_handleless_command_is_refused_like_the_reference() {
+    fn handleless_command_session_reference_rejection() {
         let mut runtime = ready();
         expect(
             &mut runtime,
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn a_curve_query_leaves_the_tpm_state_alone() {
+    fn curve_query_state_preservation() {
         let mut runtime = ready();
         let before = crate::library::tpm2::persistent::persistent_all_store(runtime.state())
             .expect("the state serializes");

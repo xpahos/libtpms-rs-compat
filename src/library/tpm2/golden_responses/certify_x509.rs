@@ -32,7 +32,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_responses_are_well_formed_tpm_replies() {
+    fn command_response_well_formedness() {
         for record in vectors().into_iter().filter(|record| {
             !record.name.starts_with("PERMALL") && !record.name.starts_with("VOLATILE")
         }) {

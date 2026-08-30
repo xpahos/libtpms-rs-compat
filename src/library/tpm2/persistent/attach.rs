@@ -891,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_fixture_materializes_the_null_profile_candidate() {
+    fn valid_fixture_null_profile_candidate_materialization() {
         let blob = valid_permanent_state_fixture();
         let candidate = materialize(&blob);
 
@@ -932,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_survives_dropping_the_input_blob() {
+    fn candidate_input_blob_drop_survival() {
         let candidate = {
             let blob = valid_permanent_state_fixture();
             materialize(&blob)
@@ -942,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_debug_output_never_contains_secret_bytes() {
+    fn candidate_debug_output_secret_byte_absence() {
         let auth = b"auth-secret-mark".to_vec();
         let seed = b"seed-secret-mark".to_vec();
         let proof = b"proof-secret-mrk".to_vec();
@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn serialized_profiles_select_the_documented_object_formats() {
+    fn serialized_profile_documented_object_format_selection() {
         for (profile, level, format) in [
             (
                 &br#"{"Name":"null","StateFormatLevel":1}"#[..],
@@ -1016,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn su_state_blob_materializes_both_startup_sections() {
+    fn su_state_blob_startup_section_materialization() {
         let blob = envelope_with_payload(&simple_payload(
             0x0001,
             crate::library::tpm2::remaining_sections_with_su_state(),
@@ -1042,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn non_su_state_blob_materializes_no_startup_sections() {
+    fn non_su_state_blob_startup_section_absence() {
         let blob = envelope_with_payload(&simple_payload(
             0x0000,
             crate::library::tpm2::remaining_sections(),
@@ -1054,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn pcr_allocation_and_shadow_stay_separate_in_the_candidate() {
+    fn candidate_pcr_allocation_shadow_separation() {
         let allocated = PcrAllocationFixture {
             selections: vec![(0x000b, 3, vec![0x01, 0x00, 0x00])],
             ..PcrAllocationFixture::default()
@@ -1120,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_values_are_preserved_exactly() {
+    fn exact_orderly_value_preservation() {
         let mut sections = orderly::OrderlyFixture {
             clock: 0x1122_3344_5566_7788,
             clock_safe: 0,
@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_nv_index_and_persistent_entries_materialize() {
+    fn mixed_nv_index_and_persistent_entry_materialization() {
         let index_bytes = NvIndexFixture::default().bytes();
         let bulk = vec![0xa5u8; 24];
         let object_bytes = object::fixtures::any_rsa_object(4);
@@ -1234,14 +1234,14 @@ mod tests {
     }
 
     #[test]
-    fn exact_nvram_boundary_is_accepted() {
+    fn exact_nvram_boundary_acceptance() {
         let blob = boundary_blob(39148);
         let candidate = materialize(&blob);
         assert_eq!(candidate.user_nvram.required_capacity, USER_NVRAM_CAPACITY);
     }
 
     #[test]
-    fn one_byte_nvram_overflow_is_rejected() {
+    fn one_byte_nvram_overflow_rejection() {
         let blob = boundary_blob(39149);
         let envelope = PersistentAllEnvelope::parse(&blob).unwrap();
         let error = parse_persistent_all_payload(&envelope)
@@ -1251,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_su_state_metadata_is_rejected() {
+    fn mismatched_su_state_metadata_rejection() {
         let su_blob = envelope_with_payload(&simple_payload(
             0x0001,
             crate::library::tpm2::remaining_sections_with_su_state(),
@@ -1279,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn inconsistent_nvram_accounting_is_rejected() {
+    fn inconsistent_nvram_accounting_rejection() {
         let blob = valid_permanent_state_fixture();
         let mut decoded = decode(&blob);
         decoded.user_nvram.required_capacity += 1;
@@ -1287,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn orderly_ram_overflow_is_rejected() {
+    fn orderly_ram_overflow_rejection() {
         static BIG: [u8; 200] = [0u8; 200];
         let blob = valid_permanent_state_fixture();
         let mut decoded = decode(&blob);

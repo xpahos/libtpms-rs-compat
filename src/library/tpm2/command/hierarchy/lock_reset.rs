@@ -30,6 +30,7 @@ pub(in crate::library::tpm2::command) fn execute(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::command::core::registry::{
         CommandLifecycle, HandleKind, NvAccess, TPM_CC_DICTIONARY_ATTACK_LOCK_RESET, find,
     };
@@ -48,7 +49,7 @@ mod tests {
     };
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn registration_upstream_attributes() {
         let descriptor =
             find(TPM_CC_DICTIONARY_ATTACK_LOCK_RESET).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x0240_0139);
@@ -68,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_command_attributes_match_the_reference() {
+    fn command_attributes_reference_match() {
         replay(&[(
             "CCATTR_0139",
             cap_command_attributes(TPM_CC_DICTIONARY_ATTACK_LOCK_RESET),
@@ -76,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn the_failure_counter_lifecycle_matches_the_reference() {
+    fn failure_counter_lifecycle_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         for (label, bytes) in [
@@ -143,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_and_parameter_errors_match_the_reference() {
+    fn handle_parameter_error_reference_match() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let before = snapshot(&runtime);
@@ -191,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_lockout_authorization_refuses_the_reset() {
+    fn disabled_lockout_auth_rejection() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         for (label, bytes) in [
@@ -226,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_never_clears_the_orderly_state() {
+    fn orderly_state_preservation() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         exec(&mut runtime, &clock, &shutdown(1));
@@ -249,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reset_counter_survives_a_permanent_state_round_trip() {
+    fn reset_counter_permanent_round_trip() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         runtime
@@ -277,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_nv_refuses_the_command_without_touching_the_state() {
+    fn unavailable_nv_rejection_state_unchanged() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         runtime
@@ -294,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn only_an_accepted_reset_commits_an_nv_update() {
+    fn accepted_reset_only_nv_update_commit() {
         assert_eq!(commits_for(&da_lock_reset(TPM_RH_LOCKOUT, &[])), 1);
         assert_eq!(commits_for(&da_lock_reset(TPM_RH_OWNER, &[])), 0);
         assert_eq!(
@@ -305,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_host_commit_fails_the_tpm() {
+    fn host_commit_failure_mode() {
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
         let bytes = da_lock_reset(TPM_RH_LOCKOUT, &[]);
@@ -316,6 +317,7 @@ mod tests {
             &input,
             &clock,
             |_| Err(crate::library::constants::TPM_RC_FAILURE),
+            Cancellation::disabled(),
         )
         .expect("the command processes");
         assert_eq!(response, error_response(0x101));
@@ -323,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_and_bit_flips_do_not_panic() {
+    fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = da_lock_reset(TPM_RH_LOCKOUT, &[]);
         for len in 0..=valid.len() {
@@ -339,6 +341,7 @@ mod tests {
                         &input,
                         &clock,
                         |_| Ok(()),
+                        Cancellation::disabled(),
                     );
                 }
             }

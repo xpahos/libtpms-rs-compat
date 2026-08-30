@@ -94,7 +94,7 @@ mod tests {
     const TPM_CC: u32 = 0x0000_0150;
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = registry::find(TPM_CC).expect("TPM2_ObjectChangeAuth is registered");
         assert_eq!(descriptor.attributes, 0x0400_0150);
         assert_eq!(descriptor.decrypt_size, 2);
@@ -116,14 +116,14 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
         exec(&mut runtime, &clock, "CCATTR_0150", cap_cc(0x0150));
     }
 
     #[test]
-    fn argument_validation_matches_the_oracle() {
+    fn argument_validation_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         exec(
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn rotating_a_loaded_child_matches_the_oracle() {
+    fn loaded_child_rotation_oracle_parity() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         let (private, public) = created_child("CREATE_SEALED_CHILD");
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn the_replacement_blob_loads_and_authorizes_with_the_new_value() {
+    fn replacement_blob_load_new_auth_success() {
         let clock = clock();
         let mut runtime = runtime_at("AFTER_CREATE", &clock);
         let (private, public) = created_child("CREATE_SEALED_CHILD");

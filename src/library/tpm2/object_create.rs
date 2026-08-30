@@ -1,6 +1,7 @@
+use crate::library::cancel::Cancellation;
 use crate::library::constants::{
-    TPM_RC_CURVE, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY, TPM_RC_KEY_SIZE, TPM_RC_NO_RESULT,
-    TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
+    TPM_RC_CANCELED, TPM_RC_CURVE, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY, TPM_RC_KEY_SIZE,
+    TPM_RC_NO_RESULT, TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
 };
 use crate::types::TpmResult;
 
@@ -197,6 +198,7 @@ fn rsa_error(error: RsaKeyError) -> TpmResult {
         RsaKeyError::Value => TPM_RC_VALUE,
         RsaKeyError::NoResult => TPM_RC_NO_RESULT,
         RsaKeyError::Failure => TPM_RC_FAILURE,
+        RsaKeyError::Canceled => TPM_RC_CANCELED,
     }
 }
 
@@ -219,6 +221,7 @@ pub(super) fn create_object(
     eps_primary: bool,
     secrets: &ObjectSecrets<'_>,
     rand: &mut SeededRand,
+    cancellation: Cancellation<'_>,
 ) -> Result<CreatedObject, TpmResult> {
     let attributes = public.object_attributes;
     let provided: &[u8] = if attributes & TPMA_OBJECT_SENSITIVE_DATA_ORIGIN != 0 {
@@ -237,6 +240,7 @@ pub(super) fn create_object(
                 *exponent,
                 attributes & TPMA_OBJECT_SIGN != 0,
                 rand,
+                cancellation,
             )
             .map_err(rsa_error)?;
             public.unique = OwnedPublicId::Rsa(key.modulus);
@@ -621,18 +625,18 @@ mod tests {
     }
 
     #[test]
-    fn the_primary_object_creation_label_is_null_terminated() {
+    fn primary_creation_label_null_termination() {
         assert_eq!(PRIMARY_OBJECT_CREATION, b"Primary Object Creation\0");
         assert_eq!(PRIMARY_OBJECT_CREATION.len(), 24);
     }
 
     #[test]
-    fn the_transient_handle_range_starts_at_the_upstream_base() {
+    fn transient_handle_range_upstream_base() {
         assert_eq!(TRANSIENT_FIRST, 0x8000_0000);
     }
 
     #[test]
-    fn the_first_free_slot_is_returned_with_its_handle() {
+    fn first_free_slot_handle_return() {
         let mut runtime = empty_state_runtime();
         assert_eq!(find_empty_object_slot(&runtime), Some((0, 0x8000_0000)));
         runtime.live.objects[0].attributes = ATTR_OCCUPIED;
@@ -644,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn a_freed_slot_is_reused_before_later_slots() {
+    fn freed_slot_reuse_priority() {
         let mut runtime = empty_state_runtime();
         for object in &mut runtime.live.objects {
             object.attributes = ATTR_OCCUPIED;
@@ -654,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rsa_primary_fills_in_the_public_modulus_and_the_private_prime() {
+    fn rsa_primary_modulus_and_prime_population() {
         let mut public = rsa_storage(2048);
         let created = create_object(
             &mut public,
@@ -663,6 +667,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"rsa"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         let OwnedPublicId::Rsa(modulus) = &created.public.unique else {
@@ -681,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restricted_decryption_primary_keeps_its_seed_value() {
+    fn restricted_decryption_primary_seed_retention() {
         let mut public = rsa_storage(1024);
         let created = create_object(
             &mut public,
@@ -690,13 +695,14 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"seed"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         assert_eq!(created.sensitive.seed_value.as_bytes().len(), 32);
     }
 
     #[test]
-    fn a_signing_primary_discards_its_seed_value() {
+    fn signing_primary_seed_discard() {
         let mut tail = Vec::new();
         tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
         tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
@@ -719,13 +725,14 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"sign"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         assert!(created.sensitive.seed_value.as_bytes().is_empty());
     }
 
     #[test]
-    fn an_ecc_primary_fills_in_both_coordinates_and_the_scalar() {
+    fn ecc_primary_coordinates_and_scalar_population() {
         let mut public = ecc_storage(0x0004);
         let created = create_object(
             &mut public,
@@ -734,6 +741,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"ecc"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         let OwnedPublicId::Ecc { x, y } = &created.public.unique else {
@@ -755,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn the_computed_name_covers_the_generated_unique_field() {
+    fn computed_name_unique_field_coverage() {
         let mut public = ecc_storage(0x0004);
         let created = create_object(
             &mut public,
@@ -764,6 +772,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"name"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         let marshalled = marshal_public_area(&created.public).unwrap();
@@ -775,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn an_endorsement_primary_stirs_both_hierarchy_proofs_into_the_generator() {
+    fn endorsement_primary_dual_hierarchy_proof_seeding() {
         let mut plain = rsa_storage(1024);
         let mut stirred = rsa_storage(1024);
         let without = create_object(
@@ -785,6 +794,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"eps"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         let with = create_object(
@@ -794,6 +804,7 @@ mod tests {
             true,
             &secrets(),
             &mut rand(b"eps"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         assert_eq!(
@@ -807,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn the_qualified_name_of_a_primary_hashes_the_hierarchy_handle() {
+    fn primary_qualified_name_hierarchy_handle_hash() {
         let name = vec![0x00, 0x0b, 0xaa, 0xbb];
         let qualified = compute_qualified_name(TPM_RH_OWNER, TPM_ALG_SHA256, &name).unwrap();
         let mut hasher = Hasher::new(TPM_ALG_SHA256).unwrap();
@@ -820,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn each_hierarchy_sets_its_own_object_attribute() {
+    fn per_hierarchy_object_attribute_selection() {
         let public = rsa_storage(1024);
         for (hierarchy, expected) in [
             (TPM_RH_OWNER, ATTR_PRIMARY | ATTR_SPS_HIERARCHY),
@@ -840,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_storage_key_is_not_marked_as_a_parent() {
+    fn non_storage_key_no_parent_flag() {
         let mut tail = Vec::new();
         tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
         tail.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
@@ -862,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_object_carries_its_name_hierarchy_and_seed_level() {
+    fn stored_object_name_hierarchy_seed_level_fields() {
         let mut runtime = empty_state_runtime();
         let mut public = rsa_storage(1024);
         let created = create_object(
@@ -872,6 +883,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"store"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         let name = created.name.clone();
@@ -889,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ecc_object_is_stored_without_a_private_exponent_marker() {
+    fn ecc_object_no_private_exponent_marker() {
         let mut runtime = empty_state_runtime();
         let mut public = ecc_storage(0x0003);
         let created = create_object(
@@ -899,6 +911,7 @@ mod tests {
             false,
             &secrets(),
             &mut rand(b"eccstore"),
+            Cancellation::disabled(),
         )
         .expect("a key");
         store_created_object(&mut runtime, 1, TPM_RH_NULL, 0, created).expect("stores");
@@ -907,14 +920,14 @@ mod tests {
     }
 
     #[test]
-    fn the_asymmetric_key_size_follows_the_public_parameters() {
+    fn asymmetric_key_size_public_parameter_derivation() {
         assert_eq!(asymmetric_key_bytes(&rsa_storage(2048)), Some(256));
         assert_eq!(asymmetric_key_bytes(&rsa_storage(3072)), Some(384));
         assert_eq!(asymmetric_key_bytes(&ecc_storage(0x0004)), Some(48));
     }
 
     #[test]
-    fn only_the_enabled_hierarchies_are_reported_as_enabled() {
+    fn enabled_hierarchy_only_reporting() {
         use crate::library::tpm2::persistent::OwnedStateClearData;
         let mut runtime = empty_state_runtime();
         assert!(hierarchy_is_enabled(&runtime, TPM_RH_NULL));
@@ -939,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn a_marshalled_private_exponent_word_is_big_endian_within_each_limb() {
+    fn marshalled_private_exponent_limb_big_endian() {
         let value = BigUint::from_be_bytes(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         let prime = owned_prime(&value);
         assert_eq!(prime.numbytes, 8);
@@ -956,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hash_block_size_follows_the_digest_size() {
+    fn hash_block_size_digest_size_mapping() {
         use crate::library::tpm2::public::{TPM_ALG_SHA1, TPM_ALG_SHA384, TPM_ALG_SHA512};
         assert_eq!(hash_block_size(TPM_ALG_SHA1), Some(64));
         assert_eq!(hash_block_size(TPM_ALG_SHA256), Some(64));

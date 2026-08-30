@@ -1383,26 +1383,26 @@ mod tests {
 ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ecc-nist-p384";
 
     #[test]
-    fn absent_and_null_profiles_map_to_level_1() {
+    fn absent_and_null_profile_level_1_mapping() {
         assert_eq!(effective_state_format_level(ProfileField::Absent), Ok(1));
         assert_eq!(effective_state_format_level(ProfileField::Null), Ok(1));
     }
 
     #[test]
-    fn serialized_null_profile_at_level_1_uses_its_descriptor_defaults() {
+    fn serialized_null_profile_level_1_descriptor_defaults() {
         assert_eq!(level(br#"{"Name":"null","StateFormatLevel":1}"#), Ok(1));
         assert_eq!(level(br#"{"Name":"null","StateFormatLevel":2}"#), Ok(2));
     }
 
     #[test]
-    fn default_v1_accepts_its_valid_current_levels() {
+    fn default_v1_valid_current_level_acceptance() {
         assert_eq!(level(&json("default-v1", 5, "")), Ok(5));
         assert_eq!(level(&json("default-v1", 6, "")), Ok(6));
         assert_eq!(level(&json("default-v1", 7, "")), Ok(7));
     }
 
     #[test]
-    fn default_v1_with_an_insufficient_level_is_rejected() {
+    fn default_v1_insufficient_level_rejection() {
         assert_eq!(
             level(&json("default-v1", 2, "")).unwrap_err(),
             PersistentAllError::ProfileEntryLevelTooNew {
@@ -1427,14 +1427,14 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn level_zero_falls_back_per_profile() {
+    fn level_zero_per_profile_fallback() {
         assert_eq!(level(br#"{"Name":"null","StateFormatLevel":0}"#), Ok(1));
         assert_eq!(level(&json("default-v1", 0, "")), Ok(7));
         assert_eq!(level(&json("custom", 0, "")), Ok(5));
     }
 
     #[test]
-    fn custom_accepts_explicit_levels_with_fitting_components() {
+    fn custom_explicit_level_fitting_component_acceptance() {
         let low_commands = format!(",\"Commands\":\"{}\"", null_commands_str());
         let mid_commands = format!(",\"Commands\":\"{},0x199-0x19a\"", null_commands_str());
         assert_eq!(level(&json("custom", 2, &low_commands)), Ok(2));
@@ -1447,7 +1447,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn custom_level_zero_components_compute_the_effective_level() {
+    fn custom_level_zero_component_effective_level() {
         let extra = format!(
             ",\"Commands\":\"{}\",\"Algorithms\":\"{MINIMAL_ALGORITHMS}\"",
             null_commands_str()
@@ -1465,7 +1465,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn computed_levels_select_the_object_section_version() {
+    fn computed_level_object_section_version_selection() {
         use PersistentObjectFormat as F;
 
         let five = level(&json("custom", 0, "")).unwrap();
@@ -1496,7 +1496,7 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
     }
 
     #[test]
-    fn attribute_requiring_level_7_is_gated_by_the_maximum() {
+    fn attribute_level_7_maximum_gate() {
         let error = level(&json("null", 1, ",\"Attributes\":\"pct\"")).unwrap_err();
         assert_eq!(
             error,
@@ -1518,7 +1518,7 @@ drbg-continous-test,pct,no-ecc-key-derivation";
     }
 
     #[test]
-    fn unknown_attribute_is_tpm_rc_failure() {
+    fn unknown_attribute_rc_failure() {
         for attrs in ["nosuch", "pct,nosuch", "PCT", ""] {
             let data = json("custom", 7, &format!(",\"Attributes\":\"{attrs}\""));
             match attrs {
@@ -1537,7 +1537,7 @@ drbg-continous-test,pct,no-ecc-key-derivation";
     }
 
     #[test]
-    fn unknown_algorithm_specifier_is_rc_value() {
+    fn unknown_algorithm_specifier_rc_value() {
         for token in ["foo", "sha1x", "rsa-min-size", "ecc-nist-", ""] {
             let algorithms = format!("{},{token}", algorithms_str());
             let error = level(&json(
@@ -1556,7 +1556,7 @@ drbg-continous-test,pct,no-ecc-key-derivation";
     }
 
     #[test]
-    fn hmac_min_key_size_requires_level_7() {
+    fn hmac_min_key_size_level_7_requirement() {
         let algorithms = format!("{},hmac-min-key-size=128", algorithms_str());
         let extra = format!(",\"Algorithms\":\"{algorithms}\"");
         let error = level(&json("custom", 6, &extra)).unwrap_err();
@@ -1573,7 +1573,7 @@ drbg-continous-test,pct,no-ecc-key-derivation";
     }
 
     #[test]
-    fn min_size_values_are_validated_like_strtoul() {
+    fn min_size_strtoul_validation() {
         for bad in [
             "aes-min-size=12x",
             "aes-min-size=5000",
@@ -1607,14 +1607,14 @@ drbg-continous-test,pct,no-ecc-key-derivation";
     }
 
     #[test]
-    fn min_size_skips_key_sizes_beyond_the_maximum() {
+    fn min_size_beyond_maximum_key_size_skip() {
         assert_eq!(level(br#"{"Name":"null","StateFormatLevel":1}"#), Ok(1));
         let extra = format!(",\"Commands\":\"{}\"", null_commands_str());
         assert_eq!(level(&json("custom", 4, &extra)), Ok(4));
     }
 
     #[test]
-    fn missing_required_algorithm_or_curve_is_rc_value() {
+    fn missing_required_algorithm_rc_value() {
         let algorithms = MINIMAL_ALGORITHMS.replace("aes,", "");
         let error = level(&json(
             "custom",
@@ -1639,7 +1639,7 @@ drbg-continous-test,pct,no-ecc-key-derivation";
     }
 
     #[test]
-    fn ecc_shortcuts_enable_their_curve_families() {
+    fn ecc_shortcut_curve_family_enablement() {
         let algorithms = "rsa,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,null,oaep,ecdsa,ecdh,\
 kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
         let extra = format!(
@@ -1650,7 +1650,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn aes_rsa_min_size_consistency_is_enforced() {
+    fn aes_rsa_min_size_consistency() {
         let algorithms = algorithms_str()
             .replace("aes-min-size=128", "aes-min-size=256")
             .replace("rsa-min-size=1024", "rsa-min-size=2048");
@@ -1675,7 +1675,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn duplicate_entries_keep_the_last_occurrence() {
+    fn duplicate_entry_last_occurrence_precedence() {
         let algorithms = format!(
             "{},hmac-min-key-size=2048,hmac-min-key-size=128",
             algorithms_str()
@@ -1700,7 +1700,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn dedup_matches_the_upstream_algorithm() {
+    fn dedup_upstream_parity() {
         let mut list = b"sha1,sha1".to_vec();
         dedup_list(&mut list);
         assert_eq!(list, b"sha1");
@@ -1719,7 +1719,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn command_requiring_a_newer_level_is_rejected() {
+    fn command_newer_level_rejection() {
         let commands = format!(",\"Commands\":\"{},0x199\"", null_commands_str());
         let error = level(&json("custom", 2, &commands)).unwrap_err();
         assert_eq!(
@@ -1736,7 +1736,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn unknown_or_invalid_command_ranges_are_rc_value() {
+    fn invalid_command_range_rc_value() {
         for commands in [
             "banana",
             "0x11f-",
@@ -1761,7 +1761,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn command_ranges_accept_the_strtoul_base_0_forms() {
+    fn command_range_strtoul_base_0_acceptance() {
         let commands = format!(
             ",\"Commands\":\"{},287,0x140-0x130,0446- 0447\"",
             null_commands_str()
@@ -1770,7 +1770,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn missing_required_command_is_rc_value() {
+    fn missing_required_command_rc_value() {
         let error = level(&json("custom", 0, ",\"Commands\":\"0x144-0x145\"")).unwrap_err();
         assert_eq!(
             error,
@@ -1782,7 +1782,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn empty_and_missing_component_fields_use_the_defaults() {
+    fn empty_and_missing_component_field_defaults() {
         assert_eq!(
             level(&json("custom", 0, ",\"Algorithms\":\"\",\"Commands\":\"\"")),
             Ok(5)
@@ -1791,13 +1791,13 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn state_profiles_may_override_non_modifiable_defaults() {
+    fn state_profile_non_modifiable_default_override() {
         let extra = format!(",\"Algorithms\":\"{MINIMAL_ALGORITHMS}\"");
         assert_eq!(level(&json("null", 1, &extra)), Ok(1));
     }
 
     #[test]
-    fn realistic_profiles_with_extra_fields_parse() {
+    fn realistic_profile_extra_field_parsing() {
         let data = json(
             "default-v1",
             7,
@@ -1811,7 +1811,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn malformed_json_is_no_result() {
+    fn malformed_json_no_result() {
         for json in [
             &b""[..],
             b"null",
@@ -1840,7 +1840,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn upstream_regex_quirks_are_reproduced() {
+    fn upstream_regex_quirk_reproduction() {
         assert_eq!(level(br#"{,"Name":"null","StateFormatLevel":1}"#), Ok(1));
         assert_eq!(
             level(b"{}").unwrap_err(),
@@ -1857,7 +1857,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn missing_name_is_no_result() {
+    fn missing_name_no_result() {
         for json in [
             &br#"{"StateFormatLevel":1}"#[..],
             br#"{"Name":"","StateFormatLevel":1}"#,
@@ -1875,14 +1875,14 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn missing_state_format_level_is_no_result() {
+    fn missing_state_format_level_no_result() {
         let error = level(br#"{"Name":"null"}"#).unwrap_err();
         assert_eq!(error, PersistentAllError::MissingStateFormatLevel);
         assert_eq!(error.tpm_result(), TPM_RC_NO_RESULT);
     }
 
     #[test]
-    fn unknown_profile_names_are_rc_value() {
+    fn unknown_profile_name_rc_value() {
         for json in [
             &br#"{"Name":"nosuch","StateFormatLevel":1}"#[..],
             br#"{"Name":"default","StateFormatLevel":1}"#,
@@ -1901,7 +1901,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn long_names_are_truncated_before_the_lookup() {
+    fn long_name_truncation_level_lookup() {
         let json = br#"{"Name":"custom:0123456789012345678901234567890123","StateFormatLevel":2}"#;
         let error = level(json).unwrap_err();
         assert!(
@@ -1916,7 +1916,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn too_new_levels_are_rc_value() {
+    fn too_new_level_rc_value() {
         for (json, actual) in [
             (&br#"{"Name":"null","StateFormatLevel":8}"#[..], 8u32),
             (
@@ -1937,7 +1937,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn levels_beyond_uint_max_are_not_a_number() {
+    fn level_uint_max_overflow_non_numeric_error() {
         for json in [
             &br#"{"Name":"null","StateFormatLevel":4294967296}"#[..],
             br#"{"Name":"null","StateFormatLevel":99999999999999999999999999}"#,
@@ -1949,7 +1949,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn profile_byte_mutations_do_not_panic() {
+    fn profile_byte_mutation_panic_safety() {
         let base = json(
             "custom",
             0,
@@ -1968,7 +1968,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn absent_and_null_profiles_produce_the_null_profile_state() {
+    fn absent_and_null_profile_null_state() {
         for field in [ProfileField::Absent, ProfileField::Null] {
             let profile = validate_profile(field).unwrap();
             assert!(profile.was_null_profile);
@@ -1986,7 +1986,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn serialized_null_profile_is_not_the_null_profile_fallback() {
+    fn serialized_null_profile_fallback_distinction() {
         let profile = validate_profile(ProfileField::Bytes(
             br#"{"Name":"null","StateFormatLevel":1}"#,
         ))
@@ -1997,7 +1997,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn serialized_components_are_stored_deduplicated() {
+    fn serialized_component_deduplication() {
         let commands = null_commands_str();
         let json = format!(
             "{{\"Name\":\"custom:x\",\"StateFormatLevel\":7,\
@@ -2013,7 +2013,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn missing_components_fall_back_to_the_descriptor_defaults() {
+    fn missing_component_descriptor_default_fallback() {
         let profile = validate_profile(ProfileField::Bytes(
             br#"{"Name":"default-v1","StateFormatLevel":7}"#,
         ))
@@ -2025,7 +2025,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn json_description_is_preserved_and_truncated() {
+    fn json_description_preservation_truncation() {
         let profile = validate_profile(ProfileField::Bytes(
             br#"{"Name":"null","StateFormatLevel":1,"Description":"my state"}"#,
         ))
@@ -2046,7 +2046,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn long_names_are_truncated_before_lookup() {
+    fn long_name_truncation_stored_profile_name() {
         let json = format!(
             "{{\"Name\":\"custom:{}\",\"StateFormatLevel\":7}}",
             "x".repeat(40)
@@ -2057,7 +2057,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn user_null_pointer_selects_the_null_profile() {
+    fn user_null_pointer_null_profile_selection() {
         let profile = validate_user_profile(None).unwrap();
         assert_eq!(profile.name, b"null");
         assert_eq!(profile.state_format_level, 1);
@@ -2065,7 +2065,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn user_bare_names_resolve_to_their_descriptor_levels() {
+    fn user_bare_name_descriptor_level_resolution() {
         let null = validate_user_profile(Some(br#"{"Name":"null"}"#)).unwrap();
         assert_eq!(null.state_format_level, 1);
         assert!(null.was_null_profile, "a by-name null profile counts");
@@ -2078,14 +2078,14 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn user_explicit_level_zero_acts_like_an_absent_level() {
+    fn user_explicit_level_zero_absent_equivalence() {
         let profile =
             validate_user_profile(Some(br#"{"Name":"default-v1","StateFormatLevel":0}"#)).unwrap();
         assert_eq!(profile.state_format_level, STATE_FORMAT_LEVEL_CURRENT);
     }
 
     #[test]
-    fn user_customization_of_non_modifiable_profiles_is_rejected() {
+    fn user_non_modifiable_customization_rejection() {
         for json in [
             br#"{"Name":"null","StateFormatLevel":1}"#.as_slice(),
             br#"{"Name":"default-v1","StateFormatLevel":7}"#.as_slice(),
@@ -2129,7 +2129,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn user_unknown_names_and_too_new_levels_are_rejected() {
+    fn user_unknown_name_too_new_level_rejection() {
         assert_eq!(
             validate_user_profile(Some(br#"{"Name":"nope"}"#)).unwrap_err(),
             PersistentAllError::UnknownProfileName
@@ -2152,7 +2152,7 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
     }
 
     #[test]
-    fn command_enabled_consults_the_validated_ranges() {
+    fn command_enabled_validated_range_lookup() {
         assert!(command_enabled(NULL_COMMANDS_PROFILE, 0x140));
         assert!(command_enabled(DEFAULT_COMMANDS_PROFILE, 0x140));
         assert!(command_enabled(DEFAULT_COMMANDS_PROFILE, 0x199));
@@ -2225,7 +2225,7 @@ ecc-bn-p638,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,c
     }
 
     #[test]
-    fn the_default_profile_enables_everything_it_names() {
+    fn default_profile_full_enablement() {
         let (enabled, disabled) =
             lists(core::str::from_utf8(DEFAULT_ALGORITHMS_PROFILE).expect("the table is ASCII"));
         assert_eq!(enabled, DEFAULT_ENABLED);
@@ -2233,7 +2233,7 @@ ecc-bn-p638,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,c
     }
 
     #[test]
-    fn every_built_in_profile_reports_the_same_lists() {
+    fn built_in_profile_list_uniformity() {
         for profile in [PROFILE_NULL, PROFILE_DEFAULT_V1, PROFILE_CUSTOM] {
             let (enabled, disabled) = runtime_algorithm_lists(profile.algorithms);
             assert_eq!(enabled, DEFAULT_ENABLED);
@@ -2242,7 +2242,7 @@ ecc-bn-p638,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,c
     }
 
     #[test]
-    fn an_empty_profile_is_the_pre_init_state() {
+    fn empty_profile_pre_init_state() {
         let (enabled, disabled) = lists("");
         assert_eq!(enabled, "");
         assert_eq!(
@@ -2256,7 +2256,7 @@ ecc-bn-p256,ecc-bn-p638,ecc-sm2-p256,symcipher,camellia,cmac,ctr,ofb,cbc,cfb,ecb
     }
 
     #[test]
-    fn a_profile_with_only_tdes_removed_disables_exactly_tdes() {
+    fn tdes_removal_exact_disable() {
         let (enabled, disabled) = lists(&swtpm_setup_profile(&["tdes"]));
         assert_eq!(disabled, "tdes");
         assert_eq!(
@@ -2271,7 +2271,7 @@ symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb",
     }
 
     #[test]
-    fn the_progressive_disable_sequence_matches_the_oracle() {
+    fn progressive_disable_oracle_match() {
         for step in 1..=CAN_BE_DISABLED.len() {
             let removed = &CAN_BE_DISABLED[..step];
             let (_, disabled) = lists(&swtpm_setup_profile(removed));
@@ -2280,7 +2280,7 @@ symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb",
     }
 
     #[test]
-    fn algorithms_and_curves_that_cannot_be_disabled_always_stay_enabled() {
+    fn non_disableable_algorithm_curve_enablement() {
         let (enabled, _) = lists(&swtpm_setup_profile(&CAN_BE_DISABLED));
         assert_eq!(
             enabled,
@@ -2305,7 +2305,7 @@ ecc-nist-p256,ecc-nist-p384,symcipher,cfb"
     }
 
     #[test]
-    fn omitted_minimum_size_entries_fall_back_to_the_build_minimums() {
+    fn omitted_minimum_size_build_minimum_fallback() {
         let (enabled, disabled) = lists(
             "rsa,tdes,sha1,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,\
 rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,\
@@ -2323,7 +2323,7 @@ camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb"
     }
 
     #[test]
-    fn raised_minimum_sizes_are_reported_and_filter_the_curves() {
+    fn raised_min_size_report_curve_filter() {
         let (enabled, disabled) = lists(
             "rsa,rsa-min-size=2048,tdes,tdes-min-size=192,sha1,hmac,hmac-min-key-size=16,aes,\
 aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,\
@@ -2345,7 +2345,7 @@ camellia,camellia-min-size=256,cmac,ctr,ofb,cbc,cfb,ecb"
     }
 
     #[test]
-    fn curves_named_individually_leave_the_shortcuts_disabled() {
+    fn individual_curve_naming_shortcut_disablement() {
         let (enabled, disabled) = lists(
             "rsa,tdes,sha1,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,\
 rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,\
@@ -2361,7 +2361,7 @@ ecc-sm2-p256",
     }
 
     #[test]
-    fn a_shortcut_enables_every_curve_it_covers() {
+    fn shortcut_curve_family_enablement() {
         let (enabled, disabled) = lists("ecc,ecc-nist");
         assert_eq!(
             enabled,
@@ -2371,7 +2371,7 @@ ecc-sm2-p256",
     }
 
     #[test]
-    fn the_two_lists_partition_every_reported_name() {
+    fn enabled_disabled_list_partition() {
         for profile in [
             core::str::from_utf8(DEFAULT_ALGORITHMS_PROFILE).unwrap(),
             "",
@@ -2407,7 +2407,7 @@ ecc-sm2-p256",
     }
 
     #[test]
-    fn the_lists_are_stable_across_repeated_calls() {
+    fn repeated_call_list_stability() {
         let profile = swtpm_setup_profile(&["tdes", "ecc-nist"]);
         let first = lists(&profile);
         for _ in 0..4 {
@@ -2416,7 +2416,7 @@ ecc-sm2-p256",
     }
 
     #[test]
-    fn an_unparsable_minimum_size_never_panics() {
+    fn unparsable_min_size_panic_safety() {
         for profile in [
             "rsa-min-size=",
             "rsa-min-size=abc",

@@ -201,7 +201,7 @@ mod tests {
     const DATA8: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
     #[test]
-    fn the_lock_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         for (code, oracle, handles, nv_access, pp) in [
             (
                 TPM_CC_NV_WRITE_LOCK,
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn a_write_lock_blocks_writes_and_is_idempotent() {
+    fn write_lock_write_blocking_idempotence() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn a_write_define_index_can_also_be_locked() {
+    fn write_define_index_lock_acceptance() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_without_a_lock_attribute_cannot_be_write_locked() {
+    fn missing_lock_attribute_write_lock_rejection() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         assert_eq!(
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_lock_blocks_reads_and_is_idempotent() {
+    fn read_lock_read_blocking_idempotence() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn an_index_without_read_stclear_cannot_be_read_locked() {
+    fn missing_read_stclear_read_lock_rejection() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         assert_eq!(
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn locking_reports_authorization_failures_before_the_attribute_check() {
+    fn lock_authorization_failure_attribute_check_precedence() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn the_global_write_lock_locks_only_global_lock_indexes() {
+    fn global_write_lock_global_lock_index_scope() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn the_global_write_lock_also_locks_orderly_indexes() {
+    fn global_write_lock_orderly_index_inclusion() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn a_global_write_lock_with_nothing_to_lock_touches_no_nv() {
+    fn global_write_lock_no_targets_nv_unchanged() {
         let mut runtime = started_runtime();
         define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
         runtime.nv_update_pending = false;
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn the_global_write_lock_accepts_owner_and_platform_authorization() {
+    fn global_write_lock_owner_and_platform_auth_acceptance() {
         for auth in [TPM_RH_OWNER, TPM_RH_PLATFORM] {
             let mut runtime = started_runtime();
             define(
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn locking_an_undefined_index_is_reported_against_its_own_handle() {
+    fn undefined_index_error_handle_attribution() {
         let mut runtime = started_runtime();
         for code in [TPM_CC_NV_WRITE_LOCK, TPM_CC_NV_READ_LOCK] {
             assert_eq!(
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_lock_parameters_are_a_size_error() {
+    fn trailing_parameters_size_error() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_lock_leaves_no_trace() {
+    fn failed_lock_no_state_change() {
         let mut runtime = started_runtime();
         define(
             &mut runtime,
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn the_startup_clear_locks_survive_or_clear_as_the_attributes_demand() {
+    fn startup_lock_clearing_per_attributes() {
         use crate::library::tpm2::persistent::persistent_all_store;
         use crate::library::tpm2::restore_permanent_blob_for_test;
 
@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn a_global_lock_does_not_survive_a_restart_unless_write_define_is_set() {
+    fn global_lock_restart_clearing_without_write_define() {
         use crate::library::tpm2::persistent::persistent_all_store;
         use crate::library::tpm2::restore_permanent_blob_for_test;
 

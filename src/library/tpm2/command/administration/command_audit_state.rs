@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn audited_runtime() -> Box<Tpm2Runtime> {
+    fn audited_runtime() -> Tpm2Runtime {
         let mut runtime = ready_runtime();
         run_ok(
             &mut runtime,
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_index_matches_the_upstream_table() {
+    fn command_index_upstream_table_match() {
         assert_eq!(COMMAND_FIRST, 0x0000_011f);
         assert_eq!(command_index(0x0000_011f), Some(0));
         assert_eq!(command_index(0x0000_019f), Some(COMMAND_COUNT - 1));
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn a_manufactured_tpm_audits_only_the_audit_status_command() {
+    fn manufactured_default_audit_status_only() {
         let runtime = ready_runtime();
         assert!(is_required(&runtime, TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS));
         for code in [CC_GET_RANDOM, CC_CERTIFY, CC_QUOTE, TPM_CC_SHUTDOWN] {
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn the_audit_status_command_can_never_be_removed_and_shutdown_never_added() {
+    fn audit_status_removal_shutdown_addition_rejection() {
         let mut bitmap = vec![0u8; AUDIT_COMMANDS_SIZE];
         let runtime = ready_runtime();
         let commands = runtime.state().profile.commands.clone();
@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_list_digest_is_taken_in_ascending_command_order() {
+    fn command_list_digest_ascending_order() {
         use crate::library::tpm2::crypto::Hasher;
         let mut runtime = ready_runtime();
         run_ok(
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn an_audited_command_extends_the_digest_with_its_command_and_response_hashes() {
+    fn audited_command_digest_extension() {
         use crate::library::tpm2::crypto::Hasher;
         let mut runtime = audited_runtime();
         let start = audit_digest(&runtime).expect("the digest reads");
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unaudited_command_leaves_the_log_alone() {
+    fn unaudited_command_log_unchanged() {
         let mut runtime = audited_runtime();
         let before = audit_digest(&runtime).expect("the digest reads");
         run_ok(
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_command_is_not_audited() {
+    fn failed_command_audit_exclusion() {
         let mut runtime = audited_runtime();
         let before = audit_digest(&runtime).expect("the digest reads");
         let counter = audit_counter(&runtime).expect("the counter reads");
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn an_audited_command_needs_nv_to_start_a_new_log() {
+    fn new_log_nv_requirement() {
         let mut runtime = audited_runtime();
         reset_digest(&mut runtime).expect("the log clears");
         runtime.nv_available = false;
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ongoing_log_survives_an_unavailable_nv() {
+    fn ongoing_log_nv_unavailable_preservation() {
         let mut runtime = audited_runtime();
         runtime.nv_available = false;
         assert_eq!(response_code(&run(&mut runtime, &get_random())), RC_SUCCESS);
@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn the_digest_report_always_needs_nv() {
+    fn digest_report_nv_requirement() {
         let mut runtime = audited_runtime();
         run_ok(&mut runtime, &get_random(), "the log is open");
         run_ok(
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_may_be_audited_by_a_session_and_by_the_command_log_at_once() {
+    fn session_and_command_log_dual_audit() {
         let mut runtime = audited_runtime();
         let mut parameters = tpm2b(&NONCE_CALLER);
         parameters.extend_from_slice(&tpm2b(&[]));
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tpm_reset_clears_the_log_while_a_restart_keeps_it() {
+    fn reset_log_clearing_restart_preservation() {
         const CC_SHUTDOWN: u32 = 0x0000_0145;
 
         let mut restart = audited_runtime();
@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn clearing_the_tpm_resets_the_audit_counter() {
+    fn tpm_clear_audit_counter_reset() {
         let mut runtime = audited_runtime();
         run_ok(&mut runtime, &get_random(), "the log is open");
         assert_ne!(audit_counter(&runtime).expect("the counter reads"), 0);
@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn the_log_survives_a_volatile_state_round_trip() {
+    fn log_volatile_state_round_trip() {
         use crate::library::tpm2::clock::RecordingClock;
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn the_algorithm_change_marker_is_a_single_byte_digest() {
+    fn algorithm_change_single_byte_marker() {
         let mut runtime = ready_runtime();
         mark_algorithm_change(&mut runtime).expect("the marker is set");
         assert_eq!(audit_digest(&runtime).expect("the digest reads"), vec![0u8]);

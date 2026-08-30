@@ -4,24 +4,29 @@ mod command_input;
 mod constants;
 mod encoded_blob;
 mod library_state;
+mod platform;
 mod preloaded_state;
+mod services;
 mod state_blob;
+mod storage;
 #[cfg(feature = "tpm2")]
 mod tpm2;
 
 use core::ffi::c_int;
+use std::sync::Arc;
 
-use crate::types::{
-    LibtpmsCallbacks, TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion,
-};
+use crate::types::{TpmResult, TpmlibInfoFlags, TpmlibTpmProperty, TpmlibTpmVersion};
 #[cfg(feature = "tpm2")]
 pub(crate) use command_input::CommandInput;
+pub(crate) use constants::TPM_RETRY;
 pub use constants::{TPM_BUFFER_MAX, TPM_FAIL, TPM_SIZE, TPM_SUCCESS};
 pub use encoded_blob::{EncodedBlobKind, decode_blob};
 pub use library_state::BufferSizeLimits;
 use library_state::Library;
-pub(crate) use library_state::ProcessPreparation;
+pub use platform::{NoPlatform, Platform};
+pub use services::ExternalServices;
 pub use state_blob::{StateBlobKind, StateInput, StateOutput, StateValidationMask};
+pub use storage::{NoStorage, Storage, StorageLoad, StorageOperation, StorageProbe};
 
 pub fn get_version() -> u32 {
     crate::version::TPM_LIBRARY_VERSION
@@ -44,13 +49,13 @@ pub fn cancel_command() -> TpmResult {
 }
 
 #[cfg(feature = "tpm2")]
-pub(crate) fn prepare_process() -> ProcessPreparation<'static> {
-    Library::global().prepare_process()
+pub(crate) fn tpm2_selected() -> bool {
+    Library::global().tpm2_selected()
 }
 
-#[cfg(not(feature = "tpm2"))]
-pub(crate) fn prepare_process() -> ProcessPreparation {
-    Library::global().prepare_process()
+#[cfg(feature = "tpm2")]
+pub(crate) fn process(command: &CommandInput) -> Result<Vec<u8>, TpmResult> {
+    Library::global().process(command)
 }
 
 pub fn get_tpm_property(prop: TpmlibTpmProperty) -> Option<c_int> {
@@ -61,8 +66,16 @@ pub fn get_info(flags: TpmlibInfoFlags) -> Option<String> {
     Library::global().get_info(flags)
 }
 
-pub fn register_callbacks(callbacks: LibtpmsCallbacks) {
-    Library::global().register_callbacks(callbacks);
+pub fn register_storage(storage: Arc<dyn Storage>) {
+    Library::global().register_storage(storage);
+}
+
+pub fn register_platform(platform: Arc<dyn Platform>) {
+    Library::global().register_platform(platform);
+}
+
+pub fn register_external_services(services: ExternalServices) {
+    Library::global().register_external_services(services);
 }
 
 pub fn set_profile(profile: Option<&[u8]>) -> TpmResult {

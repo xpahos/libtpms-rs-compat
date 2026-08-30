@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_attributes_match_the_oracle() {
+    fn command_attributes_oracle_match() {
         let oracle = vector("CCATTR_017F");
         let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
         let descriptor = find(CC_POLICY_PCR).expect("a registered command");
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn the_current_pcr_state_is_read_through_the_shared_bank_code() {
+    fn current_pcr_read_shared_bank_code() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             dispatch_bytes(
@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_selection_still_extends_the_policy() {
+    fn empty_selection_policy_extension() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_pcr(&mut runtime, &parameters(&[], &[])),
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_bank_selection_captures_the_pcr_counter() {
+    fn single_bank_selection_counter_capture() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_pcr(
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn every_allocated_bank_can_be_selected_at_once() {
+    fn allocated_bank_simultaneous_selection_acceptance() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_pcr(
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_digest_must_match_the_current_pcr_state() {
+    fn explicit_digest_match_requirement() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_pcr(
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_selections_and_digests_match_the_oracle() {
+    fn rejected_selection_and_digest_oracle_parity() {
         let mut runtime = restored("POLICY_FRESH");
         for (record, request) in [
             (
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pcr_change_invalidates_a_captured_counter() {
+    fn pcr_change_counter_invalidation() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_pcr(
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_session_trusts_the_supplied_digest() {
+    fn trial_session_supplied_digest_acceptance() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(
             policy_pcr(
@@ -487,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_request_leaves_the_session_untouched() {
+    fn rejected_request_session_unchanged() {
         let mut runtime = restored("POLICY_FRESH");
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         for request in [
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_request_only_changes_the_digest_and_the_counter() {
+    fn success_digest_counter_only_mutation() {
         let mut runtime = restored("POLICY_FRESH");
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         assert_eq!(
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn the_canonical_selection_is_filtered_before_it_reaches_the_digest() {
+    fn canonical_selection_pre_digest_filtering() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
             policy_pcr(&mut runtime, &parameters(&[], &[(ALG_SHA256, &SELECT_ALL)])),
@@ -537,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_mutations_do_not_panic() {
+    fn parameter_mutation_panic_safety() {
         let valid = command(
             CC_POLICY_PCR,
             &[POLICY_SESSION_0],

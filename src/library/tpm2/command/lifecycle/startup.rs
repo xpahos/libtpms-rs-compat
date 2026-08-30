@@ -555,6 +555,7 @@ fn context_id_oldest(
 
 #[cfg(test)]
 mod tests {
+    use crate::library::cancel::Cancellation;
     fn process(
         runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
         locality: u8,
@@ -569,6 +570,7 @@ mod tests {
             command,
             &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
             commit_nv,
+            Cancellation::disabled(),
         )
     }
     use super::*;
@@ -627,7 +629,7 @@ mod tests {
         Err(TPM_FAIL)
     }
 
-    fn manufactured_runtime() -> Box<Tpm2Runtime> {
+    fn manufactured_runtime() -> Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
@@ -660,7 +662,7 @@ mod tests {
     }
 
     impl RestoredFixture {
-        fn runtime(self) -> Box<Tpm2Runtime> {
+        fn runtime(self) -> Tpm2Runtime {
             let with_su_state = (self.orderly_state & TPM_SU_STATE_MASK) == TPM_SU_STATE;
             let mut sections = OrderlyFixture::default().bytes();
             if with_su_state {
@@ -729,7 +731,8 @@ mod tests {
     fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed)).expect("the response serializes")
+        serialize_response(&dispatch(runtime, &parsed, Cancellation::disabled()))
+            .expect("the response serializes")
     }
 
     struct Snapshot {
@@ -895,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_startup_succeeds_on_a_manufactured_runtime() {
+    fn manufactured_runtime_clear_startup_success() {
         let mut runtime = manufactured_runtime();
         let response = dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR));
         assert_eq!(response, SUCCESS_RESPONSE);
@@ -903,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_type_decodes_big_endian() {
+    fn startup_type_big_endian_decoding() {
         let mut runtime = RestoredFixture::default().runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command(0x0100)),
@@ -916,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_succeeds_at_locality_0_and_3() {
+    fn startup_locality_0_and_3_success() {
         for locality in [0u8, 3] {
             let mut runtime = manufactured_runtime();
             runtime.locality = locality;
@@ -929,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_startup_returns_initialize_without_mutation() {
+    fn second_startup_initialize_error_no_mutation() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
@@ -944,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_startup_with_malformed_parameters_still_returns_initialize() {
+    fn second_startup_malformed_parameters_initialize_error() {
         let mut runtime = manufactured_runtime();
         dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR));
         let after_first = snapshot(&runtime);
@@ -962,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_commands_still_answer_command_code_after_startup() {
+    fn post_startup_unknown_command_code_error() {
         let mut runtime = manufactured_runtime();
         dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR));
         let mut unknown = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0c];
@@ -975,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_startup_leaves_the_tpm_eligible_for_a_later_startup() {
+    fn failed_startup_retry_eligibility() {
         let mut runtime = manufactured_runtime();
         runtime.locality = 2;
         assert_eq!(
@@ -991,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn localities_follow_the_oracle() {
+    fn locality_oracle_parity() {
         for (locality, expected) in [
             (1u8, LOCALITY_RESPONSE),
             (2, LOCALITY_RESPONSE),
@@ -1015,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn locality_failure_is_transactional() {
+    fn locality_failure_transactionality() {
         let mut runtime = manufactured_runtime();
         runtime.locality = 2;
         let before = snapshot(&runtime);
@@ -1027,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_nv_returns_nv_unavailable_and_wins_over_locality() {
+    fn unavailable_nv_error_precedence_over_locality() {
         let mut runtime = manufactured_runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime);
@@ -1053,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_match_the_oracle() {
+    fn malformed_parameter_oracle_parity() {
         let mut missing = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0a];
         missing.extend_from_slice(&TPM_CC_STARTUP.to_be_bytes());
         let mut one_byte = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0b];
@@ -1082,7 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn session_tagged_requests_match_the_oracle() {
+    fn session_tagged_request_oracle_parity() {
         let mut no_authsize = vec![0x80, 0x02, 0x00, 0x00, 0x00, 0x0a];
         no_authsize.extend_from_slice(&TPM_CC_STARTUP.to_be_bytes());
         let mut authsize_zero = vec![0x80, 0x02, 0x00, 0x00, 0x00, 0x10];
@@ -1113,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn su_reset_transition_matches_the_vendored_semantics() {
+    fn su_reset_transition_vendored_parity() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         assert!(before.reset_summary.is_none(), "manufacture carries no gr");
@@ -1190,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn su_reset_initializes_the_pcr_state_from_the_active_allocation() {
+    fn su_reset_pcr_state_active_allocation_init() {
         for locality in [0u8, 3] {
             let mut runtime = manufactured_runtime();
             runtime.locality = locality;
@@ -1234,7 +1237,7 @@ mod tests {
     const SHA256_SLOT: usize = 1;
 
     #[test]
-    fn su_restart_preserves_reset_scoped_state_and_reinitializes_clear_state() {
+    fn su_restart_reset_state_preservation_clear_state_reinit() {
         let mut context_array = vec![0u16; MAX_ACTIVE_SESSIONS];
         context_array[2] = 2; // references a loaded session slot -> reclaimed
         context_array[7] = 9; // saved context -> preserved
@@ -1322,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn su_resume_restores_saved_state() {
+    fn su_resume_saved_state_restoration() {
         let mut sha256_save = vec![0u8; 16 * 32];
         sha256_save[5 * 32..6 * 32].fill(0xaa);
         let pcr_save = PcrSaveFixture {
@@ -1401,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_at_locality_3_requires_the_saved_locality_flag() {
+    fn locality_3_resume_saved_flag_requirement() {
         let mut runtime = RestoredFixture::default().runtime();
         runtime.locality = 3;
         let before = snapshot(&runtime);
@@ -1430,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_with_a_pre_startup_flag_mismatch_is_rejected() {
+    fn resume_pre_startup_flag_mismatch_rejection() {
         let mut runtime = RestoredFixture {
             orderly_state: 0x8001,
             ..RestoredFixture::default()
@@ -1445,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_without_a_prior_state_shutdown_is_rejected() {
+    fn resume_no_prior_state_shutdown_rejection() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
@@ -1468,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_with_missing_su_sections_fails_transactionally() {
+    fn resume_missing_su_section_transactional_failure() {
         for drop_reset in [true, false] {
             let mut runtime = RestoredFixture::default().runtime();
             let state = runtime.state.as_mut().unwrap();
@@ -1489,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_with_unavailable_nv_fails_transactionally() {
+    fn resume_unavailable_nv_transactional_failure() {
         let mut runtime = RestoredFixture::default().runtime();
         runtime.nv_available = false;
         let before = snapshot(&runtime);
@@ -1501,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn non_orderly_reset_clears_the_clock_safe_flag_and_counts_da() {
+    fn non_orderly_reset_clock_safe_clear_da_count() {
         let mut runtime = RestoredFixture {
             orderly_state: 0xfffe,
             lockout: lockout::LockoutFixture {
@@ -1551,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_lockout_recovery_enables_lockout_auth_on_startup() {
+    fn zero_lockout_recovery_startup_lockout_auth_enable() {
         let mut runtime = RestoredFixture::default().runtime();
         assert!(
             !runtime
@@ -1576,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_publishes_the_live_state_after_a_fresh_manufacture() {
+    fn fresh_manufacture_startup_live_state_publication() {
         let mut runtime = manufactured_runtime();
         assert!(!runtime.live.ph_enable, "pre-startup power-on default");
         assert!(
@@ -1610,7 +1613,7 @@ mod tests {
         assert_eq!(live.max_nv_counter, 0);
     }
 
-    fn pre_startup_volatile_runtime() -> Box<Tpm2Runtime> {
+    fn pre_startup_volatile_runtime() -> Tpm2Runtime {
         pre_startup_volatile_runtime_with(
             RestoredFixture::default(),
             OrderlyFixture::default().bytes(),
@@ -1620,7 +1623,7 @@ mod tests {
     fn pre_startup_volatile_runtime_with(
         fixture: RestoredFixture,
         orderly: Vec<u8>,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         pre_startup_volatile_runtime_sections(
             fixture,
             orderly,
@@ -1634,7 +1637,7 @@ mod tests {
         orderly: Vec<u8>,
         state_reset: Vec<u8>,
         state_clear: Vec<u8>,
-    ) -> Box<Tpm2Runtime> {
+    ) -> Tpm2Runtime {
         use crate::library::tpm2::clock::RecordingClock;
         use crate::library::tpm2::public::StateFormatLimit;
         use crate::library::tpm2::volatile::{SeedTie, VolatileFixture, parse_volatile_state_blob};
@@ -1673,7 +1676,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_applies_identical_cleanup_after_a_pre_startup_volatile_restore() {
+    fn startup_cleanup_parity_after_volatile_restore() {
         let mut with_volatile = pre_startup_volatile_runtime();
         assert!(
             !with_volatile.startup_received,
@@ -1743,7 +1746,7 @@ mod tests {
     const VOLATILE_DRBG_SEED: [u8; 48] = [0x77; 48];
 
     #[test]
-    fn startup_reseeds_the_volatile_restored_drbg_state() {
+    fn volatile_restored_drbg_startup_reseed() {
         let mut runtime = pre_startup_volatile_runtime_with(
             RestoredFixture::default(),
             volatile_orderly_bytes(VOLATILE_DRBG_SEED, 1),
@@ -1788,7 +1791,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_drbg_changes_do_not_affect_startup_after_volatile_restore() {
+    fn volatile_restore_startup_permanent_drbg_independence() {
         let mut runtime = pre_startup_volatile_runtime_with(
             RestoredFixture::default(),
             volatile_orderly_bytes(VOLATILE_DRBG_SEED, 1),
@@ -1807,7 +1810,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_clock_safe_is_authoritative_for_startup() {
+    fn restored_clock_safe_authority() {
         let mut runtime = pre_startup_volatile_runtime_with(
             RestoredFixture::default(),
             volatile_orderly_bytes(VOLATILE_DRBG_SEED, 0),
@@ -1840,7 +1843,7 @@ mod tests {
     }
 
     #[test]
-    fn entropy_failure_leaves_live_and_nv_orderly_state_unchanged() {
+    fn entropy_failure_live_nv_orderly_unchanged() {
         let mut runtime = pre_startup_volatile_runtime_with(
             RestoredFixture::default(),
             volatile_orderly_bytes(VOLATILE_DRBG_SEED, 1),
@@ -1873,7 +1876,7 @@ mod tests {
         [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x4a];
 
     #[test]
-    fn resume_with_bad_nv_ok_returns_nv_uninitialized_transactionally() {
+    fn resume_bad_nv_ok_nv_uninitialized_transactionality() {
         let mut runtime = RestoredFixture::default().runtime();
         runtime.live.nv_ok = false;
         let before = snapshot(&runtime);
@@ -1893,7 +1896,7 @@ mod tests {
     }
 
     #[test]
-    fn nv_ok_validation_order_matches_upstream() {
+    fn nv_ok_validation_order_upstream_parity() {
         let mut runtime = RestoredFixture::default().runtime();
         runtime.live.nv_ok = false;
         runtime.nv_available = false;
@@ -1930,7 +1933,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_startup_with_bad_nv_ok_falls_back_to_reset() {
+    fn clear_startup_bad_nv_ok_reset_fallback() {
         let mut runtime = RestoredFixture {
             state_reset: StateResetFixture {
                 clear_count: 5,
@@ -1968,7 +1971,7 @@ mod tests {
         };
 
         #[test]
-        fn startup_updates_live_go_gr_gc_but_never_their_nv_copies() {
+        fn startup_live_go_gr_gc_update_nv_copy_preservation() {
             let fixture = RestoredFixture {
                 state_reset: StateResetFixture {
                     clear_count: 5,
@@ -2126,7 +2129,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_applies_the_nv_startup_attribute_rules() {
+    fn reset_nv_startup_attribute_rules() {
         let mut runtime = nv_entity_fixture(0xffff).runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
@@ -2168,7 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_keeps_orderly_written_and_skips_the_counter_fixup() {
+    fn restart_orderly_preservation_no_counter_fixup() {
         let mut runtime = nv_entity_fixture(TPM_SU_STATE).runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
@@ -2185,7 +2188,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_restores_the_ram_view_without_attribute_clearing() {
+    fn resume_ram_view_restore_no_attribute_clearing() {
         let mut runtime = nv_entity_fixture(TPM_SU_STATE).runtime();
         let attrs_before = nv_attrs(&runtime);
         assert_eq!(
@@ -2207,7 +2210,7 @@ mod tests {
     }
 
     #[test]
-    fn late_serialization_failure_rolls_back_the_nv_startup_effects() {
+    fn late_serialization_failure_nv_startup_rollback() {
         let object_bytes = crate::library::tpm2::object::fixtures::any_rsa_object(3);
         let mut fixture = nv_entity_fixture(0xffff);
         fixture
@@ -2265,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn a_startup_entropy_failure_latches_g_entropy_bad_and_never_retries() {
+    fn startup_entropy_failure_g_entropy_bad_latch_no_retry() {
         let mut runtime = manufactured_runtime();
         runtime.entropy = failing_entropy;
         let before = snapshot(&runtime);
@@ -2292,7 +2295,7 @@ mod tests {
     }
 
     #[test]
-    fn an_instantiating_startup_entropy_failure_latches_the_same_way() {
+    fn instantiating_startup_entropy_failure_latch() {
         let mut runtime = manufactured_runtime();
         runtime.live.orderly.drbg_state.drbg_magic = 0;
         runtime.entropy = failing_entropy;
@@ -2316,7 +2319,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_tpm_init_lifecycle_starts_with_the_latch_clear() {
+    fn new_tpm_init_latch_clear() {
         use crate::library::tpm2::persistent::persistent_all_store;
 
         let mut runtime = manufactured_runtime();
@@ -2344,7 +2347,7 @@ mod tests {
     const CONTINUOUS_TEST_PROFILE: &[u8] =
         br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
 
-    fn continuous_test_runtime() -> Box<Tpm2Runtime> {
+    fn continuous_test_runtime() -> Tpm2Runtime {
         let profile =
             validate_user_profile(Some(CONTINUOUS_TEST_PROFILE)).expect("the profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
@@ -2363,7 +2366,7 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_test_failure_during_the_startup_reseed_is_the_encrypt_drbg_fatal() {
+    fn startup_reseed_continuous_test_failure_encrypt_drbg_fatal() {
         use crate::library::tpm2::failure_mode::FailureLocation;
 
         let mut runtime = continuous_test_runtime();

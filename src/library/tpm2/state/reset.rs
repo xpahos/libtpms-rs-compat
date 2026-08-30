@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn current_version_fixture_decodes_every_field() {
+    fn current_version_fixture_full_field_decode() {
         let mut context_array: Vec<u16> = (0..MAX_ACTIVE_SESSIONS as u16).collect();
         context_array[0] = 0xbeef;
         let data = StateResetFixture {
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_tpm2b_fields_return_size_errors() {
+    fn oversized_tpm2b_field_size_errors() {
         for (fixture, field) in [
             (
                 StateResetFixture {
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_capacity_tpm2b_fields_are_accepted() {
+    fn exact_capacity_tpm2b_acceptance() {
         let data = StateResetFixture {
             null_proof: vec![0x66; PROOF_SIZE],
             null_seed: vec![0x77; PRIMARY_SEED_SIZE],
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_context_array_size_is_bad_parameter() {
+    fn wrong_context_array_size_bad_parameter() {
         for declared in [0u16, 63, 65, u16::MAX] {
             let mut data = with_tail();
             data.context_array_size = declared;
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn version_3_blob_reads_narrow_slots_without_a_mask() {
+    fn version_3_blob_maskless_narrow_slot_decode() {
         let data = StateResetFixture {
             version: 3,
             min_version: 1,
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_blob_skips_a_present_seed_block() {
+    fn version_2_blob_present_seed_block_skip() {
         let data = StateResetFixture {
             version: 2,
             min_version: 1,
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_blob_accepts_an_absent_seed_block() {
+    fn version_2_blob_absent_seed_block_acceptance() {
         let data = StateResetFixture {
             version: 2,
             min_version: 1,
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_seed_block_is_bad_parameter_for_versions_3_and_4() {
+    fn missing_seed_block_versions_3_4_bad_parameter() {
         for version in [3u16, 4] {
             let data = StateResetFixture {
                 version,
@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_context_slot_mask_is_bad_parameter() {
+    fn invalid_context_slot_mask_bad_parameter() {
         for mask in [0x0000u16, 0x0001, 0xff00, 0xfffe] {
             let data = StateResetFixture {
                 context_slot_mask: mask,
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn both_valid_context_slot_masks_are_accepted() {
+    fn valid_context_slot_mask_acceptance() {
         for mask in [0x00ffu16, 0xffff] {
             let data = StateResetFixture {
                 context_slot_mask: mask,
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_ecc_block_is_bad_parameter() {
+    fn missing_ecc_block_bad_parameter() {
         let data = StateResetFixture {
             ecc_has_block: 0,
             ..StateResetFixture::default()
@@ -563,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_commit_array_size_is_bad_parameter() {
+    fn wrong_commit_array_size_bad_parameter() {
         for declared in [0u16, 15, 17] {
             let data = StateResetFixture {
                 commit_array_size: declared,
@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn too_new_seed_compat_level_is_bad_version() {
+    fn too_new_seed_compat_level_bad_version() {
         for level in [2u8, 0x80, 0xff] {
             let data = StateResetFixture {
                 null_seed_compat_level: level,
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn secret_fields_borrow_the_input() {
+    fn secret_field_input_borrowing() {
         let data = StateResetFixture {
             null_proof: vec![0xaa; 8],
             ..with_tail()
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn every_strict_prefix_fails_safely() {
+    fn strict_prefix_rejection_safety() {
         for version in [2u16, 3, 4] {
             let full = StateResetFixture {
                 version,
@@ -643,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn state_reset_byte_mutations_do_not_panic() {
+    fn state_reset_byte_mutation_panic_safety() {
         let full = StateResetFixture::default().bytes();
         for index in 0..full.len() {
             for byte in [0x00u8, 0x01, 0xff] {

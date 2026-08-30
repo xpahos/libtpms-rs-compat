@@ -117,41 +117,41 @@ mod tests {
     use core::ffi::CStr;
 
     #[test]
-    fn ffi_guard_returns_successful_value() {
+    fn ffi_guard_success_value_passthrough() {
         assert_eq!(ffi_guard(|| 42u32), 42);
     }
 
     #[test]
-    fn ffi_guard_returns_tpm_fail_for_u32_panic() {
+    fn ffi_guard_u32_panic_tpm_fail() {
         let result = ffi_guard::<u32>(|| panic!("test panic"));
         assert_eq!(result, TPM_FAIL);
     }
 
     #[test]
-    fn ffi_guard_returns_false_for_u8_panic() {
+    fn ffi_guard_u8_panic_false() {
         let result = ffi_guard::<u8>(|| panic!("test panic"));
         assert_eq!(result, 0);
     }
 
     #[test]
-    fn ffi_guard_handles_unit_panic() {
+    fn ffi_guard_unit_panic_recovery() {
         ffi_guard::<()>(|| panic!("test panic"));
     }
 
     #[test]
-    fn ffi_guard_returns_null_mut_for_mut_pointer_panic() {
+    fn ffi_guard_mut_pointer_panic_null_mut() {
         let result = ffi_guard::<*mut u8>(|| panic!("test panic"));
         assert!(result.is_null());
     }
 
     #[test]
-    fn ffi_guard_returns_null_for_const_pointer_panic() {
+    fn ffi_guard_const_pointer_panic_null() {
         let result = ffi_guard::<*const u8>(|| panic!("test panic"));
         assert!(result.is_null());
     }
 
     #[test]
-    fn malloc_c_string_round_trips_and_is_freeable() {
+    fn malloc_c_string_round_trip_freeable() {
         let ptr = malloc_c_string("{\"a\":1}");
         assert!(!ptr.is_null());
         // SAFETY: `ptr` is a valid NUL-terminated string we just allocated.
@@ -162,12 +162,12 @@ mod tests {
     }
 
     #[test]
-    fn malloc_c_string_rejects_interior_nul() {
+    fn malloc_c_string_interior_nul_rejection() {
         assert!(malloc_c_string("a\0b").is_null());
     }
 
     #[test]
-    fn malloc_c_string_of_empty_str_is_empty_c_string() {
+    fn malloc_c_string_empty_input_empty_output() {
         let ptr = malloc_c_string("");
         assert!(!ptr.is_null());
         // SAFETY: `ptr` is a valid NUL-terminated string we just allocated.
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn malloc_bytes_round_trips_and_is_freeable() {
+    fn malloc_bytes_round_trip_freeable() {
         let data = [1u8, 0, 255, 42];
         let ptr = malloc_bytes(&data);
         assert!(!ptr.is_null());
@@ -191,12 +191,12 @@ mod tests {
     }
 
     #[test]
-    fn malloc_bytes_of_empty_slice_is_null() {
+    fn malloc_bytes_empty_slice_null() {
         assert!(malloc_bytes(&[]).is_null());
     }
 
     #[test]
-    fn malloc_buffer_wraps_and_frees_host_allocation() {
+    fn malloc_buffer_host_allocation_wrap_and_free() {
         let data = [7u8, 8, 9];
         let raw = malloc_bytes(&data);
         // SAFETY: `raw` was malloc'ed with `data.len()` valid bytes.
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn malloc_buffer_of_null_is_none() {
+    fn malloc_buffer_null_input_none() {
         // SAFETY: NULL carries no ownership.
         assert!(unsafe { MallocBuffer::from_raw(core::ptr::null_mut(), 4) }.is_none());
     }

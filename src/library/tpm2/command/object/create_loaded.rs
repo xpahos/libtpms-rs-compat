@@ -215,6 +215,7 @@ pub(in crate::library::tpm2::command) fn execute(
         eps_primary,
         &secrets,
         &mut rand,
+        frame.cancellation,
     );
     let created = created.and_then(|created| {
         let out_private = match parent.as_ref().filter(|_| !derivation) {
@@ -271,6 +272,7 @@ pub(in crate::library::tpm2::command) fn execute(
 mod tests {
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::Cancellation;
     use crate::library::tpm2::clock::SteppingClock;
     use crate::library::tpm2::command::core::registry::{self, TPM_CC_CREATE_LOADED};
     use crate::library::tpm2::golden_responses::create_loaded::vector;
@@ -485,7 +487,7 @@ mod tests {
         panic!("the replay must not draw host entropy");
     }
 
-    fn restored_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+    fn restored_runtime(clock: &SteppingClock) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
         crate::library::tpm2::attach_volatile_blob(
@@ -508,12 +510,13 @@ mod tests {
             &input,
             clock,
             |_| Ok(()),
+            Cancellation::disabled(),
         )
         .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
         assert_eq!(response, vector(label), "{label}");
     }
 
-    fn replay_case(steps: &[(&str, Vec<u8>)]) -> Box<Tpm2Runtime> {
+    fn replay_case(steps: &[(&str, Vec<u8>)]) -> Tpm2Runtime {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restored_runtime(&clock);
         for (label, bytes) in steps {
@@ -523,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_registered_with_the_upstream_attributes() {
+    fn command_registration_upstream_attributes() {
         let descriptor = registry::find(TPM_CC_CREATE_LOADED).expect("the command is registered");
         assert_eq!(descriptor.attributes, 0x1200_0191);
         assert!(descriptor.physical_presence);
@@ -534,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_report_matches_the_oracle() {
+    fn capability_report_oracle_match() {
         let oracle = vector("CAP_CC_CREATE_LOADED");
         assert_eq!(
             &oracle[oracle.len() - 4..],
@@ -551,6 +554,7 @@ mod tests {
             &input,
             &clock,
             |_| Ok(()),
+            Cancellation::disabled(),
         )
         .expect("the query succeeds");
         assert_eq!(
@@ -566,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_symmetric_objects_match_the_oracle() {
+    fn primary_symmetric_object_oracle_parity() {
         replay_case(&[
             (
                 "AES_PRIMARY_OWNER",
@@ -589,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn provided_symmetric_keys_match_the_oracle() {
+    fn provided_symmetric_key_oracle_parity() {
         replay_case(&[(
             "AES_PROVIDED_KEY",
             cl_command(
@@ -623,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinary_child_under_a_storage_parent_matches_the_oracle() {
+    fn ordinary_child_storage_parent_oracle_match() {
         replay_case(&[
             (
                 "CP_STORAGE_PARENT",
@@ -642,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_ecc_children_match_the_oracle() {
+    fn derived_ecc_child_oracle_parity() {
         let child = |label: &[u8], context: &[u8]| ecc_derive_template(label, context, 0x0002_0452);
         replay_case(&[
             (
@@ -736,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn parent_type_and_availability_errors_match_the_oracle() {
+    fn parent_type_availability_error_oracle_parity() {
         replay_case(&[
             (
                 "CP_SIGNING_KEY",
@@ -760,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_object_table_matches_the_oracle() {
+    fn full_object_table_oracle_match() {
         replay_case(&[
             (
                 "SLOT_FILL_1",
@@ -782,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_parameters_match_the_oracle() {
+    fn malformed_parameter_oracle_parity() {
         replay_case(&[(
             "OVERSIZED_USERAUTH",
             cl_command(TPM_RH_OWNER_H, &[], &[0x61; 33], &[], &AES_TEMPLATE),
@@ -810,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_commands_match_the_oracle() {
+    fn truncated_command_oracle_parity() {
         let full = cl_command(TPM_RH_OWNER_H, &[], &[], &[], &AES_TEMPLATE);
         assert_eq!(full.len(), 0x35);
         let mut steps: Vec<(String, Vec<u8>)> = Vec::new();
@@ -833,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_behaviour_matches_the_oracle() {
+    fn authorization_behaviour_oracle_parity() {
         replay_case(&[("NO_SESSIONS_AUTH_MISSING", {
             let mut out = vec![0x80, 0x01, 0, 0, 0, 0];
             out.extend_from_slice(&TPM_CC_CREATE_LOADED.to_be_bytes());
@@ -875,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_attack_protection_matches_the_oracle() {
+    fn dictionary_attack_protection_oracle_parity() {
         replay_case(&[
             (
                 "CP_DA_PARENT",
@@ -900,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn parent_template_parameter_errors_match_the_oracle() {
+    fn parent_template_parameter_error_oracle_parity() {
         replay_case(&[
             (
                 "CL_TDES_PARENT_BAD_KEYBITS",
@@ -920,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_da_protected_use_is_uniform_across_entity_types() {
+    fn first_da_protected_use_entity_type_uniformity() {
         let nv = replay_case(&[
             ("DA2_DEFINE_INDEX", define_da_index_command()),
             (
@@ -1049,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_camellia_matches_the_oracle_error() {
+    fn missing_camellia_profile_oracle_error_match() {
         const NO_CAMELLIA_PROFILE: &[u8] = br#"{"Name":"custom","Algorithms":"rsa,rsa-min-size=1024,tdes,tdes-min-size=128,sha1,hmac,aes,aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=192,ecc-nist,ecc-bn,ecc-sm2-p256,symcipher,cmac,ctr,ofb,cbc,cfb,ecb"}"#;
         let responses = dispatch_with_profile(
             NO_CAMELLIA_PROFILE,
@@ -1065,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_is_rejected_before_startup() {
+    fn pre_startup_rejection() {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
@@ -1105,6 +1109,7 @@ mod tests {
             &input,
             &clock,
             |_| Ok(()),
+            Cancellation::disabled(),
         )
         .expect("startup runs");
         assert_eq!(response[6..], [0, 0, 0, 0], "startup succeeds");
@@ -1118,6 +1123,7 @@ mod tests {
                     &input,
                     &clock,
                     |_| Ok(()),
+                    Cancellation::disabled(),
                 )
                 .expect("the command runs")
             })
@@ -1125,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_tdes_matches_the_oracle_error() {
+    fn missing_tdes_profile_oracle_error_match() {
         const NO_TDES_PROFILE: &[u8] = br#"{"Name":"custom","Algorithms":"rsa,rsa-min-size=1024,sha1,hmac,aes,aes-min-size=128,mgf1,keyedhash,xor,sha256,sha384,sha512,null,rsassa,rsaes,rsapss,oaep,ecdsa,ecdh,ecdaa,sm2,ecschnorr,ecmqv,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,ecc-min-size=192,ecc-nist,ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cfb,ecb"}"#;
         let responses = dispatch_with_profile(
             NO_TDES_PROFILE,
@@ -1135,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_ecc_derivation_matches_the_oracle_error() {
+    fn missing_ecc_derivation_profile_oracle_error_match() {
         const NO_ECC_DERIVE_PROFILE: &[u8] =
             br#"{"Name":"custom","Attributes":"no-ecc-key-derivation"}"#;
         let responses = dispatch_with_profile(
@@ -1202,7 +1208,7 @@ mod tests {
         }
 
         #[test]
-        fn a_created_primary_matches_the_oracle_volatile_object_slots() {
+        fn created_primary_volatile_slot_oracle_match() {
             let runtime = replay_case(&[(
                 "AES_PRIMARY_OWNER",
                 cl_command(TPM_RH_OWNER_H, &[], &[], &[], &AES_TEMPLATE),
@@ -1217,7 +1223,7 @@ mod tests {
         }
 
         #[test]
-        fn tdes_and_camellia_storage_parents_match_the_oracle() {
+        fn tdes_camellia_storage_parent_oracle_parity() {
             for (parent_label, parent_template, child_label, boundary, flush_label) in [
                 (
                     "CP_TDES_PARENT",
@@ -1292,7 +1298,7 @@ mod tests {
         }
 
         #[test]
-        fn the_da_used_transition_survives_volatile_serialization() {
+        fn da_used_transition_volatile_serialization() {
             for boundary in [
                 "AFTER_DA2_NV_FIRST",
                 "AFTER_DA2_TRANSIENT_FIRST",
@@ -1304,7 +1310,7 @@ mod tests {
         }
 
         #[test]
-        fn an_ordinary_child_matches_the_oracle_volatile_object_slots_and_drbg() {
+        fn ordinary_child_volatile_slot_drbg_oracle_match() {
             let runtime = replay_case(&[
                 (
                     "CP_STORAGE_PARENT",
@@ -1333,7 +1339,7 @@ mod tests {
         }
 
         #[test]
-        fn a_derived_child_matches_the_oracle_volatile_object_slots_without_live_drbg_use() {
+        fn derived_child_volatile_slot_oracle_match_no_drbg_use() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = restored_runtime(&clock);
             exec(
@@ -1373,7 +1379,7 @@ mod tests {
         }
 
         #[test]
-        fn failed_commands_leave_no_slot_or_state_behind() {
+        fn failed_command_no_residual_slot_state() {
             use crate::library::tpm2::object_create::find_empty_object_slot;
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = restored_runtime(&clock);
@@ -1399,6 +1405,7 @@ mod tests {
                     &input,
                     &clock,
                     |_| Ok(()),
+                    Cancellation::disabled(),
                 )
                 .expect("processes");
                 assert_eq!(response, vector(label), "{label}");
@@ -1417,7 +1424,7 @@ mod tests {
         }
 
         #[test]
-        fn the_parent_object_is_unchanged_by_child_creation() {
+        fn child_creation_parent_unchanged() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = restored_runtime(&clock);
             exec(
@@ -1440,7 +1447,7 @@ mod tests {
         }
 
         #[test]
-        fn the_created_object_survives_a_volatile_round_trip() {
+        fn created_object_volatile_round_trip() {
             use crate::library::tpm2::volatile::volatile_all_store;
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = replay_case(&[(
@@ -1481,7 +1488,7 @@ mod tests {
         }
 
         #[test]
-        fn the_new_object_appears_in_the_transient_capability_list() {
+        fn new_object_transient_capability_listing() {
             use crate::library::tpm2::capability::handles::collect;
             let runtime = replay_case(&[(
                 "AES_PRIMARY_OWNER",
@@ -1498,7 +1505,7 @@ mod tests {
         }
 
         #[test]
-        fn different_derivation_inputs_produce_different_keys() {
+        fn derivation_input_key_divergence() {
             let labels = [
                 "DERIVED_ECC_EMPTY",
                 "DERIVED_ECC_TEMPLATE_LABEL",
@@ -1516,7 +1523,7 @@ mod tests {
         }
 
         #[test]
-        fn a_different_parent_secret_changes_the_derived_key() {
+        fn parent_secret_derived_key_dependence() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = restored_runtime(&clock);
             let parent = cp_command(TPM_RH_OWNER_H, &[], &DERIVATION_PARENT_TEMPLATE);
@@ -1527,6 +1534,7 @@ mod tests {
                 &input,
                 &clock,
                 |_| Ok(()),
+                Cancellation::disabled(),
             )
             .expect("processes");
             assert_eq!(response[6..10], [0, 0, 0, 0], "the owner parent is created");
@@ -1544,6 +1552,7 @@ mod tests {
                 &input,
                 &clock,
                 |_| Ok(()),
+                Cancellation::disabled(),
             )
             .expect("processes");
             assert_eq!(
@@ -1608,7 +1617,7 @@ mod tests {
             )
         }
 
-        fn parent_runtime(clock: &SteppingClock) -> Box<Tpm2Runtime> {
+        fn parent_runtime(clock: &SteppingClock) -> Tpm2Runtime {
             let mut runtime = restored_runtime(clock);
             exec(
                 &mut runtime,
@@ -1628,12 +1637,13 @@ mod tests {
                 &input,
                 clock,
                 |_| Ok(()),
+                Cancellation::disabled(),
             )
             .expect("the command processes")
         }
 
         #[test]
-        fn a_reseed_due_entropy_failure_answers_no_result_latches_and_never_retries() {
+        fn reseed_due_entropy_failure_no_result_latch_no_retry() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = parent_runtime(&clock);
             runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
@@ -1672,7 +1682,7 @@ mod tests {
         }
 
         #[test]
-        fn a_pre_latched_runtime_short_circuits_live_draws() {
+        fn pre_latched_runtime_live_draw_short_circuit() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = parent_runtime(&clock);
             runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
@@ -1693,7 +1703,7 @@ mod tests {
         }
 
         #[test]
-        fn an_entropy_starved_outer_wrap_iv_matches_the_pre_latched_twin() {
+        fn entropy_starved_outer_wrap_iv_pre_latched_match() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut starved = parent_runtime(&clock);
             starved.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED - 2;
@@ -1728,7 +1738,7 @@ mod tests {
             );
         }
 
-        fn continuous_test_runtime() -> Box<Tpm2Runtime> {
+        fn continuous_test_runtime() -> Tpm2Runtime {
             const CONTINUOUS_TEST_PROFILE: &[u8] =
                 br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
             let profile = validate_user_profile(Some(CONTINUOUS_TEST_PROFILE))
@@ -1749,7 +1759,7 @@ mod tests {
         }
 
         #[test]
-        fn a_live_continuous_test_failure_enters_failure_mode_with_the_encrypt_drbg_site() {
+        fn live_continuous_test_failure_encrypt_drbg_site_failure_mode() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = continuous_test_runtime();
             let startup = vec![
@@ -1795,7 +1805,7 @@ mod tests {
         }
 
         #[test]
-        fn an_independently_seeded_create_ignores_the_global_latch() {
+        fn independently_seeded_create_global_latch_isolation() {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             let mut runtime = restored_runtime(&clock);
             runtime.entropy_bad = true;

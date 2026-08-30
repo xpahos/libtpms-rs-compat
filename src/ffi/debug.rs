@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn logging_is_disabled_by_default() {
+    fn default_logging_disabled() {
         let _state = DebugStateGuard::hold();
         assert_eq!(fd_and_level(), (-1, 0));
         assert_eq!(prefix(), None);
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_and_level_are_stored_and_replaced() {
+    fn descriptor_level_storage_replacement() {
         let _state = DebugStateGuard::hold();
         set_fd(11);
         set_level(2);
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn logging_requires_both_a_descriptor_and_a_level() {
+    fn logging_descriptor_and_level_requirement() {
         let _state = DebugStateGuard::hold();
         let pipe = Pipe::new();
 
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn output_is_prefix_plus_message_on_the_configured_descriptor() {
+    fn prefix_message_output_configured_descriptor() {
         let _state = DebugStateGuard::hold();
         let first = Pipe::new();
         let second = Pipe::new();
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn indentation_is_filtered_against_the_level() {
+    fn indentation_level_filtering() {
         let _state = DebugStateGuard::hold();
         let pipe = Pipe::new();
         set_fd(pipe.write_fd());
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_all_space_messages_are_rejected() {
+    fn empty_whitespace_message_rejection() {
         let _state = DebugStateGuard::hold();
         let pipe = Pipe::new();
         set_fd(pipe.write_fd());
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn log_and_log_bytes_filter_identically() {
+    fn log_and_log_bytes_filter_parity() {
         let _state = DebugStateGuard::hold();
         let pipe = Pipe::new();
         set_fd(pipe.write_fd());
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_is_added_only_after_filtering() {
+    fn post_filter_prefix_addition() {
         let _state = DebugStateGuard::hold();
         let pipe = Pipe::new();
         set_fd(pipe.write_fd());
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_descriptor_fails_without_panicking() {
+    fn closed_descriptor_failure_panic_safety() {
         let _state = DebugStateGuard::hold();
         let mut pipe = Pipe::new();
         let closed_fd = pipe.close_write();
@@ -406,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_descriptors_fail_without_panicking() {
+    fn invalid_descriptor_failure_panic_safety() {
         let _state = DebugStateGuard::hold();
         set_level(1);
 
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn poisoned_configuration_lock_is_recovered() {
+    fn poisoned_config_lock_recovery() {
         let _state = DebugStateGuard::hold();
         let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _config = CONFIG.lock().unwrap();
