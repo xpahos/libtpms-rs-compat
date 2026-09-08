@@ -6,7 +6,7 @@ use super::crypto::{EntropySource, os_entropy};
 use super::live::{LiveState, RestoredVolatile, split_restored_volatile};
 use super::nv::build_nv_image;
 use super::persistent::{OwnedPcrAllocation, OwnedPersistentState};
-use super::profile::{DEFAULT_ALGORITHMS_PROFILE, ValidatedProfile};
+use super::profile::{DEFAULT_ALGORITHMS_PROFILE, ValidatedProfile, command_enabled};
 use super::self_test::SelfTestState;
 use super::tis::DrtmSequence;
 use super::volatile::OwnedVolatileState;
@@ -45,6 +45,8 @@ pub struct Tpm2Runtime {
 
     pub(super) active_profile_algorithms: Vec<u8>,
 
+    active_profile_commands: Vec<u8>,
+
     pub(super) drtm_sequence: Option<DrtmSequence>,
 
     pub(super) self_test: SelfTestState,
@@ -69,6 +71,15 @@ pub struct Tpm2Runtime {
 }
 
 impl Tpm2Runtime {
+    pub(super) fn command_enabled(&self, code: u32) -> bool {
+        if let Some(state) = &self.state {
+            command_enabled(&state.profile.commands, code)
+        } else {
+            self.active_profile_commands.is_empty()
+                || command_enabled(&self.active_profile_commands, code)
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn state(&self) -> &OwnedPersistentState {
         self.state
@@ -191,6 +202,7 @@ fn commit_state(
 
     let active_profile_json = format_active_profile(&candidate.profile);
     let active_profile_algorithms = candidate.profile.algorithms.clone();
+    let active_profile_commands = candidate.profile.commands.clone();
     let self_test = SelfTestState::for_profile(&candidate.profile);
 
     Ok(Tpm2Runtime {
@@ -206,6 +218,7 @@ fn commit_state(
         timer: TpmTimer::POWER_ON_RESET,
         active_profile_json,
         active_profile_algorithms,
+        active_profile_commands,
         drtm_sequence: None,
         self_test,
         manufactured: true,
@@ -242,6 +255,7 @@ pub(super) fn empty_state_runtime() -> Tpm2Runtime {
         timer: TpmTimer::POWER_ON_RESET,
         active_profile_json: String::new(),
         active_profile_algorithms: Vec::new(),
+        active_profile_commands: Vec::new(),
         drtm_sequence: None,
         self_test: SelfTestState::for_algorithms(DEFAULT_ALGORITHMS_PROFILE),
         manufactured: false,
@@ -269,6 +283,7 @@ pub(super) fn manufactured_zeroed_nv_runtime(manufactured: &Tpm2Runtime) -> Tpm2
     runtime.buffer_size = manufactured.buffer_size;
     runtime.active_profile_json = manufactured.active_profile_json.clone();
     runtime.active_profile_algorithms = manufactured.active_profile_algorithms.clone();
+    runtime.active_profile_commands = manufactured.active_profile_commands.clone();
     runtime.self_test = manufactured.self_test.restarted();
     runtime
 }

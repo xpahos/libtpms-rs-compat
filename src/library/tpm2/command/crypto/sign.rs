@@ -439,9 +439,20 @@ mod tests {
     #[test]
     fn capability_list_advertisement() {
         use crate::library::tpm2::capability::commands::implemented;
-        let page = implemented(TPM_CC_SIGN, 1);
+        use crate::library::tpm2::command::core::test_support::manufactured_runtime;
+        use crate::library::tpm2::profile::validate_user_profile;
+
+        let mut runtime = manufactured_runtime();
+        runtime.state.as_mut().expect("decoded state").profile =
+            validate_user_profile(Some(br#"{"Name":"default-v1"}"#))
+                .expect("the default-v1 profile validates");
+        let page = implemented(&runtime, TPM_CC_SIGN, 1);
         assert_eq!(page.entries, [0x0200_015d]);
-        assert!(implemented(0, 1000).entries.contains(&0x0200_015d));
+        assert!(
+            implemented(&runtime, 0, 1000)
+                .entries
+                .contains(&0x0200_015d)
+        );
     }
 
     #[track_caller]

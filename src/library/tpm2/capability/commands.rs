@@ -8,15 +8,16 @@ pub(in crate::library::tpm2) const MAX_CAP_CC: usize = MAX_CAP_DATA / SIZEOF_TPM
 
 const TPMA_CC_V: u32 = 1 << 29;
 
-// TODO: Filter the reported commands through the active profile once the
-// dispatcher enforces profile-disabled registry commands.
 pub(in crate::library::tpm2) fn implemented(
+    runtime: &Tpm2Runtime,
     starting_command: u32,
     requested_count: u32,
 ) -> CapabilityPage<u32> {
     paginate(
         implemented_commands()
-            .filter(|descriptor| descriptor.code >= starting_command)
+            .filter(|descriptor| {
+                descriptor.code >= starting_command && runtime.command_enabled(descriptor.code)
+            })
             .map(|descriptor| descriptor.attributes),
         requested_count,
         MAX_CAP_CC,
@@ -32,26 +33,34 @@ pub(in crate::library::tpm2) fn physical_presence(
         implemented_commands()
             .map(|descriptor| descriptor.code)
             .filter(|&code| {
-                code >= starting_command && physical_presence_is_required(runtime, code)
+                code >= starting_command
+                    && runtime.command_enabled(code)
+                    && physical_presence_is_required(runtime, code)
             }),
         requested_count,
         MAX_CAP_CC,
     )
 }
 
-pub(in crate::library::tpm2) fn total_count() -> u32 {
-    implemented_commands().count() as u32
-}
-
-pub(in crate::library::tpm2) fn library_count() -> u32 {
+pub(in crate::library::tpm2) fn total_count(runtime: &Tpm2Runtime) -> u32 {
     implemented_commands()
-        .filter(|descriptor| descriptor.attributes & TPMA_CC_V == 0)
+        .filter(|descriptor| runtime.command_enabled(descriptor.code))
         .count() as u32
 }
 
-pub(in crate::library::tpm2) fn vendor_count() -> u32 {
+pub(in crate::library::tpm2) fn library_count(runtime: &Tpm2Runtime) -> u32 {
     implemented_commands()
-        .filter(|descriptor| descriptor.attributes & TPMA_CC_V != 0)
+        .filter(|descriptor| {
+            descriptor.attributes & TPMA_CC_V == 0 && runtime.command_enabled(descriptor.code)
+        })
+        .count() as u32
+}
+
+pub(in crate::library::tpm2) fn vendor_count(runtime: &Tpm2Runtime) -> u32 {
+    implemented_commands()
+        .filter(|descriptor| {
+            descriptor.attributes & TPMA_CC_V != 0 && runtime.command_enabled(descriptor.code)
+        })
         .count() as u32
 }
 
@@ -174,6 +183,21 @@ mod tests {
     const TPMA_CC_TEST_PARMS: u32 = 0x0000_018a;
     const TPMA_CC_ENCRYPT_DECRYPT2: u32 = 0x0200_0193;
 
+    fn default_runtime() -> Tpm2Runtime {
+        use crate::library::tpm2::manufacture::manufacture_state;
+        use crate::library::tpm2::profile::validate_user_profile;
+        use crate::library::tpm2::runtime::commit_manufactured_state;
+
+        let profile = validate_user_profile(Some(br#"{"Name":"default-v1"}"#))
+            .expect("the default-v1 profile validates");
+        let state = manufacture_state(profile, |buffer| {
+            buffer.fill(0x5a);
+            Ok(())
+        })
+        .expect("manufactures");
+        commit_manufactured_state(state).expect("commits")
+    }
+
     fn advertised_from(starting_command: u32) -> usize {
         implemented_commands()
             .filter(|descriptor| descriptor.code >= starting_command)
@@ -181,8 +205,17 @@ mod tests {
     }
 
     #[test]
+    fn null_profile_hides_disabled_physical_presence_bits() {
+        let mut runtime = super::super::test_runtime::started();
+        crate::library::tpm2::pp_list::require_physical_presence(&mut runtime, 0x19c);
+        let page = physical_presence(&runtime, 0x19c, 0);
+        assert!(page.entries.is_empty());
+        assert!(!page.more_data);
+    }
+
+    #[test]
     fn zero_start_full_registry() {
-        let page = implemented(0, 1000);
+        let page = implemented(&default_runtime(), 0, 1000);
         assert_eq!(
             page.entries,
             [
@@ -307,15 +340,15 @@ mod tests {
 
     #[test]
     fn nv_undefine_space_special_lowest_code_first() {
-        let page = implemented(0, 1);
+        let page = implemented(&default_runtime(), 0, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_UNDEFINE_SPACE_SPECIAL]);
         assert!(page.more_data);
 
-        let page = implemented(0x0120, 1000);
+        let page = implemented(&default_runtime(), 0x0120, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x0120));
         assert_eq!(page.entries[0], TPMA_CC_EVICT_CONTROL);
 
-        let page = implemented(0x0121, 1000);
+        let page = implemented(&default_runtime(), 0x0121, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x0121));
         assert_eq!(page.entries[0], TPMA_CC_HIERARCHY_CONTROL);
         assert!(!page.entries.contains(&TPMA_CC_EVICT_CONTROL));
@@ -323,18 +356,18 @@ mod tests {
 
     #[test]
     fn hierarchy_admin_command_code_order() {
-        let page = implemented(0x0121, 1);
+        let page = implemented(&default_runtime(), 0x0121, 1);
         assert_eq!(page.entries, [TPMA_CC_HIERARCHY_CONTROL]);
         assert!(page.more_data);
 
-        let page = implemented(0x0125, 3);
+        let page = implemented(&default_runtime(), 0x0125, 3);
         assert_eq!(
             page.entries,
             [TPMA_CC_CHANGE_PPS, TPMA_CC_CLEAR, TPMA_CC_CLEAR_CONTROL]
         );
         assert!(page.more_data);
 
-        let page = implemented(0x012c, 3);
+        let page = implemented(&default_runtime(), 0x012c, 3);
         assert_eq!(
             page.entries,
             [
@@ -345,7 +378,7 @@ mod tests {
         );
         assert!(page.more_data);
 
-        let page = implemented(0x0139, 2);
+        let page = implemented(&default_runtime(), 0x0139, 2);
         assert_eq!(
             page.entries,
             [
@@ -358,78 +391,78 @@ mod tests {
 
     #[test]
     fn change_eps_after_nv_undefine_space_order() {
-        let page = implemented(0x0122, 1);
+        let page = implemented(&default_runtime(), 0x0122, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_UNDEFINE_SPACE]);
         assert!(page.more_data);
 
-        let page = implemented(0x0124, 1000);
+        let page = implemented(&default_runtime(), 0x0124, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x0124));
         assert_eq!(page.entries[0], TPMA_CC_CHANGE_EPS);
 
-        let page = implemented(0x0125, 1000);
+        let page = implemented(&default_runtime(), 0x0125, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x0125));
         assert!(!page.entries.contains(&TPMA_CC_CHANGE_EPS));
     }
 
     #[test]
     fn hierarchy_change_auth_after_clear_control_order() {
-        let page = implemented(0x0128, 2);
+        let page = implemented(&default_runtime(), 0x0128, 2);
         assert_eq!(
             page.entries,
             [TPMA_CC_CLOCK_SET, TPMA_CC_HIERARCHY_CHANGE_AUTH]
         );
         assert!(page.more_data);
 
-        let page = implemented(0x0129, 1000);
+        let page = implemented(&default_runtime(), 0x0129, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x0129));
         assert_eq!(page.entries[0], TPMA_CC_HIERARCHY_CHANGE_AUTH);
 
-        let page = implemented(0x012a, 1000);
+        let page = implemented(&default_runtime(), 0x012a, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x012a));
         assert!(!page.entries.contains(&TPMA_CC_HIERARCHY_CHANGE_AUTH));
     }
 
     #[test]
     fn nv_define_space_after_hierarchy_change_auth_order() {
-        let page = implemented(0x012a, 1);
+        let page = implemented(&default_runtime(), 0x012a, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_DEFINE_SPACE]);
         assert!(page.more_data);
 
-        let page = implemented(0x012b, 1000);
+        let page = implemented(&default_runtime(), 0x012b, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x012b));
         assert_eq!(page.entries[0], TPMA_CC_PCR_ALLOCATE);
 
-        let page = implemented(0x012c, 1000);
+        let page = implemented(&default_runtime(), 0x012c, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x012c));
         assert!(!page.entries.contains(&TPMA_CC_PCR_ALLOCATE));
     }
 
     #[test]
     fn create_primary_after_set_primary_policy_order() {
-        let page = implemented(0x012e, 1);
+        let page = implemented(&default_runtime(), 0x012e, 1);
         assert_eq!(page.entries, [TPMA_CC_SET_PRIMARY_POLICY]);
         assert!(page.more_data);
 
-        let page = implemented(0x0131, 1000);
+        let page = implemented(&default_runtime(), 0x0131, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x0131));
         assert_eq!(page.entries[0], TPMA_CC_CREATE_PRIMARY);
 
-        let page = implemented(0x0132, 1000);
+        let page = implemented(&default_runtime(), 0x0132, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x0132));
         assert!(!page.entries.contains(&TPMA_CC_CREATE_PRIMARY));
     }
 
     #[test]
     fn nv_global_write_lock_after_create_primary_order() {
-        let page = implemented(0x0132, 1);
+        let page = implemented(&default_runtime(), 0x0132, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_GLOBAL_WRITE_LOCK]);
         assert!(page.more_data);
 
-        let page = implemented(0x013d, 1000);
+        let page = implemented(&default_runtime(), 0x013d, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x013d));
         assert_eq!(page.entries[0], TPMA_CC_PCR_RESET);
 
-        let page = implemented(0x013e, 1000);
+        let page = implemented(&default_runtime(), 0x013e, 1000);
         assert_eq!(page.entries.len(), advertised_from(0x013e));
         assert_eq!(page.entries[0], TPMA_CC_SEQUENCE_COMPLETE);
         assert!(!page.entries.contains(&TPMA_CC_PCR_RESET));
@@ -437,7 +470,7 @@ mod tests {
 
     #[test]
     fn nv_modification_command_code_order() {
-        let page = implemented(0x0134, 5);
+        let page = implemented(&default_runtime(), 0x0134, 5);
         assert_eq!(
             page.entries,
             [
@@ -450,31 +483,31 @@ mod tests {
         );
         assert!(page.more_data);
 
-        let page = implemented(0x013b, 1);
+        let page = implemented(&default_runtime(), 0x013b, 1);
         assert_eq!(page.entries, [TPMA_CC_NV_CHANGE_AUTH]);
     }
 
     #[test]
     fn pcr_event_code_advertisement() {
-        let page = implemented(0x013c, 1);
+        let page = implemented(&default_runtime(), 0x013c, 1);
         assert_eq!(page.entries, [TPMA_CC_PCR_EVENT]);
         assert!(page.more_data);
 
-        let page = implemented(0x013c, 2);
+        let page = implemented(&default_runtime(), 0x013c, 2);
         assert_eq!(page.entries, [TPMA_CC_PCR_EVENT, TPMA_CC_PCR_RESET]);
         assert!(page.more_data);
 
-        let page = implemented(0x013b, 2);
+        let page = implemented(&default_runtime(), 0x013b, 2);
         assert_eq!(page.entries, [TPMA_CC_NV_CHANGE_AUTH, TPMA_CC_PCR_EVENT]);
         assert!(page.more_data);
 
-        let page = implemented(0x013d, 1000);
+        let page = implemented(&default_runtime(), 0x013d, 1000);
         assert!(!page.entries.contains(&TPMA_CC_PCR_EVENT));
     }
 
     #[test]
     fn nv_read_command_code_order() {
-        let page = implemented(0x014e, 6);
+        let page = implemented(&default_runtime(), 0x014e, 6);
         assert_eq!(
             page.entries,
             [
@@ -491,32 +524,32 @@ mod tests {
 
     #[test]
     fn self_test_code_advertisement() {
-        let page = implemented(0x0143, 1);
+        let page = implemented(&default_runtime(), 0x0143, 1);
         assert_eq!(page.entries, [TPMA_CC_SELF_TEST]);
         assert!(page.more_data);
 
-        let page = implemented(0x0142, 2);
+        let page = implemented(&default_runtime(), 0x0142, 2);
         assert_eq!(
             page.entries,
             [TPMA_CC_INCREMENTAL_SELF_TEST, TPMA_CC_SELF_TEST]
         );
         assert!(page.more_data);
 
-        let page = implemented(0x0144, 1000);
+        let page = implemented(&default_runtime(), 0x0144, 1000);
         assert!(!page.entries.contains(&TPMA_CC_SELF_TEST));
     }
 
     #[test]
     fn incremental_self_test_code_advertisement() {
-        let page = implemented(0x0142, 1);
+        let page = implemented(&default_runtime(), 0x0142, 1);
         assert_eq!(page.entries, [TPMA_CC_INCREMENTAL_SELF_TEST]);
         assert!(page.more_data);
 
-        let page = implemented(0x0141, 1);
+        let page = implemented(&default_runtime(), 0x0141, 1);
         assert_eq!(page.entries, [TPMA_CC_INCREMENTAL_SELF_TEST]);
         assert!(page.more_data);
 
-        let page = implemented(0x013f, 2);
+        let page = implemented(&default_runtime(), 0x013f, 2);
         assert_eq!(
             page.entries,
             [
@@ -526,13 +559,13 @@ mod tests {
         );
         assert!(page.more_data);
 
-        let page = implemented(0x0143, 1000);
+        let page = implemented(&default_runtime(), 0x0143, 1000);
         assert!(!page.entries.contains(&TPMA_CC_INCREMENTAL_SELF_TEST));
     }
 
     #[test]
     fn full_registry_advertisement() {
-        let page = implemented(0, 1000);
+        let page = implemented(&default_runtime(), 0, 1000);
         assert_eq!(page.entries.len(), implemented_commands().count());
         for descriptor in implemented_commands() {
             assert!(
@@ -545,14 +578,14 @@ mod tests {
 
     #[test]
     fn inclusive_start_boundary() {
-        let page = implemented(0x0145, 1);
+        let page = implemented(&default_runtime(), 0x0145, 1);
         assert_eq!(page.entries, [TPMA_CC_SHUTDOWN]);
         assert!(page.more_data);
     }
 
     #[test]
     fn between_entries_start_next_command() {
-        let page = implemented(0x0166, 11);
+        let page = implemented(&default_runtime(), 0x0166, 11);
         assert_eq!(
             page.entries,
             [
@@ -574,59 +607,59 @@ mod tests {
 
     #[test]
     fn stir_random_code_advertisement() {
-        let page = implemented(0x0146, 1);
+        let page = implemented(&default_runtime(), 0x0146, 1);
         assert_eq!(page.entries, [TPMA_CC_STIR_RANDOM]);
         assert!(page.more_data);
 
-        let page = implemented(0x0147, 1000);
+        let page = implemented(&default_runtime(), 0x0147, 1000);
         assert!(!page.entries.contains(&TPMA_CC_STIR_RANDOM));
     }
 
     #[test]
     fn get_random_code_advertisement() {
-        let page = implemented(0x017b, 1);
+        let page = implemented(&default_runtime(), 0x017b, 1);
         assert_eq!(page.entries, [TPMA_CC_GET_RANDOM]);
         assert!(page.more_data);
 
-        let page = implemented(0x017c, 1000);
+        let page = implemented(&default_runtime(), 0x017c, 1000);
         assert!(!page.entries.contains(&TPMA_CC_GET_RANDOM));
     }
 
     #[test]
     fn get_test_result_code_advertisement() {
-        let page = implemented(0x017c, 1);
+        let page = implemented(&default_runtime(), 0x017c, 1);
         assert_eq!(page.entries, [TPMA_CC_GET_TEST_RESULT]);
         assert!(page.more_data);
 
-        let page = implemented(0x017b, 2);
+        let page = implemented(&default_runtime(), 0x017b, 2);
         assert_eq!(page.entries, [TPMA_CC_GET_RANDOM, TPMA_CC_GET_TEST_RESULT]);
         assert!(page.more_data);
 
-        let page = implemented(0x017d, 1000);
+        let page = implemented(&default_runtime(), 0x017d, 1000);
         assert!(!page.entries.contains(&TPMA_CC_GET_TEST_RESULT));
     }
 
     #[test]
     fn hash_code_advertisement() {
-        let page = implemented(0x017d, 1);
+        let page = implemented(&default_runtime(), 0x017d, 1);
         assert_eq!(page.entries, [TPMA_CC_HASH]);
         assert!(page.more_data);
 
-        let page = implemented(0x017c, 1);
+        let page = implemented(&default_runtime(), 0x017c, 1);
         assert_eq!(page.entries, [TPMA_CC_GET_TEST_RESULT]);
         assert!(page.more_data);
 
-        let page = implemented(0x017d, 1);
+        let page = implemented(&default_runtime(), 0x017d, 1);
         assert_eq!(page.entries, [TPMA_CC_HASH]);
         assert!(page.more_data);
 
-        let page = implemented(0x017e, 1000);
+        let page = implemented(&default_runtime(), 0x017e, 1000);
         assert!(!page.entries.contains(&TPMA_CC_HASH));
     }
 
     #[test]
     fn read_public_verify_signature_ordering() {
-        let page = implemented(0x0169, 4);
+        let page = implemented(&default_runtime(), 0x0169, 4);
         assert_eq!(
             page.entries,
             [
@@ -638,11 +671,11 @@ mod tests {
         );
         assert!(page.more_data);
 
-        let page = implemented(0x0173, 1);
+        let page = implemented(&default_runtime(), 0x0173, 1);
         assert_eq!(page.entries, [TPMA_CC_READ_PUBLIC]);
         assert!(page.more_data);
 
-        let page = implemented(0x0174, 3);
+        let page = implemented(&default_runtime(), 0x0174, 3);
         assert_eq!(
             page.entries,
             [
@@ -654,25 +687,25 @@ mod tests {
         );
         assert!(page.more_data);
 
-        let page = implemented(0x0177, 1);
+        let page = implemented(&default_runtime(), 0x0177, 1);
         assert_eq!(page.entries, [TPMA_CC_VERIFY_SIGNATURE]);
         assert!(page.more_data);
 
-        let page = implemented(0x0178, 1000);
+        let page = implemented(&default_runtime(), 0x0178, 1000);
         assert!(!page.entries.contains(&TPMA_CC_READ_PUBLIC));
         assert!(!page.entries.contains(&TPMA_CC_VERIFY_SIGNATURE));
     }
 
     #[test]
     fn start_above_last_command_empty_result() {
-        let page = implemented(0x019d, 10);
+        let page = implemented(&default_runtime(), 0x019d, 10);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
     fn pcr_extend_code_advertisement() {
-        let page = implemented(0x0182, 16);
+        let page = implemented(&default_runtime(), 0x0182, 16);
         assert_eq!(
             page.entries,
             [
@@ -699,7 +732,7 @@ mod tests {
 
     #[test]
     fn nv_certify_last_advertisement() {
-        let page = implemented(0x0184, 14);
+        let page = implemented(&default_runtime(), 0x0184, 14);
         assert_eq!(
             page.entries,
             [
@@ -721,29 +754,29 @@ mod tests {
         );
         assert!(page.more_data);
         assert_eq!(
-            implemented(0, 1000).entries.last(),
+            implemented(&default_runtime(), 0, 1000).entries.last(),
             Some(&TPMA_CC_POLICY_PARAMETERS)
         );
     }
 
     #[test]
     fn count_zero_more_data_remaining_entries_only() {
-        let page = implemented(0, 0);
+        let page = implemented(&default_runtime(), 0, 0);
         assert!(page.entries.is_empty());
         assert!(page.more_data);
 
-        let page = implemented(0x019d, 0);
+        let page = implemented(&default_runtime(), 0x019d, 0);
         assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 
     #[test]
     fn exact_and_oversized_count_more_data_reporting() {
-        let page = implemented(0, total_count());
+        let page = implemented(&default_runtime(), 0, total_count(&default_runtime()));
         assert_eq!(page.entries.len(), advertised_from(0));
         assert!(!page.more_data);
 
-        let page = implemented(0, 3);
+        let page = implemented(&default_runtime(), 0, 3);
         assert_eq!(
             page.entries,
             [
@@ -754,21 +787,21 @@ mod tests {
         );
         assert!(page.more_data);
 
-        let page = implemented(0, u32::MAX);
+        let page = implemented(&default_runtime(), 0, u32::MAX);
         assert_eq!(page.entries.len(), advertised_from(0));
         assert!(!page.more_data);
     }
 
     #[test]
     fn registry_zero_vendor_command_count() {
-        assert_eq!(total_count(), advertised_from(0) as u32);
-        assert_eq!(library_count(), advertised_from(0) as u32);
-        assert_eq!(vendor_count(), 0);
+        assert_eq!(total_count(&default_runtime()), advertised_from(0) as u32);
+        assert_eq!(library_count(&default_runtime()), advertised_from(0) as u32);
+        assert_eq!(vendor_count(&default_runtime()), 0);
     }
 
     #[test]
     fn sequence_commands_reference_attributes() {
-        let page = implemented(0, 1000);
+        let page = implemented(&default_runtime(), 0, 1000);
         for (code, attributes) in [
             (0x0000_013eu32, TPMA_CC_SEQUENCE_COMPLETE),
             (0x0000_015b, TPMA_CC_HMAC_START),

@@ -6,7 +6,9 @@ use super::commands::MAX_CAP_CC;
 use super::{CapabilityPage, paginate};
 
 pub(in crate::library::tpm2) fn is_audited(runtime: &Tpm2Runtime, code: u32) -> bool {
-    upstream_implements(code) && command_audit_is_required(runtime, code)
+    upstream_implements(code)
+        && runtime.command_enabled(code)
+        && command_audit_is_required(runtime, code)
 }
 
 pub(in crate::library::tpm2) fn collect(
@@ -61,6 +63,18 @@ mod tests {
         let runtime = runtime();
         let page = collect(&runtime, 0, 100);
         assert_eq!(page.entries, [TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS]);
+        assert!(!page.more_data);
+    }
+
+    #[test]
+    fn null_profile_hides_disabled_audit_bits_before_pagination() {
+        let mut runtime = runtime();
+        audited(&mut runtime, &[TPM_CC_GET_RANDOM, 0x19c]);
+        let page = collect(&runtime, TPM_CC_GET_RANDOM, 1);
+        assert_eq!(page.entries, [TPM_CC_GET_RANDOM]);
+        assert!(!page.more_data);
+        let page = collect(&runtime, 0x19c, 0);
+        assert!(page.entries.is_empty());
         assert!(!page.more_data);
     }
 

@@ -733,7 +733,7 @@ mod tests {
             .as_mut()
             .expect("a decoded state")
             .profile
-            .commands = b"0x11f-0x126".to_vec();
+            .commands = b"0x11f-0x126,0x12d".to_vec();
         assert_eq!(
             response_code(&host.run(
                 &mut runtime,

@@ -41,9 +41,9 @@ pub(in crate::library::tpm2) fn lookup(
     match capability {
         TPM_CAP_ALGS => Ok(algorithm_property(runtime, property)),
         TPM_CAP_HANDLES => handle_property(runtime, property),
-        TPM_CAP_COMMANDS => Ok(command_attributes(property)),
+        TPM_CAP_COMMANDS => Ok(command_attributes(runtime, property)),
         TPM_CAP_PP_COMMANDS => Ok(command_code_when(
-            physical_presence_is_required(runtime, property),
+            runtime.command_enabled(property) && physical_presence_is_required(runtime, property),
             property,
         )),
         TPM_CAP_AUDIT_COMMANDS => Ok(command_code_when(
@@ -124,14 +124,11 @@ fn context_slot_is_used(runtime: &Tpm2Runtime, property: u32) -> bool {
             .is_some_and(|context| *context != 0)
 }
 
-// TODO: Answer from the vendored attribute table for every profile-enabled
-// command once the registry covers it; TPM2_GetCapability reports the same
-// ported subset today.
-fn command_attributes(property: u32) -> Vec<u8> {
-    match find_command(property) {
-        Some(descriptor) => descriptor.attributes.to_be_bytes().to_vec(),
-        None => Vec::new(),
-    }
+fn command_attributes(runtime: &Tpm2Runtime, property: u32) -> Vec<u8> {
+    find_command(property)
+        .filter(|_| runtime.command_enabled(property))
+        .map(|descriptor| descriptor.attributes.to_be_bytes().to_vec())
+        .unwrap_or_default()
 }
 
 fn command_code_when(found: bool, property: u32) -> Vec<u8> {
@@ -183,6 +180,19 @@ mod tests {
     const TPM_PT_PCR_SAVE: u32 = 0x0000_0000;
     const TPM_PT_PCR_AUTH: u32 = 0x0000_0014;
     const TPM_RH_OWNER: u32 = 0x4000_0001;
+
+    #[test]
+    fn null_profile_hides_disabled_single_command_capabilities() {
+        let mut runtime = started();
+        crate::library::tpm2::pp_list::require_physical_presence(&mut runtime, 0x19c);
+        for capability in [TPM_CAP_COMMANDS, TPM_CAP_PP_COMMANDS] {
+            assert_eq!(
+                lookup(&runtime, capability, 0x19c),
+                Ok(Vec::new()),
+                "capability {capability:#x} excludes a profile-disabled command"
+            );
+        }
+    }
 
     #[test]
     fn single_lookup_list_selector_equivalence() {

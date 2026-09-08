@@ -104,7 +104,7 @@ pub(in crate::library::tpm2::command) fn execute_command_code(
     if recorded != 0 && recorded != code {
         return Err(TPM_RC_VALUE + RC_POLICY_COMMAND_CODE_CODE);
     }
-    if !upstream_implements(code) {
+    if !upstream_implements(code) || !runtime.command_enabled(code) {
         return Err(TPM_RC_POLICY_CC + RC_POLICY_COMMAND_CODE_CODE);
     }
 
@@ -312,6 +312,54 @@ mod tests {
             "a command this port has not ported yet is still implemented upstream"
         );
         assert_eq!(digest(&mut runtime), vector("PGD_AFTER_LOAD"));
+    }
+
+    #[test]
+    fn profile_disabled_policy_command_code_rejection() {
+        use crate::library::tpm2::profile::validate_user_profile;
+
+        const SIGN: u32 = 0x0000_015d;
+        const LOAD: u32 = 0x0000_0157;
+        const PROFILE: &[u8] = br#"{"Name":"custom","Commands":"0x11f-0x122,0x124-0x12e,0x130-0x140,0x142-0x159,0x15b-0x15c,0x15e,0x160-0x165,0x167-0x174,0x176-0x178,0x17a-0x193,0x197"}"#;
+
+        for snapshot in ["POLICY_FRESH", "TRIAL_FRESH"] {
+            let mut runtime = restored(snapshot);
+            runtime.state.as_mut().expect("decoded state").profile =
+                validate_user_profile(Some(PROFILE)).expect("Sign can be disabled");
+            let before = session_of(&runtime, POLICY_SESSION_0).clone();
+
+            assert_eq!(
+                response_code(&run(
+                    &mut runtime,
+                    CC_POLICY_COMMAND_CODE,
+                    &SIGN.to_be_bytes()
+                )),
+                TPM_RC_POLICY_CC + RC_POLICY_COMMAND_CODE_CODE,
+                "{snapshot}: a profile-disabled target cannot be bound"
+            );
+            let after = session_of(&runtime, POLICY_SESSION_0);
+            assert_eq!(after.audit_digest, before.audit_digest, "{snapshot}");
+            assert_eq!(after.command_code, before.command_code, "{snapshot}");
+
+            assert_eq!(
+                response_code(&run(
+                    &mut runtime,
+                    CC_POLICY_COMMAND_CODE,
+                    &LOAD.to_be_bytes()
+                )),
+                RC_SUCCESS,
+                "{snapshot}: an enabled target still binds"
+            );
+            assert_eq!(
+                response_code(&run(
+                    &mut runtime,
+                    CC_POLICY_COMMAND_CODE,
+                    &SIGN.to_be_bytes()
+                )),
+                TPM_RC_VALUE + RC_POLICY_COMMAND_CODE_CODE,
+                "{snapshot}: a conflicting restriction takes precedence"
+            );
+        }
     }
 
     #[test]

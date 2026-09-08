@@ -102,7 +102,7 @@ fn collect_capability(
             Ok(out)
         }
         TPM_CAP_COMMANDS => {
-            let page = commands::implemented(input.property, input.property_count);
+            let page = commands::implemented(runtime, input.property, input.property_count);
             let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
             for attributes in &page.entries {
                 out.extend_from_slice(&attributes.to_be_bytes());
@@ -261,7 +261,11 @@ mod tests {
     }
 
     fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
+        manufactured_runtime_with_profile(None)
+    }
+
+    fn manufactured_runtime_with_profile(profile: Option<&[u8]>) -> Tpm2Runtime {
+        let profile = validate_user_profile(profile).expect("the profile validates");
         let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
         runtime.entropy = deterministic_entropy;
@@ -278,7 +282,12 @@ mod tests {
 
     #[track_caller]
     fn started_runtime() -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime();
+        started_runtime_with_profile(None)
+    }
+
+    #[track_caller]
+    fn started_runtime_with_profile(profile: Option<&[u8]>) -> Tpm2Runtime {
+        let mut runtime = manufactured_runtime_with_profile(profile);
         let startup = hex("80010000000c0000014400 00");
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup),
@@ -309,6 +318,54 @@ mod tests {
             runtime,
             &get_capability_command(capability, property, count),
         )
+    }
+
+    #[test]
+    fn null_profile_command_capability_excludes_disabled_tail() {
+        let mut runtime = started_runtime();
+        let response = query(&mut runtime, TPM_CAP_COMMANDS, 0x197, 1);
+        assert_eq!(
+            response,
+            hex("8001000000170000000000000000020000000104000197")
+        );
+
+        for count in [0, 1] {
+            assert_eq!(
+                query(&mut runtime, TPM_CAP_COMMANDS, 0x199, count),
+                hex("80010000001300000000000000000200000000")
+            );
+        }
+    }
+
+    #[test]
+    fn null_profile_command_counts_exclude_disabled_commands() {
+        let mut runtime = started_runtime();
+        assert_eq!(
+            query(&mut runtime, TPM_CAP_TPM_PROPERTIES, 0x129, 3),
+            hex(
+                "80010000002b00000000010000000600000003000001290000006e0000012a0000006e0000012b00000000"
+            )
+        );
+    }
+
+    #[test]
+    fn custom_profile_command_capability_skips_disabled_middle_entries() {
+        let profile = validate_user_profile(None).expect("the null profile validates");
+        let base_commands = core::str::from_utf8(&profile.commands).expect("ASCII command list");
+        let json = format!(r#"{{"Name":"custom","Commands":"{base_commands},0x199,0x19c"}}"#);
+        let mut runtime = started_runtime_with_profile(Some(json.as_bytes()));
+        assert_eq!(
+            query(&mut runtime, TPM_CAP_COMMANDS, 0x199, 1),
+            hex("8001000000170000000001000000020000000102000199")
+        );
+        assert_eq!(
+            query(&mut runtime, TPM_CAP_COMMANDS, 0x19a, 1),
+            hex("800100000017000000000000000002000000010200019c")
+        );
+        assert_eq!(
+            query(&mut runtime, TPM_CAP_TPM_PROPERTIES, 0x129, 1),
+            hex("80010000001b000000000100000006000000010000012900000070")
+        );
     }
 
     struct Snapshot {
@@ -675,7 +732,7 @@ mod tests {
     #[test]
     fn profile_disabled_command_code_skipping_oracle_match() {
         use crate::library::tpm2::golden_responses::disabled_commands::vector;
-        let mut runtime = started_runtime();
+        let mut runtime = started_runtime_with_profile(Some(br#"{"Name":"default-v1"}"#));
         for (record, capability, property, count) in [
             ("DC_CCATTR_012E", 2u32, 0x0000_012eu32, 1u32),
             ("DC_CCATTR_012F", 2, 0x0000_012f, 1),
@@ -742,7 +799,7 @@ mod tests {
 
     #[test]
     fn registry_generated_command_list() {
-        let mut runtime = started_runtime();
+        let mut runtime = started_runtime_with_profile(Some(br#"{"Name":"default-v1"}"#));
         assert_eq!(
             query(&mut runtime, 2, 0, 1000),
             hex(
@@ -753,7 +810,7 @@ mod tests {
 
     #[test]
     fn command_boundary_query_registry_pagination() {
-        let mut runtime = started_runtime();
+        let mut runtime = started_runtime_with_profile(Some(br#"{"Name":"default-v1"}"#));
         assert_eq!(
             query(&mut runtime, 2, 0, 0),
             hex("80010000001300000000010000000200000000"),
@@ -992,7 +1049,7 @@ mod tests {
 
     #[test]
     fn fixed_property_group_oracle_match_registry_counts() {
-        let mut runtime = started_runtime();
+        let mut runtime = started_runtime_with_profile(Some(br#"{"Name":"default-v1"}"#));
         let expected = oracle_props_fixed_all();
         assert_eq!(query(&mut runtime, 6, 0, 1000), expected, "clamped start");
         assert_eq!(query(&mut runtime, 6, 0x100, 1000), expected);

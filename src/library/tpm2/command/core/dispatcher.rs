@@ -48,6 +48,9 @@ pub(in crate::library::tpm2) fn dispatch(
     let Some(descriptor) = registry::find(command.command_code) else {
         return Response::error(TPM_RC_COMMAND_CODE);
     };
+    if !runtime.command_enabled(command.command_code) {
+        return Response::error(TPM_RC_COMMAND_CODE);
+    }
     if !descriptor.lifecycle.allows(runtime) {
         return Response::error(TPM_RC_INITIALIZE);
     }
@@ -372,6 +375,128 @@ mod tests {
     #[test]
     fn unknown_code_command_code_error() {
         assert_eq!(dispatch_code(0x2000_0000).code(), TPM_RC_COMMAND_CODE);
+    }
+
+    fn runtime_with_profile(profile: &[u8]) -> Tpm2Runtime {
+        use crate::library::tpm2::manufacture::manufacture_state;
+        use crate::library::tpm2::profile::validate_user_profile;
+        use crate::library::tpm2::runtime::commit_manufactured_state;
+
+        let profile = validate_user_profile(Some(profile)).expect("a valid profile");
+        let state = manufacture_state(profile, |bytes| {
+            bytes.fill(0x5a);
+            Ok(())
+        })
+        .expect("the TPM manufactures");
+        commit_manufactured_state(state).expect("the state commits")
+    }
+
+    #[test]
+    fn active_profile_rejection_precedes_lifecycle_and_parameters() {
+        use crate::library::tpm2::command::core::test_support::{dispatch_bytes, response_code};
+
+        let mut runtime = runtime_with_profile(br#"{"Name":"null"}"#);
+        for started in [false, true] {
+            if started {
+                let startup = framed(TPM_ST_NO_SESSIONS, TPM_CC_STARTUP, &[0, 0]);
+                assert_eq!(response_code(&dispatch_bytes(&mut runtime, &startup)), 0);
+            }
+            for code in [0x199, 0x19a, 0x19b, 0x19c] {
+                for tag in [TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS] {
+                    let response = dispatch_bytes(&mut runtime, &framed(tag, code, &[]));
+                    assert_eq!(
+                        response_code(&response),
+                        TPM_RC_COMMAND_CODE,
+                        "command {code:#x}, tag {tag:#x}, started {started}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_profile_policy_parameters_rejection_preserves_session() {
+        use crate::library::tpm2::command::core::registry::{
+            TPM_CC_POLICY_PARAMETERS, TPM_CC_START_AUTH_SESSION,
+        };
+        use crate::library::tpm2::command::core::test_support::{
+            command, dispatch_bytes, response_code,
+        };
+
+        for (profile, expected) in [
+            (br#"{"Name":"null"}"#.as_slice(), TPM_RC_COMMAND_CODE),
+            (br#"{"Name":"default-v1"}"#.as_slice(), 0),
+        ] {
+            let mut runtime = runtime_with_profile(profile);
+            let startup = command(TPM_CC_STARTUP, &[], &[], &[0, 0]);
+            assert_eq!(response_code(&dispatch_bytes(&mut runtime, &startup)), 0);
+
+            let mut parameters = vec![0, 16];
+            parameters.extend_from_slice(&[0; 16]);
+            parameters.extend_from_slice(&[0, 0, 3, 0, 16, 0, 11]);
+            let start = command(
+                TPM_CC_START_AUTH_SESSION,
+                &[TPM_RH_NULL, TPM_RH_NULL],
+                &[],
+                &parameters,
+            );
+            assert_eq!(response_code(&dispatch_bytes(&mut runtime, &start)), 0);
+
+            let handle = 0x0300_0000;
+            let mut parameters = vec![0, 32];
+            parameters.extend_from_slice(&[0; 32]);
+            let request = command(TPM_CC_POLICY_PARAMETERS, &[handle], &[], &parameters);
+            let response = dispatch_bytes(&mut runtime, &request);
+            assert_eq!(response_code(&response), expected, "profile {profile:?}");
+            let digest = &loaded_session(&runtime.live, handle).unwrap().audit_digest;
+            if expected == TPM_RC_COMMAND_CODE {
+                assert_eq!(
+                    digest, &[0; 32],
+                    "a rejected command leaves policy unchanged"
+                );
+            } else {
+                assert_ne!(digest, &[0; 32], "the enabled command updates policy");
+            }
+        }
+    }
+
+    #[test]
+    fn active_profile_custom_disables_get_random() {
+        use crate::library::tpm2::command::core::registry::TPM_CC_GET_RANDOM;
+        use crate::library::tpm2::command::core::test_support::{
+            command, dispatch_bytes, response_code,
+        };
+
+        let profile = br#"{"Name":"custom","Commands":"0x11f-0x122,0x124-0x12e,0x130-0x140,0x142-0x159,0x15b-0x15e,0x160-0x165,0x167-0x174,0x176-0x178,0x17a,0x17c-0x193,0x197,0x199-0x19c"}"#;
+        let mut runtime = runtime_with_profile(profile);
+        let startup = command(TPM_CC_STARTUP, &[], &[], &[0, 0]);
+        assert_eq!(response_code(&dispatch_bytes(&mut runtime, &startup)), 0);
+        let request = command(TPM_CC_GET_RANDOM, &[], &[], &[0, 8]);
+        assert_eq!(
+            response_code(&dispatch_bytes(&mut runtime, &request)),
+            TPM_RC_COMMAND_CODE
+        );
+    }
+
+    #[test]
+    fn active_profile_survives_zeroed_nv_fallback() {
+        use crate::library::tpm2::command::core::test_support::{dispatch_bytes, response_code};
+        use crate::library::tpm2::runtime::manufactured_zeroed_nv_runtime;
+
+        for (profile, expected) in [
+            (br#"{"Name":"null"}"#.as_slice(), TPM_RC_COMMAND_CODE),
+            (br#"{"Name":"default-v1"}"#.as_slice(), TPM_RC_INITIALIZE),
+        ] {
+            let manufactured = runtime_with_profile(profile);
+            let mut runtime = manufactured_zeroed_nv_runtime(&manufactured);
+            assert!(runtime.state.is_none());
+            let request = framed(TPM_ST_NO_SESSIONS, 0x19c, &[]);
+            assert_eq!(
+                response_code(&dispatch_bytes(&mut runtime, &request)),
+                expected,
+                "profile {profile:?} remains active without decoded state"
+            );
+        }
     }
 
     #[test]

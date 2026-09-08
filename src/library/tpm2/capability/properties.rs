@@ -242,9 +242,9 @@ pub(in crate::library::tpm2) fn property_value(
         TPM_PT_PS_DAY_OF_YEAR => Some(PLATFORM_DAY_OF_YEAR),
         TPM_PT_PS_YEAR => Some(PLATFORM_YEAR),
         TPM_PT_SPLIT_MAX => Some(COMMIT_ARRAY_SIZE as u32 * 8),
-        TPM_PT_TOTAL_COMMANDS => Some(commands::total_count()),
-        TPM_PT_LIBRARY_COMMANDS => Some(commands::library_count()),
-        TPM_PT_VENDOR_COMMANDS => Some(commands::vendor_count()),
+        TPM_PT_TOTAL_COMMANDS => Some(commands::total_count(runtime)),
+        TPM_PT_LIBRARY_COMMANDS => Some(commands::library_count(runtime)),
+        TPM_PT_VENDOR_COMMANDS => Some(commands::vendor_count(runtime)),
         TPM_PT_NV_BUFFER_MAX => Some(MAX_NV_BUFFER_SIZE),
         TPM_PT_MODES => Some(FIPS_COMPLIANT_MODES),
         TPM_PT_MAX_CAP_BUFFER => Some(MAX_CAP_BUFFER as u32),
@@ -518,8 +518,8 @@ mod tests {
         for property in [0x129u32, 0x12a] {
             assert_eq!(
                 value(&runtime, property),
-                commands::total_count(),
-                "property {property:#x} counts the registry"
+                110,
+                "property {property:#x} counts commands enabled by the null profile"
             );
         }
         assert_eq!(value(&runtime, TPM_PT_VENDOR_COMMANDS), 0);

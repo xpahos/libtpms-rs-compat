@@ -340,7 +340,13 @@ mod tests {
     #[test]
     fn capability_page_upstream_command_order() {
         use crate::library::tpm2::capability::commands::implemented;
+        use crate::library::tpm2::command::core::test_support::manufactured_runtime;
+        use crate::library::tpm2::profile::validate_user_profile;
 
+        let mut runtime = manufactured_runtime();
+        runtime.state.as_mut().expect("decoded state").profile =
+            validate_user_profile(Some(br#"{"Name":"default-v1"}"#))
+                .expect("the default-v1 profile validates");
         for (record, start) in [
             ("CCATTR_AROUND_DECRYPT", 0x0157u32),
             ("CCATTR_AROUND_ENCRYPT", 0x0173),
@@ -353,7 +359,7 @@ mod tests {
                 "{record} is ordered by command code"
             );
             let last = reference.last().expect("a non-empty page") & 0xffff;
-            let ours: Vec<u32> = implemented(start, reference.len() as u32)
+            let ours: Vec<u32> = implemented(&runtime, start, reference.len() as u32)
                 .entries
                 .into_iter()
                 .filter(|entry| entry & 0xffff <= last)
