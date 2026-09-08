@@ -624,7 +624,8 @@ impl Tpm {
                     StateBlobKind::SaveState => Ok(StateOutput::Data(Vec::new())),
                 };
             }
-            match self.lock_state().preloaded_state.get(kind).clone() {
+            let cached = self.lock_state().preloaded_state.get(kind).clone();
+            match cached {
                 PreloadedBlob::Data(blob) => Ok(StateOutput::Data(blob)),
                 PreloadedBlob::Empty => Ok(StateOutput::Empty),
                 PreloadedBlob::Missing => {
@@ -3561,6 +3562,63 @@ mod tests {
             record_event(format!("load:{}", oracle_name(kind)));
             outcome(kind)
         })
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn get_state_storage_init_reentry() {
+        let library = Arc::new(tpm2_library());
+        let reentrant = Arc::downgrade(&library);
+        library.register_storage(
+            TestStorage::new()
+                .on_init(move || {
+                    let library = reentrant.upgrade().expect("the caller owns the TPM");
+                    assert!(
+                        library.state_is_unlocked(),
+                        "storage initialization must run outside the state lock"
+                    );
+                    assert_eq!(library.get_tpm_property(TpmProperty::KeyHandles), Some(3));
+                    Ok(())
+                })
+                .on_load(|_| Ok(StorageLoad::Data(vec![0xa5, 0x5a])))
+                .arc(),
+        );
+
+        for kind in ALL_KINDS {
+            assert_eq!(
+                library.get_state(kind),
+                Ok(StateOutput::Data(vec![0xa5, 0x5a])),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn get_state_storage_load_reentry() {
+        let library = Arc::new(tpm2_library());
+        let reentrant = Arc::downgrade(&library);
+        library.register_storage(
+            TestStorage::new()
+                .on_load(move |_| {
+                    let library = reentrant.upgrade().expect("the caller owns the TPM");
+                    assert!(
+                        library.state_is_unlocked(),
+                        "storage loading must run outside the state lock"
+                    );
+                    assert_eq!(library.get_tpm_property(TpmProperty::KeyHandles), Some(3));
+                    Ok(StorageLoad::Data(vec![0xa5, 0x5a]))
+                })
+                .arc(),
+        );
+
+        for kind in ALL_KINDS {
+            assert_eq!(
+                library.get_state(kind),
+                Ok(StateOutput::Data(vec![0xa5, 0x5a])),
+                "{kind:?}"
+            );
+        }
     }
 
     #[cfg(feature = "tpm2")]
