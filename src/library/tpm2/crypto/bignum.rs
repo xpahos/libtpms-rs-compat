@@ -102,6 +102,9 @@ impl BigUint {
     }
 
     pub(in crate::library::tpm2) fn mask_bits(&mut self, bits: usize) {
+        if bits >= self.bit_len() {
+            return;
+        }
         let limbs = bits.div_ceil(LIMB_BITS);
         if self.limbs.len() > limbs {
             self.limbs.truncate(limbs);
@@ -818,10 +821,58 @@ mod tests {
 
     #[test]
     fn oversized_mask_value_unchanged() {
-        let value = BigUint::from_u64(0x1234);
-        let mut masked = value.clone();
-        masked.mask_bits(4096);
-        assert_eq!(masked, value);
+        for value in [
+            BigUint::from_u64(0x1234),
+            BigUint::from_be_bytes(&[0xff; 64]),
+            BigUint::zero(),
+        ] {
+            for bits in [
+                0,
+                13,
+                64,
+                65,
+                127,
+                128,
+                129,
+                512,
+                513,
+                521,
+                4096,
+                4097,
+                usize::MAX,
+            ] {
+                if bits < value.bit_len() {
+                    continue;
+                }
+                let mut masked = value.clone();
+                masked.mask_bits(bits);
+                assert_eq!(masked, value, "value {value:?}, mask {bits}");
+            }
+        }
+    }
+
+    #[test]
+    fn mask_bits_native_integer_match() {
+        for value in [
+            0,
+            1,
+            0x1234,
+            u128::from(u64::MAX),
+            1u128 << 64,
+            0xfedc_ba98_7654_3210_0123_4567_89ab_cdef,
+            u128::MAX,
+        ] {
+            for bits in 0..=129 {
+                let expected = if bits >= 128 {
+                    value
+                } else {
+                    value & ((1u128 << bits) - 1)
+                };
+                let mut masked = big(value);
+                masked.mask_bits(bits);
+                assert_eq!(to_u128(&masked), expected, "value {value:#x}, mask {bits}");
+            }
+        }
     }
 
     #[test]
