@@ -2957,6 +2957,45 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
+    fn accepted_reversed_command_range_state_round_trip() {
+        const PROFILE: &[u8] = br#"{"Name":"custom","StateFormatLevel":2,"Commands":"0x11f-0x122,0x124-0x12e,0x130-0x140,0x142-0x159,0x15b-0x15e,0x160-0x165,0x167-0x174,0x176-0x178,0x17a-0x193,0x197,0x140-0x130"}"#;
+
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *BACKEND_PERMALL.lock().unwrap() = None;
+        *BACKEND_STORES.lock().unwrap() = 0;
+        let library = manufacture_library();
+        assert_eq!(library.set_profile(Some(PROFILE)), TPM_SUCCESS);
+        assert_eq!(library.initialize(), TPM_SUCCESS);
+        let StateOutput::Data(blob) = library
+            .get_state(StateBlobKind::Permanent)
+            .expect("the accepted profile can be serialized")
+        else {
+            panic!("a manufactured TPM has permanent state");
+        };
+        assert_eq!(*BACKEND_PERMALL.lock().unwrap(), Some(blob.clone()));
+        let active_profile = library.get_info(INFO_ACTIVE_PROFILE);
+        library.terminate();
+
+        let restored = tpm2_library();
+        assert_eq!(
+            restored.set_state(StateBlobKind::Permanent, StateInput::Data(blob.clone())),
+            TPM_SUCCESS
+        );
+        assert_eq!(restored.initialize(), TPM_SUCCESS);
+        assert!(!restored.was_manufactured());
+        assert_eq!(
+            restored.get_state(StateBlobKind::Permanent),
+            Ok(StateOutput::Data(blob)),
+            "the compressed command bitmaps survive serialization and restore"
+        );
+        assert_eq!(restored.get_info(INFO_ACTIVE_PROFILE), active_profile);
+        restored.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
     fn set_profile_null_configuration_clear() {
         let library = manufacture_library();
         assert_eq!(

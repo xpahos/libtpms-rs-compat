@@ -1039,9 +1039,10 @@ pub(super) fn enabled_command_count(commands: &[u8]) -> Result<u32, TpmResult> {
         if idx_lo >= COMMAND_COUNT || idx_hi >= COMMAND_COUNT {
             return Err(TPM_FAIL);
         }
-        for slot in &mut enabled[idx_lo..=idx_hi] {
-            *slot = true;
+        if idx_lo > idx_hi {
+            continue;
         }
+        enabled[idx_lo..=idx_hi].fill(true);
     }
     Ok(enabled.iter().filter(|&&on| on).count() as u32)
 }
@@ -1767,6 +1768,34 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
             null_commands_str()
         );
         assert_eq!(level(&json("custom", 2, &commands)), Ok(2));
+    }
+
+    #[test]
+    fn enabled_command_count_treats_reversed_ranges_as_empty() {
+        for (commands, expected) in [
+            ("0x140-0x130", 0),
+            ("0x140-0x13f", 0),
+            ("0x130-0x130", 1),
+            ("0x130-0x140,0x140-0x130", 17),
+            ("0x140-0x130,0x130-0x132,0x131-0x133", 4),
+        ] {
+            assert_eq!(
+                enabled_command_count(commands.as_bytes()),
+                Ok(expected),
+                "commands {commands:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enabled_command_count_rejects_out_of_bounds_reversed_ranges() {
+        for commands in ["0x1a0-0x130", "0x140-0x11e", "0x100000000-0x130"] {
+            assert_eq!(
+                enabled_command_count(commands.as_bytes()),
+                Err(TPM_FAIL),
+                "commands {commands:?}"
+            );
+        }
     }
 
     #[test]
