@@ -102,10 +102,7 @@ pub(super) fn empty_object_slots(runtime: &Tpm2Runtime) -> impl Iterator<Item = 
         .map(|(index, _)| (index, TRANSIENT_FIRST + index as u32))
 }
 
-pub(super) fn resolve_any_object<'a>(
-    runtime: &'a Tpm2Runtime,
-    handle: u32,
-) -> Option<&'a OwnedAnyObject> {
+pub(super) fn resolve_any_object(runtime: &Tpm2Runtime, handle: u32) -> Option<&OwnedAnyObject> {
     if is_transient_object_handle(handle) {
         let slot = occupied_object_slot(runtime, handle)?;
         return runtime.live.objects.get(slot);
@@ -122,7 +119,7 @@ pub(super) fn resolve_any_object<'a>(
     None
 }
 
-pub(super) fn object_auth_value<'a>(runtime: &'a Tpm2Runtime, handle: u32) -> Option<&'a [u8]> {
+pub(super) fn object_auth_value(runtime: &Tpm2Runtime, handle: u32) -> Option<&[u8]> {
     match &resolve_any_object(runtime, handle)?.body {
         OwnedAnyObjectBody::Object(body) => Some(body.sensitive.auth_value.as_bytes()),
         OwnedAnyObjectBody::Sequence(body) => Some(body.auth.as_bytes()),
@@ -487,10 +484,10 @@ pub(super) fn asymmetric_key_bytes(public: &OwnedTpmtPublic) -> Option<usize> {
     }
 }
 
-pub(super) fn primary_seed<'a>(
-    runtime: &'a Tpm2Runtime,
+pub(super) fn primary_seed(
+    runtime: &Tpm2Runtime,
     hierarchy: u32,
-) -> Result<(&'a [u8], u8), TpmResult> {
+) -> Result<(&[u8], u8), TpmResult> {
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
     let persistent = &state.persistent;
     Ok(match hierarchy {

@@ -151,7 +151,8 @@ mod tests {
 
     #[test]
     fn index_type_predicate_exclusivity() {
-        let predicates: [(u32, fn(u32) -> bool); 6] = [
+        type IndexPredicate = fn(u32) -> bool;
+        let predicates: [(u32, IndexPredicate); 6] = [
             (TPM_NT_ORDINARY, is_ordinary_index),
             (TPM_NT_COUNTER, is_counter_index),
             (TPM_NT_BITS, is_bits_index),

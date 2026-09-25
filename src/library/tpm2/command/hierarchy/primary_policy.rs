@@ -1,4 +1,4 @@
-use super::{commit_persistent_state, with_rollback};
+use super::{with_persistent_rollback, with_rollback};
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
 };
@@ -60,24 +60,25 @@ pub(in crate::library::tpm2::command) fn execute(
                 commit_clear_orderly(runtime, orderly_state)
             })
         }
-        TPM_RH_OWNER | TPM_RH_ENDORSEMENT | TPM_RH_LOCKOUT => with_rollback(runtime, |runtime| {
-            let persistent = &mut runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?.persistent;
-            match auth_handle {
-                TPM_RH_OWNER => {
-                    persistent.owner_alg = hash_alg;
-                    persistent.owner_policy = auth_policy;
+        TPM_RH_OWNER | TPM_RH_ENDORSEMENT | TPM_RH_LOCKOUT => {
+            with_persistent_rollback(runtime, |persistent| {
+                match auth_handle {
+                    TPM_RH_OWNER => {
+                        persistent.owner_alg = hash_alg;
+                        persistent.owner_policy = auth_policy;
+                    }
+                    TPM_RH_ENDORSEMENT => {
+                        persistent.endorsement_alg = hash_alg;
+                        persistent.endorsement_policy = auth_policy;
+                    }
+                    _ => {
+                        persistent.lockout_alg = hash_alg;
+                        persistent.lockout_policy = auth_policy;
+                    }
                 }
-                TPM_RH_ENDORSEMENT => {
-                    persistent.endorsement_alg = hash_alg;
-                    persistent.endorsement_policy = auth_policy;
-                }
-                _ => {
-                    persistent.lockout_alg = hash_alg;
-                    persistent.lockout_policy = auth_policy;
-                }
-            }
-            commit_persistent_state(runtime)
-        }),
+                Ok(())
+            })
+        }
         _ => Err(TPM_RC_FAILURE),
     }?;
     Ok(CommandOutput::empty())

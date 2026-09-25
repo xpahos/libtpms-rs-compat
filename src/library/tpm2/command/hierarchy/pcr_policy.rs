@@ -1,5 +1,5 @@
 use super::primary_policy::hash_algorithm_allowed;
-use super::{commit_persistent_state, digest_size_of, with_rollback};
+use super::{digest_size_of, with_persistent_rollback};
 use crate::library::constants::{
     TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
     TPM_RC_VALUE,
@@ -56,18 +56,14 @@ pub(in crate::library::tpm2::command) fn execute(
 
     let hash_alg = input.hash_alg;
     let auth_policy = input.auth_policy.to_vec();
-    with_rollback(runtime, |runtime| {
-        let entry = runtime
-            .state
-            .as_mut()
-            .ok_or(TPM_RC_FAILURE)?
-            .persistent
+    with_persistent_rollback(runtime, |persistent| {
+        let entry = persistent
             .pcr_policies
             .get_mut(group)
             .ok_or(TPM_RC_FAILURE)?;
         entry.hash_alg = hash_alg;
         entry.policy = auth_policy;
-        commit_persistent_state(runtime)
+        Ok(())
     })?;
     Ok(CommandOutput::empty())
 }

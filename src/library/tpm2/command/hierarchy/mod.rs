@@ -118,7 +118,7 @@ pub(in crate::library::tpm2::command) fn recompute_user_nvram_capacity(
 }
 
 pub(in crate::library::tpm2::command) use crate::library::tpm2::command::core::transaction::{
-    commit_persistent_state, with_rollback,
+    commit_persistent_state, with_persistent_rollback, with_rollback,
 };
 
 #[cfg(test)]

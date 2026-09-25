@@ -1385,8 +1385,7 @@ mod tests {
             use crate::library::tpm2::host_nv_commit;
             use std::sync::{Arc, Mutex};
 
-            let stored_blobs: Arc<Mutex<Vec<(StateBlobKind, Vec<u8>)>>> =
-                Arc::new(Mutex::new(Vec::new()));
+            let stored_blobs = Arc::new(Mutex::new(Vec::new()));
             let recorder = Arc::clone(&stored_blobs);
             let storage = TestStorage::new().on_store(move |kind, data| {
                 recorder.lock().unwrap().push((kind, data.to_vec()));

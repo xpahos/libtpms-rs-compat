@@ -209,7 +209,7 @@ impl ShaState {
             }
             self.data[buffered..block].copy_from_slice(&data[..free]);
             data = &data[free..];
-            let pending = core::mem::replace(&mut self.data, Vec::new());
+            let pending = core::mem::take(&mut self.data);
             self.compress(&pending);
             self.data = pending;
             self.data.fill(0);
@@ -312,7 +312,7 @@ impl ShaState {
 
     pub(in crate::library::tpm2) fn import(
         hash_alg: u16,
-        payload: &ShaStatePayload,
+        payload: ShaStatePayload,
     ) -> Option<Self> {
         let block = hash_block_size(hash_alg)?;
         let (words, data, num, md_len) = match (hash_alg, payload) {
@@ -328,11 +328,11 @@ impl ShaState {
             ) => (
                 Words::W32 {
                     h: h.to_vec(),
-                    nl: *nl,
-                    nh: *nh,
+                    nl,
+                    nh,
                 },
-                data.clone(),
-                *num,
+                data,
+                num,
                 0,
             ),
             (
@@ -348,12 +348,12 @@ impl ShaState {
             ) => (
                 Words::W32 {
                     h: h.to_vec(),
-                    nl: *nl,
-                    nh: *nh,
+                    nl,
+                    nh,
                 },
-                data.clone(),
-                *num,
-                *md_len,
+                data,
+                num,
+                md_len,
             ),
             (
                 TPM_ALG_SHA384 | TPM_ALG_SHA512,
@@ -365,16 +365,7 @@ impl ShaState {
                     num,
                     md_len,
                 },
-            ) => (
-                Words::W64 {
-                    h: *h,
-                    nl: *nl,
-                    nh: *nh,
-                },
-                data.clone(),
-                *num,
-                *md_len,
-            ),
+            ) => (Words::W64 { h, nl, nh }, data, num, md_len),
             _ => return None,
         };
         if data.len() != block || num as usize > block {
@@ -566,7 +557,7 @@ mod tests {
                 state.update(&message[..split]);
                 let payload = state.export();
                 let mut restored =
-                    ShaState::import(hash_alg, &payload).expect("the payload imports");
+                    ShaState::import(hash_alg, payload).expect("the payload imports");
                 restored.update(&message[split..]);
                 state.update(&message[split..]);
                 assert_eq!(
@@ -581,10 +572,10 @@ mod tests {
     #[test]
     fn mismatched_payload_import_rejection() {
         let sha1 = ShaState::new(TPM_ALG_SHA1).expect("a compiled algorithm");
-        assert!(ShaState::import(TPM_ALG_SHA256, &sha1.export()).is_none());
+        assert!(ShaState::import(TPM_ALG_SHA256, sha1.export()).is_none());
         let sha512 = ShaState::new(TPM_ALG_SHA512).expect("a compiled algorithm");
-        assert!(ShaState::import(TPM_ALG_SHA1, &sha512.export()).is_none());
-        assert!(ShaState::import(TPM_ALG_SHA384, &sha512.export()).is_some());
+        assert!(ShaState::import(TPM_ALG_SHA1, sha512.export()).is_none());
+        assert!(ShaState::import(TPM_ALG_SHA384, sha512.export()).is_some());
     }
 
     #[test]
@@ -609,7 +600,7 @@ mod tests {
             num: 64,
             md_len,
         };
-        assert!(ShaState::import(TPM_ALG_SHA256, &oversized).is_some());
+        assert!(ShaState::import(TPM_ALG_SHA256, oversized).is_some());
         let beyond = ShaStatePayload::Sha256 {
             h,
             nl,
@@ -618,7 +609,7 @@ mod tests {
             num: 65,
             md_len,
         };
-        assert!(ShaState::import(TPM_ALG_SHA256, &beyond).is_none());
+        assert!(ShaState::import(TPM_ALG_SHA256, beyond).is_none());
         let short = ShaStatePayload::Sha256 {
             h,
             nl,
@@ -627,7 +618,7 @@ mod tests {
             num: 0,
             md_len,
         };
-        assert!(ShaState::import(TPM_ALG_SHA256, &short).is_none());
+        assert!(ShaState::import(TPM_ALG_SHA256, short).is_none());
     }
 
     #[test]

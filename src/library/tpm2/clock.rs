@@ -704,8 +704,10 @@ mod tests {
 
     #[test]
     fn fresh_power_on_stopped_timer_state() {
-        assert!(TpmTimer::POWER_ON_RESET.timer_stopped);
-        assert!(TpmTimer::POWER_ON_RESET.timer_reset);
+        const {
+            assert!(TpmTimer::POWER_ON_RESET.timer_stopped);
+            assert!(TpmTimer::POWER_ON_RESET.timer_reset);
+        }
         assert!(manufactured_runtime().timer.timer_stopped);
     }
 

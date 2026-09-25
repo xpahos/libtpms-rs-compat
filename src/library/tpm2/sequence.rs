@@ -198,7 +198,7 @@ fn restore_state(stored: &OwnedHashState) -> Option<ShaState> {
             md_len: *md_len,
         },
     };
-    ShaState::import(stored.hash_alg, &payload)
+    ShaState::import(stored.hash_alg, payload)
 }
 
 fn sequence_object(auth: &[u8], sequence_bit: u32, body: OwnedHashObjectBody) -> OwnedAnyObject {

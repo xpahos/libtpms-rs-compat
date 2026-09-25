@@ -16,8 +16,8 @@ use crate::library::tpm2::object_load::{
     add_modifier, object_load, public_marshal_and_compute_name,
 };
 use crate::library::tpm2::object_wrap::{
-    MAX_PRIVATE, Protector, duplicate_to_sensitive, produce_outer_wrap, sensitive_to_duplicate,
-    sensitive_to_private, unwrap_outer,
+    InnerWrap, MAX_PRIVATE, Protector, duplicate_to_sensitive, produce_outer_wrap,
+    sensitive_to_duplicate, sensitive_to_private, unwrap_outer,
 };
 use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedTpmtPublic};
 use crate::library::tpm2::public::{NAME_SIZE, SymDefObject, TPM_ALG_NULL, TPM_ALG_SYMCIPHER};
@@ -184,8 +184,10 @@ pub(in crate::library::tpm2::command) fn execute_duplicate(
         protector.as_ref(),
         object.public.name_alg,
         &data,
-        &symmetric,
-        &encryption_key_in,
+        InnerWrap {
+            symmetric: &symmetric,
+            key: &encryption_key_in,
+        },
         &mut rand,
     );
     finish_live_rand(runtime, rand)?;
@@ -245,11 +247,9 @@ pub(in crate::library::tpm2::command) fn execute_rewrap(
         unwrap_outer(
             &protector,
             &name,
-            old_parent.public.name_alg,
             Some(&data),
             false,
             &in_duplicate,
-            TPM_RC_FAILURE,
             &mut LazySelfTest::untested(),
         )
         .map_err(|code| add_modifier(code, RC_REWRAP_IN_DUPLICATE))?
@@ -273,7 +273,6 @@ pub(in crate::library::tpm2::command) fn execute_rewrap(
     let wrapped = produce_outer_wrap(
         &protector,
         &name,
-        new_parent.public.name_alg,
         Some(&encrypted.data),
         false,
         &private_blob,
@@ -366,8 +365,10 @@ pub(in crate::library::tpm2::command) fn execute_import(
         Some(&protector),
         name_alg,
         &data,
-        &symmetric,
-        &encryption_key,
+        InnerWrap {
+            symmetric: &symmetric,
+            key: &encryption_key,
+        },
     )
     .map_err(|code| add_modifier(code, RC_IMPORT_DUPLICATE))?;
 

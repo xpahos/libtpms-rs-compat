@@ -970,7 +970,6 @@ mod tests {
             state.persistent.sp_seed =
                 crate::library::tpm2::persistent::OwnedSecret::copy_of(&[0x5a; 64]);
         }
-        let mut runtime = runtime;
         runtime.live.objects[0].attributes = 0;
         runtime.live.objects[1].attributes = 0;
         let after = decode(&create(&mut runtime, TPM_RH_OWNER, &template));
@@ -1746,44 +1745,58 @@ mod tests {
     #[test]
     fn supplied_symmetric_primary_libtpms_oracle_byte_parity() {
         use crate::library::tpm2::golden_responses::create_primary as vectors;
-        let cases: [(&str, u16, u16, &[u8], &[u8]); 5] = [
-            (
-                "tdes128",
-                0x0003,
-                128,
-                &vectors::TDES_TWO_KEY,
-                vectors::vector("TDES128_SUPPLIED_OK"),
-            ),
-            (
-                "tdes192",
-                0x0003,
-                192,
-                &vectors::TDES_THREE_KEY,
-                vectors::vector("TDES192_SUPPLIED_OK"),
-            ),
-            (
-                "tdes128_no_parity",
-                0x0003,
-                128,
-                &vectors::TDES_TWO_KEY_NO_PARITY,
-                vectors::vector("TDES128_SUPPLIED_BAD_PARITY"),
-            ),
-            (
-                "tdes192_repeated_ends",
-                0x0003,
-                192,
-                &vectors::TDES_THREE_KEY_REPEATED_ENDS,
-                vectors::vector("TDES192_SUPPLIED_SAME13"),
-            ),
-            (
-                "aes128",
-                0x0006,
-                128,
-                &vectors::AES_SUPPLIED_KEY,
-                vectors::vector("AES128_SUPPLIED_OK"),
-            ),
+        struct SuppliedKeyCase {
+            label: &'static str,
+            symmetric: u16,
+            key_bits: u16,
+            key: &'static [u8],
+            expected: &'static [u8],
+        }
+        let cases = [
+            SuppliedKeyCase {
+                label: "tdes128",
+                symmetric: 0x0003,
+                key_bits: 128,
+                key: &vectors::TDES_TWO_KEY,
+                expected: vectors::vector("TDES128_SUPPLIED_OK"),
+            },
+            SuppliedKeyCase {
+                label: "tdes192",
+                symmetric: 0x0003,
+                key_bits: 192,
+                key: &vectors::TDES_THREE_KEY,
+                expected: vectors::vector("TDES192_SUPPLIED_OK"),
+            },
+            SuppliedKeyCase {
+                label: "tdes128_no_parity",
+                symmetric: 0x0003,
+                key_bits: 128,
+                key: &vectors::TDES_TWO_KEY_NO_PARITY,
+                expected: vectors::vector("TDES128_SUPPLIED_BAD_PARITY"),
+            },
+            SuppliedKeyCase {
+                label: "tdes192_repeated_ends",
+                symmetric: 0x0003,
+                key_bits: 192,
+                key: &vectors::TDES_THREE_KEY_REPEATED_ENDS,
+                expected: vectors::vector("TDES192_SUPPLIED_SAME13"),
+            },
+            SuppliedKeyCase {
+                label: "aes128",
+                symmetric: 0x0006,
+                key_bits: 128,
+                key: &vectors::AES_SUPPLIED_KEY,
+                expected: vectors::vector("AES128_SUPPLIED_OK"),
+            },
         ];
-        for (label, symmetric, key_bits, key, expected) in cases {
+        for SuppliedKeyCase {
+            label,
+            symmetric,
+            key_bits,
+            key,
+            expected,
+        } in cases
+        {
             let mut runtime = sym_permall_runtime();
             let template =
                 vectors::symcipher_template(symmetric, key_bits, vectors::SYM_SUPPLIED_ATTRIBUTES);

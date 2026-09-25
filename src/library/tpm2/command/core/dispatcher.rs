@@ -132,7 +132,9 @@ fn run(
         parameters: decrypted.as_deref().unwrap_or(parameters),
         cancellation,
     };
-    let transaction = transaction::begin(runtime);
+    let transaction = area
+        .response_needs_rollback(descriptor.code, audit_cp_hash.as_deref())
+        .then(|| transaction::begin(runtime));
     let (out_handles, mut out_parameters) = (descriptor.handler)(runtime, &frame)?.into_parts();
     let auth_response = match build_response_sessions(
         runtime,
@@ -145,7 +147,9 @@ fn run(
     ) {
         Ok(auth_response) => auth_response,
         Err(code) => {
-            transaction::roll_back(runtime, transaction);
+            if let Some(transaction) = transaction {
+                transaction::roll_back(runtime, transaction);
+            }
             return Err(code);
         }
     };

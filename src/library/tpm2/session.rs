@@ -86,15 +86,12 @@ fn loaded_ram_slot(live: &LiveState, handle: u32) -> Option<usize> {
     usize::from(context).checked_sub(1)
 }
 
-pub(super) fn loaded_session<'a>(live: &'a LiveState, handle: u32) -> Option<&'a OwnedSession> {
+pub(super) fn loaded_session(live: &LiveState, handle: u32) -> Option<&OwnedSession> {
     let slot = loaded_ram_slot(live, handle)?;
     live.sessions.get(slot)?.session.as_ref()
 }
 
-pub(super) fn loaded_session_mut<'a>(
-    live: &'a mut LiveState,
-    handle: u32,
-) -> Option<&'a mut OwnedSession> {
+pub(super) fn loaded_session_mut(live: &mut LiveState, handle: u32) -> Option<&mut OwnedSession> {
     let slot = loaded_ram_slot(live, handle)?;
     live.sessions.get_mut(slot)?.session.as_mut()
 }

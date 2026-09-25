@@ -4,7 +4,7 @@ use crate::library::tpm2::command::core::dispatcher::CommandFrame;
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::command::core::registry::find;
 use crate::library::tpm2::command::core::response_code::{TPM_RC_1, TPM_RC_2, TPM_RC_P};
-use crate::library::tpm2::command::core::transaction::{commit_persistent_state, with_rollback};
+use crate::library::tpm2::command::core::transaction::with_persistent_rollback;
 use crate::library::tpm2::command::{command_bitmap_index, upstream_implements};
 use crate::library::tpm2::nv::command_bitmap_image;
 use crate::library::tpm2::persistent::OwnedCommandBitmap;
@@ -41,17 +41,12 @@ pub(in crate::library::tpm2::command) fn execute(
         clear_command(&mut bitmap, &profile_commands, code);
     }
 
-    with_rollback(runtime, |runtime| {
-        runtime
-            .state
-            .as_mut()
-            .ok_or(TPM_RC_FAILURE)?
-            .persistent
-            .pp_list = OwnedCommandBitmap {
+    with_persistent_rollback(runtime, |persistent| {
+        persistent.pp_list = OwnedCommandBitmap {
             compressed: false,
             bytes: bitmap,
         };
-        commit_persistent_state(runtime)
+        Ok(())
     })?;
     Ok(CommandOutput::empty())
 }

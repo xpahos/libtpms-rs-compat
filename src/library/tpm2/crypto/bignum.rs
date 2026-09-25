@@ -498,12 +498,12 @@ fn limbs_are_below(value: &[u64], bound: &[u64]) -> bool {
 
 fn subtract_limbs_in_place(target: &mut [u64], value: &[u64]) {
     let mut borrow = 0u64;
-    for index in 0..target.len() {
+    for (index, limb) in target.iter_mut().enumerate() {
         let right = value.get(index).copied().unwrap_or(0);
-        let (difference, first) = target[index].overflowing_sub(right);
+        let (difference, first) = limb.overflowing_sub(right);
         let (difference, second) = difference.overflowing_sub(borrow);
         borrow = u64::from(first) + u64::from(second);
-        target[index] = difference;
+        *limb = difference;
     }
 }
 
@@ -540,8 +540,7 @@ impl Montgomery {
         let n = self.limbs;
         let modulus = &self.modulus_limbs;
         accumulator[..=n].fill(0);
-        for index in 0..n {
-            let multiplier = right[index];
+        for &multiplier in &right[..n] {
             let opening = u128::from(accumulator[0]) + u128::from(left[0]) * u128::from(multiplier);
             let mut carry = opening >> LIMB_BITS;
             let low = opening as u64;

@@ -2,7 +2,9 @@ use crate::library::constants::TPM_RC_FAILURE;
 use crate::library::tpm2::clock::{RuntimeClock, TpmTimer};
 use crate::library::tpm2::live::{LiveState, RestoredVolatile};
 use crate::library::tpm2::nv::build_nv_image;
-use crate::library::tpm2::persistent::{OwnedPcrAllocation, OwnedPersistentState};
+use crate::library::tpm2::persistent::{
+    OwnedPcrAllocation, OwnedPersistentData, OwnedPersistentState,
+};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 use crate::types::TpmResult;
 pub(in crate::library::tpm2::command) struct CommandTransaction {
@@ -80,6 +82,85 @@ where
         Err(code) => {
             roll_back(runtime, backup);
             Err(code)
+        }
+    }
+}
+
+pub(in crate::library::tpm2::command) fn with_persistent_rollback(
+    runtime: &mut Tpm2Runtime,
+    apply: impl FnOnce(&mut OwnedPersistentData) -> Result<(), TpmResult>,
+) -> Result<(), TpmResult> {
+    let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
+    let backup = state.persistent.clone();
+    let result = apply(&mut state.persistent)
+        .and_then(|()| build_nv_image(state).map_err(|_| TPM_RC_FAILURE));
+    match result {
+        Ok(image) => {
+            runtime.nv_memory = image;
+            runtime.nv_update_pending = true;
+            Ok(())
+        }
+        Err(code) => {
+            state.persistent = backup;
+            Err(code)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::constants::TPM_RC_VALUE;
+    use crate::library::tpm2::command::core::test_support::manufactured_runtime;
+    use crate::library::tpm2::persistent::{OwnedSecret, persistent_all_store};
+
+    #[test]
+    fn persistent_mutation_error_restores_state() {
+        for pending in [false, true] {
+            let mut runtime = manufactured_runtime();
+            runtime.nv_update_pending = pending;
+            let before = persistent_all_store(runtime.state()).expect("state serializes");
+            let nv_before = runtime.nv_memory.clone();
+
+            let result = with_persistent_rollback(&mut runtime, |persistent| {
+                persistent.algorithm_set = 9;
+                persistent.owner_auth = OwnedSecret::from_vec(b"changed".to_vec());
+                Err::<(), _>(TPM_RC_VALUE)
+            });
+
+            assert_eq!(result, Err(TPM_RC_VALUE));
+            assert_eq!(
+                persistent_all_store(runtime.state()).expect("state serializes"),
+                before,
+                "a rejected mutation restores all persistent fields"
+            );
+            assert_eq!(runtime.nv_memory, nv_before);
+            assert_eq!(runtime.nv_update_pending, pending);
+        }
+    }
+
+    #[test]
+    fn persistent_image_error_restores_state() {
+        for pending in [false, true] {
+            let mut runtime = manufactured_runtime();
+            runtime.nv_update_pending = pending;
+            let before = persistent_all_store(runtime.state()).expect("state serializes");
+            let nv_before = runtime.nv_memory.clone();
+
+            let result = with_persistent_rollback(&mut runtime, |persistent| {
+                persistent.algorithm_set = 9;
+                persistent.owner_auth = OwnedSecret::from_vec(vec![0xaa; 4096]);
+                Ok(())
+            });
+
+            assert_eq!(result, Err(TPM_RC_FAILURE));
+            assert_eq!(
+                persistent_all_store(runtime.state()).expect("state serializes"),
+                before,
+                "an unencodable mutation restores all persistent fields"
+            );
+            assert_eq!(runtime.nv_memory, nv_before);
+            assert_eq!(runtime.nv_update_pending, pending);
         }
     }
 }

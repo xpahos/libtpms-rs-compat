@@ -6,7 +6,9 @@ use crate::library::constants::{
     TPM_RC_RESERVED_BITS, TPM_RC_SIZE, TPM_RC_SYMMETRIC, TPM_RC_VALUE,
 };
 use crate::library::tpm2::algorithm::{TPM_ALG_NULL, TPM_ALG_XOR};
-use crate::library::tpm2::command::core::registry::{CommandDescriptor, NvAccess};
+use crate::library::tpm2::command::core::registry::{
+    CommandDescriptor, NvAccess, TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
+};
 use crate::library::tpm2::crypto::{
     Hasher, HmacState, kdfa, sym_block_size, sym_cfb_decrypt, sym_cfb_encrypt,
 };
@@ -109,6 +111,19 @@ pub(in crate::library::tpm2::command) struct SessionArea<'a> {
 }
 
 impl SessionArea<'_> {
+    pub(in crate::library::tpm2::command) fn response_needs_rollback(
+        &self,
+        code: u32,
+        audit_cp_hash: Option<&[u8]>,
+    ) -> bool {
+        code == TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS
+            || audit_cp_hash.is_some()
+            || self
+                .sessions
+                .iter()
+                .any(|session| session.handle != TPM_RS_PW)
+    }
+
     pub(in crate::library::tpm2::command) fn none() -> Self {
         Self {
             sessions: Vec::new(),
@@ -653,7 +668,7 @@ fn check_policy_session(
         let allowed = if locality < 5 {
             loaded.command_locality & (1 << locality) != 0 && loaded.command_locality <= 31
         } else if locality > 31 {
-            u32::from(loaded.command_locality) == u32::from(locality)
+            u32::from(loaded.command_locality) == locality
         } else {
             false
         };
@@ -1123,11 +1138,23 @@ pub(in crate::library::tpm2::command) fn build_response_sessions(
     runtime: &mut Tpm2Runtime,
     descriptor: &CommandDescriptor,
     code: u32,
-    parameters: &mut Vec<u8>,
+    parameters: &mut [u8],
     area: &mut SessionArea<'_>,
     tagged: bool,
     audit_cp_hash: Option<&[u8]>,
 ) -> Result<Vec<u8>, TpmResult> {
+    if tagged && !area.response_needs_rollback(descriptor.code, audit_cp_hash) {
+        if descriptor.sessions_allowed {
+            set_exclusive_audit_session(runtime, TPM_RH_UNASSIGNED);
+        }
+        let mut response = Vec::with_capacity(5 * area.sessions.len());
+        for session in &mut area.sessions {
+            session.attributes |= TPMA_SESSION_CONTINUE_SESSION;
+            response.extend_from_slice(&[0, 0, session.attributes, 0, 0]);
+        }
+        return Ok(response);
+    }
+
     if tagged {
         update_all_nonce_tpm(runtime, area)?;
         encrypt_first_parameter(runtime, area, parameters)?;
@@ -2048,6 +2075,33 @@ mod tests {
     }
 
     #[test]
+    fn password_response_clears_exclusivity_without_updating_audit_session() {
+        for attributes in [0, TPMA_SESSION_CONTINUE_SESSION] {
+            let mut runtime = restored("AUDIT_SESSION");
+            assert_eq!(
+                send(&mut runtime, &hex(AUDIT_GET_RANDOM)),
+                vector("AUDIT_GET_RANDOM")
+            );
+            assert_eq!(exclusive_audit_session(&runtime), HMAC_SESSION_0);
+            let before = session_of(&runtime, HMAC_SESSION_0).clone();
+            let mut command = hex(
+                "80020000004100000182000000000000000940000009000000000000000001000b0000000000000000000000000000000000000000000000000000000000000000",
+            );
+            command[24] = attributes;
+
+            assert_eq!(
+                send(&mut runtime, &command),
+                hex("80020000001300000000000000000000010000")
+            );
+            assert_eq!(exclusive_audit_session(&runtime), TPM_RH_UNASSIGNED);
+            let after = session_of(&runtime, HMAC_SESSION_0);
+            assert_eq!(after.audit_digest, before.audit_digest);
+            assert_eq!(after.nonce_tpm.as_bytes(), before.nonce_tpm.as_bytes());
+            assert_eq!(after.attributes, before.attributes);
+        }
+    }
+
+    #[test]
     fn unaudited_command_exclusivity_loss_next_audit_failure() {
         let mut runtime = restored("AUDIT_SESSION");
         send(&mut runtime, &hex(AUDIT_GET_RANDOM));
@@ -2528,6 +2582,15 @@ mod tests {
         const NV_DEFINE_PASSWORD_AREA: [u8; 13] = [0, 0, 0, 9, 0x40, 0, 0, 9, 0, 0, 0, 0, 0];
 
         #[derive(Debug, Eq, PartialEq)]
+        struct SessionSnapshot {
+            attributes: u32,
+            command_code: u32,
+            nonce_tpm: Vec<u8>,
+            audit_digest: Vec<u8>,
+            session_key: Vec<u8>,
+        }
+
+        #[derive(Debug, Eq, PartialEq)]
         struct Observable {
             permanent: Vec<u8>,
             nv_memory: Vec<u8>,
@@ -2535,7 +2598,7 @@ mod tests {
             pcrs: Vec<[Option<Vec<u8>>; 4]>,
             free_session_slots: u32,
             exclusive_audit: u32,
-            sessions: Vec<Option<(u32, u32, Vec<u8>, Vec<u8>, Vec<u8>)>>,
+            sessions: Vec<Option<SessionSnapshot>>,
         }
 
         fn observable(runtime: &Tpm2Runtime) -> Observable {
@@ -2557,14 +2620,12 @@ mod tests {
                     .sessions
                     .iter()
                     .map(|slot| {
-                        slot.session.as_ref().map(|session| {
-                            (
-                                session.attributes,
-                                session.command_code,
-                                session.nonce_tpm.as_bytes().to_vec(),
-                                session.audit_digest.clone(),
-                                session.session_key.as_bytes().to_vec(),
-                            )
+                        slot.session.as_ref().map(|session| SessionSnapshot {
+                            attributes: session.attributes,
+                            command_code: session.command_code,
+                            nonce_tpm: session.nonce_tpm.as_bytes().to_vec(),
+                            audit_digest: session.audit_digest.clone(),
+                            session_key: session.session_key.as_bytes().to_vec(),
                         })
                     })
                     .collect(),
@@ -2589,13 +2650,13 @@ mod tests {
 
         #[track_caller]
         fn assert_same(now: &Observable, before: &Observable) {
-            assert_eq!(now.permanent == before.permanent, true, "permanent");
-            assert_eq!(now.nv_memory == before.nv_memory, true, "nv_memory");
+            assert!(now.permanent == before.permanent, "permanent");
+            assert!(now.nv_memory == before.nv_memory, "nv_memory");
             assert_eq!(
                 now.nv_update_pending, before.nv_update_pending,
                 "nv_pending"
             );
-            assert_eq!(now.pcrs == before.pcrs, true, "pcrs");
+            assert!(now.pcrs == before.pcrs, "pcrs");
             assert_eq!(now.free_session_slots, before.free_session_slots, "slots");
             assert_eq!(now.exclusive_audit, before.exclusive_audit, "exclusive");
             assert_eq!(now.sessions, before.sessions, "sessions");
@@ -2864,6 +2925,55 @@ mod tests {
                 runtime.self_test.pending, pending,
                 "consumed self tests are not re-armed"
             );
+        }
+
+        #[test]
+        fn restored_missing_audit_bit_response_failure_rolls_back() {
+            use crate::library::tpm2::audit::AUDIT_COMMANDS_SIZE;
+            use crate::library::tpm2::command::administration::command_audit_state::is_required;
+            use crate::library::tpm2::command::core::registry::TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS;
+            use crate::library::tpm2::command::core::test_support::{
+                command, manufactured_runtime,
+            };
+            use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
+            use crate::library::tpm2::persistent::{
+                OwnedCommandBitmap, PersistentAllEnvelope, materialize_persistent_state,
+            };
+            use crate::library::tpm2::runtime::commit_restored_state;
+
+            let mut manufactured = manufactured_runtime();
+            manufactured
+                .state
+                .as_mut()
+                .unwrap()
+                .persistent
+                .audit_commands = OwnedCommandBitmap {
+                compressed: false,
+                bytes: vec![0; AUDIT_COMMANDS_SIZE],
+            };
+            let blob = persistent_all_store(manufactured.state()).expect("state serializes");
+            let envelope = PersistentAllEnvelope::parse(&blob).expect("envelope parses");
+            let decoded = crate::library::tpm2::parse_persistent_all_payload(&envelope)
+                .expect("a missing mandatory audit bit is accepted on restore");
+            let state = materialize_persistent_state(decoded).expect("state materializes");
+            let mut runtime = commit_restored_state(state).expect("state commits");
+            assert_eq!(
+                response_code(&send(&mut runtime, &hex("80010000000c000001440000"))),
+                0
+            );
+            runtime.nv_update_pending = false;
+            assert!(!is_required(&runtime, TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS));
+            set_exclusive_audit_session(&mut runtime, TPM_RH_UNASSIGNED);
+            let before = observable(&runtime);
+            let command = command(
+                TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
+                &[TPM_RH_OWNER],
+                &[&[]],
+                &hex("0010000000010000014000000000"),
+            );
+
+            assert_eq!(response_code(&send(&mut runtime, &command)), FAILURE);
+            assert_same(&observable(&runtime), &before);
         }
 
         #[test]

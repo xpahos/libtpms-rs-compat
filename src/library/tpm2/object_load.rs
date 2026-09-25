@@ -1006,7 +1006,6 @@ mod tests {
         let mut reader = TemplateReader::new(&empty);
         assert!(
             read_sized_sensitive_area(&mut reader)
-                .ok()
                 .expect("a zero-sized area parses")
                 .is_none()
         );

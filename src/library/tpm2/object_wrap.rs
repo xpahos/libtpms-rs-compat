@@ -86,13 +86,13 @@ fn outer_integrity(
 pub(super) fn produce_outer_wrap(
     protector: &Protector<'_>,
     name: &[u8],
-    hash_alg: u16,
     seed: Option<&[u8]>,
     use_iv: bool,
     data: &[u8],
     gate: &mut LazySelfTest<'_>,
     rand: &mut SeededRand,
 ) -> Result<Vec<u8>, TpmResult> {
+    let hash_alg = protector.public.name_alg;
     let (sym_alg, key_bits) = parent_storage_symmetric(protector.public)?;
     let iv = if use_iv {
         let block_size = sym_block_size(sym_alg).ok_or(TPM_RC_SYMMETRIC)?;
@@ -137,15 +137,14 @@ pub(super) fn produce_outer_wrap(
 pub(super) fn unwrap_outer(
     protector: &Protector<'_>,
     name: &[u8],
-    hash_alg: u16,
     seed: Option<&[u8]>,
     use_iv: bool,
     blob: &[u8],
-    block_size_error: TpmResult,
     gate: &mut LazySelfTest<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
+    let hash_alg = protector.public.name_alg;
     let (sym_alg, key_bits) = parent_storage_symmetric(protector.public)?;
-    let block_size = sym_block_size(sym_alg).ok_or(block_size_error)?;
+    let block_size = sym_block_size(sym_alg).ok_or(TPM_RC_FAILURE)?;
 
     let mut reader = TemplateReader::new(blob);
     let integrity = reader.tpm2b(DIGEST_SIZE)?;
@@ -193,20 +192,10 @@ pub(super) fn secret_to_credential(
     gate: &mut LazySelfTest<'_>,
     rand: &mut SeededRand,
 ) -> Result<Vec<u8>, TpmResult> {
-    let outer_hash = protector.public.name_alg;
     let mut marshalled = Vec::with_capacity(2 + credential.len());
     marshalled.extend_from_slice(&(credential.len() as u16).to_be_bytes());
     marshalled.extend_from_slice(credential);
-    produce_outer_wrap(
-        protector,
-        name,
-        outer_hash,
-        Some(seed),
-        false,
-        &marshalled,
-        gate,
-        rand,
-    )
+    produce_outer_wrap(protector, name, Some(seed), false, &marshalled, gate, rand)
 }
 
 pub(super) fn credential_to_secret(
@@ -216,17 +205,7 @@ pub(super) fn credential_to_secret(
     protector: &Protector<'_>,
     gate: &mut LazySelfTest<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
-    let outer_hash = protector.public.name_alg;
-    let payload = unwrap_outer(
-        protector,
-        name,
-        outer_hash,
-        Some(seed),
-        false,
-        blob,
-        TPM_RC_FAILURE,
-        gate,
-    )?;
+    let payload = unwrap_outer(protector, name, Some(seed), false, blob, gate)?;
     let mut reader = TemplateReader::new(&payload);
     let secret = reader.tpm2b(DIGEST_SIZE)?.to_vec();
     if !reader.remaining().is_empty() {
@@ -317,16 +296,24 @@ pub(super) struct DuplicationBlob {
     pub(super) generated_inner_key: Option<Vec<u8>>,
 }
 
+pub(super) struct InnerWrap<'a> {
+    pub(super) symmetric: &'a SymDefObject,
+    pub(super) key: &'a [u8],
+}
+
 pub(super) fn sensitive_to_duplicate(
     sensitive: &OwnedTpmtSensitive,
     name: &[u8],
     parent: Option<&Protector<'_>>,
     name_alg: u16,
     seed: &[u8],
-    symmetric: &SymDefObject,
-    inner_key: &[u8],
+    inner: InnerWrap<'_>,
     rand: &mut SeededRand,
 ) -> Result<DuplicationBlob, TpmResult> {
+    let InnerWrap {
+        symmetric,
+        key: inner_key,
+    } = inner;
     let mut data = marshal_sensitive(sensitive, name_alg)?;
     let mut generated_inner_key = None;
 
@@ -350,11 +337,9 @@ pub(super) fn sensitive_to_duplicate(
 
     if !seed.is_empty() {
         let parent = parent.ok_or(TPM_RC_FAILURE)?;
-        let outer_hash = parent.public.name_alg;
         data = produce_outer_wrap(
             parent,
             name,
-            outer_hash,
             Some(seed),
             false,
             &data,
@@ -375,22 +360,22 @@ pub(super) fn duplicate_to_sensitive(
     parent: Option<&Protector<'_>>,
     name_alg: u16,
     seed: &[u8],
-    symmetric: &SymDefObject,
-    inner_key: &[u8],
+    inner: InnerWrap<'_>,
 ) -> Result<OwnedTpmtSensitive, TpmResult> {
+    let InnerWrap {
+        symmetric,
+        key: inner_key,
+    } = inner;
     let mut payload = if seed.is_empty() {
         blob.to_vec()
     } else {
         let parent = parent.ok_or(TPM_RC_FAILURE)?;
-        let outer_hash = parent.public.name_alg;
         unwrap_outer(
             parent,
             name,
-            outer_hash,
             Some(seed),
             false,
             blob,
-            TPM_RC_FAILURE,
             &mut LazySelfTest::untested(),
         )?
     };
@@ -427,12 +412,10 @@ pub(super) fn sensitive_to_private(
     name_alg: u16,
     rand: &mut SeededRand,
 ) -> Result<Vec<u8>, TpmResult> {
-    let hash_alg = parent.public.name_alg;
     let data = marshal_sensitive(sensitive, name_alg)?;
     produce_outer_wrap(
         parent,
         name,
-        hash_alg,
         None,
         true,
         &data,
@@ -446,15 +429,12 @@ pub(super) fn private_to_sensitive(
     name: &[u8],
     parent: &Protector<'_>,
 ) -> Result<OwnedTpmtSensitive, TpmResult> {
-    let hash_alg = parent.public.name_alg;
     let payload = unwrap_outer(
         parent,
         name,
-        hash_alg,
         None,
         true,
         in_private,
-        TPM_RC_FAILURE,
         &mut LazySelfTest::untested(),
     )?;
     let mut reader = TemplateReader::new(&payload);
@@ -687,7 +667,6 @@ mod tests {
         let wrapped = produce_outer_wrap(
             &protector(&parent, &[]),
             &NAME,
-            TPM_ALG_SHA256,
             Some(&SEED),
             false,
             b"payload",
@@ -700,11 +679,9 @@ mod tests {
         let recovered = unwrap_outer(
             &protector(&parent, &[]),
             &NAME,
-            TPM_ALG_SHA256,
             Some(&SEED),
             false,
             &wrapped,
-            TPM_RC_FAILURE,
             &mut no_gate(),
         )
         .expect("the unwrap succeeds");
@@ -717,7 +694,6 @@ mod tests {
         let wrapped = produce_outer_wrap(
             &protector(&parent, &[]),
             &NAME,
-            TPM_ALG_SHA256,
             Some(&SEED),
             false,
             b"payload",
@@ -746,7 +722,6 @@ mod tests {
         let wrapped = produce_outer_wrap(
             &protector(&parent, &[]),
             &NAME,
-            TPM_ALG_SHA256,
             Some(&SEED),
             false,
             b"payload",
@@ -759,11 +734,9 @@ mod tests {
                 unwrap_outer(
                     &protector(&parent, &[]),
                     name,
-                    TPM_ALG_SHA256,
                     Some(seed),
                     false,
                     &wrapped,
-                    TPM_RC_FAILURE,
                     &mut no_gate(),
                 ),
                 Err(TPM_RC_INTEGRITY)
@@ -824,8 +797,10 @@ mod tests {
                 Some(&protector(&parent, &[])),
                 TPM_ALG_SHA256,
                 seed,
-                &symmetric,
-                key,
+                InnerWrap {
+                    symmetric: &symmetric,
+                    key,
+                },
                 &mut rand(label),
             )
             .expect("the duplication blob is produced");
@@ -836,8 +811,10 @@ mod tests {
                 Some(&protector(&parent, &[])),
                 TPM_ALG_SHA256,
                 seed,
-                &symmetric,
-                key,
+                InnerWrap {
+                    symmetric: &symmetric,
+                    key,
+                },
             )
             .expect("the duplication blob is recovered");
             assert_eq!(
@@ -859,8 +836,10 @@ mod tests {
             Some(&protector(&parent, &[])),
             TPM_ALG_SHA256,
             &SEED,
-            &sym(TPM_ALG_AES, 128),
-            &[],
+            InnerWrap {
+                symmetric: &sym(TPM_ALG_AES, 128),
+                key: &[],
+            },
             &mut rand(b"generated"),
         )
         .expect("the duplication blob is produced");
@@ -881,8 +860,10 @@ mod tests {
                 Some(&protector(&parent, &[])),
                 TPM_ALG_SHA256,
                 &SEED,
-                &sym(TPM_ALG_AES, 128),
-                key,
+                InnerWrap {
+                    symmetric: &sym(TPM_ALG_AES, 128),
+                    key,
+                },
             )
             .is_ok()
         );
@@ -898,8 +879,10 @@ mod tests {
             Some(&protector(&parent, &[])),
             TPM_ALG_SHA256,
             &SEED,
-            &sym(TPM_ALG_AES, 128),
-            &key,
+            InnerWrap {
+                symmetric: &sym(TPM_ALG_AES, 128),
+                key: &key,
+            },
             &mut rand(b"bound"),
         )
         .expect("the duplication blob is produced");
@@ -910,8 +893,10 @@ mod tests {
                 Some(&protector(&parent, &[])),
                 TPM_ALG_SHA256,
                 seed,
-                &sym(TPM_ALG_AES, 128),
-                key,
+                InnerWrap {
+                    symmetric: &sym(TPM_ALG_AES, 128),
+                    key,
+                },
             )
         };
         assert_eq!(
@@ -935,8 +920,10 @@ mod tests {
             Some(&protector(&parent, &[])),
             TPM_ALG_SHA256,
             &SEED,
-            &null_sym(),
-            &[],
+            InnerWrap {
+                symmetric: &null_sym(),
+                key: &[],
+            },
             &mut rand(b"corrupt"),
         )
         .expect("the duplication blob is produced");
@@ -950,8 +937,10 @@ mod tests {
                     Some(&protector(&parent, &[])),
                     TPM_ALG_SHA256,
                     &SEED,
-                    &null_sym(),
-                    &[],
+                    InnerWrap {
+                        symmetric: &null_sym(),
+                        key: &[],
+                    },
                 )
                 .is_err(),
                 "byte {position}"
@@ -968,8 +957,10 @@ mod tests {
             Some(&protector(&parent, &[])),
             TPM_ALG_SHA256,
             &[],
-            &sym(TPM_ALG_AES, 128),
-            &[0xa5; 16],
+            InnerWrap {
+                symmetric: &sym(TPM_ALG_AES, 128),
+                key: &[0xa5; 16],
+            },
             &mut rand(b"prefix"),
         )
         .expect("the duplication blob is produced");
@@ -980,8 +971,10 @@ mod tests {
                 Some(&protector(&parent, &[])),
                 TPM_ALG_SHA256,
                 &[],
-                &sym(TPM_ALG_AES, 128),
-                &[0xa5; 16],
+                InnerWrap {
+                    symmetric: &sym(TPM_ALG_AES, 128),
+                    key: &[0xa5; 16],
+                },
             );
             assert!(outcome.is_err(), "prefix {length}");
         }
@@ -1139,7 +1132,6 @@ mod tests {
         produce_outer_wrap(
             &protector(public, &[]),
             &NAME,
-            TPM_ALG_SHA256,
             Some(&RSA_DERIVED_SEED),
             false,
             payload,
@@ -1415,7 +1407,6 @@ mod tests {
         let produced = produce_outer_wrap(
             &protector(&parent, &[]),
             &NAME,
-            TPM_ALG_SHA256,
             Some(&SEED),
             false,
             &sized,
@@ -1430,8 +1421,10 @@ mod tests {
                 Some(&protector(&parent, &[])),
                 TPM_ALG_SHA256,
                 &SEED,
-                &null_sym(),
-                &[],
+                InnerWrap {
+                    symmetric: &null_sym(),
+                    key: &[],
+                },
             )
             .err(),
             Some(TPM_RC_TYPE)

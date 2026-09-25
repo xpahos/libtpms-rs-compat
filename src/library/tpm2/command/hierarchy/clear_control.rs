@@ -1,4 +1,4 @@
-use super::{commit_persistent_state, with_rollback};
+use super::with_persistent_rollback;
 use crate::library::constants::{
     TPM_RC_AUTH_FAIL, TPM_RC_FAILURE, TPM_RC_INSUFFICIENT, TPM_RC_NV_UNAVAILABLE, TPM_RC_SIZE,
     TPM_RC_VALUE,
@@ -28,14 +28,9 @@ pub(in crate::library::tpm2::command) fn execute(
         return Err(TPM_RC_AUTH_FAIL);
     }
 
-    with_rollback(runtime, |runtime| {
-        runtime
-            .state
-            .as_mut()
-            .ok_or(TPM_RC_FAILURE)?
-            .persistent
-            .disable_clear = disable;
-        commit_persistent_state(runtime)
+    with_persistent_rollback(runtime, |persistent| {
+        persistent.disable_clear = disable;
+        Ok(())
     })?;
     Ok(CommandOutput::empty())
 }

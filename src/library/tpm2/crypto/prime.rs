@@ -38,7 +38,7 @@ const fn build_seed_values() -> [u8; SEED_VALUES_SIZE] {
     let mut values = [0u8; SEED_VALUES_SIZE];
     let mut bit = 0usize;
     while bit < SEED_VALUES_SIZE * 8 {
-        if bit % 3 != 0 && bit % 5 != 0 && bit % 7 != 0 {
+        if !bit.is_multiple_of(3) && !bit.is_multiple_of(5) && !bit.is_multiple_of(7) {
             values[bit / 8] |= 1 << (bit % 8);
         }
         bit += 1;
@@ -131,7 +131,7 @@ pub(in crate::library::tpm2) fn is_prime_int(n: u32) -> bool {
     let stop = root2(n) >> 1;
     let mut index = 1u32;
     while index < stop {
-        if table_bit(index) && n % ((index << 1) + 1) == 0 {
+        if table_bit(index) && n.is_multiple_of((index << 1) + 1) {
             return false;
         }
         index += 1;
@@ -632,7 +632,10 @@ mod tests {
             let mut prime = 3u32;
             while prime <= 8167 {
                 if is_prime_int(prime) {
-                    assert!(value % u64::from(prime) != 0, "value {value} prime {prime}");
+                    assert!(
+                        !value.is_multiple_of(u64::from(prime)),
+                        "value {value} prime {prime}"
+                    );
                 }
                 prime += 2;
             }
@@ -652,7 +655,7 @@ mod tests {
             let survivor = field[bit / 8] & (1 << (bit % 8)) != 0;
             let divisible = (3..=8167u32)
                 .step_by(2)
-                .any(|prime| is_prime_int(prime) && value % u64::from(prime) == 0);
+                .any(|prime| is_prime_int(prime) && value.is_multiple_of(u64::from(prime)));
             assert_eq!(survivor, !divisible, "bit {bit} value {value}");
         }
     }

@@ -1170,7 +1170,7 @@ mod tests {
         let sha256 = COMPILED_HASHES[1].0;
         let sha384 = COMPILED_HASHES[2].0;
         let sha512 = COMPILED_HASHES[3].0;
-        let mut cases: Vec<(&str, [(u8, u16); HASH_STATE_COUNT], u16)> = Vec::new();
+        let mut cases = Vec::new();
 
         let mut banks = event_banks();
         banks[0] = (HASH_STATE_HMAC, sha1);

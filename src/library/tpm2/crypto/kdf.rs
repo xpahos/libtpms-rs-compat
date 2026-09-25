@@ -82,7 +82,7 @@ pub(in crate::library::tpm2) fn kdfe(
         out.extend_from_slice(&hasher.finalize());
     }
     out.truncate(wanted);
-    if size_in_bits % 8 != 0 {
+    if !size_in_bits.is_multiple_of(8) {
         out[0] &= (1u8 << (size_in_bits % 8)) - 1;
     }
     Some(out)

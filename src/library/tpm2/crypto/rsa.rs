@@ -62,7 +62,6 @@ fn random_prime_candidate(bits: usize, rand: &mut SeededRand) -> Result<BigUint,
         for (index, limb) in limbs.into_iter().enumerate() {
             value = value.add(&BigUint::from_u64(limb).shl(index * 64));
         }
-        let mut value = value;
         adjust_prime_candidate_pre_rev155(&mut value);
         Ok(value)
     } else {
@@ -135,12 +134,8 @@ impl PrivateExponent {
         p_ok && q_ok
     }
 
-    fn private_key_op(&mut self, value: &BigUint) -> Option<BigUint> {
-        self.make_p_greater_than_q();
-        let m1 = value.mod_exp(&self.d_p, &self.p)?;
-        let m2 = value.mod_exp(&self.d_q, &self.q)?;
-        let h = self.p.sub(&m2)?.add(&m1).mod_mul(&self.q_inv, &self.p)?;
-        Some(m2.add(&h.mul(&self.q)))
+    fn private_key_op(&self, value: &BigUint) -> Option<BigUint> {
+        rsa_private_key_op(&self.p, &self.q, &self.d_p, &self.d_q, &self.q_inv, value)
     }
 }
 
@@ -152,14 +147,11 @@ pub(in crate::library::tpm2) fn rsa_private_key_op(
     q_inv: &BigUint,
     value: &BigUint,
 ) -> Option<BigUint> {
-    let mut exponent = PrivateExponent {
-        p: p.clone(),
-        q: q.clone(),
-        d_p: d_p.clone(),
-        d_q: d_q.clone(),
-        q_inv: q_inv.clone(),
-    };
-    exponent.private_key_op(value)
+    let (p, q) = if p < q { (q, p) } else { (p, q) };
+    let m1 = value.mod_exp(d_p, p)?;
+    let m2 = value.mod_exp(d_q, q)?;
+    let h = p.sub(&m2)?.add(&m1).mod_mul(q_inv, p)?;
+    Some(m2.add(&h.mul(q)))
 }
 
 pub(in crate::library::tpm2) struct RecoveredExponent {
@@ -983,6 +975,23 @@ mod tests {
     }
 
     #[test]
+    fn private_op_accepts_either_stored_prime_order() {
+        let larger = BigUint::from_u64(61);
+        let smaller = BigUint::from_u64(53);
+        let d_p = BigUint::from_u64(53);
+        let d_q = BigUint::from_u64(49);
+        let q_inv = BigUint::from_u64(38);
+        let encrypted = BigUint::from_u64(2790);
+        for (p, q) in [(&larger, &smaller), (&smaller, &larger)] {
+            assert_eq!(
+                rsa_private_key_op(p, q, &d_p, &d_q, &q_inv, &encrypted),
+                Some(BigUint::from_u64(65)),
+                "stored p {p:?}, q {q:?}"
+            );
+        }
+    }
+
+    #[test]
     fn public_op_declared_exponent() {
         let modulus = BigUint::from_u64(3233);
         let message = BigUint::from_u64(65);
@@ -1558,7 +1567,7 @@ mod tests {
         )
         .expect("a key");
         let modulus = BigUint::from_be_bytes(&key.modulus);
-        let mut z = PrivateExponent {
+        let z = PrivateExponent {
             p: BigUint::from_be_bytes(&key.prime),
             q: key.q.clone(),
             d_p: key.d_p.clone(),

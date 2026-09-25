@@ -342,7 +342,7 @@ mod tests {
 
     #[track_caller]
     fn oracle_runtime_before_da_transition(with_owner: bool) -> (Tpm2Runtime, u32, u32) {
-        let mut runtime = restore_permanent_blob_for_test(&certify_vector("PERMALL_BASE"))
+        let mut runtime = restore_permanent_blob_for_test(certify_vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
         assert_eq!(
             response_code(&dispatch_bytes(
@@ -541,7 +541,7 @@ mod tests {
     #[test]
     fn direct_content_certification_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_ENDORSEMENT"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_ENDORSEMENT"));
         assert_eq!(
             certify(
                 &mut runtime,
@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn certified_window_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_WINDOW"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_WINDOW"));
         assert_eq!(
             response_code(&certify(
                 &mut runtime,
@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn certification_without_qualifying_data_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_NO_QUALIFYING"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_NO_QUALIFYING"));
         assert_eq!(
             certify(
                 &mut runtime,
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn digest_certification_oracle_match() {
         let (mut runtime, endorsement) = oracle_runtime();
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_DIGEST"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_DIGEST"));
         let response = certify(
             &mut runtime,
             endorsement,
@@ -641,7 +641,7 @@ mod tests {
         let (mut runtime, endorsement) = oracle_runtime();
         replay_clock(
             &mut runtime,
-            &certify_vector("CERTIFY_NV_DIGEST_NO_QUALIFYING"),
+            certify_vector("CERTIFY_NV_DIGEST_NO_QUALIFYING"),
         );
         assert_eq!(
             certify(
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn storage_signer_clock_firmware_obfuscation() {
         let (mut runtime, endorsement, owner) = oracle_runtime_with_owner(true);
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_OWNER_SIGNER"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_OWNER_SIGNER"));
         let response = certify(
             &mut runtime,
             owner,
@@ -676,7 +676,7 @@ mod tests {
         );
         assert_eq!(response, certify_vector("CERTIFY_NV_OWNER_SIGNER"));
 
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_ENDORSEMENT"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_ENDORSEMENT"));
         assert_eq!(
             certify(
                 &mut runtime,
@@ -693,7 +693,7 @@ mod tests {
             "an endorsement-hierarchy signer reports the values unmasked"
         );
 
-        let plain = attest_clock_info(&certify_vector("CERTIFY_NV_ENDORSEMENT"));
+        let plain = attest_clock_info(certify_vector("CERTIFY_NV_ENDORSEMENT"));
         let masked = attest_clock_info(&response);
         assert_eq!(plain.reset_count, 1);
         assert_eq!(plain.restart_count, 0);
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn index_self_authorization() {
         let (mut runtime, endorsement) = oracle_runtime();
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_INDEX_AUTH"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_INDEX_AUTH"));
         assert_eq!(
             certify(
                 &mut runtime,
@@ -736,7 +736,7 @@ mod tests {
     #[test]
     fn matching_explicit_scheme_acceptance() {
         let (mut runtime, endorsement) = oracle_runtime();
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_EXPLICIT_SCHEME"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_EXPLICIT_SCHEME"));
         assert_eq!(
             certify(
                 &mut runtime,
@@ -1064,7 +1064,7 @@ mod tests {
             certify_vector("PERMALL_READY"),
             "before certification",
         );
-        replay_clock(&mut runtime, &certify_vector("CERTIFY_NV_ENDORSEMENT"));
+        replay_clock(&mut runtime, certify_vector("CERTIFY_NV_ENDORSEMENT"));
         assert_eq!(
             response_code(&certify(
                 &mut runtime,

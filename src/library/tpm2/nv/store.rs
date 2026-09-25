@@ -121,10 +121,10 @@ pub(in crate::library::tpm2) fn index_is_accessible(
     Ok(())
 }
 
-pub(in crate::library::tpm2) fn index_auth_value<'a>(
-    runtime: &'a Tpm2Runtime,
+pub(in crate::library::tpm2) fn index_auth_value(
+    runtime: &Tpm2Runtime,
     handle: u32,
-) -> Option<&'a [u8]> {
+) -> Option<&[u8]> {
     let state = runtime.state.as_ref()?;
     let entry = index_entry_position(state, handle)?;
     stored_index(state, entry).map(|index| index.auth_value.as_bytes())
@@ -487,8 +487,6 @@ pub(in crate::library::tpm2) struct NvSnapshot {
     orderly_state: u16,
     live_orderly_ram: OwnedIndexOrderlyRam,
     max_nv_counter: u64,
-    nv_memory: Box<[u8]>,
-    nv_update_pending: bool,
 }
 
 pub(in crate::library::tpm2) fn snapshot(runtime: &Tpm2Runtime) -> Result<NvSnapshot, TpmResult> {
@@ -501,16 +499,12 @@ pub(in crate::library::tpm2) fn snapshot(runtime: &Tpm2Runtime) -> Result<NvSnap
         orderly_state: state.persistent.orderly_state,
         live_orderly_ram: runtime.live.index_orderly_ram.clone(),
         max_nv_counter: runtime.live.max_nv_counter,
-        nv_memory: runtime.nv_memory.clone(),
-        nv_update_pending: runtime.nv_update_pending,
     })
 }
 
 pub(in crate::library::tpm2) fn rollback(runtime: &mut Tpm2Runtime, snapshot: NvSnapshot) {
     runtime.live.index_orderly_ram = snapshot.live_orderly_ram;
     runtime.live.max_nv_counter = snapshot.max_nv_counter;
-    runtime.nv_memory = snapshot.nv_memory;
-    runtime.nv_update_pending = snapshot.nv_update_pending;
     if let Some(state) = runtime.state.as_mut() {
         state.user_nvram.entries = snapshot.entries;
         state.user_nvram.required_capacity = snapshot.required_capacity;
@@ -871,6 +865,7 @@ mod tests {
         runtime.nv_update_pending = false;
 
         let before = snapshot(&runtime).unwrap();
+        let before_image = runtime.nv_memory.clone();
         let orderly = public(0x0100_0002, TPMA_NV_ORDERLY, 8);
         let error = transact(&mut runtime, |runtime| {
             add_index(runtime, &orderly, Vec::new())?;
@@ -884,18 +879,58 @@ mod tests {
         assert_eq!(after.required_capacity, before.required_capacity);
         assert_eq!(after.max_count, before.max_count);
         assert_eq!(after.max_nv_counter, before.max_nv_counter);
-        assert_eq!(after.nv_memory, before.nv_memory);
-        assert!(!after.nv_update_pending);
+        assert_eq!(runtime.nv_memory, before_image);
+        assert!(!runtime.nv_update_pending);
         assert!(runtime.live.index_orderly_ram.entries.is_empty());
         assert!(runtime.state().index_orderly_ram.entries.is_empty());
         assert!(resolve_index(&runtime, 0x0100_0002).is_none());
     }
 
     #[test]
+    fn commit_serialization_failure_rollback() {
+        for pending in [false, true] {
+            let mut runtime = runtime();
+            let ordinary = public(0x0100_0001, 0, 32);
+            transact(&mut runtime, |runtime| {
+                add_index(runtime, &ordinary, vec![0x11])
+            })
+            .unwrap();
+            runtime.nv_update_pending = pending;
+            let before_image = runtime.nv_memory.clone();
+            let before_capacity = runtime.state().user_nvram.required_capacity;
+
+            let orderly = public(0x0100_0002, TPMA_NV_ORDERLY, 8);
+            let mut applied = false;
+            let error = transact(&mut runtime, |runtime| {
+                add_index(runtime, &orderly, vec![0xaa; 65])?;
+                applied = true;
+                Ok(())
+            })
+            .unwrap_err();
+            assert!(applied, "the failure occurs while committing the mutation");
+            assert_eq!(error, TPM_RC_FAILURE);
+            assert!(resolve_index(&runtime, orderly.nv_index).is_none());
+            assert!(runtime.live.index_orderly_ram.entries.is_empty());
+            assert_eq!(runtime.live.index_orderly_ram.used_bytes, 0);
+            assert_eq!(
+                runtime.state().user_nvram.required_capacity,
+                before_capacity
+            );
+            assert_eq!(runtime.nv_memory, before_image);
+            assert_eq!(runtime.nv_update_pending, pending);
+            assert_eq!(
+                build_nv_image(runtime.state()).unwrap(),
+                before_image,
+                "the NV data, including the existing index, is restored"
+            );
+        }
+    }
+
+    #[test]
     fn define_unavailable_nv_unchanged() {
         let mut runtime = runtime();
         runtime.nv_available = false;
-        let before = snapshot(&runtime).unwrap();
+        let before_image = runtime.nv_memory.clone();
         let area = public(0x0100_0001, 0, 32);
         assert_eq!(
             transact(&mut runtime, |runtime| add_index(
@@ -905,7 +940,7 @@ mod tests {
             )),
             Err(TPM_RC_NV_UNAVAILABLE)
         );
-        assert_eq!(snapshot(&runtime).unwrap().nv_memory, before.nv_memory);
+        assert_eq!(runtime.nv_memory, before_image);
         assert!(!runtime.nv_update_pending);
     }
 

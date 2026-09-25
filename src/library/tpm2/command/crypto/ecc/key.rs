@@ -850,7 +850,7 @@ mod tests {
         use crate::library::tpm2::self_test::PrimitiveTest;
         const SHA512: u16 = 0x000d;
         let (s2, y2) = commit_operand();
-        let cases: [(&str, Vec<Vec<u8>>, Vec<u8>, Vec<u16>); 6] = [
+        let cases = [
             (
                 "TPM2_ECDH_ZGen",
                 vec![decrypt_key()],
@@ -958,7 +958,7 @@ mod tests {
         use crate::library::tpm2::self_test::fails_on_ecdh;
         const FAILURE: u32 = 0x0000_0101;
         let (s2, y2) = commit_operand();
-        let cases: [(&str, Vec<Vec<u8>>, Vec<u8>); 6] = [
+        let cases = [
             (
                 "TPM2_ECDH_ZGen",
                 vec![decrypt_key()],

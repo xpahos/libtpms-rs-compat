@@ -1862,72 +1862,80 @@ mod behaviour {
         let (ecc_blob, ecc_secret) = made_credential("MC_ECC_SHA256");
         let rsa_name = object_name("READPUBLIC_RSA_AK");
         let ecc_name = object_name("READPUBLIC_ECC_AK");
-        let cases: [(
-            &str,
-            &str,
-            fn(PrimitiveTest) -> bool,
-            FailureLocation,
-            Vec<u8>,
-        ); 8] = [
-            (
-                "TPM2_MakeCredential OAEP encoding",
-                "RSA_READY",
-                fails_on_sha256,
-                FailureLocation::HashSelfTest,
-                make_credential(H0, &credential(), &rsa_name),
-            ),
-            (
-                "TPM2_MakeCredential outer encryption",
-                "RSA_READY",
-                fails_on_aes,
-                FailureLocation::SymmetricSelfTest,
-                make_credential(H0, &credential(), &rsa_name),
-            ),
-            (
-                "TPM2_ActivateCredential OAEP decoding",
-                "RSA_READY",
-                fails_on_sha256,
-                FailureLocation::HashSelfTest,
-                activate_credential(H1, H0, &rsa_blob, &rsa_secret),
-            ),
-            (
-                "TPM2_ActivateCredential outer decryption",
-                "RSA_READY",
-                fails_on_aes,
-                FailureLocation::SymmetricSelfTest,
-                activate_credential(H1, H0, &rsa_blob, &rsa_secret),
-            ),
-            (
-                "TPM2_MakeCredential key derivation",
-                "ECC_READY",
-                fails_on_sha256,
-                FailureLocation::HashSelfTest,
-                make_credential(H0, &credential(), &ecc_name),
-            ),
-            (
-                "TPM2_MakeCredential outer encryption over ECC",
-                "ECC_READY",
-                fails_on_aes,
-                FailureLocation::SymmetricSelfTest,
-                make_credential(H0, &credential(), &ecc_name),
-            ),
-            (
-                "TPM2_ActivateCredential key derivation",
-                "ECC_READY",
-                fails_on_sha256,
-                FailureLocation::HashSelfTest,
-                activate_credential(H1, H0, &ecc_blob, &ecc_secret),
-            ),
-            (
-                "TPM2_ActivateCredential outer decryption over ECC",
-                "ECC_READY",
-                fails_on_aes,
-                FailureLocation::SymmetricSelfTest,
-                activate_credential(H1, H0, &ecc_blob, &ecc_secret),
-            ),
+        struct SelfTestFailureCase {
+            label: &'static str,
+            snapshot: &'static str,
+            runner: fn(PrimitiveTest) -> bool,
+            location: FailureLocation,
+            packet: Vec<u8>,
+        }
+        let cases = [
+            SelfTestFailureCase {
+                label: "TPM2_MakeCredential OAEP encoding",
+                snapshot: "RSA_READY",
+                runner: fails_on_sha256,
+                location: FailureLocation::HashSelfTest,
+                packet: make_credential(H0, &credential(), &rsa_name),
+            },
+            SelfTestFailureCase {
+                label: "TPM2_MakeCredential outer encryption",
+                snapshot: "RSA_READY",
+                runner: fails_on_aes,
+                location: FailureLocation::SymmetricSelfTest,
+                packet: make_credential(H0, &credential(), &rsa_name),
+            },
+            SelfTestFailureCase {
+                label: "TPM2_ActivateCredential OAEP decoding",
+                snapshot: "RSA_READY",
+                runner: fails_on_sha256,
+                location: FailureLocation::HashSelfTest,
+                packet: activate_credential(H1, H0, &rsa_blob, &rsa_secret),
+            },
+            SelfTestFailureCase {
+                label: "TPM2_ActivateCredential outer decryption",
+                snapshot: "RSA_READY",
+                runner: fails_on_aes,
+                location: FailureLocation::SymmetricSelfTest,
+                packet: activate_credential(H1, H0, &rsa_blob, &rsa_secret),
+            },
+            SelfTestFailureCase {
+                label: "TPM2_MakeCredential key derivation",
+                snapshot: "ECC_READY",
+                runner: fails_on_sha256,
+                location: FailureLocation::HashSelfTest,
+                packet: make_credential(H0, &credential(), &ecc_name),
+            },
+            SelfTestFailureCase {
+                label: "TPM2_MakeCredential outer encryption over ECC",
+                snapshot: "ECC_READY",
+                runner: fails_on_aes,
+                location: FailureLocation::SymmetricSelfTest,
+                packet: make_credential(H0, &credential(), &ecc_name),
+            },
+            SelfTestFailureCase {
+                label: "TPM2_ActivateCredential key derivation",
+                snapshot: "ECC_READY",
+                runner: fails_on_sha256,
+                location: FailureLocation::HashSelfTest,
+                packet: activate_credential(H1, H0, &ecc_blob, &ecc_secret),
+            },
+            SelfTestFailureCase {
+                label: "TPM2_ActivateCredential outer decryption over ECC",
+                snapshot: "ECC_READY",
+                runner: fails_on_aes,
+                location: FailureLocation::SymmetricSelfTest,
+                packet: activate_credential(H1, H0, &ecc_blob, &ecc_secret),
+            },
         ];
 
-        for (label, snapshot, runner, location, packet) in cases {
+        for SelfTestFailureCase {
+            label,
+            snapshot,
+            runner,
+            location,
+            packet,
+        } in cases
+        {
             let clock = clock();
             let mut runtime = runtime_at(snapshot, &clock);
             runtime.self_test = runtime.self_test.restarted();

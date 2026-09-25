@@ -1256,6 +1256,7 @@ mod tests {
         use crate::library::tpm2::clock::RecordingClock;
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::rsa_vectors::{PaddedRsaSelfTestStage, RawRsaSelfTestStage};
+        use crate::library::tpm2::self_test::PaddedRsaRunner;
         use core::cell::Cell;
 
         fn process(
@@ -1407,10 +1408,7 @@ mod tests {
             }
         }
 
-        fn oaep_stage_table() -> [(
-            fn(&[u8]) -> Result<(), PaddedRsaSelfTestStage>,
-            FailureLocation,
-        ); 5] {
+        fn oaep_stage_table() -> [(PaddedRsaRunner, FailureLocation); 5] {
             [
                 (
                     |_| Err(PaddedRsaSelfTestStage::Encrypt),

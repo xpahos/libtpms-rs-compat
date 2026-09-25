@@ -2012,7 +2012,7 @@ mod tests {
             assert_eq!(response, SUCCESS_RESPONSE);
             assert!(runtime.nv_update_pending, "Startup schedules one NV commit");
             runtime.nv_update_pending = false;
-            let stored = vec![persistent_all_store(runtime.state.as_ref().unwrap()).unwrap()];
+            let stored = [persistent_all_store(runtime.state.as_ref().unwrap()).unwrap()];
 
             assert_eq!(
                 runtime.live.orderly.drbg_state.seed.expose(),

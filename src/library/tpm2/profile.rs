@@ -1148,13 +1148,34 @@ impl ValidatedProfile {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProfileSource {
+    State,
+    User,
+}
+
 pub(super) fn validate_profile(
     profile: ProfileField<'_>,
 ) -> Result<ValidatedProfile, PersistentAllError> {
-    let bytes = match profile {
-        ProfileField::Absent | ProfileField::Null => return Ok(ValidatedProfile::null_profile()),
-        ProfileField::Bytes(bytes) => bytes,
-    };
+    match profile {
+        ProfileField::Absent | ProfileField::Null => Ok(ValidatedProfile::null_profile()),
+        ProfileField::Bytes(bytes) => validate_profile_json(bytes, ProfileSource::State),
+    }
+}
+
+pub(super) fn validate_user_profile(
+    profile: Option<&[u8]>,
+) -> Result<ValidatedProfile, PersistentAllError> {
+    match profile {
+        None => Ok(ValidatedProfile::null_profile()),
+        Some(bytes) => validate_profile_json(bytes, ProfileSource::User),
+    }
+}
+
+fn validate_profile_json(
+    bytes: &[u8],
+    source: ProfileSource,
+) -> Result<ValidatedProfile, PersistentAllError> {
     let json = match bytes.iter().position(|&byte| byte == 0) {
         Some(nul) => &bytes[..nul],
         None => bytes,
@@ -1168,9 +1189,11 @@ pub(super) fn validate_profile(
         .ok_or(PersistentAllError::MissingProfileName)?;
     let name = &name[..name.len().min(MAX_PROFILE_NAME_LEN)];
 
-    let digits = extract_last(json, b"\"StateFormatLevel\"", ValueKind::Digits)
-        .ok_or(PersistentAllError::MissingStateFormatLevel)?;
-    let level_json = parse_level_digits(digits)?;
+    let level_json = match extract_last(json, b"\"StateFormatLevel\"", ValueKind::Digits) {
+        Some(digits) => parse_level_digits(digits)?,
+        None if source == ProfileSource::User => 0,
+        None => return Err(PersistentAllError::MissingStateFormatLevel),
+    };
     if level_json > STATE_FORMAT_LEVEL_CURRENT {
         return Err(PersistentAllError::StateFormatLevelTooNew {
             actual: level_json,
@@ -1193,6 +1216,21 @@ pub(super) fn validate_profile(
     } else {
         return Err(PersistentAllError::UnknownProfileName);
     };
+
+    if source == ProfileSource::User {
+        if !desc.allow_modifications
+            && (level_json != 0
+                || algorithms_json.is_some()
+                || commands_json.is_some()
+                || attributes_json.is_some()
+                || description_json.is_some())
+        {
+            return Err(PersistentAllError::ProfileCustomizationNotAllowed);
+        }
+        if desc.allow_modifications && level_json == 1 {
+            return Err(PersistentAllError::CustomProfileLevelTooLow);
+        }
+    }
 
     let mut algorithms = algorithms_json
         .map(<[u8]>::to_vec)
@@ -1237,110 +1275,7 @@ pub(super) fn validate_profile(
         commands,
         attributes,
         description,
-        was_null_profile: false,
-    })
-}
-
-pub(super) fn validate_user_profile(
-    profile: Option<&[u8]>,
-) -> Result<ValidatedProfile, PersistentAllError> {
-    let Some(bytes) = profile else {
-        return Ok(ValidatedProfile::null_profile());
-    };
-    let json = match bytes.iter().position(|&byte| byte == 0) {
-        Some(nul) => &bytes[..nul],
-        None => bytes,
-    };
-
-    if !check_profile_shape(json) {
-        return Err(PersistentAllError::MalformedProfileJson);
-    }
-
-    let name = extract_last(json, b"\"Name\"", ValueKind::NonEmptyString)
-        .ok_or(PersistentAllError::MissingProfileName)?;
-    let name = &name[..name.len().min(MAX_PROFILE_NAME_LEN)];
-
-    let level_json = match extract_last(json, b"\"StateFormatLevel\"", ValueKind::Digits) {
-        Some(digits) => parse_level_digits(digits)?,
-        None => 0,
-    };
-    if level_json > STATE_FORMAT_LEVEL_CURRENT {
-        return Err(PersistentAllError::StateFormatLevelTooNew {
-            actual: level_json,
-            supported: STATE_FORMAT_LEVEL_CURRENT,
-        });
-    }
-
-    let algorithms_json = extract_last(json, b"\"Algorithms\"", ValueKind::NonEmptyString);
-    let commands_json = extract_last(json, b"\"Commands\"", ValueKind::NonEmptyString);
-    let attributes_json = extract_last(json, b"\"Attributes\"", ValueKind::AnyString);
-    let description_json = extract_last(json, b"\"Description\"", ValueKind::NonEmptyString)
-        .map(|description| &description[..description.len().min(DESCRIPTION_MAX_SIZE)]);
-
-    let desc = if name == b"null" {
-        &PROFILE_NULL
-    } else if name == b"default-v1" {
-        &PROFILE_DEFAULT_V1
-    } else if name == b"custom" || name.starts_with(b"custom:") {
-        &PROFILE_CUSTOM
-    } else {
-        return Err(PersistentAllError::UnknownProfileName);
-    };
-
-    if !desc.allow_modifications
-        && (level_json != 0
-            || algorithms_json.is_some()
-            || commands_json.is_some()
-            || attributes_json.is_some()
-            || description_json.is_some())
-    {
-        return Err(PersistentAllError::ProfileCustomizationNotAllowed);
-    }
-
-    let mut algorithms = algorithms_json
-        .map(<[u8]>::to_vec)
-        .unwrap_or_else(|| desc.algorithms.to_vec());
-    let mut commands = commands_json
-        .map(<[u8]>::to_vec)
-        .unwrap_or_else(|| desc.commands.to_vec());
-    let mut attributes = attributes_json.map(<[u8]>::to_vec);
-    if algorithms_json.is_some() {
-        dedup_list(&mut algorithms);
-    }
-    if commands_json.is_some() {
-        dedup_list(&mut commands);
-    }
-    if let Some(attributes) = &mut attributes {
-        dedup_list(attributes);
-    }
-    let description = description_json
-        .map(<[u8]>::to_vec)
-        .unwrap_or_else(|| desc.description.to_vec());
-
-    let (maximum, mut level) = if desc.allow_modifications {
-        match level_json {
-            0 => (u32::MAX, 0),
-            1 => return Err(PersistentAllError::CustomProfileLevelTooLow),
-            explicit => (explicit, explicit),
-        }
-    } else {
-        (desc.level, desc.level)
-    };
-
-    if let Some(attributes) = &attributes {
-        apply_attributes(attributes, &mut level, maximum)?;
-    }
-    apply_algorithms(&algorithms, &mut level, maximum)?;
-    apply_commands(&commands, &mut level, maximum)?;
-
-    Ok(ValidatedProfile {
-        name: name.to_vec(),
-        state_format_level: level,
-        algorithms,
-        commands,
-        attributes,
-        description,
-        was_null_profile: name == b"null",
+        was_null_profile: source == ProfileSource::User && name == b"null",
     })
 }
 
@@ -2178,6 +2113,67 @@ kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist,ecc-bn";
             validate_user_profile(Some(br#"{"StateFormatLevel":2}"#)).unwrap_err(),
             PersistentAllError::MissingProfileName
         );
+    }
+
+    #[test]
+    fn state_and_user_validation_error_precedence() {
+        use PersistentAllError as E;
+
+        for (json, state_error, user_error) in [
+            (
+                br#"{"StateFormatLevel":8}"#.as_slice(),
+                E::MissingProfileName,
+                E::MissingProfileName,
+            ),
+            (
+                br#"{"Name":"unknown"}"#,
+                E::MissingStateFormatLevel,
+                E::UnknownProfileName,
+            ),
+            (
+                br#"{"Name":"unknown","StateFormatLevel":8}"#,
+                E::StateFormatLevelTooNew { actual: 8, supported: STATE_FORMAT_LEVEL_CURRENT },
+                E::StateFormatLevelTooNew { actual: 8, supported: STATE_FORMAT_LEVEL_CURRENT },
+            ),
+            (
+                br#"{"Name":"unknown","StateFormatLevel":4294967296}"#,
+                E::StateFormatLevelNotANumber,
+                E::StateFormatLevelNotANumber,
+            ),
+            (
+                br#"{"Name":"custom","StateFormatLevel":1,"Attributes":"unknown"}"#,
+                E::UnknownProfileAttribute,
+                E::CustomProfileLevelTooLow,
+            ),
+            (
+                br#"{"Name":"null","StateFormatLevel":1,"Attributes":"unknown"}"#,
+                E::UnknownProfileAttribute,
+                E::ProfileCustomizationNotAllowed,
+            ),
+            (
+                br#"{"Name":"custom","StateFormatLevel":7,"Attributes":"unknown","Algorithms":"unknown","Commands":"unknown"}"#,
+                E::UnknownProfileAttribute,
+                E::UnknownProfileAttribute,
+            ),
+            (
+                br#"{"Name":"custom","StateFormatLevel":7,"Algorithms":"unknown","Commands":"unknown"}"#,
+                E::UnknownProfileAlgorithm,
+                E::UnknownProfileAlgorithm,
+            ),
+        ] {
+            assert_eq!(
+                validate_profile(ProfileField::Bytes(json)).unwrap_err(),
+                state_error,
+                "state profile {}",
+                String::from_utf8_lossy(json)
+            );
+            assert_eq!(
+                validate_user_profile(Some(json)).unwrap_err(),
+                user_error,
+                "user profile {}",
+                String::from_utf8_lossy(json)
+            );
+        }
     }
 
     #[test]
