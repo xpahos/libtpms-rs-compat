@@ -820,7 +820,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     },
     CommandDescriptor {
         code: TPM_CC_PCR_EVENT,
-        attributes: tpma_cc(TPM_CC_PCR_EVENT, false, 1),
+        attributes: tpma_cc(TPM_CC_PCR_EVENT, true, 1),
         physical_presence: false,
         physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
@@ -837,7 +837,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     },
     CommandDescriptor {
         code: TPM_CC_PCR_RESET,
-        attributes: tpma_cc(TPM_CC_PCR_RESET, false, 1),
+        attributes: tpma_cc(TPM_CC_PCR_RESET, true, 1),
         physical_presence: false,
         physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
@@ -1900,7 +1900,7 @@ static COMMANDS: &[CommandDescriptor] = &[
     },
     CommandDescriptor {
         code: TPM_CC_PCR_EXTEND,
-        attributes: tpma_cc(TPM_CC_PCR_EXTEND, false, 1),
+        attributes: tpma_cc(TPM_CC_PCR_EXTEND, true, 1),
         physical_presence: false,
         physical_presence_required: false,
         lifecycle: CommandLifecycle::RequiresStarted,
@@ -2494,8 +2494,8 @@ mod tests {
             (TPM_CC_DICTIONARY_ATTACK_PARAMETERS, 0x0240_013a),
             (TPM_CC_HIERARCHY_CHANGE_AUTH, 0x0240_0129),
             (TPM_CC_PCR_ALLOCATE, 0x0240_012b),
-            (TPM_CC_PCR_EVENT, 0x0200_013c),
-            (TPM_CC_PCR_RESET, 0x0200_013d),
+            (TPM_CC_PCR_EVENT, 0x0240_013c),
+            (TPM_CC_PCR_RESET, 0x0240_013d),
             (TPM_CC_INCREMENTAL_SELF_TEST, 0x0040_0142),
             (TPM_CC_SELF_TEST, 0x0040_0143),
             (TPM_CC_STARTUP, 0x0040_0144),
@@ -2506,7 +2506,7 @@ mod tests {
             (TPM_CC_GET_RANDOM, 0x0000_017b),
             (TPM_CC_HASH, 0x0000_017d),
             (TPM_CC_PCR_READ, 0x0000_017e),
-            (TPM_CC_PCR_EXTEND, 0x0200_0182),
+            (TPM_CC_PCR_EXTEND, 0x0240_0182),
         ] {
             let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
             assert_eq!(descriptor.attributes, attributes, "code {code:#x}");
@@ -2538,8 +2538,8 @@ mod tests {
             (TPM_CC_CHANGE_EPS, true),
             (TPM_CC_HIERARCHY_CHANGE_AUTH, true),
             (TPM_CC_PCR_ALLOCATE, true),
-            (TPM_CC_PCR_EXTEND, false),
-            (TPM_CC_PCR_RESET, false),
+            (TPM_CC_PCR_EXTEND, true),
+            (TPM_CC_PCR_RESET, true),
         ] {
             let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
             assert_eq!(descriptor.handles.len(), 1, "code {code:#x}");
@@ -2702,10 +2702,10 @@ mod tests {
             CommandLifecycle::RequiresStarted
         ));
         assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert_eq!(
+        assert_ne!(
             descriptor.attributes & (1 << 22),
             0,
-            "PCR_Event carries no NV attribute"
+            "PCR_Event advertises the upstream TPMA_CC nv bit"
         );
         assert_eq!(
             descriptor.attributes & (1 << 28),

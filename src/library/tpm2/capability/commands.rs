@@ -93,7 +93,7 @@ mod tests {
     const TPMA_CC_DICTIONARY_ATTACK_LOCK_RESET: u32 = 0x0240_0139;
     const TPMA_CC_DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0240_013a;
     const TPMA_CC_NV_CHANGE_AUTH: u32 = 0x0240_013b;
-    const TPMA_CC_PCR_EVENT: u32 = 0x0200_013c;
+    const TPMA_CC_PCR_EVENT: u32 = 0x0240_013c;
     const TPMA_CC_NV_READ: u32 = 0x0400_014e;
     const TPMA_CC_NV_READ_LOCK: u32 = 0x0440_014f;
     const TPMA_CC_OBJECT_CHANGE_AUTH: u32 = 0x0400_0150;
@@ -111,7 +111,7 @@ mod tests {
     const TPMA_CC_NV_READ_PUBLIC: u32 = 0x0200_0169;
     const TPMA_CC_READ_PUBLIC: u32 = 0x0200_0173;
     const TPMA_CC_VERIFY_SIGNATURE: u32 = 0x0200_0177;
-    const TPMA_CC_PCR_RESET: u32 = 0x0200_013d;
+    const TPMA_CC_PCR_RESET: u32 = 0x0240_013d;
     const TPMA_CC_INCREMENTAL_SELF_TEST: u32 = 0x0040_0142;
     const TPMA_CC_SELF_TEST: u32 = 0x0040_0143;
     const TPMA_CC_STARTUP: u32 = 0x0040_0144;
@@ -123,7 +123,7 @@ mod tests {
     const TPMA_CC_HASH: u32 = 0x0000_017d;
     const TPMA_CC_PCR_READ: u32 = 0x0000_017e;
     const TPMA_CC_READ_CLOCK: u32 = 0x0000_0181;
-    const TPMA_CC_PCR_EXTEND: u32 = 0x0200_0182;
+    const TPMA_CC_PCR_EXTEND: u32 = 0x0240_0182;
     const TPMA_CC_PCR_SET_AUTH_VALUE: u32 = 0x0200_0183;
     const TPMA_CC_NV_CERTIFY: u32 = 0x0600_0184;
     const TPMA_CC_PCR_ALLOCATE: u32 = 0x0240_012b;
@@ -820,5 +820,61 @@ mod tests {
     #[test]
     fn capacity_constant_upstream_match() {
         assert_eq!(MAX_CAP_CC, 254);
+    }
+
+    fn reference_command_attributes() -> Vec<u32> {
+        use crate::library::tpm2::sequence::replay::vector;
+
+        let response = vector("CAP_CC_ALL");
+        let count = u32::from_be_bytes(response[15..19].try_into().unwrap()) as usize;
+        let entries = &response[19..];
+        assert_eq!(entries.len(), count * SIZEOF_TPM_CC);
+        entries
+            .chunks_exact(SIZEOF_TPM_CC)
+            .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
+            .collect()
+    }
+
+    fn get_capability_commands(starting_command: u32, count: u32) -> Vec<u8> {
+        use crate::library::tpm2::sequence::replay::{base_runtime, clock, command, exec_raw};
+
+        let clock = clock();
+        let mut runtime = base_runtime(&clock);
+        let mut params = 2u32.to_be_bytes().to_vec();
+        params.extend_from_slice(&starting_command.to_be_bytes());
+        params.extend_from_slice(&count.to_be_bytes());
+        exec_raw(&mut runtime, &clock, command(0x8001, 0x0000_017a, &params))
+    }
+
+    #[test]
+    fn full_command_list_reference_response() {
+        use crate::library::tpm2::sequence::replay::vector;
+
+        assert_eq!(
+            get_capability_commands(0, 1000),
+            vector("CAP_CC_ALL"),
+            "CAP_CC_ALL"
+        );
+    }
+
+    #[test]
+    fn pcr_commands_reference_nv_attribute() {
+        const TPMA_CC_NV: u32 = 1 << 22;
+        let reference = reference_command_attributes();
+        for code in [0x0000_013cu32, 0x0000_013d, 0x0000_0182] {
+            let expected = *reference
+                .iter()
+                .find(|&&attributes| attributes & 0xffff == code)
+                .unwrap_or_else(|| panic!("the reference advertises {code:#06x}"));
+            assert_ne!(expected & TPMA_CC_NV, 0, "reference {code:#06x}");
+
+            let response = get_capability_commands(code, 1);
+            let mut wanted = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00, 0x00];
+            wanted.push(1); // moreData
+            wanted.extend_from_slice(&2u32.to_be_bytes());
+            wanted.extend_from_slice(&1u32.to_be_bytes());
+            wanted.extend_from_slice(&expected.to_be_bytes());
+            assert_eq!(response, wanted, "GetCapability for {code:#06x}");
+        }
     }
 }
