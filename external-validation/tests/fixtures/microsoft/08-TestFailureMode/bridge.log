@@ -1,0 +1,13 @@
+libtpms bridge ready: 127.0.0.1:2321 platform:2322 library:/work/cache/rust-target/release/libtpms.so
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001c4
+bridge: unsupported simulator opcode 30

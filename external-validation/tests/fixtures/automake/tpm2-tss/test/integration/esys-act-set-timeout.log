@@ -1,0 +1,15 @@
+Trying to start simulator mssim
+Starting simulator on port 62984
+successfully started daemon: tpm_server with PID: 65640
+/work/cache/builds/tpm2-tss
+simulator PID: 65640
+LISTEN 0      16         127.0.0.1:62984      0.0.0.0:*    users:(("tpm_server",pid=65640,fd=3))
+LISTEN 0      16         127.0.0.1:62985      0.0.0.0:*    users:(("tpm_server",pid=65640,fd=4))
+Simulator with PID 65640 bound to port 62984 and  62985 successfully.
+TPM20TEST_TCTI=mssim:host=127.0.0.1,port=62984
+Execute the test script
+WARNING:esys:/work/cache/sources/tpm2-tss/src/tss2-esys/api/Esys_ACT_SetTimeout.c:282:Esys_ACT_SetTimeout_Finish() Received TPM Error 
+ERROR:esys:/work/cache/sources/tpm2-tss/src/tss2-esys/api/Esys_ACT_SetTimeout.c:101:Esys_ACT_SetTimeout() Esys Finish ErrorCode (0x00000143) 
+ERROR:test:/work/cache/sources/tpm2-tss/test/integration/esys-act-set-timeout.int.c:55:test_esys_act_set_timeout() Error: Clear ErrorCode (0x00000143) 
+Script returned 77
+SKIP test/integration/esys-act-set-timeout.int (exit status: 77)

@@ -1,0 +1,45 @@
+creating simulator working dir: /tmp/tpm2_test_ThUgfk
+/tmp/tpm2_test_ThUgfk /work/cache/builds/tpm2-tools
+Switched to CWD: /tmp/tpm2_test_ThUgfk
+Starting the simulator
+Attempting to start simulator on port: 22414
+libtpms bridge ready: 127.0.0.1:22414 platform:22415 library:/work/cache/rust-target/release/libtpms.so
+LISTEN 0      16         127.0.0.1:22414      0.0.0.0:*    users:(("tpm_server",pid=87236,fd=3))
+LISTEN 0      16         127.0.0.1:22415      0.0.0.0:*    users:(("tpm_server",pid=87236,fd=4))
+Started simulator on port 22414 in dir "/tmp/tpm2_test_ThUgfk"
+tpm2tools_tcti="mssim:host=localhost,port=22414"
+Started the simulator
+Starting tpm2-abrmd
+TPM2ABRMD_TCTI is empty, configuring
+TPM2ABRMD_TCTI="--session --dbus-name=com.intel.tss2.Tabrmd22414 --tcti=mssim:port=22414"
+tpm2-abrmd command: /work/cache/install/sbin/tpm2-abrmd --allow-root --session --dbus-name=com.intel.tss2.Tabrmd22414 --tcti=mssim:port=22414 --session --dbus-name=com.intel.tss2.Tabrmd22414 --tcti=mssim:port=22414
+tpm2tools_tcti="tabrmd:bus_type=session,bus_name=com.intel.tss2.Tabrmd22414"
+TPM2TOOLS_TEST_TCTI=
+TPM2TOOLS_TEST_TCTI not set, attempting to figure out default
+export TPM2TOOLS_TCTI="tabrmd:bus_type=session,bus_name=com.intel.tss2.Tabrmd22414"
+
+--- To recreate this test run the following: ---
+#!/usr/bin/env bash
+export TPM2_ABRMD="/work/cache/install/sbin/tpm2-abrmd"
+export TPM2_SIM="tpm_server"
+export TPM2ABRMD_TCTI="--session --dbus-name=com.intel.tss2.Tabrmd22414 --tcti=mssim:port=22414"
+export TPM2_SIMPORT="22414"
+export TPM2TOOLS_TEST_TCTI="tabrmd:bus_type=session,bus_name=com.intel.tss2.Tabrmd22414"
+export TPM2TOOLS_TEST_PERSISTENT=""
+export PATH="/work/cache/builds/tpm2-tools/tools:/work/cache/builds/tpm2-tools/tools/misc:/work/cache/sources/tpm2-tools/test/integration:/work/cache/builds/tpm2-tools/tools/fapi:/validation/bin:/work/cache/install/bin:/work/cache/install/sbin:/validation/bin:/work/cache/install/bin:/work/cache/install/sbin:/usr/local/go/bin:/usr/share/dotnet:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export srcdir="/work/cache/sources/tpm2-tools"
+export abs_srcdir="/work/cache/sources/tpm2-tools"
+export abs_builddir="/work/cache/builds/tpm2-tools"
+
+realpath: /work/cache/builds/tpm2-tools//work/cache/sources/tpm2-tools/test/integration/tests/getrandom.sh: No such file or directory
+dbus-run-session realpath "$script" on line 239 failed: 1
+--- EOF ---
+
+run_startup: false
+WARN: Session has to be used either for auth and/or audit and/or parameter-encryption/decryption. Use session-config tool to specify the use
+ς™uεδ¤Shutting down
+/work/cache/builds/tpm2-tools
+Removing sim dir: /tmp/tpm2_test_ThUgfk
+/work/cache/sources/tpm2-tools/test/integration/helpers.sh: line 443: 87236 Killed                  "$TPM2_SIM" -port "$tpm2_sim_port"  (wd: /tmp/tpm2_test_ThUgfk)
+/work/cache/sources/tpm2-tools/test/integration/helpers.sh: line 443: 87250 Killed                  $TPM2_ABRMD $tpm2_tabrmd_opts $TPM2ABRMD_TCTI  (wd: /tmp/tpm2_test_ThUgfk)
+PASS test/integration/tests/getrandom.sh (exit status: 0)

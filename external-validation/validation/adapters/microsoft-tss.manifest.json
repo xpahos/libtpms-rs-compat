@@ -1,0 +1,52 @@
+{
+  "comment": "Reviewed transcription of Tpm2Tester metadata at the pinned revision. microsoft_tss.py cross-checks it against the upstream enums, [Test] attributes, -tests and -profiles before executing anything.",
+  "revision": "52cb9f432318e8e95cdfeaf98b824ece89370744",
+  "enums": {
+    "Profile": {"None": 0, "MinTPM": 1, "TPM20": 2, "Debug": 64, "Disabled": 128},
+    "Privileges": {"None": 0, "StandardUser": 1, "Admin": 2, "Special": 4},
+    "Special": {
+      "None": 0, "NotThreadSafe": 1, "PowerControl": 2, "PhysicalPresence": 4,
+      "NeedsTpmResourceMgr": 8, "Locality": 16, "NotFuzzSafe": 32, "NoTRM": 64,
+      "NotDebugNvSafe": 128, "RunAtEnd": 256, "Platform": 512, "Lockout": 1024,
+      "NvControl": 2048, "TbsBlocked": 4096
+    },
+    "Category": {
+      "None": 0, "Startup": 1, "NV": 2, "PCR": 4, "Clock": 8,
+      "Hierarchy": 16, "Context": 32, "Object": 64,
+      "Hash": 256, "Mac": 512, "Hmac": 512, "Seq": 1024, "Sym": 2048, "Symmetric": 2048,
+      "Rsa": 4096, "Ecc": 8192, "Asym": 16384, "Asymmetric": 16384,
+      "Sig": 32768, "Signature": 32768,
+      "Attest": 65536, "Attestation": 65536, "Dup": 131072, "Duplication": 131072,
+      "Ticket": 262144, "Session": 1048576, "Policy": 2097152, "Audit": 4194304,
+      "DA": 8388608, "Coverage": 16777216, "Regression": 33554432,
+      "CriticalPatch": 67108864, "Misc": 134217728, "Slow": 268435456,
+      "Infra": 536870912, "Hidden": 1073741824, "WLK": 2147483648
+    }
+  },
+  "profiles": ["All", "TbsAdmin", "TbsStandardUser", "MinTpmTbsAdmin", "NoTRM", "WlkHWInterfaceTests"],
+  "device": {
+    "comment": "What upstream GenerateTestSet sees through bridge.py: handshake 0x0d (platform, raw mode, physical presence), so no TRM; a non-WLK build; ECC is implemented by both libtpms backends.",
+    "endpoint_info": 13,
+    "ecc": true,
+    "wlk_build": false
+  },
+  "tests": {
+    "ActivateAikSample": {"source": "TestSuite/Sample-AikActivation.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Asym", "Object"], "special": []},
+    "DuplicateImportRsaSample": {"source": "TestSuite/Sample-KeyImport.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Asym", "Dup", "Rsa"], "special": []},
+    "EcdhSample": {"source": "TestSuite/Sample-Ecc.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Asym", "Ecc"], "special": []},
+    "ExternalKeyImportSample": {"source": "TestSuite/Sample-KeyImport.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Asym", "Dup", "Rsa"], "special": []},
+    "LoadExternalFullRsaKeySample": {"source": "TestSuite/Sample-KeyImport.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Asym", "Rsa"], "special": []},
+    "TestAutomaticAuth": {"source": "TestSuite/TestSamples-Tss.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Infra", "Session"], "special": ["NotThreadSafe"]},
+    "TestCertifyX509": {"source": "TestSuite/TestCertifyX509.cs", "profile": ["TPM20"], "privileges": ["StandardUser"], "category": ["Misc"], "special": []},
+    "TestFailureMode": {"source": "TestSuite/TestSamples-TpmSimCtl.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Misc"], "special": ["Platform", "NotThreadSafe"]},
+    "TestRandom": {"source": "TestSuite/TestSamples-Simple.cs", "profile": ["TPM20"], "privileges": ["StandardUser"], "category": ["Misc"], "special": []},
+    "TestSerialization": {"source": "TestSuite/TestSamples-Tss.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Infra"], "special": []},
+    "TestTpmPlatformControls": {"source": "TestSuite/TestSamples-TpmSimCtl.cs", "profile": ["TPM20"], "privileges": ["Special"], "category": ["Startup"], "special": ["NotThreadSafe", "Platform", "PowerControl", "Locality", "PhysicalPresence"]},
+    "TestVendorSpecific": {"source": "TestSuite/TestSamples-Simple.cs", "profile": ["TPM20"], "privileges": ["Admin"], "category": ["Misc"], "special": []}
+  },
+  "expected_all": [
+    "ActivateAikSample", "DuplicateImportRsaSample", "EcdhSample", "ExternalKeyImportSample",
+    "LoadExternalFullRsaKeySample", "TestAutomaticAuth", "TestCertifyX509", "TestFailureMode",
+    "TestRandom", "TestSerialization", "TestTpmPlatformControls", "TestVendorSpecific"
+  ]
+}

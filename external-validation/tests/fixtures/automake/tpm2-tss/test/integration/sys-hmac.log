@@ -1,0 +1,12 @@
+Trying to start simulator mssim
+Starting simulator on port 50486
+successfully started daemon: tpm_server with PID: 65424
+/work/cache/builds/tpm2-tss
+simulator PID: 65424
+LISTEN 0      16         127.0.0.1:50486      0.0.0.0:*    users:(("tpm_server",pid=65424,fd=3))
+LISTEN 0      16         127.0.0.1:50487      0.0.0.0:*    users:(("tpm_server",pid=65424,fd=4))
+Simulator with PID 65424 bound to port 50486 and  50487 successfully.
+TPM20TEST_TCTI=mssim:host=127.0.0.1,port=50486
+Execute the test script
+Script returned 0
+PASS test/integration/sys-hmac.int (exit status: 0)

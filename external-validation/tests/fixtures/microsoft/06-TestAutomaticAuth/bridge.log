@@ -1,0 +1,19 @@
+libtpms bridge ready: 127.0.0.1:2321 platform:2322 library:/work/cache/rust-target/release/libtpms.so
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001d6
+bridge: command 0x0000018a response 0x000001c4
+bridge: command 0x00000157 response 0x00000125
+bridge: command 0x0000014d response 0x000009a2
+bridge: command 0x00000176 response 0x00000903
+bridge: command 0x00000176 response 0x00000903
+bridge: command 0x00000176 response 0x00000903
+bridge: command 0x00000176 response 0x00000903
+bridge: command 0x00000176 response 0x00000903

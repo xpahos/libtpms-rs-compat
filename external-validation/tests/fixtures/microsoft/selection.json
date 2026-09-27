@@ -1,0 +1,45 @@
+{
+  "requested": [
+    "All"
+  ],
+  "default": true,
+  "expansions": [
+    {
+      "token": "All",
+      "kind": "profile",
+      "name": "All",
+      "members": [
+        "ActivateAikSample",
+        "DuplicateImportRsaSample",
+        "EcdhSample",
+        "ExternalKeyImportSample",
+        "LoadExternalFullRsaKeySample",
+        "TestAutomaticAuth",
+        "TestCertifyX509",
+        "TestFailureMode",
+        "TestRandom",
+        "TestSerialization",
+        "TestTpmPlatformControls",
+        "TestVendorSpecific"
+      ]
+    }
+  ],
+  "duplicates_removed": [],
+  "order": [
+    "ActivateAikSample",
+    "DuplicateImportRsaSample",
+    "EcdhSample",
+    "ExternalKeyImportSample",
+    "LoadExternalFullRsaKeySample",
+    "TestAutomaticAuth",
+    "TestCertifyX509",
+    "TestFailureMode",
+    "TestRandom",
+    "TestSerialization",
+    "TestTpmPlatformControls",
+    "TestVendorSpecific"
+  ],
+  "source_metadata_check": "matched",
+  "discovery_check": "matched",
+  "manifest": "/validation/suites/microsoft-tss.manifest.json"
+}

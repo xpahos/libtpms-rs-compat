@@ -1,0 +1,925 @@
+{
+  "suite": "microsoft-tss",
+  "revision": "52cb9f432318e8e95cdfeaf98b824ece89370744",
+  "status": "FAIL",
+  "complete": true,
+  "interrupted_by": null,
+  "scenario_timeout_seconds": 120,
+  "selection": {
+    "requested": [
+      "All"
+    ],
+    "default": true,
+    "expansions": [
+      {
+        "token": "All",
+        "kind": "profile",
+        "name": "All",
+        "members": [
+          "ActivateAikSample",
+          "DuplicateImportRsaSample",
+          "EcdhSample",
+          "ExternalKeyImportSample",
+          "LoadExternalFullRsaKeySample",
+          "TestAutomaticAuth",
+          "TestCertifyX509",
+          "TestFailureMode",
+          "TestRandom",
+          "TestSerialization",
+          "TestTpmPlatformControls",
+          "TestVendorSpecific"
+        ]
+      }
+    ],
+    "duplicates_removed": [],
+    "order": [
+      "ActivateAikSample",
+      "DuplicateImportRsaSample",
+      "EcdhSample",
+      "ExternalKeyImportSample",
+      "LoadExternalFullRsaKeySample",
+      "TestAutomaticAuth",
+      "TestCertifyX509",
+      "TestFailureMode",
+      "TestRandom",
+      "TestSerialization",
+      "TestTpmPlatformControls",
+      "TestVendorSpecific"
+    ],
+    "source_metadata_check": "matched",
+    "discovery_check": "matched",
+    "manifest": "/validation/suites/microsoft-tss.manifest.json"
+  },
+  "counts": {
+    "PASS": 9,
+    "FAIL": 1,
+    "TIMEOUT": 1,
+    "SKIPPED": 1
+  },
+  "scenarios": [
+    {
+      "name": "ActivateAikSample",
+      "index": 1,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:17:35Z",
+      "directory": "microsoft-tss.mnEty6/01-ActivateAikSample",
+      "console_log": "microsoft-tss.mnEty6/01-ActivateAikSample/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/01-ActivateAikSample/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/01-ActivateAikSample/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 179,
+      "tester_pid": 182,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.605,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[ActivateAikSample]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 148 commands; 14 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "ActivateAikSample"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 12,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        },
+        {
+          "command": "0x00000173",
+          "response": "0x0000018b"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "DuplicateImportRsaSample",
+      "index": 2,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:17:35Z",
+      "directory": "microsoft-tss.mnEty6/02-DuplicateImportRsaSample",
+      "console_log": "microsoft-tss.mnEty6/02-DuplicateImportRsaSample/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/02-DuplicateImportRsaSample/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/02-DuplicateImportRsaSample/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 199,
+      "tester_pid": 202,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 1.028,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[DuplicateImportRsaSample]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 153 commands; 11 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "DuplicateImportRsaSample"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "EcdhSample",
+      "index": 3,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:17:36Z",
+      "directory": "microsoft-tss.mnEty6/03-EcdhSample",
+      "console_log": "microsoft-tss.mnEty6/03-EcdhSample/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/03-EcdhSample/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/03-EcdhSample/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 219,
+      "tester_pid": 222,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.604,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[EcdhSample]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 130 commands; 12 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "EcdhSample"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "ExternalKeyImportSample",
+      "index": 4,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:17:37Z",
+      "directory": "microsoft-tss.mnEty6/04-ExternalKeyImportSample",
+      "console_log": "microsoft-tss.mnEty6/04-ExternalKeyImportSample/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/04-ExternalKeyImportSample/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/04-ExternalKeyImportSample/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 239,
+      "tester_pid": 242,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.816,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[ExternalKeyImportSample]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 146 commands; 12 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "ExternalKeyImportSample"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "LoadExternalFullRsaKeySample",
+      "index": 5,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:17:38Z",
+      "directory": "microsoft-tss.mnEty6/05-LoadExternalFullRsaKeySample",
+      "console_log": "microsoft-tss.mnEty6/05-LoadExternalFullRsaKeySample/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/05-LoadExternalFullRsaKeySample/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/05-LoadExternalFullRsaKeySample/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 259,
+      "tester_pid": 262,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.83,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[LoadExternalFullRsaKeySample]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 125 commands; 13 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "LoadExternalFullRsaKeySample"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "TestAutomaticAuth",
+      "index": 6,
+      "status": "FAIL",
+      "started_at": "2026-09-26T14:17:39Z",
+      "directory": "microsoft-tss.mnEty6/06-TestAutomaticAuth",
+      "console_log": "microsoft-tss.mnEty6/06-TestAutomaticAuth/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/06-TestAutomaticAuth/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "upstream report: 1 failed, 1 aborted (LibTesterInfra: 0 failed, 0 aborted); System.ArgumentException: AuthSession: Attempt to construct from parametrized non-session handle; seed f58291a4250d1cd3",
+      "report": "microsoft-tss.mnEty6/06-TestAutomaticAuth/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 0,
+        "failed": 1,
+        "aborted": 1
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "Some tests FAILED",
+      "bridge_pid": 279,
+      "tester_pid": 282,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.822,
+      "exceptions": [
+        "System.ArgumentException: AuthSession: Attempt to construct from parametrized non-session handle"
+      ],
+      "seeds": [
+        "f58291a4250d1cd3"
+      ],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "at Tpm2TestSuite.Tpm2Tests.TestAutomaticAuth(Tpm2 tpm, TestContext testCtx) in /work/cache/sources/microsoft-tss/Tpm2Tester/TestSuite/TestSamples-Tss.cs:line 159",
+        "at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)",
+        "at System.Reflection.MethodBaseInvoker.InvokeDirectByRefWithFewArgs(Object obj, Span`1 copyOfArgs, BindingFlags invokeAttr)",
+        "Some tests FAILED.",
+        "Duration: 00d 00:00:00; 183 commands; 18 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "TestAutomaticAuth"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 18,
+      "last_error_responses": [
+        {
+          "command": "0x00000176",
+          "response": "0x00000903"
+        },
+        {
+          "command": "0x00000176",
+          "response": "0x00000903"
+        },
+        {
+          "command": "0x00000176",
+          "response": "0x00000903"
+        },
+        {
+          "command": "0x00000176",
+          "response": "0x00000903"
+        },
+        {
+          "command": "0x00000176",
+          "response": "0x00000903"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "TestCertifyX509",
+      "index": 7,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:17:39Z",
+      "directory": "microsoft-tss.mnEty6/07-TestCertifyX509",
+      "console_log": "microsoft-tss.mnEty6/07-TestCertifyX509/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/07-TestCertifyX509/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/07-TestCertifyX509/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 299,
+      "tester_pid": 302,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 1.633,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "[TestCertifyX509]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "Test 1 of 1: 177 commands; 7 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:01; 344 commands; 19 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "TestCertifyX509"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "TestFailureMode",
+      "index": 8,
+      "status": "TIMEOUT",
+      "started_at": "2026-09-26T14:17:41Z",
+      "directory": "microsoft-tss.mnEty6/08-TestFailureMode",
+      "console_log": "microsoft-tss.mnEty6/08-TestFailureMode/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/08-TestFailureMode/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": true,
+      "interrupted": false,
+      "exit_code": null,
+      "reason": "tester did not finish within 120s; bridge rejected unsupported simulator opcode 30 (TestFailureMode) and closed the platform channel",
+      "report": null,
+      "counts": null,
+      "infrastructure_counts": null,
+      "report_title": null,
+      "bridge_pid": 319,
+      "tester_pid": 322,
+      "tester_exit_code_after_cleanup": 143,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 120.22,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test Routines in current test run:",
+        "TestFailureMode",
+        "Running TPM tests sequentially",
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[TestFailureMode]",
+        "Test 1 of 1: 0 commands; 0 asserts"
+      ],
+      "selected_by_upstream": [
+        "TestFailureMode"
+      ],
+      "unsupported_opcodes": [
+        30
+      ],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "TestRandom",
+      "index": 9,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:19:41Z",
+      "directory": "microsoft-tss.mnEty6/09-TestRandom",
+      "console_log": "microsoft-tss.mnEty6/09-TestRandom/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/09-TestRandom/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/09-TestRandom/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 342,
+      "tester_pid": 345,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.655,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[TestRandom]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 150 commands; 31 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "TestRandom"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "TestSerialization",
+      "index": 10,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:19:42Z",
+      "directory": "microsoft-tss.mnEty6/10-TestSerialization",
+      "console_log": "microsoft-tss.mnEty6/10-TestSerialization/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/10-TestSerialization/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/10-TestSerialization/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 363,
+      "tester_pid": 366,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.878,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[TestSerialization]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 149 commands; 14 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "TestSerialization"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "TestTpmPlatformControls",
+      "index": 11,
+      "status": "PASS",
+      "started_at": "2026-09-26T14:19:43Z",
+      "directory": "microsoft-tss.mnEty6/11-TestTpmPlatformControls",
+      "console_log": "microsoft-tss.mnEty6/11-TestTpmPlatformControls/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/11-TestTpmPlatformControls/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "",
+      "report": "microsoft-tss.mnEty6/11-TestTpmPlatformControls/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 383,
+      "tester_pid": 386,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.667,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [],
+      "console_tail": [
+        "Test 0 of 1: 103 commands; 11 asserts",
+        "[TestTpmPlatformControls]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 135 commands; 15 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "TestTpmPlatformControls"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 15,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        },
+        {
+          "command": "0x00000144",
+          "response": "0x00000907"
+        },
+        {
+          "command": "0x00000144",
+          "response": "0x00000907"
+        },
+        {
+          "command": "0x00000144",
+          "response": "0x00000907"
+        },
+        {
+          "command": "0x0000012d",
+          "response": "0x00000990"
+        }
+      ],
+      "bridge_errors": []
+    },
+    {
+      "name": "TestVendorSpecific",
+      "index": 12,
+      "status": "SKIPPED",
+      "started_at": "2026-09-26T14:19:44Z",
+      "directory": "microsoft-tss.mnEty6/12-TestVendorSpecific",
+      "console_log": "microsoft-tss.mnEty6/12-TestVendorSpecific/console.log",
+      "bridge_log": "microsoft-tss.mnEty6/12-TestVendorSpecific/bridge.log",
+      "timeout_seconds": 120,
+      "timed_out": false,
+      "interrupted": false,
+      "exit_code": 0,
+      "reason": "TestVendorSpecific skipped",
+      "report": "microsoft-tss.mnEty6/12-TestVendorSpecific/TpmTests_0.Report.html",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "infrastructure_counts": {
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0
+      },
+      "report_title": "All Tests PASSED",
+      "bridge_pid": 404,
+      "tester_pid": 407,
+      "tester_exit_code_after_cleanup": 0,
+      "bridge_exit_code": 0,
+      "bridge_exited_during_scenario": false,
+      "duration_seconds": 0.658,
+      "exceptions": [],
+      "seeds": [],
+      "ecc_curves": "NISTP192, NISTP224, NISTP256, NISTP384, NISTP521, BNP256, BNP638, SM2P256",
+      "skipped_messages": [
+        "TestVendorSpecific skipped"
+      ],
+      "console_tail": [
+        "[TestVendorSpecific]",
+        "Test 1 of 1: 0 commands; 0 asserts",
+        "TestVendorSpecific skipped",
+        "All Tests PASSED.",
+        "Duration: 00d 00:00:00; 120 commands; 11 asserts",
+        "Report TpmTests_0.Report.html has been generated."
+      ],
+      "selected_by_upstream": [
+        "TestVendorSpecific"
+      ],
+      "unsupported_opcodes": [],
+      "error_responses": 11,
+      "last_error_responses": [
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001d6"
+        },
+        {
+          "command": "0x0000018a",
+          "response": "0x000001c4"
+        }
+      ],
+      "bridge_errors": []
+    }
+  ]
+}

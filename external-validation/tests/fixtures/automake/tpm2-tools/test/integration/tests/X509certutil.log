@@ -1,0 +1,63 @@
+    0:d=0  hl=3 l= 188 cons: SEQUENCE          
+    3:d=1  hl=2 l=  66 cons: SEQUENCE          
+    5:d=2  hl=2 l=  11 cons: SET               
+    7:d=3  hl=2 l=   9 cons: SEQUENCE          
+    9:d=4  hl=2 l=   3 prim: OBJECT            :countryName
+   14:d=4  hl=2 l=   2 prim: PRINTABLESTRING   :US
+   18:d=2  hl=2 l=  15 cons: SET               
+   20:d=3  hl=2 l=  13 cons: SEQUENCE          
+   22:d=4  hl=2 l=   3 prim: OBJECT            :organizationName
+   27:d=4  hl=2 l=   6 prim: UTF8STRING        :CA org
+   35:d=2  hl=2 l=  16 cons: SET               
+   37:d=3  hl=2 l=  14 cons: SEQUENCE          
+   39:d=4  hl=2 l=   3 prim: OBJECT            :organizationalUnitName
+   44:d=4  hl=2 l=   7 prim: UTF8STRING        :CA unit
+   53:d=2  hl=2 l=  16 cons: SET               
+   55:d=3  hl=2 l=  14 cons: SEQUENCE          
+   57:d=4  hl=2 l=   3 prim: OBJECT            :commonName
+   62:d=4  hl=2 l=   7 prim: UTF8STRING        :example
+   71:d=1  hl=2 l=  30 cons: SEQUENCE          
+   73:d=2  hl=2 l=  13 prim: UTCTIME           :260926030039Z
+   88:d=2  hl=2 l=  13 prim: UTCTIME           :261006030039Z
+  103:d=1  hl=2 l=  66 cons: SEQUENCE          
+  105:d=2  hl=2 l=  11 cons: SET               
+  107:d=3  hl=2 l=   9 cons: SEQUENCE          
+  109:d=4  hl=2 l=   3 prim: OBJECT            :countryName
+  114:d=4  hl=2 l=   2 prim: PRINTABLESTRING   :US
+  118:d=2  hl=2 l=  15 cons: SET               
+  120:d=3  hl=2 l=  13 cons: SEQUENCE          
+  122:d=4  hl=2 l=   3 prim: OBJECT            :organizationName
+  127:d=4  hl=2 l=   6 prim: UTF8STRING        :CA org
+  135:d=2  hl=2 l=  16 cons: SET               
+  137:d=3  hl=2 l=  14 cons: SEQUENCE          
+  139:d=4  hl=2 l=   3 prim: OBJECT            :organizationalUnitName
+  144:d=4  hl=2 l=   7 prim: UTF8STRING        :CA unit
+  153:d=2  hl=2 l=  16 cons: SET               
+  155:d=3  hl=2 l=  14 cons: SEQUENCE          
+  157:d=4  hl=2 l=   3 prim: OBJECT            :commonName
+  162:d=4  hl=2 l=   7 prim: UTF8STRING        :example
+  171:d=1  hl=2 l=  18 cons: cont [ 3 ]        
+  173:d=2  hl=2 l=  16 cons: SEQUENCE          
+  175:d=3  hl=2 l=  14 cons: SEQUENCE          
+  177:d=4  hl=2 l=   3 prim: OBJECT            :X509v3 Key Usage
+  182:d=4  hl=2 l=   1 prim: BOOLEAN           :255
+  185:d=4  hl=2 l=   4 prim: OCTET STRING      [HEX DUMP]:03020186
+   27:d=4  hl=2 l=   5 prim: UTF8STRING        :cname
+  126:d=4  hl=2 l=   5 prim: UTF8STRING        :cname
+WARN: Field C too long or empty. Using default
+WARN: Field CN too long or empty. Using default
+WARN: Field O too long or empty. Using default
+WARN: Field OU too long or empty. Using default
+WARN: Field C too long or empty. Using default
+WARN: Field CN too long or empty. Using default
+WARN: Field O too long or empty. Using default
+WARN: Field OU too long or empty. Using default
+   45:d=4  hl=2 l=   6 prim: UTF8STRING        :CA Org
+  145:d=4  hl=2 l=   6 prim: UTF8STRING        :CA Org
+WARN: Field CN too long or empty. Using default
+WARN: Field CN too long or empty. Using default
+WARN: Field CN too long or empty. Using default
+   14:d=4  hl=2 l=   7 prim: UTF8STRING        :default
+   51:d=4  hl=2 l=   7 prim: UTF8STRING        :default
+  122:d=4  hl=2 l=   7 prim: UTF8STRING        :default
+PASS test/integration/tests/X509certutil.sh (exit status: 0)

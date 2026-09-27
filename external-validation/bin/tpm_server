@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""`tpm_server` for the tpm2-tss/tpm2-tools upstream helpers: exec bridge.py.
+
+exec keeps the PID the helpers track; --process-name keeps the name they find.
+"""
+import os
+import sys
+
+bridge = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'bridge.py')
+os.execv(sys.executable, [sys.executable, bridge, '--process-name', 'tpm_server', *sys.argv[1:]])
