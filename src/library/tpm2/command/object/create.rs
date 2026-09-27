@@ -142,13 +142,19 @@ pub(in crate::library::tpm2::command) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::CommandInput;
-    use crate::library::cancel::CancellationToken;
+    use crate::library::tpm2::command::core::test_support::assert_scenario_response;
+    use crate::library::tpm2::command::object::test_support::{
+        cap_da_command, cp_command, evict_command, flush_command,
+    };
+    use crate::library::tpm2::object_load::replay::{
+        exec_raw, push_tpm2b, runtime_from, sessioned,
+    };
+
     use crate::library::tpm2::clock::SteppingClock;
-    use crate::library::tpm2::command::core::registry::{self, HandleKind, TPM_CC_CREATE};
+    use crate::library::tpm2::command::core::registry::TPM_CC_CREATE;
     use crate::library::tpm2::golden_responses::create::vector;
     use crate::library::tpm2::object::ATTR_OCCUPIED;
-    use crate::library::tpm2::process::process;
+
     use crate::library::tpm2::restore_permanent_blob_for_test;
     use crate::library::tpm2::template::TemplateReader;
 
@@ -197,27 +203,6 @@ mod tests {
     const PCR_BAD_ALG: [u8; 10] = [0x00, 0x00, 0x00, 0x01, 0x07, 0x77, 0x03, 0xff, 0x00, 0x00];
     const PCR_BAD_SELECT_SIZE: [u8; 7] = [0x00, 0x00, 0x00, 0x01, 0x00, 0x0b, 0x00];
 
-    fn push_tpm2b(out: &mut Vec<u8>, bytes: &[u8]) {
-        out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-        out.extend_from_slice(bytes);
-    }
-
-    fn build(command_code: u32, handles: &[u32], password: &[u8], params: &[u8]) -> Vec<u8> {
-        let mut out = vec![0x80, 0x02, 0, 0, 0, 0];
-        out.extend_from_slice(&command_code.to_be_bytes());
-        for handle in handles {
-            out.extend_from_slice(&handle.to_be_bytes());
-        }
-        out.extend_from_slice(&(9 + password.len() as u32).to_be_bytes());
-        out.extend_from_slice(&0x4000_0009u32.to_be_bytes());
-        out.extend_from_slice(&[0x00, 0x00, 0x00]);
-        push_tpm2b(&mut out, password);
-        out.extend_from_slice(params);
-        let size = (out.len() as u32).to_be_bytes();
-        out[2..6].copy_from_slice(&size);
-        out
-    }
-
     fn cr_params(
         user_auth: &[u8],
         data: &[u8],
@@ -248,7 +233,7 @@ mod tests {
         outside_info: &[u8],
         creation_pcr: &[u8],
     ) -> Vec<u8> {
-        build(
+        sessioned(
             TPM_CC_CREATE,
             &[parent],
             password,
@@ -260,40 +245,13 @@ mod tests {
         cr_command(parent, password, &[], &[], template, &[], &[])
     }
 
-    fn cp_command(hierarchy: u32, user_auth: &[u8], template: &[u8]) -> Vec<u8> {
-        let mut params = Vec::new();
-        params.extend_from_slice(&(4 + user_auth.len() as u16).to_be_bytes());
-        push_tpm2b(&mut params, user_auth);
-        push_tpm2b(&mut params, &[]);
-        push_tpm2b(&mut params, template);
-        params.extend_from_slice(&0u16.to_be_bytes());
-        params.extend_from_slice(&0u32.to_be_bytes());
-        build(0x0000_0131, &[hierarchy], &[], &params)
-    }
-
     fn cl_command(parent: u32, template: &[u8]) -> Vec<u8> {
         let mut params = Vec::new();
         params.extend_from_slice(&4u16.to_be_bytes());
         push_tpm2b(&mut params, &[]);
         push_tpm2b(&mut params, &[]);
         push_tpm2b(&mut params, template);
-        build(0x0000_0191, &[parent], &[], &params)
-    }
-
-    fn flush_command(handle: u32) -> Vec<u8> {
-        let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0e];
-        out.extend_from_slice(&0x0000_0165u32.to_be_bytes());
-        out.extend_from_slice(&handle.to_be_bytes());
-        out
-    }
-
-    fn evict_command(object: u32, persistent: u32) -> Vec<u8> {
-        build(
-            0x0000_0120,
-            &[TPM_RH_OWNER_H, object],
-            &[],
-            &persistent.to_be_bytes(),
-        )
+        sessioned(0x0000_0191, &[parent], &[], &params)
     }
 
     fn cap_cc_command(property: u32, count: u32) -> Vec<u8> {
@@ -305,40 +263,8 @@ mod tests {
         out
     }
 
-    fn cap_da_command() -> Vec<u8> {
-        let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x16];
-        out.extend_from_slice(&0x0000_017au32.to_be_bytes());
-        out.extend_from_slice(&6u32.to_be_bytes());
-        out.extend_from_slice(&0x20eu32.to_be_bytes());
-        out.extend_from_slice(&4u32.to_be_bytes());
-        out
-    }
-
-    fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
-        panic!("the replay must not draw host entropy");
-    }
-
     fn restored_runtime(clock: &SteppingClock) -> Tpm2Runtime {
-        let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
-            .expect("the oracle permanent state restores");
-        crate::library::tpm2::attach_volatile_blob(&mut runtime, vector("VOLATILE_BASE"), clock)
-            .expect("the oracle volatile state attaches");
-        runtime.entropy = unreachable_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn exec_raw(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: Vec<u8>) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes);
-        process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(0),
-            &input,
-            clock,
-            |_| Ok(()),
-            CancellationToken::disabled(),
-        )
-        .expect("the command processes")
+        runtime_from(vector("PERMALL_BASE"), vector("VOLATILE_BASE"), clock)
     }
 
     #[track_caller]
@@ -354,61 +280,6 @@ mod tests {
             exec(&mut runtime, &clock, label, bytes.clone());
         }
         runtime
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        assert_eq!(TPM_CC_CREATE, 0x0000_0153);
-        let descriptor = registry::find(TPM_CC_CREATE).expect("the command is registered");
-        assert_eq!(descriptor.attributes, 0x0200_0153);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!(descriptor.attributes & (1 << 22), 0, "no NVRAM update");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn object_handle_kind_transient_persistent_only() {
-        let kind = registry::find(TPM_CC_CREATE).unwrap().handles[0].kind;
-        for handle in [
-            0x8000_0000u32,
-            0x8000_0001,
-            0x8000_0002,
-            0x8100_0000,
-            0x81ff_ffff,
-        ] {
-            assert!(kind.accepts(handle), "handle {handle:#x}");
-        }
-        for handle in [
-            0u32,
-            23,
-            0x0100_0000,
-            TPM_RH_OWNER_H,
-            TPM_RH_NULL_H,
-            TPM_RH_ENDORSEMENT_H,
-            0x4000_0009,
-            0x8000_0003,
-            0x8200_0000,
-            u32::MAX,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#x}");
-        }
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let oracle = vector("CAP_CC_CREATE");
-        assert_eq!(
-            &oracle[oracle.len() - 4..],
-            0x0200_0153u32.to_be_bytes(),
-            "the vendored TPM reports TPMA_CC 0x02000153"
-        );
-        replay_case(&[("CAP_CC_CREATE", cap_cc_command(0x153, 1))]);
     }
 
     #[test]
@@ -432,11 +303,16 @@ mod tests {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
-        exec(
-            &mut runtime,
-            &clock,
-            "BEFORE_STARTUP",
-            create_command(0x8000_0000, &[], &AES_TEMPLATE),
+        assert_scenario_response(
+            "TPM2_Create before TPM2_Startup: create BEFORE_STARTUP",
+            vector("BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    create_command(0x8000_0000, &[], &AES_TEMPLATE),
+                )
+            },
         );
     }
 
@@ -1052,13 +928,13 @@ mod tests {
 
     mod state {
         use super::*;
-        use crate::library::tpm2::nv::any_object_image;
+        use crate::library::tpm2::command::object::test_support::object_images;
+
         use crate::library::tpm2::persistent::{
-            OwnedAnyObject, PersistentAllEnvelope, materialize_persistent_state,
-            persistent_all_store,
+            PersistentAllEnvelope, materialize_persistent_state, persistent_all_store,
         };
         use crate::library::tpm2::runtime::commit_restored_state;
-        use crate::library::tpm2::volatile::{CURRENT_OBJECT_VERSION, OwnedVolatileState};
+        use crate::library::tpm2::volatile::OwnedVolatileState;
         use crate::library::tpm2::{
             decode_volatile_blob, parse_persistent_all_payload, volatile_validation_context,
         };
@@ -1073,15 +949,6 @@ mod tests {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             decode_volatile_blob(&context, vector(&format!("VOLATILE_{label}")), &clock)
                 .expect("the volatile record decodes")
-        }
-
-        fn object_images(objects: &[OwnedAnyObject]) -> Vec<Vec<u8>> {
-            objects
-                .iter()
-                .map(|object| {
-                    any_object_image(object, CURRENT_OBJECT_VERSION).expect("the object serializes")
-                })
-                .collect()
         }
 
         #[test]

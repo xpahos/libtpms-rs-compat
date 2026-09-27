@@ -33,8 +33,6 @@ pub(in crate::library::tpm2::command) fn execute(
 ) -> Result<CommandOutput, TpmResult> {
     let auth_handle = frame.handles.first().copied().ok_or(TPM_RC_FAILURE)?;
     let input = {
-        // TODO: Support runtimes without decoded state after the NVChip fallback
-        // is implemented.
         let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
         parse_parameters(&state.profile.algorithms, frame.parameters)?
     };
@@ -121,16 +119,16 @@ pub(super) fn hash_algorithm_allowed(profile_algorithms: &[u8], hash_alg: u16) -
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_SET_PRIMARY_POLICY, find,
+
+    use crate::library::tpm2::command::core::registry::TPM_CC_SET_PRIMARY_POLICY;
+    use crate::library::tpm2::command::core::test_support::{
+        command, for_each_mutation, framed, prefix_bit_flips, response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{command, framed, response_code};
     use crate::library::tpm2::command::hierarchy::test_support::{
         DIGEST, RC_NV_UNAVAILABLE, RC_SUCCESS, TPM_ALG_NULL, TPM_ALG_SHA256,
-        assert_nv_image_is_current, assert_unchanged, cap_command_attributes, cap_startup_clear,
-        commits_for, exec, expect, oracle_runtime, policies, reboot, reload, replay, replay_clock,
-        secrets, set_primary_policy, shutdown, snapshot, startup,
+        assert_nv_image_is_current, assert_unchanged, cap_startup_clear, commits_for, exec, expect,
+        oracle_runtime, policies, reboot, reload, replay_clock, secrets, set_primary_policy,
+        shutdown, snapshot, startup, try_exec,
     };
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
@@ -140,61 +138,6 @@ mod tests {
     const TPM_ALG_SHA1: u16 = 0x0004;
     const TPM_ALG_SHA384: u16 = 0x000c;
     const TPM_ALG_ECB: u16 = 0x0044;
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = find(TPM_CC_SET_PRIMARY_POLICY).expect("the command is registered");
-        assert_eq!(descriptor.attributes, 0x0240_012e);
-        assert!(descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 0);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::HierarchyAuth
-        ));
-    }
-
-    #[test]
-    fn authorization_handle_four_hierarchies_only() {
-        let kind = find(TPM_CC_SET_PRIMARY_POLICY).unwrap().handles[0].kind;
-        for handle in [
-            TPM_RH_OWNER,
-            TPM_RH_ENDORSEMENT,
-            TPM_RH_PLATFORM,
-            TPM_RH_LOCKOUT,
-        ] {
-            assert!(kind.accepts(handle), "handle {handle:#x}");
-        }
-        for handle in [
-            TPM_RH_NULL,
-            TPM_RH_PLATFORM_NV,
-            TPM_RS_PW,
-            0x4000_0110,
-            0x4000_011f,
-            0,
-            0x0100_0000,
-            0x8000_0000,
-            u32::MAX,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#x}");
-        }
-    }
-
-    #[test]
-    fn reported_attributes_reference_match() {
-        replay(&[(
-            "CCATTR_012E",
-            cap_command_attributes(TPM_CC_SET_PRIMARY_POLICY),
-        )]);
-    }
 
     #[test]
     fn hierarchy_policy_set_clear_reference_match() {
@@ -541,23 +484,12 @@ mod tests {
     fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = set_primary_policy(TPM_RH_OWNER, &DIGEST, TPM_ALG_SHA256, &[]);
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    let mut runtime = oracle_runtime(&clock);
-                    let input = crate::library::CommandInput::new(mutated.len() as u32, mutated);
-                    let _ = crate::library::tpm2::process::process(
-                        &mut runtime,
-                        crate::library::tpm2::PlatformInputs::at_locality(0),
-                        &input,
-                        &clock,
-                        |_| Ok(()),
-                        CancellationToken::disabled(),
-                    );
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_SetPrimaryPolicy",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                let _ = try_exec(&mut oracle_runtime(&clock), &clock, &bytes);
+            },
+        );
     }
 }

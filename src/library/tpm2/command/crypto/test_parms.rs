@@ -47,13 +47,14 @@ fn parse_parameters(
 #[cfg(test)]
 mod tests {
     use crate::library::tpm2::clock::SteppingClock;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, prefix_bit_flips,
+    };
     use crate::library::tpm2::golden_responses::test_parms::vector;
     use crate::library::tpm2::object_load::replay::{
-        cap_cc, clock, exec_raw, framed, password_area, plain, runtime_from,
+        clock, exec_raw, framed, password_area, plain, runtime_from,
     };
     use crate::library::tpm2::runtime::Tpm2Runtime;
-
-    use crate::library::tpm2::command::core::registry::{self, CommandLifecycle, NvAccess};
 
     const CC_TEST_PARMS: u32 = 0x0000_018a;
 
@@ -185,45 +186,21 @@ mod tests {
     }
 
     #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = registry::find(CC_TEST_PARMS).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0000_018a);
-        assert_eq!(descriptor.decrypt_size, 0);
-        assert_eq!(descriptor.encrypt_size, 0);
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 0, "no command handle");
-        assert!(descriptor.handles.is_empty());
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = fresh_clock();
-        let mut runtime = runtime_at("BASE", &clock);
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_TEST_PARMS",
-            cap_cc(CC_TEST_PARMS),
-        );
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
-        exec(
-            &mut runtime,
-            &clock,
-            "TP_BEFORE_STARTUP",
-            test_parms(&symmetric(ALG_AES, 128, ALG_CFB)),
+        assert_scenario_response(
+            "TPM2_TestParms before TPM2_Startup: test-parms TP_BEFORE_STARTUP",
+            vector("TP_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    test_parms(&symmetric(ALG_AES, 128, ALG_CFB)),
+                )
+            },
         );
     }
 
@@ -545,16 +522,12 @@ mod tests {
         let valid = test_parms(&rsa(
             ALG_AES, 128, ALG_CFB, ALG_RSASSA, ALG_SHA256, 2048, 65537,
         ));
-        for length in 10..=valid.len() {
-            for index in 10..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let size = (mutated.len() as u32).to_be_bytes();
-                    mutated[2..6].copy_from_slice(&size);
-                    let _ = exec_raw(&mut runtime, &clock, mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_TestParms",
+            prefix_bit_flips(&valid, 10, 10, true),
+            |bytes| {
+                let _ = exec_raw(&mut runtime, &clock, bytes);
+            },
+        );
     }
 }

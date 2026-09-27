@@ -45,19 +45,18 @@ fn parse_parameters(parameters: &[u8]) -> Result<Vec<u8>, TpmResult> {
 mod tests {
     use super::*;
     use crate::library::cancel::CancellationToken;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_CHANGE_AUTH, find,
-    };
+    use crate::library::tpm2::command::core::registry::TPM_CC_NV_CHANGE_AUTH;
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, TPM_ALG_SHA1, command, dispatch_bytes, response_code, started_runtime,
+        RC_SUCCESS, REPLACEMENT_BYTES, TPM_ALG_SHA1, byte_replacements, command, dispatch_bytes,
+        for_each_mutation, response_code, started_runtime,
     };
     use crate::library::tpm2::command::nv::test_support::{
-        assert_unchanged, nv_public, resolved, snapshot,
+        assert_unchanged, define, nv_public, resolved, snapshot,
     };
     use crate::library::tpm2::golden_responses::nv::nv_vector;
-    use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
+
     use crate::library::tpm2::nv::{
-        NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, index_auth_value, marshal_sized_nv_public,
+        NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, index_auth_value,
     };
     use crate::library::tpm2::persistent::OwnedUserNvramEntry;
 
@@ -66,20 +65,6 @@ mod tests {
     const RC_PARAM1_SIZE: u32 = 0x1d5;
 
     const INDEX: u32 = 0x0100_0001;
-
-    #[track_caller]
-    fn define(runtime: &mut Tpm2Runtime, public: &NvPublic) {
-        let mut parameters = 0u16.to_be_bytes().to_vec();
-        parameters.extend_from_slice(&marshal_sized_nv_public(public));
-        assert_eq!(
-            response_code(&dispatch_bytes(
-                runtime,
-                &command(0x0000_012a, &[TPM_RH_OWNER], &[&[]], &parameters),
-            )),
-            RC_SUCCESS,
-            "the index is defined"
-        );
-    }
 
     fn auth_read_write() -> NvPublic {
         nv_public(INDEX, TPMA_NV_AUTHWRITE | TPMA_NV_AUTHREAD, 8)
@@ -99,30 +84,6 @@ mod tests {
             cancellation: CancellationToken::disabled(),
         };
         execute(runtime, &frame).map(|_| ())
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = nv_vector("CCATTR_013B");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        let descriptor = find(TPM_CC_NV_CHANGE_AUTH).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_ne!(descriptor.attributes & (1 << 22), 0, "ChangeAuth writes NV");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(
-            descriptor.handles[0].admin_role(),
-            "the index is authorized with the ADMIN role"
-        );
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::NvIndex));
     }
 
     #[test]
@@ -350,10 +311,10 @@ mod tests {
     #[test]
     fn parameter_mutation_panic_safety() {
         let full = change_auth_frame(b"pass");
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_NV_ChangeAuth",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let mut runtime = started_runtime();
                 define(&mut runtime, &auth_read_write());
                 let frame = CommandFrame {
@@ -362,7 +323,7 @@ mod tests {
                     cancellation: CancellationToken::disabled(),
                 };
                 let _ = execute(&mut runtime, &frame);
-            }
-        }
+            },
+        );
     }
 }

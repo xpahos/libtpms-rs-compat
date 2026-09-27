@@ -72,11 +72,13 @@ mod tests {
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_INCREMENTAL_SELF_TEST;
-    use crate::library::tpm2::manufacture::manufacture_state;
-    use crate::library::tpm2::profile::{DEFAULT_ALGORITHMS_PROFILE, validate_user_profile};
-    use crate::library::tpm2::runtime::{
-        Tpm2Runtime, commit_manufactured_state, empty_state_runtime,
+    use crate::library::tpm2::command::core::test_support::{
+        dispatch_bytes as run, dispatch_bytes_with as run_with,
     };
+    use crate::library::tpm2::command::lifecycle::test_support::{snapshot, started_runtime};
+
+    use crate::library::tpm2::profile::{DEFAULT_ALGORITHMS_PROFILE, validate_user_profile};
+    use crate::library::tpm2::runtime::{Tpm2Runtime, empty_state_runtime};
     use crate::library::tpm2::self_test::{
         PrimitiveTest, SelfTestFailure, SelfTestState, always_fails, fails_on_sha384,
         fails_on_sha512,
@@ -143,40 +145,6 @@ mod tests {
         out
     }
 
-    fn started_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the default profile validates");
-        let state =
-            manufacture_state(profile, deterministic_entropy).expect("the state is manufactured");
-        let mut runtime = commit_manufactured_state(state).expect("the state is committed");
-        runtime.entropy = deterministic_entropy;
-        runtime.startup_received = true;
-        runtime
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), u32> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x27;
-        }
-        Ok(())
-    }
-
-    #[track_caller]
-    fn run(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        run_with(runtime, bytes, CancellationToken::disabled())
-    }
-
-    #[track_caller]
-    fn run_with(
-        runtime: &mut Tpm2Runtime,
-        bytes: &[u8],
-        cancellation: CancellationToken<'_>,
-    ) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, cancellation)).expect("the response fits")
-    }
-
     #[track_caller]
     fn run_code(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> u32 {
         run_code_with(runtime, bytes, CancellationToken::disabled())
@@ -217,31 +185,6 @@ mod tests {
             .collect();
         assert_eq!(reported.len(), count);
         reported
-    }
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct RuntimeSnapshot {
-        nv_memory: Vec<u8>,
-        nv_update_pending: bool,
-        manufactured: bool,
-        startup_received: bool,
-        tpm_established: bool,
-        locality: u8,
-        power_on: bool,
-        nv_available: bool,
-    }
-
-    fn snapshot(runtime: &Tpm2Runtime) -> RuntimeSnapshot {
-        RuntimeSnapshot {
-            nv_memory: runtime.nv_memory.to_vec(),
-            nv_update_pending: runtime.nv_update_pending,
-            manufactured: runtime.manufactured,
-            startup_received: runtime.startup_received,
-            tpm_established: runtime.tpm_established,
-            locality: runtime.locality,
-            power_on: runtime.power_on,
-            nv_available: runtime.nv_available,
-        }
     }
 
     #[track_caller]

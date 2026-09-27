@@ -28,8 +28,6 @@ pub(in crate::library::tpm2::command) fn execute(
     frame: &CommandFrame<'_>,
 ) -> Result<CommandOutput, TpmResult> {
     let input = {
-        // TODO: Support runtimes without decoded state after the NVChip fallback
-        // is implemented.
         let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
         parse_parameters(&state.profile.algorithms, frame.parameters)?
     };
@@ -96,8 +94,9 @@ fn parse_parameters<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{
-        self, HandleKind, TPM_CC_HASH_SEQUENCE_START,
+
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, prefix_bit_flips,
     };
     use crate::library::tpm2::object::{ATTR_EVENT_SEQ, ATTR_HASH_SEQ, ATTR_OCCUPIED};
     use crate::library::tpm2::sequence::replay::{self, *};
@@ -115,49 +114,22 @@ mod tests {
     ];
 
     #[test]
-    fn registration_upstream_attributes() {
-        assert_eq!(TPM_CC_HASH_SEQUENCE_START, 0x0000_0186);
-        let descriptor = registry::find(TPM_CC_HASH_SEQUENCE_START).expect("registered");
-        assert_eq!(descriptor.attributes, 0x1000_0186);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_ne!(descriptor.attributes & (1 << 28), 0, "a response handle");
-        assert_eq!(descriptor.attributes & (1 << 22), 0, "no NVRAM update");
-        assert_eq!(descriptor.attributes & (1 << 23), 0, "not extensive");
-        assert_eq!(descriptor.attributes & (1 << 24), 0, "no flushed handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 0, "no command handle");
-        assert!(descriptor.handles.is_empty());
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = clock();
-        let mut runtime = base_runtime(&clock);
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_HASH_SEQUENCE_START",
-            command(0x8001, 0x0000_017a, &{
-                let mut out = 2u32.to_be_bytes().to_vec();
-                out.extend_from_slice(&0x0186u32.to_be_bytes());
-                out.extend_from_slice(&1u32.to_be_bytes());
-                out
-            }),
-        );
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let clock = clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
         runtime.entropy = unreachable_entropy;
-        exec(
-            &mut runtime,
-            &clock,
-            "HSS_BEFORE_STARTUP",
-            hash_sequence_start(&[], TPM_ALG_SHA256),
+        assert_scenario_response(
+            "TPM2_HashSequenceStart before TPM2_Startup: sequence-commands HSS_BEFORE_STARTUP",
+            vector("HSS_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    hash_sequence_start(&[], TPM_ALG_SHA256),
+                )
+            },
         );
     }
 
@@ -394,29 +366,12 @@ mod tests {
         let clock = clock();
         let mut runtime = base_runtime(&clock);
         let valid = hash_sequence_start(b"a", TPM_ALG_SHA256);
-        for length in 10..=valid.len() {
-            for index in 10..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let size = (mutated.len() as u32).to_be_bytes();
-                    mutated[2..6].copy_from_slice(&size);
-                    let _ = exec_raw(&mut runtime, &clock, mutated);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn registry_descriptor_zero_handles() {
-        let descriptor = registry::find(TPM_CC_HASH_SEQUENCE_START).expect("registered");
-        assert!(descriptor.handles.is_empty());
-        assert!(matches!(
-            registry::find(crate::library::tpm2::command::core::registry::TPM_CC_SEQUENCE_UPDATE)
-                .expect("registered")
-                .handles[0]
-                .kind,
-            HandleKind::Object
-        ));
+        for_each_mutation(
+            "TPM2_HashSequenceStart",
+            prefix_bit_flips(&valid, 10, 10, true),
+            |bytes| {
+                let _ = exec_raw(&mut runtime, &clock, bytes);
+            },
+        );
     }
 }

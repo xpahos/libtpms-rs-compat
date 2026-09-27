@@ -26,8 +26,6 @@ pub(in crate::library::tpm2::command) fn execute(
     runtime: &mut Tpm2Runtime,
     frame: &CommandFrame<'_>,
 ) -> Result<CommandOutput, TpmResult> {
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
     let mut selections = parse_parameters(&state.profile.algorithms, frame.parameters)?;
     let update_counter = runtime
@@ -194,34 +192,18 @@ fn marshal_response(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+
     use crate::library::constants::{TPM_RC_INITIALIZE, TPM_SUCCESS};
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
+
     use crate::library::tpm2::command::core::registry::TPM_CC_PCR_READ;
-    use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::command::core::test_support::{
+        dispatch_bytes, dispatch_ignoring_result, error_response, for_each_mutation, hex,
+        manufactured_runtime, prefix_bit_flips, process, started_runtime,
+    };
     use crate::library::tpm2::persistent::OwnedPcrSelection;
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
     use crate::library::tpm2::tis;
 
     const TPM_ALG_SHA1: u16 = 0x0004;
@@ -245,51 +227,6 @@ mod tests {
     const DRTM_ABC_SHA256: &str =
         "589f9ffed4c477966bfb8d41f37895b08c69047df8f911d6f3b57fbe08faee8d";
 
-    fn hex(s: &str) -> Vec<u8> {
-        let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x55;
-        }
-        Ok(())
-    }
-
-    fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
-
-    #[track_caller]
-    fn started_runtime() -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime();
-        let startup = hex("80010000000c0000014400 00");
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
-        runtime
-    }
-
     fn pcr_read_command(parameters: &[u8]) -> Vec<u8> {
         let mut out = vec![0x80, 0x01];
         out.extend_from_slice(&(10 + parameters.len() as u32).to_be_bytes());
@@ -303,12 +240,6 @@ mod tests {
         out.extend_from_slice(&hash_alg.to_be_bytes());
         out.push(3);
         out.extend_from_slice(&bitmap);
-        out
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
         out
     }
 
@@ -389,14 +320,18 @@ mod tests {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &pcr_read_command(&0u32.to_be_bytes())),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_PCR_Read before TPM2_Startup"
         );
         assert_eq!(
             dispatch_bytes(&mut runtime, &pcr_read_command(&[])),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes parameter parsing"
+            "TPM2_PCR_Read before TPM2_Startup: the lifecycle check precedes parameter parsing"
         );
-        assert!(!runtime.startup_received);
+        assert!(
+            !runtime.startup_received,
+            "TPM2_PCR_Read before TPM2_Startup leaves the TPM unstarted"
+        );
     }
 
     #[test]
@@ -565,23 +500,13 @@ mod tests {
     #[test]
     fn prefix_and_bit_flip_panic_safety() {
         let valid = pcr_read_command(&one_bank_params(TPM_ALG_SHA256, [1, 0, 0]));
-        for len in 10..=valid.len() {
-            for index in 6..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
-                    mutated[index] ^= flip;
-                    let mut runtime = started_runtime();
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(
-                        &mut runtime,
-                        &parsed,
-                        CancellationToken::disabled(),
-                    ));
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_PCR_Read",
+            prefix_bit_flips(&valid, 10, 6, true),
+            |bytes| {
+                dispatch_ignoring_result(&mut started_runtime(), bytes);
+            },
+        );
     }
 
     #[test]

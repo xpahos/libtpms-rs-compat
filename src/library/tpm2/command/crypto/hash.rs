@@ -39,8 +39,6 @@ pub(in crate::library::tpm2::command) fn execute(
     frame: &CommandFrame<'_>,
 ) -> Result<CommandOutput, TpmResult> {
     let input = {
-        // TODO: Support runtimes without decoded state after the NVChip fallback
-        // is implemented.
         let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
         parse_parameters(&state.profile.algorithms, frame.parameters)?
     };
@@ -117,37 +115,26 @@ fn parse_parameters<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_RC_INITIALIZE;
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_HASH;
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, error_response, hex, manufactured_runtime_with, process,
+        start,
+    };
+    use crate::library::tpm2::command::crypto::test_support::{
+        never_runs, recording_runner, recording_runner_failing_sha256,
+        recording_runner_failing_sha512, take_self_tests_run,
+    };
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::hash_vectors::{HashTicketCase, hash_ticket_record};
-    use crate::library::tpm2::manufacture::manufacture_state;
+
     use crate::library::tpm2::persistent::OwnedSecret;
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
     use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure};
-    use std::cell::RefCell;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x63>;
 
     const TPM_ALG_SHA1: u16 = 0x0004;
     const TPM_ALG_AES: u16 = 0x0006;
@@ -173,48 +160,14 @@ mod tests {
     const MINIMAL_ALGORITHMS: &str = "rsa,hmac,aes,mgf1,keyedhash,xor,sha256,sha384,null,oaep,\
 ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ecc-nist-p384";
 
-    fn hex(text: &str) -> Vec<u8> {
-        let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x63;
-        }
-        Ok(())
-    }
-
     fn manufactured_runtime(profile: Option<&[u8]>) -> Tpm2Runtime {
-        let profile = validate_user_profile(profile).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
+        manufactured_runtime_with(profile, ENTROPY)
     }
 
     #[track_caller]
     fn started_runtime(profile: Option<&[u8]>) -> Tpm2Runtime {
         let mut runtime = manufactured_runtime(profile);
-        let startup = hex("80010000000c0000014400 00");
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
+        start(&mut runtime);
         runtime
     }
 
@@ -231,33 +184,6 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
         let mut runtime = started_runtime(None);
         install_oracle_proofs(&mut runtime);
         runtime
-    }
-
-    thread_local! {
-        static SELF_TESTS_RUN: RefCell<Vec<PrimitiveTest>> = const { RefCell::new(Vec::new()) };
-    }
-
-    fn recording_runner(test: PrimitiveTest) -> bool {
-        SELF_TESTS_RUN.with(|run| run.borrow_mut().push(test));
-        true
-    }
-
-    fn recording_runner_failing_sha256(test: PrimitiveTest) -> bool {
-        SELF_TESTS_RUN.with(|run| run.borrow_mut().push(test));
-        test != PrimitiveTest::Sha256
-    }
-
-    fn recording_runner_failing_sha512(test: PrimitiveTest) -> bool {
-        SELF_TESTS_RUN.with(|run| run.borrow_mut().push(test));
-        test != PrimitiveTest::Sha512
-    }
-
-    fn never_runs(test: PrimitiveTest) -> bool {
-        panic!("a rejected command must run no self-test, got {test:?}");
-    }
-
-    fn take_self_tests_run() -> Vec<PrimitiveTest> {
-        SELF_TESTS_RUN.with(|run| core::mem::take(&mut *run.borrow_mut()))
     }
 
     #[track_caller]
@@ -286,12 +212,6 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
 
     fn hash_command(data: &[u8], hash_alg: u16, hierarchy: u32) -> Vec<u8> {
         command_with(&parameters_of(data, hash_alg, hierarchy))
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
     }
 
     fn success_response(parameters: &[u8]) -> Vec<u8> {
@@ -425,7 +345,8 @@ ecdsa,ecdh,kdf1-sp800-56a,kdf2,kdf1-sp800-108,ecc,symcipher,cfb,ecc-nist-p256,ec
             assert_eq!(
                 dispatch_bytes(&mut runtime, &command_with(parameters)),
                 error_response(TPM_RC_INITIALIZE),
-                "the lifecycle check precedes parameter parsing, {parameters:02x?}"
+                "TPM2_Hash before TPM2_Startup: the lifecycle check precedes parameter parsing, \
+                 {parameters:02x?}"
             );
         }
         assert_unchanged(&runtime, &before);

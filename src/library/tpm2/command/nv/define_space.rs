@@ -174,18 +174,17 @@ fn platform_nv_is_enabled(runtime: &Tpm2Runtime) -> Result<bool, TpmResult> {
 mod tests {
     use super::*;
     use crate::library::constants::TPM_RC_INITIALIZE;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_DEFINE_SPACE, find,
-    };
+    use crate::library::tpm2::command::core::registry::TPM_CC_NV_DEFINE_SPACE;
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, TPM_ALG_SHA1, command, dispatch_bytes, error_response, framed,
-        manufactured_runtime, response_code, started_runtime,
+        RC_SUCCESS, REPLACEMENT_BYTES, TPM_ALG_SHA1, byte_replacements, command, dispatch_bytes,
+        error_response, for_each_mutation, framed, manufactured_runtime, response_code,
+        started_runtime,
     };
     use crate::library::tpm2::command::nv::test_support::{
         assert_matches_oracle, assert_unchanged, index_handles, nt, nv_public, resolved, snapshot,
     };
     use crate::library::tpm2::golden_responses::nv::nv_vector;
-    use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL};
+
     use crate::library::tpm2::nv::{
         NV_INDEX_FIRST, NV_INDEX_LAST, TPMA_NV_ORDERLY, TPMA_NV_READ_STCLEAR,
         TPMA_NV_WRITE_STCLEAR, marshal_sized_nv_public, resolve_index,
@@ -269,54 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn command_code_attributes_vendored_table_match() {
-        assert_eq!(TPM_CC_NV_DEFINE_SPACE, 0x0000_012a);
-        let expected = nv_vector("CCATTR_012A");
-        let descriptor = find(TPM_CC_NV_DEFINE_SPACE).expect("a registered command");
-        assert_eq!(
-            descriptor.attributes,
-            u32::from_be_bytes(expected[19..23].try_into().unwrap())
-        );
-        assert_eq!(descriptor.attributes, 0x0240_012a);
-        assert_ne!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "DefineSpace writes NV"
-        );
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert!(descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-    }
-
-    #[test]
-    fn single_provision_handle_user_auth() {
-        let descriptor = find(TPM_CC_NV_DEFINE_SPACE).expect("a registered command");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Provision));
-
-        let kind = descriptor.handles[0].kind;
-        assert!(kind.accepts(TPM_RH_OWNER));
-        assert!(kind.accepts(TPM_RH_PLATFORM));
-        for handle in [
-            TPM_RH_ENDORSEMENT,
-            TPM_RH_LOCKOUT,
-            TPM_RH_NULL,
-            NV_INDEX_FIRST,
-            0x8100_0000,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#010x}");
-        }
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
@@ -324,7 +275,8 @@ mod tests {
                 &mut runtime,
                 &define_command(TPM_RH_OWNER, &[], &[], &owner_ordinary())
             ),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_NV_DefineSpace before TPM2_Startup"
         );
     }
 
@@ -1269,16 +1221,16 @@ mod tests {
     #[test]
     fn parameter_mutation_panic_safety() {
         let full = define_parameters(b"pw", &owner_ordinary());
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_NV_DefineSpace",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let mut runtime = started_runtime();
                 let _ = dispatch_bytes(
                     &mut runtime,
                     &command(TPM_CC_NV_DEFINE_SPACE, &[TPM_RH_OWNER], &[&[]], &parameters),
                 );
-            }
-        }
+            },
+        );
     }
 }

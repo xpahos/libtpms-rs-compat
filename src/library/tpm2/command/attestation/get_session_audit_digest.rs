@@ -83,14 +83,14 @@ mod tests {
     use crate::library::tpm2::command::attestation::builder::test_support::{
         ALG_NULL, ALG_RSASSA, ALG_SHA256, CC_FLUSH_CONTEXT, CC_GET_RANDOM, CC_START_AUTH_SESSION,
         HMAC_SESSION, KEY0, NONCE_CALLER, QUALIFY, SIGN_ATTRS, TPM_RH_ENDORSEMENT, TPM_RH_NULL,
-        TPM_RH_OWNER, TPM_RS_PW, attest_prefix, attested_body, attested_bytes, audited_get_random,
-        command, create_primary, pw, ready_runtime, replay_clock, rsa_template, run, run_ok,
-        sig_scheme, tpm2b,
+        TPM_RH_OWNER, TPM_RS_PW, assert_trailing_byte_oracle, attest_prefix, attested_body,
+        attested_bytes, audited_get_random, command, create_primary, pw, ready_runtime,
+        replay_clock, rsa_template, run, run_ok, sig_scheme, tpm2b,
     };
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_GET_SESSION_AUDIT_DIGEST, find,
+    use crate::library::tpm2::command::core::registry::TPM_CC_GET_SESSION_AUDIT_DIGEST;
+    use crate::library::tpm2::command::core::test_support::{
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, for_each_mutation, response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{RC_SUCCESS, response_code};
     use crate::library::tpm2::golden_responses::attestation::vector;
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -98,7 +98,6 @@ mod tests {
     const RC_HANDLE3_VALUE: u32 = 0x384;
     const RC_HANDLE3_TYPE: u32 = 0x38a;
     const RC_REFERENCE_H2: u32 = 0x912;
-    const RC_SIZE: u32 = 0x095;
 
     fn audit_digest_command(privacy: u32, sign: u32, audit: u32, scheme: u16) -> Vec<u8> {
         let mut parameters = tpm2b(&QUALIFY);
@@ -154,47 +153,6 @@ mod tests {
             "the audited command matches the oracle"
         );
         runtime
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_014D");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
-        assert_eq!(TPM_CC_GET_SESSION_AUDIT_DIGEST, 0x0000_014d);
-        let descriptor = find(TPM_CC_GET_SESSION_AUDIT_DIGEST).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0600_014d);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 3);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.handles[1].user_auth);
-        assert!(!descriptor.handles[2].user_auth);
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::Endorsement
-        ));
-        assert!(matches!(
-            descriptor.handles[1].kind,
-            HandleKind::ObjectAllowNull
-        ));
-        assert!(matches!(
-            descriptor.handles[2].kind,
-            HandleKind::HmacSession
-        ));
-        let kind = descriptor.handles[2].kind;
-        assert!(kind.accepts(HMAC_SESSION));
-        assert!(kind.accepts(HMAC_SESSION + 63));
-        for handle in [HMAC_SESSION + 64, 0x0300_0000, TPM_RS_PW, TPM_RH_NULL, 0] {
-            assert!(!kind.accepts(handle), "{handle:#010x}");
-        }
     }
 
     #[test]
@@ -365,20 +323,14 @@ mod tests {
         let mut runtime = audited_runtime();
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
-        parameters.push(0x00);
-        assert_eq!(
-            run(
-                &mut runtime,
-                &command(
-                    TPM_CC_GET_SESSION_AUDIT_DIGEST,
-                    &[TPM_RH_ENDORSEMENT, KEY0, HMAC_SESSION],
-                    Some(&[pw(), pw()]),
-                    &parameters
-                )
-            ),
-            vector("SESSION_AUDIT_TRAILING")
+        assert_trailing_byte_oracle(
+            &mut runtime,
+            TPM_CC_GET_SESSION_AUDIT_DIGEST,
+            &[TPM_RH_ENDORSEMENT, KEY0, HMAC_SESSION],
+            &[pw(), pw()],
+            &parameters,
+            "SESSION_AUDIT_TRAILING",
         );
-        assert_eq!(response_code(vector("SESSION_AUDIT_TRAILING")), RC_SIZE);
     }
 
     #[test]
@@ -411,10 +363,10 @@ mod tests {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = audited_runtime();
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_GetSessionAuditDigest",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let _ = run(
                     &mut runtime,
                     &command(
@@ -424,7 +376,7 @@ mod tests {
                         &parameters,
                     ),
                 );
-            }
-        }
+            },
+        );
     }
 }

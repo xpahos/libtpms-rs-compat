@@ -197,29 +197,10 @@ pub(in crate::library) fn established_reset(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
+
     use super::*;
     use crate::library::CommandInput;
-    use crate::library::tpm2::manufacture::manufacture_state;
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+    use crate::library::tpm2::test_support::{hex, process};
 
     const SHA1_SLOT: usize = 0;
     const SHA256_SLOT: usize = 1;
@@ -247,30 +228,12 @@ mod tests {
 
     const STARTUP_PCR_COUNTER: u32 = 20;
 
-    fn hex(value: &str) -> Vec<u8> {
-        let value: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        (0..value.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&value[i..i + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x71;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0x71>;
 
     fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
+        crate::library::tpm2::test_support::manufactured_runtime_with(None, ENTROPY)
     }
-
     fn run_command(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
         process(runtime, 0, &input, |_| Ok(())).expect("the command processes")

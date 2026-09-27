@@ -221,6 +221,7 @@ mod tests {
     use super::*;
     use crate::library::constants::TPM_RC_COMMAND_CODE;
     use crate::library::tpm2::buffer_size::{DEFAULT_BUFFER_SIZE, MIN_BUFFER_SIZE};
+    use crate::library::tpm2::command::core::test_support::{for_each_mutation, prefix_bit_flips};
 
     const MAX_RESPONSE_SIZE: usize = DEFAULT_BUFFER_SIZE as usize;
 
@@ -409,15 +410,13 @@ mod tests {
     #[test]
     fn header_prefix_and_bit_flip_panic_safety() {
         let valid = command_bytes(TPM_ST_SESSIONS, 14, 0x144, &[1, 2, 3, 4]);
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    let _ = parse_command(&received(&mutated));
-                }
-            }
-        }
+        for_each_mutation(
+            "command header",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                let _ = parse_command(&received(&bytes));
+            },
+        );
     }
 
     #[test]

@@ -123,16 +123,15 @@ pub(in crate::library::tpm2::command) fn execute_command_code(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, manufactured_runtime, response_code,
+        RC_SUCCESS, TAIL_BYTES, assert_scenario_response, command, dispatch_bytes,
+        for_each_mutation, manufactured_runtime, response_code, truncated_tail_replacements,
     };
     use crate::library::tpm2::command::policy::session::test_support::{
         CC_POLICY_AUTH_VALUE, CC_POLICY_COMMAND_CODE, CC_POLICY_GET_DIGEST, CC_POLICY_PASSWORD,
-        CC_POLICY_RESTART, CC_START_AUTH_SESSION, HMAC_SESSION_0, POLICY_SESSION_0, restored,
-        session_of,
+        CC_POLICY_RESTART, CC_START_AUTH_SESSION, HMAC_SESSION_0, POLICY_SESSION_0, digest,
+        restored, session_of,
     };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
     use crate::library::tpm2::session::{
@@ -148,54 +147,18 @@ mod tests {
         dispatch_bytes(runtime, &policy_command(code, POLICY_SESSION_0, extra))
     }
 
-    #[track_caller]
-    fn digest(runtime: &mut Tpm2Runtime) -> Vec<u8> {
-        run(runtime, CC_POLICY_GET_DIGEST, &[])
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (code, record, expected) in [
-            (CC_POLICY_AUTH_VALUE, "CCATTR_016B", 0x0200_016bu32),
-            (CC_POLICY_COMMAND_CODE, "CCATTR_016C", 0x0200_016c),
-            (CC_POLICY_RESTART, "CCATTR_0180", 0x0200_0180),
-            (CC_POLICY_GET_DIGEST, "CCATTR_0189", 0x0200_0189),
-            (CC_POLICY_PASSWORD, "CCATTR_018C", 0x0200_018c),
-        ] {
-            let oracle = vector(record);
-            let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "{record}");
-            assert_eq!(descriptor.attributes, expected, "{record}");
-            assert_eq!(descriptor.handles.len(), 1, "{record}");
-            assert!(!descriptor.handles[0].user_auth, "{record}");
-            assert!(!descriptor.handles[0].admin_role(), "{record}");
-            assert!(
-                matches!(descriptor.handles[0].kind, HandleKind::PolicySession),
-                "{record}"
-            );
-            assert!(descriptor.sessions_allowed, "{record}");
-            assert!(!descriptor.physical_presence, "{record}");
-            assert!(
-                matches!(descriptor.nv_access, NvAccess::Neither),
-                "{record}"
-            );
-            assert!(
-                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
-                "{record}"
-            );
-        }
-    }
-
     #[test]
     fn pre_startup_command_rejection() {
         let mut runtime = manufactured_runtime();
-        assert_eq!(
-            dispatch_bytes(
-                &mut runtime,
-                &policy_command(CC_POLICY_GET_DIGEST, POLICY_SESSION_0, &[])
-            ),
-            vector("PGD_BEFORE_STARTUP")
+        assert_scenario_response(
+            "TPM2_PolicyGetDigest before TPM2_Startup: policy-sessions PGD_BEFORE_STARTUP",
+            vector("PGD_BEFORE_STARTUP"),
+            || {
+                dispatch_bytes(
+                    &mut runtime,
+                    &policy_command(CC_POLICY_GET_DIGEST, POLICY_SESSION_0, &[]),
+                )
+            },
         );
     }
 
@@ -691,15 +654,12 @@ mod tests {
     #[test]
     fn parameter_mutation_panic_safety() {
         let valid = policy_command(CC_POLICY_COMMAND_CODE, POLICY_SESSION_0, &[0, 0, 1, 0x5d]);
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("POLICY_FRESH");
-                let _ = dispatch_bytes(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_PolicyCommandCode",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = dispatch_bytes(&mut restored("POLICY_FRESH"), &bytes);
+            },
+        );
     }
 }

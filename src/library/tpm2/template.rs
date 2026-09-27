@@ -929,23 +929,11 @@ pub(super) const MAX_SYMMETRIC_KEY_BYTES: usize = MAX_SYM_KEY_BYTES;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE;
-
-    fn policy() -> AlgorithmPolicy<'static> {
-        AlgorithmPolicy {
-            profile_algorithms: DEFAULT_ALGORITHMS_PROFILE,
-            state_format: StateFormatLimit::CURRENT,
-        }
-    }
+    use crate::library::tpm2::test_support::{default_algorithm_policy, push_tpm2b};
 
     fn parse(bytes: &[u8]) -> Result<OwnedTpmtPublic, TpmResult> {
         let mut reader = TemplateReader::new(bytes);
-        parse_public_area(&mut reader, &policy(), false)
-    }
-
-    fn push_tpm2b(out: &mut Vec<u8>, bytes: &[u8]) {
-        out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-        out.extend_from_slice(bytes);
+        parse_public_area(&mut reader, &default_algorithm_policy(), false)
     }
 
     pub(super) fn rsa_storage_template(key_bits: u16, name_alg: u16) -> Vec<u8> {
@@ -1069,7 +1057,7 @@ mod tests {
         let bytes = rsa_storage_template(2048, TPM_ALG_NULL);
         assert_eq!(parse(&bytes).unwrap_err(), TPM_RC_HASH);
         let mut reader = TemplateReader::new(&bytes);
-        assert!(parse_public_area(&mut reader, &policy(), true).is_ok());
+        assert!(parse_public_area(&mut reader, &default_algorithm_policy(), true).is_ok());
     }
 
     #[test]

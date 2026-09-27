@@ -58,7 +58,6 @@ mod tests {
         attach_volatile_blob, decode_volatile_blob, parse_persistent_all_payload,
         volatile_validation_context,
     };
-    use crate::types::TpmResult;
 
     const TPM_RH_OWNER: u32 = 0x4000_0001;
     const TPM_RH_LOCKOUT: u32 = 0x4000_000a;
@@ -67,13 +66,8 @@ mod tests {
     const TPMA_NV_NO_DA: u32 = 0x0200_0000;
     const AUTH_READ_WRITE: u32 = 0x0004_0004;
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x3d;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0x3d>;
 
     fn no_sessions_command(code: u32, params: &[u8]) -> Vec<u8> {
         let mut out = vec![0x80, 0x01];
@@ -709,7 +703,7 @@ mod tests {
         let decoded = parse_persistent_all_payload(&envelope).expect("the payload decodes");
         let state = materialize_persistent_state(decoded).expect("the state materializes");
         let mut runtime = commit_restored_state(state).expect("the restored state commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         if let Some(carried) = previous.restored_volatile.as_ref() {
             let restored = runtime
                 .restored_volatile
@@ -730,7 +724,7 @@ mod tests {
         let decoded = parse_persistent_all_payload(&envelope).expect("the payload decodes");
         let state = materialize_persistent_state(decoded).expect("the state materializes");
         let mut runtime = commit_restored_state(state).expect("the restored state commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         attach_volatile_blob(&mut runtime, volatile, clock).expect("the volatile state attaches");
         runtime
     }
@@ -757,7 +751,7 @@ mod tests {
         let boot_state = materialize_permanent(vector("PERMALL_MANUFACTURED"))
             .expect("the manufactured permall decodes");
         let mut runtime = commit_restored_state(boot_state).expect("the manufactured state boots");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         runtime.manufactured = true;
 
         let fresh = volatile_record("FRESH_STARTUP");

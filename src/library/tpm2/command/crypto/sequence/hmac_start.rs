@@ -40,8 +40,6 @@ pub(in crate::library::tpm2::command) fn execute(
 ) -> Result<CommandOutput, TpmResult> {
     let key_handle = frame.handles.first().copied().ok_or(TPM_RC_FAILURE)?;
     let input = {
-        // TODO: Support runtimes without decoded state after the NVChip fallback
-        // is implemented.
         let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
         parse_parameters(&state.profile.algorithms, frame.parameters)?
     };
@@ -170,7 +168,11 @@ fn parse_parameters<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{self, HandleKind, TPM_CC_HMAC_START};
+    use crate::library::tpm2::command::core::registry::TPM_CC_HMAC_START;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, occupied, prefix_bit_flips,
+    };
+    use crate::library::tpm2::command::crypto::test_support::{failed_tries, plain32};
     use crate::library::tpm2::object::ATTR_OCCUPIED;
     use crate::library::tpm2::sequence::replay::clock as fresh_clock;
     use crate::library::tpm2::sequence::replay::{self, *};
@@ -180,57 +182,6 @@ mod tests {
     const TPM_ALG_SHA384: u16 = 0x000c;
     const TPM_ALG_SHA512: u16 = 0x000d;
 
-    fn occupied(runtime: &Tpm2Runtime) -> Vec<bool> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .map(|object| object.attributes & ATTR_OCCUPIED != 0)
-            .collect()
-    }
-
-    fn failed_tries(runtime: &Tpm2Runtime) -> u32 {
-        runtime
-            .state
-            .as_ref()
-            .expect("decoded state")
-            .persistent
-            .failed_tries
-    }
-
-    #[test]
-    fn registration_upstream_attributes() {
-        assert_eq!(TPM_CC_HMAC_START, 0x0000_015b);
-        let descriptor = registry::find(TPM_CC_HMAC_START).expect("registered");
-        assert_eq!(descriptor.attributes, 0x1200_015b);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_ne!(descriptor.attributes & (1 << 28), 0, "a response handle");
-        assert_eq!(descriptor.attributes & (1 << 22), 0, "no NVRAM update");
-        assert_eq!(descriptor.attributes & (1 << 23), 0, "not extensive");
-        assert_eq!(descriptor.attributes & (1 << 24), 0, "no flushed handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = fresh_clock();
-        let mut runtime = base_runtime(&clock);
-        let mut params = 2u32.to_be_bytes().to_vec();
-        params.extend_from_slice(&0x015bu32.to_be_bytes());
-        params.extend_from_slice(&1u32.to_be_bytes());
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_HMAC_START",
-            command(0x8001, 0x0000_017a, &params),
-        );
-    }
-
     #[test]
     fn pre_startup_rejection() {
         let clock = fresh_clock();
@@ -238,11 +189,16 @@ mod tests {
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
         runtime.entropy = unreachable_entropy;
-        exec(
-            &mut runtime,
-            &clock,
-            "HMS_BEFORE_STARTUP",
-            mac_start(0x8000_0000, &[], TPM_ALG_SHA256),
+        assert_scenario_response(
+            "TPM2_HMAC_Start before TPM2_Startup: sequence-commands HMS_BEFORE_STARTUP",
+            vector("HMS_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    mac_start(0x8000_0000, &[], TPM_ALG_SHA256),
+                )
+            },
         );
     }
 
@@ -798,14 +754,6 @@ mod tests {
 
     fn key24() -> Vec<u8> {
         (0..24u8).collect()
-    }
-
-    fn plain32() -> Vec<u8> {
-        vec![
-            0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93,
-            0x17, 0x2a, 0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c, 0x9e, 0xb7, 0x6f, 0xac,
-            0x45, 0xaf, 0x8e, 0x51,
-        ]
     }
 
     fn mac_digest(response: &[u8]) -> &[u8] {
@@ -1380,16 +1328,12 @@ mod tests {
         let clock = fresh_clock();
         let mut runtime = key_runtime(&clock, "Q_CREATE_HMAC_KEY", &hmac_key(TPM_ALG_SHA256));
         let valid = mac_start(0x8000_0000, b"a", TPM_ALG_SHA256);
-        for length in 10..=valid.len() {
-            for index in 10..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let size = (mutated.len() as u32).to_be_bytes();
-                    mutated[2..6].copy_from_slice(&size);
-                    let _ = exec_raw(&mut runtime, &clock, mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_HMAC_Start",
+            prefix_bit_flips(&valid, 10, 10, true),
+            |bytes| {
+                let _ = exec_raw(&mut runtime, &clock, bytes);
+            },
+        );
     }
 }

@@ -74,41 +74,30 @@ fn commit_reset(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::CancellationToken;
     use crate::library::constants::{
         TPM_RC_AUTH_MISSING, TPM_RC_INITIALIZE, TPM_RC_NV_UNAVAILABLE,
     };
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{TPM_CC_PCR_RESET, TPM_RH_NULL};
+    use crate::library::tpm2::command::core::test_support::{
+        auth_session, dispatch_bytes, dispatch_ignoring_result, error_response, for_each_mutation,
+        hex, make_orderly, manufactured_runtime, prefix_bit_flips, process, pw_session,
+        session_success_response, started_runtime,
+    };
+    use crate::library::tpm2::command::pcr::test_support::{
+        assert_unchanged, bank, pcr_counter, snapshot,
+    };
     use crate::library::tpm2::command::session::processing::{
         HMAC_SESSION_FIRST, POLICY_SESSION_FIRST, TPM_RS_PW,
     };
-    use crate::library::tpm2::manufacture::manufacture_state;
-    use crate::library::tpm2::nv::build_nv_image;
+
     use crate::library::tpm2::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE};
     use crate::library::tpm2::persistent::{OwnedPcrAllocation, OwnedPcrSelection};
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
     use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
 
     const TPM_ALG_SHA256: u16 = 0x000b;
@@ -139,69 +128,11 @@ mod tests {
 
     const RESETTABLE_PCRS: [u32; 5] = [16, 20, 21, 22, 23];
 
-    fn hex(value: &str) -> Vec<u8> {
-        let cleaned: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x55;
-        }
-        Ok(())
-    }
-
-    fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
-
-    #[track_caller]
-    fn started_runtime() -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime();
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &hex("80010000000c0000014400 00")),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
-        runtime
-    }
-
     #[track_caller]
     fn runtime_at(locality: u8) -> Tpm2Runtime {
         let mut runtime = started_runtime();
         runtime.locality = locality;
         runtime
-    }
-
-    fn password_session(handle: u32, nonce: &[u8], attributes: u8, password: &[u8]) -> Vec<u8> {
-        let mut out = handle.to_be_bytes().to_vec();
-        out.extend_from_slice(&(nonce.len() as u16).to_be_bytes());
-        out.extend_from_slice(nonce);
-        out.push(attributes);
-        out.extend_from_slice(&(password.len() as u16).to_be_bytes());
-        out.extend_from_slice(password);
-        out
-    }
-
-    fn empty_password_session() -> Vec<u8> {
-        password_session(TPM_RS_PW, &[], 0x00, &[])
     }
 
     fn reset_command(handle: u32, auth: Option<&[u8]>, parameters: &[u8]) -> Vec<u8> {
@@ -221,109 +152,7 @@ mod tests {
     }
 
     fn authorized_reset(pcr: u32) -> Vec<u8> {
-        reset_command(pcr, Some(&empty_password_session()), &[])
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
-    }
-
-    fn session_success_response() -> Vec<u8> {
-        hex("8002 00000013 00000000 00000000 0000 01 0000")
-    }
-
-    struct Snapshot {
-        failure_mode: bool,
-        nv_update_pending: bool,
-        orderly_state: u16,
-        nv_memory: Box<[u8]>,
-        pcr_counter: Option<u32>,
-        pcr_banks: Vec<Vec<Option<Vec<u8>>>>,
-        free_session_slots: u32,
-        sessions_occupied: Vec<bool>,
-    }
-
-    fn snapshot(runtime: &Tpm2Runtime) -> Snapshot {
-        Snapshot {
-            failure_mode: runtime.failure_mode,
-            nv_update_pending: runtime.nv_update_pending,
-            orderly_state: runtime.state.as_ref().unwrap().persistent.orderly_state,
-            nv_memory: runtime.nv_memory.clone(),
-            pcr_counter: runtime
-                .live
-                .state_reset
-                .as_ref()
-                .map(|reset| reset.pcr_counter),
-            pcr_banks: runtime
-                .live
-                .pcrs
-                .iter()
-                .map(|pcr| pcr.banks.to_vec())
-                .collect(),
-            free_session_slots: runtime.live.free_session_slots,
-            sessions_occupied: runtime
-                .live
-                .sessions
-                .iter()
-                .map(|slot| slot.occupied)
-                .collect(),
-        }
-    }
-
-    #[track_caller]
-    fn assert_unchanged(runtime: &Tpm2Runtime, before: &Snapshot) {
-        assert_eq!(runtime.failure_mode, before.failure_mode);
-        assert_eq!(runtime.nv_update_pending, before.nv_update_pending);
-        assert_eq!(
-            runtime.state.as_ref().unwrap().persistent.orderly_state,
-            before.orderly_state
-        );
-        assert_eq!(runtime.nv_memory, before.nv_memory);
-        assert_eq!(
-            runtime
-                .live
-                .state_reset
-                .as_ref()
-                .map(|reset| reset.pcr_counter),
-            before.pcr_counter
-        );
-        let pcr_banks: Vec<Vec<Option<Vec<u8>>>> = runtime
-            .live
-            .pcrs
-            .iter()
-            .map(|pcr| pcr.banks.to_vec())
-            .collect();
-        assert_eq!(pcr_banks, before.pcr_banks);
-        assert_eq!(runtime.live.free_session_slots, before.free_session_slots);
-        assert_eq!(
-            runtime
-                .live
-                .sessions
-                .iter()
-                .map(|slot| slot.occupied)
-                .collect::<Vec<bool>>(),
-            before.sessions_occupied
-        );
-    }
-
-    #[track_caller]
-    fn bank(runtime: &Tpm2Runtime, pcr: usize, slot: usize) -> Vec<u8> {
-        runtime.live.pcrs[pcr].banks[slot]
-            .clone()
-            .expect("an allocated bank")
-    }
-
-    fn pcr_counter(runtime: &Tpm2Runtime) -> u32 {
-        runtime.live.state_reset.as_ref().unwrap().pcr_counter
-    }
-
-    fn make_orderly(runtime: &mut Tpm2Runtime, orderly_state: u16) {
-        let state = runtime.state.as_mut().expect("state present");
-        state.persistent.orderly_state = orderly_state;
-        runtime.nv_memory = build_nv_image(state).expect("the orderly state serializes");
-        runtime.nv_update_pending = false;
+        reset_command(pcr, Some(&pw_session(&[])), &[])
     }
 
     #[test]
@@ -332,12 +161,13 @@ mod tests {
         let before = snapshot(&runtime);
         assert_eq!(
             dispatch_bytes(&mut runtime, &authorized_reset(20)),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_PCR_Reset before TPM2_Startup"
         );
         assert_eq!(
             dispatch_bytes(&mut runtime, &reset_command(20, None, &[])),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes handle parsing"
+            "TPM2_PCR_Reset before TPM2_Startup: the lifecycle check precedes handle parsing"
         );
         assert_unchanged(&runtime, &before);
     }
@@ -731,7 +561,7 @@ mod tests {
             assert_eq!(
                 dispatch_bytes(
                     &mut runtime,
-                    &reset_command(20, Some(&empty_password_session()), parameters)
+                    &reset_command(20, Some(&pw_session(&[])), parameters)
                 ),
                 error_response(RC_SIZE),
                 "{} trailing bytes",
@@ -748,7 +578,7 @@ mod tests {
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,
-                &reset_command(20, Some(&empty_password_session()), &[0xee])
+                &reset_command(20, Some(&pw_session(&[])), &[0xee])
             ),
             error_response(RC_SIZE),
             "upstream unmarshals the parameter area before TPM2_PCR_Reset runs"
@@ -780,7 +610,7 @@ mod tests {
     fn nonempty_password_empty_auth_value_rejection() {
         let mut runtime = runtime_at(2);
         let before = snapshot(&runtime);
-        let auth = password_session(TPM_RS_PW, &[], 0x00, b"wrong");
+        let auth = auth_session(TPM_RS_PW, &[], 0x00, b"wrong");
         assert_eq!(
             dispatch_bytes(&mut runtime, &reset_command(20, Some(&auth), &[])),
             error_response(RC_SESSION1_BAD_AUTH),
@@ -793,7 +623,7 @@ mod tests {
     fn trailing_zero_password_empty_auth_match() {
         let mut runtime = runtime_at(2);
         for password in [&[0x00][..], &[0x00, 0x00][..], &[0x00; 32][..]] {
-            let auth = password_session(TPM_RS_PW, &[], 0x00, password);
+            let auth = auth_session(TPM_RS_PW, &[], 0x00, password);
             assert_eq!(
                 dispatch_bytes(&mut runtime, &reset_command(20, Some(&auth), &[])),
                 session_success_response(),
@@ -806,7 +636,7 @@ mod tests {
     #[test]
     fn malformed_authorization_area_oracle_code_parity() {
         let declared_password_size = |size: u16| {
-            let mut session = password_session(TPM_RS_PW, &[], 0x00, &[0xaa; 8]);
+            let mut session = auth_session(TPM_RS_PW, &[], 0x00, &[0xaa; 8]);
             session[7..9].copy_from_slice(&size.to_be_bytes());
             session
         };
@@ -814,37 +644,37 @@ mod tests {
         for (label, auth, expected) in [
             (
                 "authorization_area_below_the_minimum",
-                empty_password_session()[..4].to_vec(),
+                pw_session(&[])[..4].to_vec(),
                 RC_SIZE,
             ),
             (
                 "invalid_handle",
-                password_session(0x4000_0008, &[], 0x00, &[]),
+                auth_session(0x4000_0008, &[], 0x00, &[]),
                 RC_SESSION1_VALUE,
             ),
             (
                 "non_empty_nonce",
-                password_session(TPM_RS_PW, &[0xaa, 0xbb], 0x00, &[]),
+                auth_session(TPM_RS_PW, &[0xaa, 0xbb], 0x00, &[]),
                 RC_SESSION1_NONCE,
             ),
             (
                 "reserved_attributes",
-                password_session(TPM_RS_PW, &[], 0x08, &[]),
+                auth_session(TPM_RS_PW, &[], 0x08, &[]),
                 RC_SESSION1_RESERVED,
             ),
             (
                 "audit_attribute",
-                password_session(TPM_RS_PW, &[], 0x80, &[]),
+                auth_session(TPM_RS_PW, &[], 0x80, &[]),
                 RC_SESSION1_ATTRIBUTES,
             ),
             (
                 "hmac_session",
-                password_session(HMAC_SESSION_FIRST, &[], 0x00, &[]),
+                auth_session(HMAC_SESSION_FIRST, &[], 0x00, &[]),
                 RC_REFERENCE_S0,
             ),
             (
                 "policy_session",
-                password_session(POLICY_SESSION_FIRST, &[], 0x00, &[]),
+                auth_session(POLICY_SESSION_FIRST, &[], 0x00, &[]),
                 RC_REFERENCE_S0,
             ),
             (
@@ -871,8 +701,8 @@ mod tests {
 
     #[test]
     fn truncated_second_session_indexed_error() {
-        let mut auth = empty_password_session();
-        auth.extend_from_slice(&empty_password_session());
+        let mut auth = pw_session(&[]);
+        auth.extend_from_slice(&pw_session(&[]));
         for len in 10..auth.len() {
             let mut runtime = runtime_at(2);
             let before = snapshot(&runtime);
@@ -887,8 +717,8 @@ mod tests {
 
     #[test]
     fn extra_password_session_handle_error() {
-        let mut auth = empty_password_session();
-        auth.extend_from_slice(&empty_password_session());
+        let mut auth = pw_session(&[]);
+        auth.extend_from_slice(&pw_session(&[]));
         let mut runtime = runtime_at(2);
         let before = snapshot(&runtime);
         assert_eq!(
@@ -907,7 +737,7 @@ mod tests {
                 &mut runtime,
                 &reset_command(
                     IMPLEMENTATION_PCR as u32,
-                    Some(&password_session(0x4000_0008, &[], 0x00, &[])),
+                    Some(&auth_session(0x4000_0008, &[], 0x00, &[])),
                     &[]
                 )
             ),
@@ -938,20 +768,13 @@ mod tests {
     #[test]
     fn bit_flip_panic_safety() {
         let valid = authorized_reset(20);
-        for index in 6..valid.len() {
-            for flip in [0x01u8, 0x80, 0xff] {
-                let mut mutated = valid.clone();
-                mutated[index] ^= flip;
-                let mut runtime = runtime_at(2);
-                let input = CommandInput::new(mutated.len() as u32, mutated);
-                let parsed = parse_command(&input).expect("the header parses");
-                let _ = serialize_response(&dispatch(
-                    &mut runtime,
-                    &parsed,
-                    CancellationToken::disabled(),
-                ));
-            }
-        }
+        for_each_mutation(
+            "TPM2_PCR_Reset",
+            prefix_bit_flips(&valid, valid.len(), 6, false),
+            |bytes| {
+                dispatch_ignoring_result(&mut runtime_at(2), bytes);
+            },
+        );
     }
 
     #[test]

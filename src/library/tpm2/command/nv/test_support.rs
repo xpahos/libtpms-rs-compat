@@ -1,8 +1,14 @@
-use crate::library::tpm2::command::core::test_support::TPM_ALG_SHA256;
-use crate::library::tpm2::nv::{
-    NvPublic, OrderlyRamImage, ResolvedIndex, TPMA_NV_TPM_NT_SHIFT, resolve_index,
+use crate::library::tpm2::command::core::test_support::{
+    RC_SUCCESS, TPM_ALG_SHA256, command, dispatch_bytes, divergence, response_code,
 };
-use crate::library::tpm2::persistent::{OwnedUserNvramEntry, persistent_all_store};
+use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
+use crate::library::tpm2::nv::{
+    NvPublic, OrderlyRamImage, ResolvedIndex, TPMA_NV_TPM_NT_SHIFT, build_nv_image,
+    marshal_sized_nv_public, resolve_index,
+};
+use crate::library::tpm2::persistent::{
+    OwnedUserNvramEntry, persistent_all_store, user_nvram_required_capacity,
+};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 
 pub(in crate::library::tpm2::command) fn nv_public(
@@ -17,6 +23,19 @@ pub(in crate::library::tpm2::command) fn nv_public(
         auth_policy: Vec::new(),
         data_size,
     }
+}
+#[track_caller]
+pub(in crate::library::tpm2::command) fn define(runtime: &mut Tpm2Runtime, public: &NvPublic) {
+    let mut parameters = 0u16.to_be_bytes().to_vec();
+    parameters.extend_from_slice(&marshal_sized_nv_public(public));
+    assert_eq!(
+        response_code(&dispatch_bytes(
+            runtime,
+            &command(0x0000_012a, &[TPM_RH_OWNER], &[&[]], &parameters),
+        )),
+        RC_SUCCESS,
+        "the index is defined"
+    );
 }
 pub(in crate::library::tpm2::command) fn nt(index_type: u32) -> u32 {
     index_type << TPMA_NV_TPM_NT_SHIFT
@@ -38,6 +57,30 @@ pub(in crate::library::tpm2::command) fn index_handles(runtime: &Tpm2Runtime) ->
             OwnedUserNvramEntry::Persistent { .. } => None,
         })
         .collect()
+}
+pub(in crate::library::tpm2::command) fn nvram_handles(runtime: &Tpm2Runtime) -> Vec<u32> {
+    runtime
+        .state()
+        .user_nvram
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            OwnedUserNvramEntry::NvIndex { handle, .. }
+            | OwnedUserNvramEntry::Persistent { handle, .. } => *handle,
+        })
+        .collect()
+}
+#[track_caller]
+pub(in crate::library::tpm2::command) fn push_nvram(
+    runtime: &mut Tpm2Runtime,
+    entries: impl IntoIterator<Item = OwnedUserNvramEntry>,
+) {
+    let user_nvram = &mut runtime.state.as_mut().expect("state present").user_nvram;
+    user_nvram.entries.extend(entries);
+    user_nvram.required_capacity = user_nvram_required_capacity(&user_nvram.entries)
+        .expect("the planted entries fit the dynamic region");
+    let state = runtime.state.as_ref().expect("state present");
+    runtime.nv_memory = build_nv_image(state).expect("the planted entries serialize");
 }
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2::command) struct Snapshot {
@@ -63,12 +106,6 @@ pub(in crate::library::tpm2::command) fn snapshot(runtime: &Tpm2Runtime) -> Snap
         nv_memory: runtime.nv_memory.clone(),
         permanent: persistent_all_store(runtime.state()).expect("the state serializes"),
     }
-}
-fn divergence(actual: &[u8], expected: &[u8]) -> Vec<usize> {
-    assert_eq!(actual.len(), expected.len(), "blob length");
-    (0..actual.len())
-        .filter(|&index| actual[index] != expected[index])
-        .collect()
 }
 #[track_caller]
 pub(in crate::library::tpm2::command) fn assert_matches_oracle(

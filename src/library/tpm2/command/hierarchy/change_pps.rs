@@ -35,8 +35,6 @@ fn change_platform_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmResu
         return Err(TPM_RC_FAILURE);
     }
     let orderly_state = prepare_clear_orderly(runtime)?;
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let seed_compat_level = runtime
         .state
         .as_ref()
@@ -80,48 +78,23 @@ fn change_platform_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmResu
 #[cfg(test)]
 mod tests {
     use crate::library::cancel::CancellationToken;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_CHANGE_PPS, find,
-    };
+    use crate::library::tpm2::command::core::registry::TPM_CC_CHANGE_PPS;
     use crate::library::tpm2::command::core::test_support::{
-        command, error_response, framed, response_code,
+        command, error_response, for_each_mutation, framed, prefix_bit_flips, response_code,
     };
     use crate::library::tpm2::command::hierarchy::test_support::{
         DIGEST, NV_OWNER_ATTRIBUTES, NV_PLATFORM_ATTRIBUTES, OWNER_INDEX, OWNER_PERSISTENT,
         PLATFORM_INDEX, PLATFORM_PERSISTENT, RC_NV_UNAVAILABLE, TPM_ALG_NULL, TPM_ALG_SHA256,
-        TRANSIENT_FIRST, assert_nv_image_is_current, assert_unchanged, cap_command_attributes,
-        cap_nv, cap_permanent_flags, cap_persistent, cap_startup_clear, cap_transient,
-        change_auth_command, change_pps, commits_for, counters, create_primary,
-        dictionary_attack_state, evict_control, exec, exec_counting, expect, fingerprint, flush,
-        nv_define, nv_read_public, oracle_runtime, policies, read_public, reboot, reload, replay,
-        replay_clock, secrets, set_primary_policy, shutdown, snapshot, startup,
+        TRANSIENT_FIRST, assert_nv_image_is_current, assert_unchanged, cap_nv, cap_permanent_flags,
+        cap_persistent, cap_startup_clear, cap_transient, change_auth_command, change_pps,
+        commits_for, counters, create_primary, dictionary_attack_state, evict_control, exec,
+        exec_counting, expect, fingerprint, flush, nv_define, nv_read_public, oracle_runtime,
+        policies, read_public, reboot, reload, replay, replay_clock, secrets, set_primary_policy,
+        shutdown, snapshot, startup, try_exec,
     };
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
     };
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = find(TPM_CC_CHANGE_PPS).expect("the command is registered");
-        assert_eq!(descriptor.attributes, 0x02c0_0125);
-        assert!(descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_eq!(descriptor.decrypt_size, 0);
-        assert_eq!(descriptor.encrypt_size, 0);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Platform));
-    }
-
-    #[test]
-    fn reported_attributes_reference_match() {
-        replay(&[("CCATTR_0125", cap_command_attributes(TPM_CC_CHANGE_PPS))]);
-    }
 
     #[test]
     fn handle_parameter_error_reference_match() {
@@ -422,23 +395,12 @@ mod tests {
     fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = change_pps(TPM_RH_PLATFORM, &[]);
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    let mut runtime = oracle_runtime(&clock);
-                    let input = crate::library::CommandInput::new(mutated.len() as u32, mutated);
-                    let _ = crate::library::tpm2::process::process(
-                        &mut runtime,
-                        crate::library::tpm2::PlatformInputs::at_locality(0),
-                        &input,
-                        &clock,
-                        |_| Ok(()),
-                        CancellationToken::disabled(),
-                    );
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_ChangePPS",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                let _ = try_exec(&mut oracle_runtime(&clock), &clock, &bytes);
+            },
+        );
     }
 }

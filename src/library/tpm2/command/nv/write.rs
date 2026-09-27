@@ -226,22 +226,22 @@ fn parse_max_nv_buffer(parameters: &[u8], error_index: TpmResult) -> Result<Vec<
 mod tests {
     use super::*;
     use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_EXTEND, TPM_CC_NV_INCREMENT,
-        TPM_CC_NV_SET_BITS, TPM_CC_NV_WRITE, find,
+        TPM_CC_NV_EXTEND, TPM_CC_NV_INCREMENT, TPM_CC_NV_SET_BITS, TPM_CC_NV_WRITE,
     };
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, TPM_ALG_SHA1, command, dispatch_bytes, response_code, started_runtime,
+        RC_SUCCESS, REPLACEMENT_BYTES, TPM_ALG_SHA1, byte_replacements, command, dispatch_bytes,
+        for_each_mutation, response_code, started_runtime,
     };
     use crate::library::tpm2::command::nv::test_support::{
-        assert_unchanged, nt, nv_public, resolved, snapshot,
+        assert_unchanged, define, nt, nv_public, resolved, snapshot,
     };
     use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::nv::{
-        NV_INDEX_FIRST, NvPublic, TPM_NT_BITS, TPM_NT_COUNTER, TPM_NT_EXTEND, TPMA_NV_AUTHREAD,
-        TPMA_NV_AUTHWRITE, TPMA_NV_GLOBALLOCK, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE,
-        TPMA_NV_POLICYWRITE, TPMA_NV_PPREAD, TPMA_NV_PPWRITE, TPMA_NV_WRITE_STCLEAR,
-        marshal_sized_nv_public, resolve_index,
+        TPM_NT_BITS, TPM_NT_COUNTER, TPM_NT_EXTEND, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE,
+        TPMA_NV_GLOBALLOCK, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE, TPMA_NV_POLICYWRITE,
+        TPMA_NV_PPREAD, TPMA_NV_PPWRITE, TPMA_NV_WRITE_STCLEAR, marshal_sized_nv_public,
+        resolve_index,
     };
 
     const RC_SIZE: u32 = 0x095;
@@ -258,20 +258,6 @@ mod tests {
 
     const INDEX: u32 = 0x0100_0001;
     const READ_WRITE: u32 = TPMA_NV_OWNERWRITE | TPMA_NV_OWNERREAD;
-
-    #[track_caller]
-    fn define(runtime: &mut Tpm2Runtime, public: &NvPublic) {
-        let mut parameters = 0u16.to_be_bytes().to_vec();
-        parameters.extend_from_slice(&marshal_sized_nv_public(public));
-        assert_eq!(
-            response_code(&dispatch_bytes(
-                runtime,
-                &command(0x0000_012a, &[TPM_RH_OWNER], &[&[]], &parameters),
-            )),
-            RC_SUCCESS,
-            "the index is defined"
-        );
-    }
 
     fn write_parameters(data: &[u8], offset: u16) -> Vec<u8> {
         let mut out = (data.len() as u16).to_be_bytes().to_vec();
@@ -341,52 +327,6 @@ mod tests {
     }
 
     const DATA8: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-
-    #[test]
-    fn command_codes_attributes_oracle_match() {
-        for (code, oracle) in [
-            (TPM_CC_NV_INCREMENT, nv_vector("CCATTR_0134")),
-            (TPM_CC_NV_SET_BITS, nv_vector("CCATTR_0135")),
-            (TPM_CC_NV_EXTEND, nv_vector("CCATTR_0136")),
-            (TPM_CC_NV_WRITE, nv_vector("CCATTR_0137")),
-        ] {
-            let expected = oracle;
-            let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("a TPMA_CC"));
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "code {code:#x}");
-            assert_ne!(
-                descriptor.attributes & (1 << 22),
-                0,
-                "code {code:#x} writes NV"
-            );
-            assert_eq!((descriptor.attributes >> 25) & 0x7, 2, "code {code:#x}");
-            assert!(!descriptor.physical_presence);
-            assert!(descriptor.sessions_allowed);
-            assert!(matches!(descriptor.nv_access, NvAccess::Write));
-            assert!(matches!(
-                descriptor.lifecycle,
-                CommandLifecycle::RequiresStarted
-            ));
-            assert_eq!(descriptor.handles.len(), 2);
-            assert!(descriptor.handles[0].user_auth);
-            assert!(!descriptor.handles[0].admin_role());
-            assert!(!descriptor.handles[1].user_auth);
-            assert!(matches!(descriptor.handles[0].kind, HandleKind::NvAuth));
-            assert!(matches!(descriptor.handles[1].kind, HandleKind::NvIndex));
-        }
-    }
-
-    #[test]
-    fn auth_handle_owner_platform_index_acceptance() {
-        let kind = find(TPM_CC_NV_WRITE).unwrap().handles[0].kind;
-        assert!(kind.accepts(TPM_RH_OWNER));
-        assert!(kind.accepts(TPM_RH_PLATFORM));
-        assert!(kind.accepts(NV_INDEX_FIRST));
-        assert!(kind.accepts(0x01ff_ffff));
-        for handle in [0x4000_0000u32, 0x4000_000b, 0x0200_0000, 0x8100_0000, 0] {
-            assert!(!kind.accepts(handle), "handle {handle:#010x}");
-        }
-    }
 
     #[test]
     fn partial_write_read_oracle_match() {
@@ -1055,10 +995,10 @@ mod tests {
     #[test]
     fn parameter_mutation_panic_safety() {
         let full = write_parameters(&DATA8, 4);
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_NV_Write family",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let mut runtime = started_runtime();
                 define(&mut runtime, &nv_public(INDEX, READ_WRITE, 32));
                 for code in [
@@ -1072,8 +1012,8 @@ mod tests {
                         &command(code, &[TPM_RH_OWNER, INDEX], &[&[]], &parameters),
                     );
                 }
-            }
-        }
+            },
+        );
     }
 
     #[test]

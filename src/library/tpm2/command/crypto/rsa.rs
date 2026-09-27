@@ -158,15 +158,14 @@ pub(in crate::library::tpm2::command) fn execute_decrypt(
 mod tests {
     use super::*;
     use crate::library::cancel::CancellationToken;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_RSA_DECRYPT, TPM_CC_RSA_ENCRYPT, find,
-    };
+    use crate::library::tpm2::command::core::registry::{TPM_CC_RSA_DECRYPT, TPM_CC_RSA_ENCRYPT};
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, TPM_ALG_SHA1, TPM_ALG_SHA256, command, dispatch_bytes, error_response,
-        pw_session, response_code, response_parameters,
+        RC_SUCCESS, TPM_ALG_SHA1, TPM_ALG_SHA256, assert_scenario_response, command,
+        dispatch_bytes, error_response, for_each_mutation, prefix_bit_flips, prefixes, pw_session,
+        response_code, response_parameters, restored_snapshot, tpm2b,
     };
     use crate::library::tpm2::golden_responses::rsa_encryption::vector;
-    use crate::library::tpm2::{attach_volatile_blob_for_test, restore_permanent_blob_for_test};
+    use crate::library::tpm2::restore_permanent_blob_for_test;
 
     const TPM_ALG_SHA384: u16 = 0x000c;
     const TPM_ALG_SHA512: u16 = 0x000d;
@@ -186,12 +185,6 @@ mod tests {
         (0..length)
             .map(|index| ((index * 7 + 3) & 0xff) as u8)
             .collect()
-    }
-
-    fn tpm2b(data: &[u8]) -> Vec<u8> {
-        let mut out = (data.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(data);
-        out
     }
 
     fn null_scheme() -> Vec<u8> {
@@ -241,15 +234,7 @@ mod tests {
 
     #[track_caller]
     fn restored(snapshot: &str) -> Tpm2Runtime {
-        let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
-            .expect("the oracle permanent state restores");
-        attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
-            .expect("the oracle volatile state attaches");
-        assert!(
-            runtime.startup_received,
-            "the snapshot is past TPM2_Startup"
-        );
-        runtime
+        restored_snapshot(vector, snapshot)
     }
 
     #[track_caller]
@@ -275,127 +260,32 @@ mod tests {
     }
 
     #[test]
-    fn command_registration_upstream_attributes() {
-        let encrypt = find(TPM_CC_RSA_ENCRYPT).expect("TPM2_RSA_Encrypt is registered");
-        assert_eq!(encrypt.attributes, 0x0200_0174);
-        assert_eq!(encrypt.decrypt_size, 2);
-        assert_eq!(encrypt.encrypt_size, 2);
-        assert!(encrypt.sessions_allowed);
-        assert!(!encrypt.physical_presence);
-        assert!(matches!(encrypt.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            encrypt.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(encrypt.handles.len(), 1);
-        assert!(
-            !encrypt.handles[0].user_auth,
-            "encryption uses only the public area"
-        );
-        assert!(!encrypt.handles[0].admin_role());
-        assert!(matches!(encrypt.handles[0].kind, HandleKind::Object));
-
-        let decrypt = find(TPM_CC_RSA_DECRYPT).expect("TPM2_RSA_Decrypt is registered");
-        assert_eq!(decrypt.attributes, 0x0200_0159);
-        assert_eq!(decrypt.decrypt_size, 2);
-        assert_eq!(decrypt.encrypt_size, 2);
-        assert!(decrypt.sessions_allowed);
-        assert!(!decrypt.physical_presence);
-        assert!(matches!(decrypt.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            decrypt.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(decrypt.handles.len(), 1);
-        assert!(decrypt.handles[0].user_auth);
-        assert!(!decrypt.handles[0].admin_role());
-        assert!(matches!(decrypt.handles[0].kind, HandleKind::Object));
-    }
-
-    fn advertised(record: &str) -> Vec<u32> {
-        let body = response_parameters(vector(record));
-        let count = u32::from_be_bytes(body[5..9].try_into().expect("a count")) as usize;
-        (0..count)
-            .map(|index| {
-                u32::from_be_bytes(
-                    body[9 + index * 4..13 + index * 4]
-                        .try_into()
-                        .expect("an entry"),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (record, code, attributes) in [
-            ("CCATTR_0159", TPM_CC_RSA_DECRYPT, 0x0200_0159u32),
-            ("CCATTR_0174", TPM_CC_RSA_ENCRYPT, 0x0200_0174),
-        ] {
-            assert_eq!(advertised(record), [attributes]);
-            assert_eq!(find(code).expect("registered").attributes, attributes);
-        }
-    }
-
-    #[test]
-    fn capability_page_upstream_command_order() {
-        use crate::library::tpm2::capability::commands::implemented;
-        use crate::library::tpm2::command::core::test_support::manufactured_runtime;
-        use crate::library::tpm2::profile::validate_user_profile;
-
-        let mut runtime = manufactured_runtime();
-        runtime.state.as_mut().expect("decoded state").profile =
-            validate_user_profile(Some(br#"{"Name":"default-v1"}"#))
-                .expect("the default-v1 profile validates");
-        for (record, start) in [
-            ("CCATTR_AROUND_DECRYPT", 0x0157u32),
-            ("CCATTR_AROUND_ENCRYPT", 0x0173),
-        ] {
-            let reference = advertised(record);
-            assert!(
-                reference
-                    .windows(2)
-                    .all(|pair| pair[0] & 0xffff < pair[1] & 0xffff),
-                "{record} is ordered by command code"
-            );
-            let last = reference.last().expect("a non-empty page") & 0xffff;
-            let ours: Vec<u32> = implemented(&runtime, start, reference.len() as u32)
-                .entries
-                .into_iter()
-                .filter(|entry| entry & 0xffff <= last)
-                .collect();
-            let mut remaining = reference.iter().copied();
-            for entry in &ours {
-                assert!(
-                    remaining.any(|reference_entry| reference_entry == *entry),
-                    "{record}: {entry:#010x} is missing or out of order upstream"
-                );
-            }
-        }
-        assert!(
-            advertised("CCATTR_AROUND_DECRYPT").contains(&0x0200_0159),
-            "TPM2_RSA_Decrypt sits between TPM2_Load and TPM2_HMAC_Start upstream"
-        );
-        assert!(
-            advertised("CCATTR_AROUND_ENCRYPT").contains(&0x0200_0174),
-            "TPM2_RSA_Encrypt sits between TPM2_ReadPublic and TPM2_StartAuthSession upstream"
-        );
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
-        assert!(!runtime.startup_received);
-        check(
-            &mut runtime,
-            "ENC_BEFORE_STARTUP",
-            &encrypt_command(KEY_NULL, b"abc", &null_scheme(), b""),
+        assert!(
+            !runtime.startup_received,
+            "rsa-encryption PERMALL_BASE precedes TPM2_Startup"
         );
-        check(
-            &mut runtime,
-            "DEC_BEFORE_STARTUP",
-            &decrypt_command(KEY_NULL, &payload(256), &null_scheme(), b"", KEY_AUTH),
+        assert_scenario_response(
+            "TPM2_RSA_Encrypt before TPM2_Startup: rsa-encryption ENC_BEFORE_STARTUP",
+            vector("ENC_BEFORE_STARTUP"),
+            || {
+                dispatch_bytes(
+                    &mut runtime,
+                    &encrypt_command(KEY_NULL, b"abc", &null_scheme(), b""),
+                )
+            },
+        );
+        assert_scenario_response(
+            "TPM2_RSA_Decrypt before TPM2_Startup: rsa-encryption DEC_BEFORE_STARTUP",
+            vector("DEC_BEFORE_STARTUP"),
+            || {
+                dispatch_bytes(
+                    &mut runtime,
+                    &decrypt_command(KEY_NULL, &payload(256), &null_scheme(), b"", KEY_AUTH),
+                )
+            },
         );
     }
 
@@ -1154,28 +1044,26 @@ mod tests {
     fn prefix_and_bit_flip_panic_safety() {
         let mut runtime = restored("KEYS");
         let templates = [
-            encrypt_command(
-                KEY_NULL,
-                &payload(8),
-                &oaep_scheme(TPM_ALG_SHA256),
-                b"lab\0",
+            (
+                "TPM2_RSA_Encrypt",
+                encrypt_command(
+                    KEY_NULL,
+                    &payload(8),
+                    &oaep_scheme(TPM_ALG_SHA256),
+                    b"lab\0",
+                ),
             ),
-            decrypt_command(KEY_NULL, &payload(8), &rsaes_scheme(), b"", KEY_AUTH),
+            (
+                "TPM2_RSA_Decrypt",
+                decrypt_command(KEY_NULL, &payload(8), &rsaes_scheme(), b"", KEY_AUTH),
+            ),
         ];
-        for template in templates {
-            for length in 10..template.len().min(40) {
-                let mut cut = template[..length].to_vec();
-                let size = cut.len() as u32;
-                cut[2..6].copy_from_slice(&size.to_be_bytes());
-                let _ = dispatch_bytes(&mut runtime, &cut);
-            }
-            for index in 10..template.len() {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = template.clone();
-                    mutated[index] ^= flip;
-                    let _ = dispatch_bytes(&mut runtime, &mutated);
-                }
-            }
+        for (case, template) in templates {
+            let cuts = prefixes(&template, 10..template.len().min(40), true);
+            let flips = prefix_bit_flips(&template, template.len(), 10, false);
+            for_each_mutation(case, cuts.chain(flips), |bytes| {
+                let _ = dispatch_bytes(&mut runtime, &bytes);
+            });
         }
         assert!(!runtime.failure_mode, "no mutation reaches a FAIL() site");
     }

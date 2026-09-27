@@ -790,27 +790,11 @@ mod tests {
     };
     use crate::library::tpm2::pcr::{PcrAllocationFixture, PcrPoliciesFixture};
     use crate::library::tpm2::profile::PersistentObjectFormat;
+    use crate::library::tpm2::test_support::{envelope_v4_with_profile, envelope_with_payload};
     use crate::library::tpm2::{
         DecodedPersistentAll, audit, compile_constants, lockout, object,
         parse_persistent_all_payload, pp_list, valid_permanent_state_fixture,
     };
-
-    fn envelope_with_payload(payload: &[u8]) -> Vec<u8> {
-        let mut blob = vec![0x00, 0x03, 0xab, 0x36, 0x47, 0x23, 0x00, 0x01];
-        blob.extend_from_slice(payload);
-        blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
-        blob
-    }
-
-    fn envelope_v4_with_profile(profile: &[u8], payload: &[u8]) -> Vec<u8> {
-        let mut blob = vec![0x00, 0x04, 0xab, 0x36, 0x47, 0x23, 0x00, 0x04];
-        blob.extend_from_slice(&u16::try_from(profile.len() + 1).unwrap().to_be_bytes());
-        blob.extend_from_slice(profile);
-        blob.push(0);
-        blob.extend_from_slice(payload);
-        blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
-        blob
-    }
 
     fn simple_payload(orderly_state: u16, sections: Vec<u8>) -> Vec<u8> {
         let mut payload = compile_constants::marshalled_section(3);

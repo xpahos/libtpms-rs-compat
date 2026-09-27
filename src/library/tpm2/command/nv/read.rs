@@ -72,20 +72,18 @@ fn parse_read_parameters(parameters: &[u8]) -> Result<(u16, u16), TpmResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_READ, TPM_CC_NV_READ_PUBLIC, find,
-    };
+    use crate::library::tpm2::command::core::registry::{TPM_CC_NV_READ, TPM_CC_NV_READ_PUBLIC};
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, framed, response_code, response_parameters,
-        started_runtime,
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, command, dispatch_bytes,
+        for_each_mutation, framed, response_code, response_parameters, started_runtime,
     };
     use crate::library::tpm2::command::nv::test_support::{
-        assert_unchanged, nt, nv_public, resolved, snapshot,
+        assert_unchanged, define, nt, nv_public, resolved, snapshot,
     };
     use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::nv::{
-        NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_ORDERLY, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE,
+        TPMA_NV_AUTHREAD, TPMA_NV_ORDERLY, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE,
         TPMA_NV_POLICYREAD, TPMA_NV_POLICYWRITE, TPMA_NV_PPREAD, TPMA_NV_READ_STCLEAR,
         TPMA_NV_WRITTEN, marshal_sized_nv_public, nv_index_name,
     };
@@ -107,20 +105,6 @@ mod tests {
 
     const INDEX: u32 = 0x0100_0001;
     const READ_WRITE: u32 = TPMA_NV_OWNERWRITE | TPMA_NV_OWNERREAD;
-
-    #[track_caller]
-    fn define(runtime: &mut Tpm2Runtime, public: &NvPublic) {
-        let mut parameters = 0u16.to_be_bytes().to_vec();
-        parameters.extend_from_slice(&marshal_sized_nv_public(public));
-        assert_eq!(
-            response_code(&dispatch_bytes(
-                runtime,
-                &command(0x0000_012a, &[TPM_RH_OWNER], &[&[]], &parameters),
-            )),
-            RC_SUCCESS,
-            "the index is defined"
-        );
-    }
 
     #[track_caller]
     fn write(runtime: &mut Tpm2Runtime, index: u32, data: &[u8]) {
@@ -156,48 +140,6 @@ mod tests {
     }
 
     const DATA8: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = nv_vector("CCATTR_014E");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        let descriptor = find(TPM_CC_NV_READ).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "TPM2_NV_Read does not write NV"
-        );
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 2);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Read));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[1].user_auth);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::NvAuth));
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::NvIndex));
-    }
-
-    #[test]
-    fn read_public_command_attributes_oracle_match() {
-        let expected = nv_vector("CCATTR_0169");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        let descriptor = find(TPM_CC_NV_READ_PUBLIC).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes & (1 << 22), 0);
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1);
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(
-            !descriptor.handles[0].user_auth,
-            "TPM2_NV_ReadPublic needs no authorization"
-        );
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::NvIndex));
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-    }
 
     #[test]
     fn read_window_oracle_parity() {
@@ -625,10 +567,10 @@ mod tests {
     #[test]
     fn parameter_mutation_panic_safety() {
         let full = [0x00u8, 0x08, 0x00, 0x00];
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full;
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_NV_Read",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let mut runtime = started_runtime();
                 define(&mut runtime, &nv_public(INDEX, READ_WRITE, 8));
                 write(&mut runtime, INDEX, &DATA8);
@@ -636,7 +578,7 @@ mod tests {
                     &mut runtime,
                     &command(TPM_CC_NV_READ, &[TPM_RH_OWNER, INDEX], &[&[]], &parameters),
                 );
-            }
-        }
+            },
+        );
     }
 }

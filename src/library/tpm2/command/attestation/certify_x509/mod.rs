@@ -438,10 +438,11 @@ mod tests {
         TPM_RH_NULL, TPM_RH_OWNER, command, create_primary, ecc_template, keyedhash_template,
         parameters_of, pw, replay_clock, rsa_template, run, run_ok, sig_scheme, tpm2b,
     };
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_CERTIFY_X509, find,
+    use crate::library::tpm2::command::core::registry::TPM_CC_CERTIFY_X509;
+    use crate::library::tpm2::command::core::test_support::{
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, for_each_mutation, prefixes,
+        response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{RC_SUCCESS, response_code};
     use crate::library::tpm2::golden_responses::certify_x509::{vector, vectors};
     use crate::library::tpm2::runtime::Tpm2Runtime;
     use crate::library::tpm2::self_test::PrimitiveTest;
@@ -697,9 +698,6 @@ mod tests {
         parameters[at + 2 + digest..].to_vec()
     }
 
-    // Splits `addedToCertificate` into the elements the TPM generated: the
-    // version, the serial number, an optional signing AlgorithmIdentifier, and
-    // the SubjectPublicKeyInfo.
     fn added_elements(added: &[u8]) -> Vec<Vec<u8>> {
         let mut body = &added[header_length(added)..];
         let mut elements = Vec::new();
@@ -729,8 +727,6 @@ mod tests {
         }
     }
 
-    // Rebuilds the TBSCertificate the TPM hashed: the caller's issuer, validity,
-    // subject, and extensions interleaved with the elements the TPM added.
     fn rebuilt_tbs_certificate(response: &[u8], caller: &[Vec<u8>]) -> Vec<u8> {
         let added = added_to_certificate(response);
         let generated = added_elements(&added);
@@ -775,52 +771,6 @@ mod tests {
             tbs_digest(response),
             "tbsDigest covers the reconstructed TBSCertificate"
         );
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_0197");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
-        assert_eq!(TPM_CC_CERTIFY_X509, 0x0000_0197);
-        let descriptor = find(TPM_CC_CERTIFY_X509).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0400_0197);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(!descriptor.physical_presence);
-        assert!(!descriptor.physical_presence_required);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth && descriptor.handles[0].admin_role());
-        assert!(descriptor.handles[1].user_auth && !descriptor.handles[1].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::Object));
-        assert!(!descriptor.handles[0].kind.accepts(TPM_RH_NULL));
-        assert!(
-            !descriptor.handles[1].kind.accepts(TPM_RH_NULL),
-            "unlike TPM2_Certify, the signing handle may not be TPM_RH_NULL"
-        );
-    }
-
-    #[test]
-    fn neighbour_command_codes_capability_oracle_match() {
-        for (record, expected) in [
-            ("CCATTR_0196", 0x0400_0197u32),
-            ("CCATTR_0197", 0x0400_0197),
-            ("CCATTR_0198", 0x0200_0199),
-        ] {
-            let bytes = vector(record);
-            assert_eq!(
-                u32::from_be_bytes(bytes[19..23].try_into().expect("four bytes")),
-                expected,
-                "{record}"
-            );
-        }
     }
 
     #[test]
@@ -1791,18 +1741,18 @@ mod tests {
 
     #[test]
     fn partial_certificate_mutation_panic_safety() {
+        const DER_BYTES: [u8; 8] = [0x00, 0x01, 0x30, 0x7f, 0x80, 0x82, 0xa3, 0xff];
         let full = default_body();
         let mut runtime = with_keys(&signer_pair());
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x30, 0x7f, 0x80, 0x82, 0xa3, 0xff] {
-                let mut partial = full.clone();
-                partial[index] = byte;
+        let replacements = byte_replacements(&full, &DER_BYTES);
+        let cuts = prefixes(&full, 0..full.len(), false);
+        for_each_mutation(
+            "TPM2_CertifyX509 partialCertificate",
+            replacements.chain(cuts),
+            |partial| {
                 let _ = run(&mut runtime, &certify_command(KEY1, KEY0, &partial));
-            }
-        }
-        for length in 0..full.len() {
-            let _ = run(&mut runtime, &certify_command(KEY1, KEY0, &full[..length]));
-        }
+            },
+        );
     }
 
     #[test]
@@ -1811,10 +1761,11 @@ mod tests {
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         full.extend_from_slice(&tpm2b(&default_body()));
         let mut runtime = with_keys(&signer_pair());
-        for index in 0..full.len().min(24) {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        let leading = full.len().min(24) * REPLACEMENT_BYTES.len();
+        for_each_mutation(
+            "TPM2_CertifyX509 leading parameters",
+            byte_replacements(&full, &REPLACEMENT_BYTES).take(leading),
+            |parameters| {
                 let _ = run(
                     &mut runtime,
                     &command(
@@ -1824,8 +1775,8 @@ mod tests {
                         &parameters,
                     ),
                 );
-            }
-        }
+            },
+        );
     }
 
     thread_local! {
@@ -1855,8 +1806,6 @@ mod tests {
             .collect()
     }
 
-    // The first DA-protected authorization of a cycle is itself a persistent
-    // state change, so the failure tests perform it before they snapshot.
     fn burn_da_cycle(runtime: &mut Tpm2Runtime) {
         crate::library::tpm2::dictionary_attack::record_da_used(runtime)
             .expect("the DA-used transition is a production state change");

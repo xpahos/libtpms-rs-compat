@@ -114,8 +114,6 @@ struct StartupChecks {
 }
 
 fn startup_checks(runtime: &Tpm2Runtime, startup_type: u16) -> Result<StartupChecks, TpmResult> {
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
 
     let mut locality = runtime.locality;
@@ -561,31 +559,15 @@ fn context_id_oldest(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_FAIL;
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_STARTUP;
+    use crate::library::tpm2::command::core::test_support::{
+        colliding_last_value, counter_entropy, dispatch_bytes, manufactured_runtime_with, process,
+    };
     use crate::library::tpm2::crypto::Drbg;
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::nv::{IndexOrderlyRamFixture, UserNvramFixture};
     use crate::library::tpm2::nv::{
@@ -605,6 +587,8 @@ mod tests {
     };
     use crate::types::TpmResult;
 
+    const ENTROPY: EntropySource = counter_entropy::<0x71>;
+
     const SUCCESS_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00];
     const INITIALIZE_RESPONSE: [u8; 10] =
         [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x00];
@@ -623,24 +607,12 @@ mod tests {
         [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x9a];
     const FAILURE_RESPONSE: [u8; 10] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01];
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x71;
-        }
-        Ok(())
-    }
-
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         Err(TPM_FAIL)
     }
 
     fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
+        manufactured_runtime_with(None, ENTROPY)
     }
 
     struct RestoredFixture {
@@ -721,7 +693,7 @@ mod tests {
             let decoded = parse_persistent_all_payload(&envelope).expect("payload parses");
             let candidate = materialize_persistent_state(decoded).expect("materializes");
             let mut runtime = commit_restored_state(candidate).expect("commits");
-            runtime.entropy = deterministic_entropy;
+            runtime.entropy = ENTROPY;
             runtime
         }
     }
@@ -731,14 +703,6 @@ mod tests {
         out.extend_from_slice(&TPM_CC_STARTUP.to_be_bytes());
         out.extend_from_slice(&startup_type.to_be_bytes());
         out
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
     }
 
     struct Snapshot {
@@ -1230,8 +1194,8 @@ mod tests {
     #[test]
     fn su_restart_reset_state_preservation_clear_state_reinit() {
         let mut context_array = vec![0u16; MAX_ACTIVE_SESSIONS];
-        context_array[2] = 2; // references a loaded session slot -> reclaimed
-        context_array[7] = 9; // saved context -> preserved
+        context_array[2] = 2;
+        context_array[7] = 9;
         let mut runtime = RestoredFixture {
             allocation: all_pcrs_allocation(),
             state_reset: StateResetFixture {
@@ -1662,7 +1626,7 @@ mod tests {
         .expect("materializes");
         crate::library::tpm2::runtime::merge_volatile_state(&mut runtime, owned);
         crate::library::tpm2::runtime::nv_shadow_restore(&mut runtime);
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         runtime
     }
 
@@ -1731,7 +1695,7 @@ mod tests {
 
     fn expected_reseeded_seed(seed: [u8; 48]) -> Vec<u8> {
         let mut drbg = Drbg::restore(&seed, 0, [0; 4], false).unwrap();
-        drbg.reseed_from_entropy(deterministic_entropy).unwrap();
+        drbg.reseed_from_entropy(ENTROPY).unwrap();
         drbg.seed().to_vec()
     }
 
@@ -2045,10 +2009,7 @@ mod tests {
     }
 
     const ORDINARY_LOCKED: u32 = TPMA_NV_READLOCKED | TPMA_NV_WRITELOCKED | TPMA_NV_WRITTEN;
-    const STCLEAR_DEFINED: u32 = TPMA_NV_CLEAR_STCLEAR
-        | TPMA_NV_WRITTEN
-        | (1 << 31) // TPMA_NV_READ_STCLEAR
-        | (1 << 14); // TPMA_NV_WRITE_STCLEAR
+    const STCLEAR_DEFINED: u32 = TPMA_NV_CLEAR_STCLEAR | TPMA_NV_WRITTEN | (1 << 31) | (1 << 14);
     const WRITEDEFINE_LOCKED: u32 =
         TPMA_NV_WRITEDEFINE | TPMA_NV_WRITTEN | TPMA_NV_WRITELOCKED | TPMA_NV_READLOCKED;
     const COUNTER_STCLEAR: u32 =
@@ -2329,7 +2290,7 @@ mod tests {
         let restored = materialize_persistent_state(decoded).expect("materializes");
         let mut runtime = commit_restored_state(restored).expect("commits");
         assert!(!runtime.entropy_bad, "the latch is not part of any state");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
             SUCCESS_RESPONSE
@@ -2342,19 +2303,10 @@ mod tests {
     fn continuous_test_runtime() -> Tpm2Runtime {
         let profile =
             validate_user_profile(Some(CONTINUOUS_TEST_PROFILE)).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         runtime
-    }
-
-    fn colliding_last_value(seed: &[u8]) -> [u32; 4] {
-        let mut probe = Drbg::restore(seed, 1, [0; 4], false).expect("the probe restores");
-        let mut block = [0u8; 16];
-        probe.generate(&mut block).expect("the probe generates");
-        core::array::from_fn(|word| {
-            u32::from_le_bytes(block[word * 4..word * 4 + 4].try_into().unwrap())
-        })
     }
 
     #[test]

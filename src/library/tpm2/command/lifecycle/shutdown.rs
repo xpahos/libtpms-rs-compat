@@ -101,8 +101,6 @@ fn perform_shutdown(runtime: &mut Tpm2Runtime, shutdown_type: u16) -> Result<(),
 
     runtime.live.orderly.time = runtime.timer.time_ms;
 
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
 
     let backup_orderly_state = state.persistent.orderly_state;
@@ -143,23 +141,22 @@ fn perform_shutdown(runtime: &mut Tpm2Runtime, shutdown_type: u16) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::CommandInput;
-    use crate::library::cancel::CancellationToken;
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{TPM_CC_SHUTDOWN, TPM_CC_STARTUP};
+    use crate::library::tpm2::command::core::test_support::{
+        auth_session, counter_entropy, dispatch_bytes, manufactured_runtime_with, reload, start,
+    };
     use crate::library::tpm2::command::session::processing::{
         HMAC_SESSION_FIRST, POLICY_SESSION_FIRST, TPM_RS_PW,
     };
-    use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::crypto::EntropySource;
+
     use crate::library::tpm2::nv::OrderlyRamImage;
-    use crate::library::tpm2::parse_persistent_all_payload;
-    use crate::library::tpm2::persistent::{
-        OwnedPersistentState, PersistentAllEnvelope, materialize_persistent_state,
-        persistent_all_store,
-    };
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::{commit_manufactured_state, commit_restored_state};
+
+    use crate::library::tpm2::persistent::{OwnedPersistentState, persistent_all_store};
+
+    use crate::library::tpm2::runtime::commit_restored_state;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x53>;
 
     const SUCCESS: u32 = 0x000;
     const INITIALIZE: u32 = 0x100;
@@ -188,20 +185,8 @@ mod tests {
         out
     }
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x53;
-        }
-        Ok(())
-    }
-
     fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
+        manufactured_runtime_with(None, ENTROPY)
     }
 
     fn command_with_params(code: u32, params: &[u8]) -> Vec<u8> {
@@ -232,32 +217,10 @@ mod tests {
         out
     }
 
-    fn session_bytes(handle: u32, nonce: &[u8], attributes: u8, hmac: &[u8]) -> Vec<u8> {
-        let mut out = handle.to_be_bytes().to_vec();
-        out.extend_from_slice(&(nonce.len() as u16).to_be_bytes());
-        out.extend_from_slice(nonce);
-        out.push(attributes);
-        out.extend_from_slice(&(hmac.len() as u16).to_be_bytes());
-        out.extend_from_slice(hmac);
-        out
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
-
     #[track_caller]
     fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup_command(TPM_SU_CLEAR)),
-            response_bytes(SUCCESS)
-        );
-        runtime.nv_update_pending = false;
+        start(&mut runtime);
         runtime
     }
 
@@ -351,18 +314,10 @@ mod tests {
     }
 
     #[track_caller]
-    fn reload(state: &OwnedPersistentState) -> OwnedPersistentState {
-        let blob = persistent_all_store(state).expect("the state serializes");
-        let envelope = PersistentAllEnvelope::parse(&blob).expect("envelope parses");
-        let decoded = parse_persistent_all_payload(&envelope).expect("payload parses");
-        materialize_persistent_state(decoded).expect("materializes")
-    }
-
-    #[track_caller]
     fn rebooted_runtime(runtime: &Tpm2Runtime) -> Tpm2Runtime {
         let restored = reload(state(runtime));
         let mut rebooted = commit_restored_state(restored).expect("the persisted state restores");
-        rebooted.entropy = deterministic_entropy;
+        rebooted.entropy = ENTROPY;
         rebooted
     }
 
@@ -503,7 +458,7 @@ mod tests {
 
     #[test]
     fn session_tagged_request_oracle_parity() {
-        let pw = session_bytes(TPM_RS_PW, &[], 0x00, &[]);
+        let pw = auth_session(TPM_RS_PW, &[], 0x00, &[]);
         let mut no_authsize = vec![0x80, 0x02, 0x00, 0x00, 0x00, 0x0a];
         no_authsize.extend_from_slice(&TPM_CC_SHUTDOWN.to_be_bytes());
         let mut pw_trunc_hmac = pw.clone();
@@ -533,7 +488,7 @@ mod tests {
             (
                 "pw_nonce",
                 session_shutdown(
-                    &session_bytes(TPM_RS_PW, &[0xaa, 0xbb], 0x00, &[]),
+                    &auth_session(TPM_RS_PW, &[0xaa, 0xbb], 0x00, &[]),
                     None,
                     &[0, 0],
                 ),
@@ -541,13 +496,13 @@ mod tests {
             ),
             (
                 "pw_audit_attribute",
-                session_shutdown(&session_bytes(TPM_RS_PW, &[], 0x80, &[]), None, &[0, 0]),
+                session_shutdown(&auth_session(TPM_RS_PW, &[], 0x80, &[]), None, &[0, 0]),
                 SESSION1_ATTRIBUTES,
             ),
             (
                 "unloaded_policy_session",
                 session_shutdown(
-                    &session_bytes(POLICY_SESSION_FIRST, &[], 0x00, &[]),
+                    &auth_session(POLICY_SESSION_FIRST, &[], 0x00, &[]),
                     None,
                     &[0, 0],
                 ),
@@ -556,7 +511,7 @@ mod tests {
             (
                 "unloaded_hmac_session",
                 session_shutdown(
-                    &session_bytes(HMAC_SESSION_FIRST, &[], 0x00, &[]),
+                    &auth_session(HMAC_SESSION_FIRST, &[], 0x00, &[]),
                     None,
                     &[0, 0],
                 ),
@@ -564,7 +519,7 @@ mod tests {
             ),
             (
                 "invalid_handle",
-                session_shutdown(&session_bytes(0x1234_5678, &[], 0x00, &[]), None, &[0, 0]),
+                session_shutdown(&auth_session(0x1234_5678, &[], 0x00, &[]), None, &[0, 0]),
                 SESSION1_VALUE,
             ),
             (

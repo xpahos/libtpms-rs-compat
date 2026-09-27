@@ -362,11 +362,13 @@ pub(in crate::library::tpm2::command) fn check_condition(
 
 #[cfg(test)]
 pub(in crate::library::tpm2::command) mod test_support {
+    use crate::library::tpm2::command::core::test_support::{
+        command, dispatch_bytes, restored_snapshot,
+    };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
     use crate::library::tpm2::runtime::Tpm2Runtime;
     use crate::library::tpm2::session::loaded_session;
     use crate::library::tpm2::volatile::OwnedSession;
-    use crate::library::tpm2::{attach_volatile_blob_for_test, restore_permanent_blob_for_test};
 
     pub(in crate::library::tpm2::command) const POLICY_SESSION_0: u32 = 0x0300_0000;
     pub(in crate::library::tpm2::command) const HMAC_SESSION_0: u32 = 0x0200_0000;
@@ -398,15 +400,7 @@ pub(in crate::library::tpm2::command) mod test_support {
 
     #[track_caller]
     pub(in crate::library::tpm2::command) fn restored(snapshot: &str) -> Tpm2Runtime {
-        let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
-            .expect("the oracle permanent state restores");
-        attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
-            .expect("the oracle volatile state attaches");
-        assert!(
-            runtime.startup_received,
-            "the {snapshot} snapshot is past TPM2_Startup"
-        );
-        runtime
+        restored_snapshot(vector, snapshot)
     }
 
     pub(in crate::library::tpm2::command) fn session_of(
@@ -414,6 +408,30 @@ pub(in crate::library::tpm2::command) mod test_support {
         handle: u32,
     ) -> &OwnedSession {
         loaded_session(&runtime.live, handle).expect("a loaded session")
+    }
+
+    #[track_caller]
+    pub(in crate::library::tpm2::command) fn session_only(
+        runtime: &mut Tpm2Runtime,
+        code: u32,
+        extra: &[u8],
+    ) -> Vec<u8> {
+        dispatch_bytes(runtime, &command(code, &[POLICY_SESSION_0], &[], extra))
+    }
+
+    #[track_caller]
+    pub(in crate::library::tpm2::command) fn digest(runtime: &mut Tpm2Runtime) -> Vec<u8> {
+        session_only(runtime, CC_POLICY_GET_DIGEST, &[])
+    }
+
+    pub(in crate::library::tpm2::command) fn read_tpm2b(
+        data: &[u8],
+        offset: usize,
+    ) -> (&[u8], usize) {
+        let size = usize::from(u16::from_be_bytes(
+            data[offset..offset + 2].try_into().expect("a size prefix"),
+        ));
+        (&data[offset + 2..offset + 2 + size], offset + 2 + size)
     }
 }
 

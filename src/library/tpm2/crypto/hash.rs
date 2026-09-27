@@ -61,10 +61,7 @@ impl Hasher {
 mod tests {
     use super::*;
     use crate::library::tpm2::algorithm::{TPM_ALG_AES, TPM_ALG_HMAC, TPM_ALG_NULL};
-
-    fn hex(digest: &[u8]) -> String {
-        digest.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
+    use crate::library::tpm2::test_support::hex_string;
 
     #[test]
     fn compiled_algorithm_hasher_selection() {
@@ -128,7 +125,11 @@ mod tests {
         for (hash_alg, expected) in EMPTY {
             let hasher = Hasher::new(hash_alg).expect("a compiled algorithm");
             let expected: String = expected.chars().filter(|c| !c.is_whitespace()).collect();
-            assert_eq!(hex(&hasher.finalize()), expected, "alg {hash_alg:#06x}");
+            assert_eq!(
+                hex_string(&hasher.finalize()),
+                expected,
+                "alg {hash_alg:#06x}"
+            );
         }
     }
 
@@ -156,7 +157,11 @@ mod tests {
             let mut hasher = Hasher::new(hash_alg).expect("a compiled algorithm");
             hasher.update(b"abc");
             let expected: String = expected.chars().filter(|c| !c.is_whitespace()).collect();
-            assert_eq!(hex(&hasher.finalize()), expected, "alg {hash_alg:#06x}");
+            assert_eq!(
+                hex_string(&hasher.finalize()),
+                expected,
+                "alg {hash_alg:#06x}"
+            );
         }
     }
 

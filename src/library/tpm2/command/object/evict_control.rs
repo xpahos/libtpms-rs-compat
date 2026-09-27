@@ -268,46 +268,32 @@ fn remove_persistent(runtime: &mut Tpm2Runtime, entry: usize) -> Result<(), TpmR
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+
     use crate::library::constants::TPM_RC_INITIALIZE;
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
-    use crate::library::tpm2::command::core::registry::{CommandLifecycle, HandleKind};
-    use crate::library::tpm2::command::core::registry::{TPM_CC_EVICT_CONTROL, find};
+    use crate::library::tpm2::capability::handles::test_state::nv_index_entry;
+
+    use crate::library::tpm2::command::core::registry::TPM_CC_EVICT_CONTROL;
+    use crate::library::tpm2::command::core::test_support::{
+        dispatch_bytes, dispatch_if_header_parses, divergence, error_response, for_each_mutation,
+        framed, hex, manufactured_runtime, occupied_slots, prefix_bit_flips, process, pw_session,
+        response_code, start, started_runtime, symcipher_template,
+    };
+    use crate::library::tpm2::command::nv::test_support::{nvram_handles, push_nvram};
     use crate::library::tpm2::command::session::processing::TPM_RS_PW;
     use crate::library::tpm2::golden_responses::evict_control::vector;
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_PLATFORM_NV,
     };
-    use crate::library::tpm2::manufacture::manufacture_state;
+
     use crate::library::tpm2::nv::USER_NVRAM_CAPACITY;
     use crate::library::tpm2::object::{ATTR_OCCUPIED, ATTR_SPS_HIERARCHY};
     use crate::library::tpm2::object_create::find_empty_object_slot;
-    use crate::library::tpm2::persistent::{
-        OwnedNvIndex, OwnedSecret, persistent_all_store, user_nvram_required_capacity,
-    };
-    use crate::library::tpm2::profile::validate_user_profile;
+    use crate::library::tpm2::persistent::{persistent_all_store, user_nvram_required_capacity};
+
     use crate::library::tpm2::restore_permanent_blob_for_test;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
     use crate::library::tpm2::volatile::MAX_LOADED_OBJECTS;
 
     const RC_SUCCESS: u32 = 0x000;
@@ -339,57 +325,8 @@ mod tests {
     const STORAGE_ATTRIBUTES: u32 = 0x0003_0072;
     const TPMA_OBJECT_ST_CLEAR: u32 = 0x0000_0004;
 
-    fn hex(value: &str) -> Vec<u8> {
-        let digits: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(digits.len().is_multiple_of(2));
-        (0..digits.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).expect("hex digits"))
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x55;
-        }
-        Ok(())
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
-
     fn startup_command() -> Vec<u8> {
         hex("80010000000c0000014400 00")
-    }
-
-    #[track_caller]
-    fn start(runtime: &mut Tpm2Runtime) {
-        assert_eq!(
-            dispatch_bytes(runtime, &startup_command()),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
-    }
-
-    fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn started_runtime() -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime();
-        start(&mut runtime);
-        runtime
     }
 
     #[track_caller]
@@ -398,24 +335,6 @@ mod tests {
             .expect("the oracle permanent state restores");
         start(&mut runtime);
         runtime
-    }
-
-    fn pw_session(password: &[u8]) -> Vec<u8> {
-        let mut out = TPM_RS_PW.to_be_bytes().to_vec();
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.push(0x00);
-        out.extend_from_slice(&(password.len() as u16).to_be_bytes());
-        out.extend_from_slice(password);
-        out
-    }
-
-    fn framed(code: u32, payload: &[u8], sessions: bool) -> Vec<u8> {
-        let tag: u16 = if sessions { 0x8002 } else { 0x8001 };
-        let mut out = tag.to_be_bytes().to_vec();
-        out.extend_from_slice(&(10 + payload.len() as u32).to_be_bytes());
-        out.extend_from_slice(&code.to_be_bytes());
-        out.extend_from_slice(payload);
-        out
     }
 
     fn command(auth: u32, object: u32, password: Option<&[u8]>, parameters: &[u8]) -> Vec<u8> {
@@ -439,26 +358,8 @@ mod tests {
         dispatch_bytes(runtime, &evict_command(auth, object, persistent))
     }
 
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
-    }
-
     fn success_response() -> Vec<u8> {
         hex("8002 00000013 00000000 00000000 0000010000")
-    }
-
-    fn symcipher_template(attributes: u32) -> Vec<u8> {
-        let mut out = 0x0025u16.to_be_bytes().to_vec();
-        out.extend_from_slice(&0x000bu16.to_be_bytes());
-        out.extend_from_slice(&attributes.to_be_bytes());
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.extend_from_slice(&0x0006u16.to_be_bytes());
-        out.extend_from_slice(&0x0080u16.to_be_bytes());
-        out.extend_from_slice(&0x0043u16.to_be_bytes());
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out
     }
 
     fn create_primary_command(hierarchy: u32, template: &[u8]) -> Vec<u8> {
@@ -536,23 +437,6 @@ mod tests {
         (handle, modulus)
     }
 
-    fn response_code(response: &[u8]) -> u32 {
-        u32::from_be_bytes(response[6..10].try_into().expect("a response code"))
-    }
-
-    fn nvram_handles(runtime: &Tpm2Runtime) -> Vec<u32> {
-        runtime
-            .state()
-            .user_nvram
-            .entries
-            .iter()
-            .map(|entry| match entry {
-                OwnedUserNvramEntry::NvIndex { handle, .. }
-                | OwnedUserNvramEntry::Persistent { handle, .. } => *handle,
-            })
-            .collect()
-    }
-
     fn persistent_entry(runtime: &Tpm2Runtime, handle: u32) -> &OwnedUserNvramEntry {
         runtime
             .state()
@@ -577,17 +461,6 @@ mod tests {
         permanent: Vec<u8>,
     }
 
-    fn occupied_slots(runtime: &Tpm2Runtime) -> Vec<usize> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .enumerate()
-            .filter(|(_, object)| object.attributes & ATTR_OCCUPIED != 0)
-            .map(|(slot, _)| slot)
-            .collect()
-    }
-
     fn snapshot(runtime: &Tpm2Runtime) -> Snapshot {
         Snapshot {
             nv_update_pending: runtime.nv_update_pending,
@@ -605,121 +478,18 @@ mod tests {
         assert_eq!(snapshot(runtime), *before);
     }
 
-    fn nv_index_entry(handle: u32) -> OwnedUserNvramEntry {
-        OwnedUserNvramEntry::NvIndex {
-            declared_entry_size: 0,
-            handle,
-            index: OwnedNvIndex {
-                nv_index: handle,
-                name_alg: 0x000b,
-                attributes: 0,
-                auth_policy: Vec::new(),
-                data_size: 8,
-                auth_value: OwnedSecret::from_vec(Vec::new()),
-            },
-            data: vec![0; 8],
-        }
-    }
-
-    #[track_caller]
-    fn push_nvram(
-        runtime: &mut Tpm2Runtime,
-        entries: impl IntoIterator<Item = OwnedUserNvramEntry>,
-    ) {
-        let user_nvram = &mut runtime.state.as_mut().expect("state present").user_nvram;
-        user_nvram.entries.extend(entries);
-        user_nvram.required_capacity = user_nvram_required_capacity(&user_nvram.entries)
-            .expect("the planted entries fit the dynamic region");
-        let state = runtime.state.as_ref().expect("state present");
-        runtime.nv_memory = build_nv_image(state).expect("the planted entries serialize");
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        assert_eq!(TPM_CC_EVICT_CONTROL, 0x0000_0120);
-        let descriptor = find(TPM_CC_EVICT_CONTROL).expect("a registered command");
-        assert_eq!(descriptor.attributes, 0x0440_0120);
-        assert_ne!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "EvictControl writes NV"
-        );
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!(
-            (descriptor.attributes >> 25) & 0x7,
-            2,
-            "two command handles"
-        );
-        assert!(descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn user_authorization_provision_handle_only() {
-        let descriptor = find(TPM_CC_EVICT_CONTROL).expect("a registered command");
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[1].user_auth);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Provision));
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn provision_handle_owner_platform_only() {
-        let kind = find(TPM_CC_EVICT_CONTROL).unwrap().handles[0].kind;
-        assert!(kind.accepts(TPM_RH_OWNER));
-        assert!(kind.accepts(TPM_RH_PLATFORM));
-        for handle in [
-            TPM_RH_ENDORSEMENT,
-            TPM_RH_LOCKOUT,
-            TPM_RH_NULL,
-            TPM_RH_PLATFORM_NV,
-            TPM_RS_PW,
-            0x0000_0000,
-            0x0100_0001,
-            0x8000_0000,
-            0x8100_0000,
-            u32::MAX,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#010x}");
-        }
-    }
-
-    #[test]
-    fn object_handle_transient_persistent_ranges() {
-        let kind = find(TPM_CC_EVICT_CONTROL).unwrap().handles[1].kind;
-        for handle in [0x8000_0000, 0x8000_0002, PERSISTENT_FIRST, PERSISTENT_LAST] {
-            assert!(kind.accepts(handle), "handle {handle:#010x}");
-        }
-        for handle in [
-            0x7fff_ffff,
-            0x8000_0003,
-            0x80ff_ffff,
-            0x8200_0000,
-            TPM_RH_OWNER,
-            0x0100_0001,
-            0x0200_0000,
-            0x0000_0000,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#010x}");
-        }
-    }
-
     #[test]
     fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             evict(&mut runtime, TPM_RH_OWNER, 0x8000_0000, OWNER_HANDLE),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_EvictControl before TPM2_Startup"
         );
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex("80010000000a00000120")),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes handle unmarshalling"
+            "TPM2_EvictControl before TPM2_Startup: the lifecycle check precedes handle unmarshalling"
         );
     }
 
@@ -1799,13 +1569,6 @@ mod tests {
         );
     }
 
-    fn divergence(actual: &[u8], expected: &[u8]) -> Vec<usize> {
-        assert_eq!(actual.len(), expected.len(), "blob length");
-        (0..actual.len())
-            .filter(|&index| actual[index] != expected[index])
-            .collect()
-    }
-
     fn startup_divergence() -> Vec<usize> {
         let runtime = oracle_runtime();
         divergence(
@@ -1909,25 +1672,17 @@ mod tests {
     #[test]
     fn prefix_bit_flip_panic_safety() {
         let valid = evict_command(TPM_RH_OWNER, 0x8000_0000, OWNER_HANDLE);
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    let Ok(parsed) = parse_command(&input) else {
-                        continue;
-                    };
+        for_each_mutation(
+            "TPM2_EvictControl",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                dispatch_if_header_parses(bytes, || {
                     let mut runtime = started_runtime();
                     storage_primary(&mut runtime, TPM_RH_OWNER);
-                    let _ = serialize_response(&dispatch(
-                        &mut runtime,
-                        &parsed,
-                        CancellationToken::disabled(),
-                    ));
-                }
-            }
-        }
+                    runtime
+                });
+            },
+        );
     }
 
     #[test]

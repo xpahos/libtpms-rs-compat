@@ -46,6 +46,8 @@ mod session;
 mod signature;
 mod state;
 mod template;
+#[cfg(test)]
+pub(in crate::library) mod test_support;
 mod ticket;
 mod tis;
 mod volatile;
@@ -87,14 +89,11 @@ pub(super) fn volatile_all_store(runtime: &Tpm2Runtime) -> Result<Vec<u8>, TpmRe
     volatile::volatile_all_store(runtime, &OsClock)
 }
 
-/// Makes the next self-test run park on the armed [`SelfTestGate`].
 #[cfg(test)]
 pub(super) fn park_self_test_on_gate(runtime: &mut Tpm2Runtime) {
     runtime.self_test.park_on_gate();
 }
 
-/// The algorithms whose self-test is still pending, as `TPM2_IncrementalSelfTest`
-/// would report them.
 #[cfg(test)]
 pub(super) fn pending_self_test_algorithms(runtime: &Tpm2Runtime) -> Vec<u16> {
     runtime.self_test.pending_algorithms()
@@ -417,8 +416,6 @@ pub(super) fn host_nv_commit(
     storage: &dyn Storage,
     runtime: &Tpm2Runtime,
 ) -> Result<(), TpmResult> {
-    // TODO: Implement the NVChip fallback after command processing and host
-    // persistence are complete.
     if !storage.supports_store() {
         return Ok(());
     }
@@ -503,8 +500,6 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Tpm2Runtime, Ini
     );
     let mut runtime = match source {
         PermanentStateSource::Manufacture => {
-            // TODO: Implement the legacy NVChip fallback after TPMLIB_Process
-            // and the command-time NVRAM mutation/commit path are complete.
             if !load_supported {
                 return Err(TPM_FAIL.into());
             }
@@ -594,8 +589,6 @@ pub(super) fn load_state_from_backend(
         StorageLoad::Data(blob) => Ok(blob),
         StorageLoad::Empty => Ok(Vec::new()),
         StorageLoad::Missing => Err(TPM_RETRY),
-        // TODO: Implement the NVChip file fallback for hosts that register
-        // no tpm_nvram_loaddata callback.
         StorageLoad::Unsupported => Err(TPM_FAIL),
     }
 }
@@ -733,8 +726,6 @@ pub(super) fn finish_validation(
 }
 
 fn load_permanent_for_validation(storage: &dyn Storage) -> Result<Vec<u8>, TpmResult> {
-    // TODO: Implement the NVChip file fallback for hosts that register no
-    // tpm_nvram_loaddata callback.
     match storage.load(StateBlobKind::Permanent)? {
         StorageLoad::Data(blob) => Ok(blob),
         StorageLoad::Missing => Err(TPM_RETRY),
@@ -1098,14 +1089,8 @@ mod tests {
     use crate::library::platform::test_support::TestPlatform;
     use crate::library::storage::NoStorage;
     use crate::library::storage::test_support::TestStorage;
+    use crate::library::tpm2::test_support::{envelope_v4_with_profile, envelope_with_payload};
     use std::sync::{LazyLock, Mutex};
-
-    fn envelope_with_payload(payload: &[u8]) -> Vec<u8> {
-        let mut blob = vec![0x00, 0x03, 0xab, 0x36, 0x47, 0x23, 0x00, 0x01];
-        blob.extend_from_slice(payload);
-        blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
-        blob
-    }
 
     fn pp_list_tail() -> Vec<u8> {
         pp_list::PpListFixture {
@@ -1249,13 +1234,8 @@ mod tests {
         Arc::new(NoStorage)
     }
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0xa5;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0xa5>;
 
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         Err(TPM_FAIL)
@@ -1306,7 +1286,7 @@ mod tests {
             preloaded_permanent,
             preloaded_volatile,
             configured_profile: configured_profile.map(<[u8]>::to_vec),
-            entropy: deterministic_entropy,
+            entropy: ENTROPY,
             clock: &TEST_HOST_CLOCK,
             failure_diagnostics: FailureDiagnostics::default(),
         }
@@ -2477,16 +2457,6 @@ mod tests {
         blob
     }
 
-    fn envelope_v4_with_profile(profile: &[u8], payload: &[u8]) -> Vec<u8> {
-        let mut blob = vec![0x00, 0x04, 0xab, 0x36, 0x47, 0x23, 0x00, 0x04];
-        blob.extend_from_slice(&u16::try_from(profile.len() + 1).unwrap().to_be_bytes());
-        blob.extend_from_slice(profile);
-        blob.push(0);
-        blob.extend_from_slice(payload);
-        blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
-        blob
-    }
-
     #[test]
     fn su_state_blob_conditional_section_reads() {
         for orderly_state in [0x0001u16, 0x8001, 0x4001, 0xc001] {
@@ -3405,7 +3375,7 @@ mod tests {
             preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             preloaded_volatile: PreloadedBlob::Data(valid_volatile_state_fixture()),
             configured_profile: None,
-            entropy: deterministic_entropy,
+            entropy: ENTROPY,
             clock: &host,
             failure_diagnostics: FailureDiagnostics::default(),
         })
@@ -3445,7 +3415,7 @@ mod tests {
             preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             preloaded_volatile: PreloadedBlob::Data(blob),
             configured_profile: None,
-            entropy: deterministic_entropy,
+            entropy: ENTROPY,
             clock: &host,
             failure_diagnostics: FailureDiagnostics::default(),
         })
@@ -3697,7 +3667,7 @@ mod tests {
                 preloaded_permanent: PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
                 preloaded_volatile: PreloadedBlob::Data(valid_volatile_state_fixture()),
                 configured_profile: None,
-                entropy: deterministic_entropy,
+                entropy: ENTROPY,
                 clock: host,
                 failure_diagnostics: FailureDiagnostics::default(),
             })

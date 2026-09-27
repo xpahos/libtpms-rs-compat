@@ -577,11 +577,6 @@ pub(in crate::library::tpm2) struct LazySelfTest<'a>(
 );
 
 impl<'a> LazySelfTest<'a> {
-    // TODO: Give the duplication and private-blob outer-wrap paths a
-    // runtime-backed gate; they do not model the lazy hash and symmetric
-    // known-answer tests they reach yet. The known-answer runners themselves
-    // stay ungated, because the reference suppresses nested tests while one is
-    // running.
     pub(in crate::library::tpm2) fn untested() -> Self {
         Self(None)
     }

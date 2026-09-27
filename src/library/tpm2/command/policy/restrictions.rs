@@ -368,17 +368,16 @@ pub(in crate::library::tpm2::command) fn execute_duplication_select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, response_code,
+        RC_SUCCESS, TAIL_BYTES, command, dispatch_bytes, for_each_mutation, response_code, tpm2b,
+        truncated_tail_replacements,
     };
     use crate::library::tpm2::command::policy::session::test_support::{
         CC_POLICY_COMMAND_CODE, CC_POLICY_CP_HASH, CC_POLICY_DUPLICATION_SELECT,
-        CC_POLICY_GET_DIGEST, CC_POLICY_LOCALITY, CC_POLICY_NAME_HASH, CC_POLICY_NV_WRITTEN,
-        CC_POLICY_PARAMETERS, CC_POLICY_PHYSICAL_PRESENCE, CC_POLICY_TEMPLATE, POLICY_SESSION_0,
-        restored, session_of,
+        CC_POLICY_LOCALITY, CC_POLICY_NAME_HASH, CC_POLICY_NV_WRITTEN, CC_POLICY_PARAMETERS,
+        CC_POLICY_PHYSICAL_PRESENCE, CC_POLICY_TEMPLATE, POLICY_SESSION_0, digest, restored,
+        session_of,
     };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
     use crate::library::tpm2::session::SESSION_ATTR_IS_TRIAL_POLICY;
@@ -392,82 +391,32 @@ mod tests {
         dispatch_bytes(runtime, &policy_command(code, extra))
     }
 
-    #[track_caller]
-    fn digest(runtime: &mut Tpm2Runtime) -> Vec<u8> {
-        run(runtime, CC_POLICY_GET_DIGEST, &[])
-    }
-
-    fn sized(payload: &[u8]) -> Vec<u8> {
-        let mut out = (payload.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(payload);
-        out
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (code, record, expected, decrypt) in [
-            (CC_POLICY_CP_HASH, "CCATTR_016E", 0x0200_016eu32, 2u16),
-            (CC_POLICY_LOCALITY, "CCATTR_016F", 0x0200_016f, 0),
-            (CC_POLICY_NAME_HASH, "CCATTR_0170", 0x0200_0170, 2),
-            (CC_POLICY_PHYSICAL_PRESENCE, "CCATTR_0187", 0x0200_0187, 0),
-            (CC_POLICY_DUPLICATION_SELECT, "CCATTR_0188", 0x0200_0188, 2),
-            (CC_POLICY_NV_WRITTEN, "CCATTR_018F", 0x0200_018f, 0),
-            (CC_POLICY_TEMPLATE, "CCATTR_0190", 0x0200_0190, 2),
-            (CC_POLICY_PARAMETERS, "CCATTR_019C", 0x0200_019c, 2),
-        ] {
-            let oracle = vector(record);
-            let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "{record}");
-            assert_eq!(descriptor.attributes, expected, "{record}");
-            assert_eq!(descriptor.handles.len(), 1, "{record}");
-            assert!(!descriptor.handles[0].user_auth, "{record}");
-            assert!(!descriptor.handles[0].admin_role(), "{record}");
-            assert!(
-                matches!(descriptor.handles[0].kind, HandleKind::PolicySession),
-                "{record}"
-            );
-            assert_eq!(descriptor.decrypt_size, decrypt, "{record}");
-            assert_eq!(descriptor.encrypt_size, 0, "{record}");
-            assert!(descriptor.sessions_allowed, "{record}");
-            assert!(!descriptor.physical_presence, "{record}");
-            assert!(
-                matches!(descriptor.nv_access, NvAccess::Neither),
-                "{record}"
-            );
-            assert!(
-                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
-                "{record}"
-            );
-        }
-    }
-
     #[test]
     fn direct_assertion_oracle_digest_parity() {
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
-            run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32])),
+            run(&mut runtime, CC_POLICY_CP_HASH, &tpm2b(&[0x11; 32])),
             vector("PCPH_FIRST")
         );
         assert_eq!(digest(&mut runtime), vector("PGD_AFTER_CP_HASH"));
 
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
-            run(&mut runtime, CC_POLICY_NAME_HASH, &sized(&[0x22; 32])),
+            run(&mut runtime, CC_POLICY_NAME_HASH, &tpm2b(&[0x22; 32])),
             vector("PNH_FIRST")
         );
         assert_eq!(digest(&mut runtime), vector("PGD_AFTER_NAME_HASH"));
 
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
-            run(&mut runtime, CC_POLICY_TEMPLATE, &sized(&[0x33; 32])),
+            run(&mut runtime, CC_POLICY_TEMPLATE, &tpm2b(&[0x33; 32])),
             vector("PTPL_FIRST")
         );
         assert_eq!(digest(&mut runtime), vector("PGD_AFTER_TEMPLATE"));
 
         let mut runtime = restored("POLICY_FRESH");
         assert_eq!(
-            run(&mut runtime, CC_POLICY_PARAMETERS, &sized(&[0x44; 32])),
+            run(&mut runtime, CC_POLICY_PARAMETERS, &tpm2b(&[0x44; 32])),
             vector("PPARM_FIRST")
         );
         assert_eq!(digest(&mut runtime), vector("PGD_AFTER_PARAMETERS"));
@@ -497,19 +446,19 @@ mod tests {
     #[test]
     fn hash_assertion_bound_entity_flag_update() {
         let mut runtime = restored("POLICY_FRESH");
-        run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32]));
+        run(&mut runtime, CC_POLICY_CP_HASH, &tpm2b(&[0x11; 32]));
         let session = session_of(&runtime, POLICY_SESSION_0);
         assert_eq!(session.bound_entity, vec![0x11; 32]);
         assert_ne!(session.attributes & SESSION_ATTR_IS_CP_HASH_DEFINED, 0);
 
         let mut runtime = restored("POLICY_FRESH");
-        run(&mut runtime, CC_POLICY_NAME_HASH, &sized(&[0x22; 32]));
+        run(&mut runtime, CC_POLICY_NAME_HASH, &tpm2b(&[0x22; 32]));
         let session = session_of(&runtime, POLICY_SESSION_0);
         assert_eq!(session.bound_entity, vec![0x22; 32]);
         assert_ne!(session.attributes & SESSION_ATTR_IS_NAME_HASH_DEFINED, 0);
 
         let mut runtime = restored("POLICY_FRESH");
-        run(&mut runtime, CC_POLICY_TEMPLATE, &sized(&[0x33; 32]));
+        run(&mut runtime, CC_POLICY_TEMPLATE, &tpm2b(&[0x33; 32]));
         let session = session_of(&runtime, POLICY_SESSION_0);
         assert_eq!(session.bound_entity, vec![0x33; 32]);
         assert_ne!(
@@ -518,7 +467,7 @@ mod tests {
         );
 
         let mut runtime = restored("POLICY_FRESH");
-        run(&mut runtime, CC_POLICY_PARAMETERS, &sized(&[0x44; 32]));
+        run(&mut runtime, CC_POLICY_PARAMETERS, &tpm2b(&[0x44; 32]));
         let session = session_of(&runtime, POLICY_SESSION_0);
         assert_eq!(session.bound_entity, vec![0x44; 32]);
         assert_ne!(
@@ -554,26 +503,26 @@ mod tests {
     #[test]
     fn repeated_and_conflicting_assertion_oracle_parity() {
         let mut runtime = restored("POLICY_FRESH");
-        run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32]));
+        run(&mut runtime, CC_POLICY_CP_HASH, &tpm2b(&[0x11; 32]));
         assert_eq!(
-            run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32])),
+            run(&mut runtime, CC_POLICY_CP_HASH, &tpm2b(&[0x11; 32])),
             vector("PCPH_REPEATED")
         );
         assert_eq!(digest(&mut runtime), vector("PGD_AFTER_REPEATED_CP_HASH"));
         assert_eq!(
-            run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x99; 32])),
+            run(&mut runtime, CC_POLICY_CP_HASH, &tpm2b(&[0x99; 32])),
             vector("PCPH_CONFLICT")
         );
         assert_eq!(
-            run(&mut runtime, CC_POLICY_NAME_HASH, &sized(&[0x22; 32])),
+            run(&mut runtime, CC_POLICY_NAME_HASH, &tpm2b(&[0x22; 32])),
             vector("PNH_AFTER_CP_HASH")
         );
         assert_eq!(
-            run(&mut runtime, CC_POLICY_TEMPLATE, &sized(&[0x33; 32])),
+            run(&mut runtime, CC_POLICY_TEMPLATE, &tpm2b(&[0x33; 32])),
             vector("PTPL_AFTER_CP_HASH")
         );
         assert_eq!(
-            run(&mut runtime, CC_POLICY_PARAMETERS, &sized(&[0x44; 32])),
+            run(&mut runtime, CC_POLICY_PARAMETERS, &tpm2b(&[0x44; 32])),
             vector("PPARM_AFTER_CP_HASH")
         );
 
@@ -608,8 +557,8 @@ mod tests {
     #[test]
     fn duplication_select_name_hash_command_code_seeding() {
         let mut runtime = restored("POLICY_FRESH");
-        let mut parameters = sized(&[0xa1; 34]);
-        parameters.extend_from_slice(&sized(&[0xb2; 34]));
+        let mut parameters = tpm2b(&[0xa1; 34]);
+        parameters.extend_from_slice(&tpm2b(&[0xb2; 34]));
         parameters.push(0x01);
         assert_eq!(
             run(&mut runtime, CC_POLICY_DUPLICATION_SELECT, &parameters),
@@ -627,8 +576,8 @@ mod tests {
         );
 
         let mut runtime = restored("POLICY_FRESH");
-        let mut excluded = sized(&[0xa1; 34]);
-        excluded.extend_from_slice(&sized(&[0xb2; 34]));
+        let mut excluded = tpm2b(&[0xa1; 34]);
+        excluded.extend_from_slice(&tpm2b(&[0xb2; 34]));
         excluded.push(0x00);
         assert_eq!(
             run(&mut runtime, CC_POLICY_DUPLICATION_SELECT, &excluded),
@@ -648,8 +597,8 @@ mod tests {
             CC_POLICY_COMMAND_CODE,
             &0x0000_014bu32.to_be_bytes(),
         );
-        let mut parameters = sized(&[0xa1; 34]);
-        parameters.extend_from_slice(&sized(&[0xb2; 34]));
+        let mut parameters = tpm2b(&[0xa1; 34]);
+        parameters.extend_from_slice(&tpm2b(&[0xb2; 34]));
         parameters.push(0x01);
         assert_eq!(
             run(&mut runtime, CC_POLICY_DUPLICATION_SELECT, &parameters),
@@ -661,18 +610,18 @@ mod tests {
     fn malformed_direct_assertion_oracle_parity() {
         let mut runtime = restored("POLICY_FRESH");
         for (record, code, extra) in [
-            ("PCPH_SHORT", CC_POLICY_CP_HASH, sized(&[0x11; 20])),
-            ("PCPH_OVERSIZED", CC_POLICY_CP_HASH, sized(&[0x11; 65])),
-            ("PCPH_EMPTY", CC_POLICY_CP_HASH, sized(&[])),
+            ("PCPH_SHORT", CC_POLICY_CP_HASH, tpm2b(&[0x11; 20])),
+            ("PCPH_OVERSIZED", CC_POLICY_CP_HASH, tpm2b(&[0x11; 65])),
+            ("PCPH_EMPTY", CC_POLICY_CP_HASH, tpm2b(&[])),
             ("PCPH_TRUNCATED", CC_POLICY_CP_HASH, vec![0x00]),
             ("PCPH_TRAILING", CC_POLICY_CP_HASH, {
-                let mut out = sized(&[0x11; 32]);
+                let mut out = tpm2b(&[0x11; 32]);
                 out.push(0x00);
                 out
             }),
-            ("PNH_SHORT", CC_POLICY_NAME_HASH, sized(&[0x22; 20])),
-            ("PTPL_SHORT", CC_POLICY_TEMPLATE, sized(&[0x33; 20])),
-            ("PPARM_SHORT", CC_POLICY_PARAMETERS, sized(&[0x44; 20])),
+            ("PNH_SHORT", CC_POLICY_NAME_HASH, tpm2b(&[0x22; 20])),
+            ("PTPL_SHORT", CC_POLICY_TEMPLATE, tpm2b(&[0x33; 20])),
+            ("PPARM_SHORT", CC_POLICY_PARAMETERS, tpm2b(&[0x44; 20])),
             ("PPP_TRAILING", CC_POLICY_PHYSICAL_PRESENCE, vec![0x00]),
             ("PLOC_MISSING", CC_POLICY_LOCALITY, Vec::new()),
             ("PLOC_TRAILING", CC_POLICY_LOCALITY, vec![0x04, 0x00]),
@@ -682,17 +631,17 @@ mod tests {
             (
                 "PDS_TRUNCATED",
                 CC_POLICY_DUPLICATION_SELECT,
-                sized(&[0xa1; 34]),
+                tpm2b(&[0xa1; 34]),
             ),
             ("PDS_OVERSIZED_NAME", CC_POLICY_DUPLICATION_SELECT, {
-                let mut out = sized(&[0xa1; 69]);
-                out.extend_from_slice(&sized(&[0xb2; 34]));
+                let mut out = tpm2b(&[0xa1; 69]);
+                out.extend_from_slice(&tpm2b(&[0xb2; 34]));
                 out.push(0x01);
                 out
             }),
             ("PDS_INVALID_INCLUDE", CC_POLICY_DUPLICATION_SELECT, {
-                let mut out = sized(&[0xa1; 34]);
-                out.extend_from_slice(&sized(&[0xb2; 34]));
+                let mut out = tpm2b(&[0xa1; 34]);
+                out.extend_from_slice(&tpm2b(&[0xb2; 34]));
                 out.push(0x05);
                 out
             }),
@@ -705,14 +654,14 @@ mod tests {
     #[test]
     fn failed_assertion_session_unchanged() {
         let mut runtime = restored("POLICY_FRESH");
-        run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32]));
+        run(&mut runtime, CC_POLICY_CP_HASH, &tpm2b(&[0x11; 32]));
         let before = session_of(&runtime, POLICY_SESSION_0).clone();
         for (code, extra) in [
-            (CC_POLICY_CP_HASH, sized(&[0x99; 32])),
-            (CC_POLICY_CP_HASH, sized(&[0x11; 20])),
-            (CC_POLICY_NAME_HASH, sized(&[0x22; 32])),
-            (CC_POLICY_TEMPLATE, sized(&[0x33; 32])),
-            (CC_POLICY_PARAMETERS, sized(&[0x44; 32])),
+            (CC_POLICY_CP_HASH, tpm2b(&[0x99; 32])),
+            (CC_POLICY_CP_HASH, tpm2b(&[0x11; 20])),
+            (CC_POLICY_NAME_HASH, tpm2b(&[0x22; 32])),
+            (CC_POLICY_TEMPLATE, tpm2b(&[0x33; 32])),
+            (CC_POLICY_PARAMETERS, tpm2b(&[0x44; 32])),
             (CC_POLICY_LOCALITY, vec![0x00]),
             (CC_POLICY_NV_WRITTEN, vec![0x02]),
             (CC_POLICY_PHYSICAL_PRESENCE, vec![0x00]),
@@ -732,7 +681,7 @@ mod tests {
     fn trial_session_identical_restrictions() {
         let mut runtime = restored("TRIAL_FRESH");
         assert_eq!(
-            run(&mut runtime, CC_POLICY_CP_HASH, &sized(&[0x11; 32])),
+            run(&mut runtime, CC_POLICY_CP_HASH, &tpm2b(&[0x11; 32])),
             vector("TRIAL_PCPH")
         );
         assert_eq!(digest(&mut runtime), vector("TRIAL_PGD_AFTER_CP_HASH"));
@@ -755,20 +704,17 @@ mod tests {
     #[test]
     fn parameter_mutation_panic_safety() {
         let valid = policy_command(CC_POLICY_DUPLICATION_SELECT, &{
-            let mut out = sized(&[0xa1; 34]);
-            out.extend_from_slice(&sized(&[0xb2; 34]));
+            let mut out = tpm2b(&[0xa1; 34]);
+            out.extend_from_slice(&tpm2b(&[0xb2; 34]));
             out.push(0x01);
             out
         });
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("POLICY_FRESH");
-                let _ = dispatch_bytes(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_PolicyDuplicationSelect",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = dispatch_bytes(&mut restored("POLICY_FRESH"), &bytes);
+            },
+        );
     }
 }

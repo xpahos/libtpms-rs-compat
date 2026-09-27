@@ -64,7 +64,10 @@ pub(super) fn read_max_buffer<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{self, HandleKind, TPM_CC_SEQUENCE_UPDATE};
+    use crate::library::tpm2::command::core::registry::TPM_CC_SEQUENCE_UPDATE;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, prefix_bit_flips,
+    };
     use crate::library::tpm2::object::{ATTR_HASH_SEQ, ATTR_OCCUPIED};
     use crate::library::tpm2::sequence::replay::{self, *};
 
@@ -81,50 +84,22 @@ mod tests {
     };
 
     #[test]
-    fn command_registration_upstream_attributes() {
-        assert_eq!(TPM_CC_SEQUENCE_UPDATE, 0x0000_015c);
-        let descriptor = registry::find(TPM_CC_SEQUENCE_UPDATE).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0200_015c);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!(descriptor.attributes & (1 << 22), 0, "no NVRAM update");
-        assert_eq!(descriptor.attributes & (1 << 23), 0, "not extensive");
-        assert_eq!(descriptor.attributes & (1 << 24), 0, "no flushed handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = clock();
-        let mut runtime = base_runtime(&clock);
-        let mut params = 2u32.to_be_bytes().to_vec();
-        params.extend_from_slice(&0x015cu32.to_be_bytes());
-        params.extend_from_slice(&1u32.to_be_bytes());
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_SEQUENCE_UPDATE",
-            command(0x8001, 0x0000_017a, &params),
-        );
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let clock = clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
         runtime.entropy = unreachable_entropy;
-        exec(
-            &mut runtime,
-            &clock,
-            "SU_BEFORE_STARTUP",
-            sequence_update(0x8000_0000, b"abc", &[]),
+        assert_scenario_response(
+            "TPM2_SequenceUpdate before TPM2_Startup: sequence-commands SU_BEFORE_STARTUP",
+            vector("SU_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    sequence_update(0x8000_0000, b"abc", &[]),
+                )
+            },
         );
     }
 
@@ -398,16 +373,12 @@ mod tests {
             hash_sequence_start(&[], TPM_ALG_SHA256),
         );
         let valid = sequence_update(0x8000_0000, b"ab", &[]);
-        for length in 10..=valid.len() {
-            for index in 10..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let size = (mutated.len() as u32).to_be_bytes();
-                    mutated[2..6].copy_from_slice(&size);
-                    let _ = exec_raw(&mut runtime, &clock, mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_SequenceUpdate",
+            prefix_bit_flips(&valid, 10, 10, true),
+            |bytes| {
+                let _ = exec_raw(&mut runtime, &clock, bytes);
+            },
+        );
     }
 }

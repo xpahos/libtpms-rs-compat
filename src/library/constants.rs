@@ -60,9 +60,6 @@ pub(in crate::library) const TPM_RC_INSUFFICIENT: TpmResult = 0x09a;
 pub(in crate::library) const TPM_RC_INTEGRITY: TpmResult = 0x09f;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_KEY: TpmResult = 0x09c;
-// TODO: Also return this from the upstream per-command physical-presence gate
-// once TPM2_PP_Commands can populate the pp-list bitmap; every command's list
-// bit is clear today, so that gate never fires.
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_PP: TpmResult = 0x090;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -93,8 +90,6 @@ pub(in crate::library) const TPM_RC_SEQUENCE: TpmResult = 0x103;
 pub(in crate::library) const TPM_RC_COMMAND_SIZE: TpmResult = 0x142;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_NV_RANGE: TpmResult = 0x146;
-// TODO: Returned by TPM2_NV_DefineSpace2 and the external-NV commands, which
-// the vendored v0.10 profile marks unsupported.
 #[allow(dead_code)]
 pub(in crate::library) const TPM_RC_NV_SIZE: TpmResult = 0x147;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
@@ -145,16 +140,12 @@ pub(in crate::library) const TPM_RC_SESSION_MEMORY: TpmResult = 0x903;
 pub(in crate::library) const TPM_RC_SESSION_HANDLES: TpmResult = 0x905;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_LOCALITY: TpmResult = 0x907;
-// TODO: Poll cancellation from the ECC sign-and-verify self test
-// (AlgorithmTests.c CHECK_CANCELED) once that primitive is ported.
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_CANCELED: TpmResult = 0x909;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_REFERENCE_H0: TpmResult = 0x910;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]
 pub(in crate::library) const TPM_RC_REFERENCE_S0: TpmResult = 0x918;
-// TODO: Returned by the upstream NV rate limiter; this port's platform layer
-// never reports NV as rate limited.
 #[allow(dead_code)]
 pub(in crate::library) const TPM_RC_NV_RATE: TpmResult = 0x920;
 #[cfg_attr(not(feature = "tpm2"), allow(dead_code))]

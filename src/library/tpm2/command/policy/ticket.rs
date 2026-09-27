@@ -473,15 +473,14 @@ pub(in crate::library::tpm2::command) fn execute_ticket(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, response_code, response_parameters,
+        RC_SUCCESS, TAIL_BYTES, command, dispatch_bytes, for_each_mutation, response_code,
+        response_parameters, tpm2b, truncated_tail_replacements,
     };
     use crate::library::tpm2::command::policy::session::test_support::{
-        CC_POLICY_GET_DIGEST, CC_POLICY_SECRET, CC_POLICY_SIGNED, CC_POLICY_TICKET,
-        POLICY_SESSION_0, restored, session_of,
+        CC_POLICY_SECRET, CC_POLICY_SIGNED, CC_POLICY_TICKET, POLICY_SESSION_0, digest, read_tpm2b,
+        restored, session_of, session_only,
     };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
     use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
@@ -489,21 +488,15 @@ mod tests {
 
     const SIGNING_KEY: u32 = 0x8000_0000;
 
-    fn sized(payload: &[u8]) -> Vec<u8> {
-        let mut out = (payload.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(payload);
-        out
-    }
-
     fn secret_parameters(
         nonce: &[u8],
         cp_hash: &[u8],
         policy_ref: &[u8],
         expiration: i32,
     ) -> Vec<u8> {
-        let mut out = sized(nonce);
-        out.extend_from_slice(&sized(cp_hash));
-        out.extend_from_slice(&sized(policy_ref));
+        let mut out = tpm2b(nonce);
+        out.extend_from_slice(&tpm2b(cp_hash));
+        out.extend_from_slice(&tpm2b(policy_ref));
         out.extend_from_slice(&(expiration as u32).to_be_bytes());
         out
     }
@@ -514,11 +507,6 @@ mod tests {
             runtime,
             &command(CC_POLICY_SECRET, &[auth, POLICY_SESSION_0], &[&[]], extra),
         )
-    }
-
-    #[track_caller]
-    fn session_only(runtime: &mut Tpm2Runtime, code: u32, extra: &[u8]) -> Vec<u8> {
-        dispatch_bytes(runtime, &command(code, &[POLICY_SESSION_0], &[], extra))
     }
 
     #[track_caller]
@@ -534,18 +522,6 @@ mod tests {
         )
     }
 
-    #[track_caller]
-    fn digest(runtime: &mut Tpm2Runtime) -> Vec<u8> {
-        session_only(runtime, CC_POLICY_GET_DIGEST, &[])
-    }
-
-    fn read_tpm2b(data: &[u8], offset: usize) -> (&[u8], usize) {
-        let size = usize::from(u16::from_be_bytes(
-            data[offset..offset + 2].try_into().expect("a size prefix"),
-        ));
-        (&data[offset + 2..offset + 2 + size], offset + 2 + size)
-    }
-
     fn produced_timeout_and_ticket() -> (Vec<u8>, Vec<u8>) {
         let parameters = response_parameters(vector("PSEC_TICKET_FOR_REUSE"));
         let (timeout, offset) = read_tpm2b(&parameters, 0);
@@ -559,66 +535,21 @@ mod tests {
         auth_name: &[u8],
         ticket: &[u8],
     ) -> Vec<u8> {
-        let mut out = sized(timeout);
-        out.extend_from_slice(&sized(cp_hash));
-        out.extend_from_slice(&sized(policy_ref));
-        out.extend_from_slice(&sized(auth_name));
+        let mut out = tpm2b(timeout);
+        out.extend_from_slice(&tpm2b(cp_hash));
+        out.extend_from_slice(&tpm2b(policy_ref));
+        out.extend_from_slice(&tpm2b(auth_name));
         out.extend_from_slice(ticket);
         out
     }
 
     fn signed_parameters(expiration: i32, signature: &[u8]) -> Vec<u8> {
-        let mut out = sized(&[]);
-        out.extend_from_slice(&sized(&[]));
-        out.extend_from_slice(&sized(&[]));
+        let mut out = tpm2b(&[]);
+        out.extend_from_slice(&tpm2b(&[]));
+        out.extend_from_slice(&tpm2b(&[]));
         out.extend_from_slice(&(expiration as u32).to_be_bytes());
         out.extend_from_slice(signature);
         out
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (code, record, expected, handles, encrypt) in [
-            (
-                CC_POLICY_SECRET,
-                "CCATTR_0151",
-                0x0400_0151u32,
-                2usize,
-                2u16,
-            ),
-            (CC_POLICY_SIGNED, "CCATTR_0160", 0x0400_0160, 2, 2),
-            (CC_POLICY_TICKET, "CCATTR_0172", 0x0200_0172, 1, 0),
-        ] {
-            let oracle = vector(record);
-            let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "{record}");
-            assert_eq!(descriptor.attributes, expected, "{record}");
-            assert_eq!(descriptor.handles.len(), handles, "{record}");
-            assert_eq!(descriptor.decrypt_size, 2, "{record}");
-            assert_eq!(descriptor.encrypt_size, encrypt, "{record}");
-            assert!(descriptor.sessions_allowed, "{record}");
-            assert!(!descriptor.physical_presence, "{record}");
-            assert!(
-                matches!(descriptor.nv_access, NvAccess::Neither),
-                "{record}"
-            );
-            assert!(
-                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
-                "{record}"
-            );
-            assert!(matches!(
-                descriptor.handles.last().expect("a handle").kind,
-                HandleKind::PolicySession
-            ));
-        }
-        let secret = find(CC_POLICY_SECRET).expect("a registered command");
-        assert!(matches!(secret.handles[0].kind, HandleKind::Entity));
-        assert!(secret.handles[0].user_auth);
-        assert!(!secret.handles[0].admin_role());
-        let signed = find(CC_POLICY_SIGNED).expect("a registered command");
-        assert!(matches!(signed.handles[0].kind, HandleKind::Object));
-        assert!(!signed.handles[0].user_auth);
     }
 
     #[test]
@@ -768,7 +699,7 @@ mod tests {
         let mut runtime = restored("TRIAL_FRESH");
         let mut ticket = 0x8023u16.to_be_bytes().to_vec();
         ticket.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
-        ticket.extend_from_slice(&sized(&[0x00; 64]));
+        ticket.extend_from_slice(&tpm2b(&[0x00; 64]));
         assert_eq!(
             session_only(
                 &mut runtime,
@@ -872,7 +803,7 @@ mod tests {
         let mut runtime = restored("POLICY_FRESH");
         let mut ticket = 0x8023u16.to_be_bytes().to_vec();
         ticket.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
-        ticket.extend_from_slice(&sized(&[0x00; 64]));
+        ticket.extend_from_slice(&tpm2b(&[0x00; 64]));
         assert_eq!(
             session_only(
                 &mut runtime,
@@ -884,7 +815,7 @@ mod tests {
 
         let mut bad_tag = 0x8024u16.to_be_bytes().to_vec();
         bad_tag.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
-        bad_tag.extend_from_slice(&sized(&[0x00; 64]));
+        bad_tag.extend_from_slice(&tpm2b(&[0x00; 64]));
         assert_eq!(
             session_only(
                 &mut runtime,
@@ -896,7 +827,7 @@ mod tests {
 
         let mut bad_hierarchy = 0x8023u16.to_be_bytes().to_vec();
         bad_hierarchy.extend_from_slice(&0x4000_000au32.to_be_bytes());
-        bad_hierarchy.extend_from_slice(&sized(&[0x00; 64]));
+        bad_hierarchy.extend_from_slice(&tpm2b(&[0x00; 64]));
         assert_eq!(
             session_only(
                 &mut runtime,
@@ -947,7 +878,7 @@ mod tests {
         let mut runtime = restored("SIGNED_READY");
         let mut wrong = 0x0014u16.to_be_bytes().to_vec();
         wrong.extend_from_slice(&0x000bu16.to_be_bytes());
-        wrong.extend_from_slice(&sized(&[0x00; 256]));
+        wrong.extend_from_slice(&tpm2b(&[0x00; 256]));
         assert_eq!(
             signed(&mut runtime, &signed_parameters(0, &wrong)),
             vector("PSIGN_WRONG_SIGNATURE")
@@ -959,8 +890,8 @@ mod tests {
         ] {
             let mut ecc = selector.to_be_bytes().to_vec();
             ecc.extend_from_slice(&0x000bu16.to_be_bytes());
-            ecc.extend_from_slice(&sized(&[0x00; 32]));
-            ecc.extend_from_slice(&sized(&[0x00; 32]));
+            ecc.extend_from_slice(&tpm2b(&[0x00; 32]));
+            ecc.extend_from_slice(&tpm2b(&[0x00; 32]));
             assert_eq!(
                 signed(&mut runtime, &signed_parameters(0, &ecc)),
                 vector(record),
@@ -1012,15 +943,12 @@ mod tests {
             &[&[]],
             &secret_parameters(&[], &[0x11; 32], &[0xaa], -5),
         );
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("POLICY_FRESH");
-                let _ = dispatch_bytes(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_PolicySecret",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = dispatch_bytes(&mut restored("POLICY_FRESH"), &bytes);
+            },
+        );
     }
 }

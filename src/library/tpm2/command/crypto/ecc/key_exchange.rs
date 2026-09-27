@@ -233,37 +233,19 @@ pub(in crate::library::tpm2::command) fn execute_two_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        AuthRole, CommandLifecycle, HandleKind, NvAccess, TPM_CC_ECDH_KEY_GEN, TPM_CC_ECDH_ZGEN,
-        TPM_CC_ZGEN_2_PHASE, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{dispatch_bytes, response_parameters};
     use crate::library::tpm2::command::crypto::ecc::key::test_support::{
-        ATTR_DECRYPT, ATTR_SIGN, CC_EC_EPHEMERAL, CC_ECDH_KEYGEN, CC_ECDH_ZGEN, CC_ZGEN_2PHASE,
-        CURVE_P256, H0, KDF_NULL, KEY_AUTH, KEYED_AUTH, PRIVATE_SCALAR, SCHEME_ECDH, SCHEME_ECMQV,
-        SCHEME_NULL, cmd, ecc_private, ecc_public, expect, framed, generator_multiple,
-        keyed_object, load_external, off_curve_point, point2b, public_point, pw, raw_point2b,
-        ready_with, restored,
+        ATTR_DECRYPT, CC_EC_EPHEMERAL, CC_ECDH_KEYGEN, CC_ECDH_ZGEN, CC_ZGEN_2PHASE, CURVE_P256,
+        H0, KDF_NULL, KEY_AUTH, KEYED_AUTH, PRIVATE_SCALAR, SCHEME_ECDH, SCHEME_ECMQV, cmd,
+        decrypt_key, ecc_private, ecc_public, expect, framed, generator_multiple, keyed_object,
+        load_external, off_curve_point, point2b, public_point, pw, raw_point2b, ready_with,
+        restored, sign_key,
     };
     use crate::library::tpm2::ecc::point_is_on_curve;
     use crate::library::tpm2::golden_responses::ecc_commands::vector;
 
     const TPM_RH_OWNER: u32 = 0x4000_0001;
-
-    fn decrypt_key(auth: &[u8]) -> Vec<u8> {
-        let point = public_point();
-        load_external(
-            &ecc_private(&PRIVATE_SCALAR, auth),
-            &ecc_public(
-                ATTR_DECRYPT,
-                &SCHEME_NULL,
-                CURVE_P256,
-                &KDF_NULL,
-                &point.x,
-                &point.y,
-            ),
-        )
-    }
 
     fn scheme_key(scheme: &[u8]) -> Vec<u8> {
         let point = public_point();
@@ -272,21 +254,6 @@ mod tests {
             &ecc_public(
                 ATTR_DECRYPT,
                 scheme,
-                CURVE_P256,
-                &KDF_NULL,
-                &point.x,
-                &point.y,
-            ),
-        )
-    }
-
-    fn sign_key() -> Vec<u8> {
-        let point = public_point();
-        load_external(
-            &ecc_private(&PRIVATE_SCALAR, &[]),
-            &ecc_public(
-                ATTR_SIGN,
-                &SCHEME_NULL,
                 CURVE_P256,
                 &KDF_NULL,
                 &point.x,
@@ -305,33 +272,6 @@ mod tests {
         parameters.extend_from_slice(&scheme.to_be_bytes());
         parameters.extend_from_slice(&counter.to_be_bytes());
         cmd(CC_ZGEN_2PHASE, &[H0], Some(&pw(auth)), &parameters)
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let zgen = find(TPM_CC_ECDH_ZGEN).expect("TPM2_ECDH_ZGen is registered");
-        assert_eq!(zgen.attributes, 0x0200_0154);
-        assert_eq!((zgen.decrypt_size, zgen.encrypt_size), (2, 2));
-        assert_eq!(zgen.handles.len(), 1);
-        assert!(zgen.handles[0].user_auth);
-        assert!(matches!(zgen.handles[0].kind, HandleKind::Object));
-        assert!(zgen.handles[0].role == AuthRole::User);
-        assert!(matches!(zgen.lifecycle, CommandLifecycle::RequiresStarted));
-        assert!(matches!(zgen.nv_access, NvAccess::Neither));
-
-        let key_gen = find(TPM_CC_ECDH_KEY_GEN).expect("TPM2_ECDH_KeyGen is registered");
-        assert_eq!(key_gen.attributes, 0x0200_0163);
-        assert_eq!((key_gen.decrypt_size, key_gen.encrypt_size), (0, 2));
-        assert_eq!(key_gen.handles.len(), 1);
-        assert!(
-            !key_gen.handles[0].user_auth,
-            "the reference does not set HANDLE_1_USER"
-        );
-
-        let two_phase = find(TPM_CC_ZGEN_2_PHASE).expect("TPM2_ZGen_2Phase is registered");
-        assert_eq!(two_phase.attributes, 0x0200_018d);
-        assert_eq!((two_phase.decrypt_size, two_phase.encrypt_size), (2, 2));
-        assert!(two_phase.handles[0].user_auth);
     }
 
     #[test]

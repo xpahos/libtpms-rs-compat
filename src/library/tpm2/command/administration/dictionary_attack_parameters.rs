@@ -28,8 +28,6 @@ pub(in crate::library::tpm2::command) fn execute(
         return Err(TPM_RC_NV_UNAVAILABLE);
     }
 
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
     let backup = (
         state.persistent.max_tries,
@@ -79,16 +77,19 @@ fn parse_parameters(parameters: &[u8]) -> Result<Parameters, TpmResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::CommandInput;
-    use crate::library::cancel::CancellationToken;
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::parse_command;
+
     use crate::library::tpm2::command::core::registry::TPM_CC_DICTIONARY_ATTACK_PARAMETERS;
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, manufactured_runtime_with, response_code, start,
+    };
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::hierarchy::{TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RS_PW};
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::persistent::OwnedSecret;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x71>;
 
     const RC_SUCCESS: u32 = 0x000;
     const RC_SIZE: u32 = 0x095;
@@ -101,37 +102,10 @@ mod tests {
     const RC_SESSION1_AUTH_FAIL: u32 = 0x98e;
     const RC_LOCKOUT: u32 = 0x921;
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x71;
-        }
-        Ok(())
-    }
-
     fn started_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        let bytes = vec![
-            0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0, 0,
-        ];
-        assert_eq!(dispatch_bytes(&mut runtime, &bytes)[6..], [0, 0, 0, 0]);
-        runtime.nv_update_pending = false;
+        let mut runtime = manufactured_runtime_with(None, ENTROPY);
+        start(&mut runtime);
         runtime
-    }
-
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        let response = dispatch(runtime, &parsed, CancellationToken::disabled());
-        crate::library::tpm2::command::core::header::serialize_response(&response)
-            .expect("the response serializes")
-    }
-
-    fn response_code(response: &[u8]) -> u32 {
-        u32::from_be_bytes(response[6..10].try_into().expect("four bytes"))
     }
 
     fn command(handle: u32, password: &[u8], params: &[u8]) -> Vec<u8> {
@@ -315,12 +289,16 @@ mod tests {
     #[test]
     fn pre_startup_execution_rejection() {
         let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
         let response = dispatch_bytes(
             &mut runtime,
             &command(TPM_RH_LOCKOUT, &[], &parameters(9, 8, 7)),
         );
-        assert_eq!(response_code(&response), 0x100);
+        assert_eq!(
+            response_code(&response),
+            0x100,
+            "TPM2_DictionaryAttackParameters before TPM2_Startup"
+        );
     }
 }

@@ -199,14 +199,13 @@ pub(in crate::library::tpm2::command) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, response_code,
+        RC_SUCCESS, TAIL_BYTES, command, dispatch_bytes, for_each_mutation, response_code,
+        truncated_tail_replacements,
     };
     use crate::library::tpm2::command::policy::session::test_support::{
-        CC_POLICY_GET_DIGEST, CC_POLICY_PCR, POLICY_SESSION_0, restored, session_of,
+        CC_POLICY_PCR, POLICY_SESSION_0, digest, restored, session_of,
     };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
 
@@ -239,41 +238,12 @@ mod tests {
         )
     }
 
-    #[track_caller]
-    fn digest(runtime: &mut Tpm2Runtime) -> Vec<u8> {
-        dispatch_bytes(
-            runtime,
-            &command(CC_POLICY_GET_DIGEST, &[POLICY_SESSION_0], &[], &[]),
-        )
-    }
-
     fn pcr0_sha256_digest() -> Vec<u8> {
         let read = vector("PCR_READ_SHA256_PCR0");
         let value = &read[read.len() - 32..];
         let mut hasher = crate::library::tpm2::crypto::Hasher::new(ALG_SHA256).expect("sha256");
         hasher.update(value);
         hasher.finalize()
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let oracle = vector("CCATTR_017F");
-        let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
-        let descriptor = find(CC_POLICY_PCR).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0200_017f);
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::PolicySession
-        ));
-        assert!(!descriptor.handles[0].user_auth);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
     }
 
     #[test]
@@ -544,15 +514,12 @@ mod tests {
             &[],
             &parameters(&[], &[(ALG_SHA256, &SELECT_PCR0)]),
         );
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("POLICY_FRESH");
-                let _ = dispatch_bytes(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_PolicyPCR",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = dispatch_bytes(&mut restored("POLICY_FRESH"), &bytes);
+            },
+        );
     }
 }

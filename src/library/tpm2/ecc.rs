@@ -489,6 +489,7 @@ mod tests {
         TPM_ALG_KDF1_SP800_56A, TPM_ALG_NULL, TPM_ALG_SHA256, TPM_ALG_SHA384,
     };
     use crate::library::tpm2::crypto::{curve_key_size_bits, is_compiled_curve};
+    use crate::library::tpm2::test_support::tpm2b;
 
     const P256: u16 = 0x0003;
     const P384: u16 = 0x0004;
@@ -497,12 +498,6 @@ mod tests {
     const BN638: u16 = 0x0011;
     const SM2P256: u16 = 0x0020;
     const ALL_CURVES: [u16; 8] = [0x0001, 0x0002, P256, P384, P521, BN256, BN638, SM2P256];
-
-    fn tpm2b(bytes: &[u8]) -> Vec<u8> {
-        let mut out = (bytes.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(bytes);
-        out
-    }
 
     fn point_bytes(x: &[u8], y: &[u8]) -> Vec<u8> {
         let mut inner = tpm2b(x);

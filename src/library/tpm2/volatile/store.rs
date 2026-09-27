@@ -368,7 +368,7 @@ mod tests {
     use crate::library::tpm2::object::ATTR_OCCUPIED;
     use crate::library::tpm2::persistent::ProfileField;
     use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedPcrBank};
-    use crate::library::tpm2::profile::{validate_profile, validate_user_profile};
+    use crate::library::tpm2::profile::validate_profile;
     use crate::library::tpm2::public::StateFormatLimit;
     use crate::library::tpm2::runtime::{commit_manufactured_state, merge_volatile_state};
     use crate::library::tpm2::volatile::DecodedVolatileState;
@@ -414,22 +414,12 @@ mod tests {
         .expect("the synthetic fixture materializes")
     }
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x71;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0x71>;
 
     fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
+        crate::library::tpm2::test_support::manufactured_runtime_with(None, ENTROPY)
     }
-
     fn runtime_seed_tie(runtime: &Tpm2Runtime) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let persistent = &runtime.state().persistent;
         (
@@ -801,7 +791,7 @@ mod tests {
             br#"{"Name":"default-v1","StateFormatLevel":7}"#,
         ))
         .expect("the level-7 profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let runtime = commit_manufactured_state(state).expect("commits");
         let snapshot = capture_volatile_state(&runtime, &host_clock()).unwrap();
         assert_eq!(snapshot.object_version, CURRENT_OBJECT_VERSION);

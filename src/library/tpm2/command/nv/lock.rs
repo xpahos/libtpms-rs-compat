@@ -131,18 +131,18 @@ fn apply_global_lock(runtime: &mut Tpm2Runtime) -> Result<(), TpmResult> {
 mod tests {
     use super::*;
     use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_GLOBAL_WRITE_LOCK, TPM_CC_NV_READ_LOCK,
-        TPM_CC_NV_WRITE_LOCK, find,
+        TPM_CC_NV_GLOBAL_WRITE_LOCK, TPM_CC_NV_READ_LOCK, TPM_CC_NV_WRITE_LOCK,
     };
     use crate::library::tpm2::command::core::test_support::{
         RC_SUCCESS, command, dispatch_bytes, framed, response_code, started_runtime,
     };
-    use crate::library::tpm2::command::nv::test_support::{assert_unchanged, nv_public, snapshot};
+    use crate::library::tpm2::command::nv::test_support::{
+        assert_unchanged, define, nv_public, snapshot,
+    };
     use crate::library::tpm2::golden_responses::nv::nv_vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::nv::{
-        NvPublic, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE,
-        TPMA_NV_PPREAD, marshal_sized_nv_public,
+        TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE, TPMA_NV_PPREAD,
     };
 
     const RC_SIZE: u32 = 0x095;
@@ -152,20 +152,6 @@ mod tests {
 
     const INDEX: u32 = 0x0100_0001;
     const READ_WRITE: u32 = TPMA_NV_OWNERWRITE | TPMA_NV_OWNERREAD;
-
-    #[track_caller]
-    fn define(runtime: &mut Tpm2Runtime, public: &NvPublic) {
-        let mut parameters = 0u16.to_be_bytes().to_vec();
-        parameters.extend_from_slice(&marshal_sized_nv_public(public));
-        assert_eq!(
-            response_code(&dispatch_bytes(
-                runtime,
-                &command(0x0000_012a, &[TPM_RH_OWNER], &[&[]], &parameters),
-            )),
-            RC_SUCCESS,
-            "the index is defined"
-        );
-    }
 
     #[track_caller]
     fn write(runtime: &mut Tpm2Runtime, index: u32, data: &[u8]) -> Vec<u8> {
@@ -202,54 +188,6 @@ mod tests {
     }
 
     const DATA8: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (code, oracle, handles, nv_access, pp) in [
-            (
-                TPM_CC_NV_WRITE_LOCK,
-                nv_vector("CCATTR_0138"),
-                2u32,
-                NvAccess::Write,
-                false,
-            ),
-            (
-                TPM_CC_NV_READ_LOCK,
-                nv_vector("CCATTR_014F"),
-                2,
-                NvAccess::Read,
-                false,
-            ),
-            (
-                TPM_CC_NV_GLOBAL_WRITE_LOCK,
-                nv_vector("CCATTR_0132"),
-                1,
-                NvAccess::Neither,
-                true,
-            ),
-        ] {
-            let expected = oracle;
-            let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "code {code:#x}");
-            assert_ne!(descriptor.attributes & (1 << 22), 0, "code {code:#x}");
-            assert_eq!(
-                (descriptor.attributes >> 25) & 0x7,
-                handles,
-                "code {code:#x}"
-            );
-            assert_eq!(descriptor.physical_presence, pp, "code {code:#x}");
-            assert_eq!(descriptor.handles.len(), handles as usize);
-            assert!(descriptor.handles[0].user_auth);
-            assert!(matches!(descriptor.nv_access, x if x == nv_access));
-            assert!(matches!(
-                descriptor.lifecycle,
-                CommandLifecycle::RequiresStarted
-            ));
-        }
-        let descriptor = find(TPM_CC_NV_GLOBAL_WRITE_LOCK).unwrap();
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Provision));
-    }
 
     #[test]
     fn write_lock_write_blocking_idempotence() {

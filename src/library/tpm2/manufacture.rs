@@ -180,13 +180,8 @@ mod tests {
     use crate::library::constants::TPM_FAIL;
     use std::sync::Mutex;
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0xa5;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0xa5>;
 
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         Err(TPM_FAIL)
@@ -196,14 +191,14 @@ mod tests {
         if buffer.is_empty() {
             return Err(TPM_FAIL);
         }
-        deterministic_entropy(buffer)
+        ENTROPY(buffer)
     }
 
     static ENTROPY_REQUESTS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
     fn recording_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
         ENTROPY_REQUESTS.lock().unwrap().push(buffer.len());
-        deterministic_entropy(buffer)
+        ENTROPY(buffer)
     }
 
     fn null_profile() -> ValidatedProfile {
@@ -227,8 +222,7 @@ mod tests {
     #[test]
     fn secrets_and_drbg_state_oracle_parity() {
         let record = vector_record(false);
-        let state =
-            manufacture_state(null_profile(), deterministic_entropy).expect("manufacture succeeds");
+        let state = manufacture_state(null_profile(), ENTROPY).expect("manufacture succeeds");
         let persistent = &state.persistent;
         for (secret, expected) in [
             (persistent.ep_seed.expose(), &record.ep_seed),
@@ -254,8 +248,7 @@ mod tests {
     fn commit_nonce_draw_pre_hierarchy_drbg_advance() {
         let record = vector_record(false);
         assert_ne!(record.ep_seed, record.commit_nonce);
-        let state =
-            manufacture_state(null_profile(), deterministic_entropy).expect("manufacture succeeds");
+        let state = manufacture_state(null_profile(), ENTROPY).expect("manufacture succeeds");
         assert_eq!(state.persistent.ep_seed.expose(), record.ep_seed);
         assert_ne!(state.persistent.ep_seed.expose(), record.commit_nonce);
     }
@@ -263,8 +256,8 @@ mod tests {
     #[test]
     fn continuous_test_profile_oracle_last_value_preservation() {
         let record = vector_record(true);
-        let state = manufacture_state(continuous_test_profile(), deterministic_entropy)
-            .expect("manufacture succeeds");
+        let state =
+            manufacture_state(continuous_test_profile(), ENTROPY).expect("manufacture succeeds");
         assert_eq!(state.persistent.ep_seed.expose(), record.ep_seed);
         let drbg = &state.orderly.drbg_state;
         assert_eq!(drbg.seed.expose(), record.final_seed);
@@ -290,14 +283,13 @@ mod tests {
                 .unwrap_err(),
             TPM_FAIL
         );
-        manufacture_state(null_profile(), deterministic_entropy).expect("a later attempt succeeds");
+        manufacture_state(null_profile(), ENTROPY).expect("a later attempt succeeds");
     }
 
     #[test]
     fn manufactured_debug_output_secret_byte_absence() {
         let record = vector_record(false);
-        let state =
-            manufacture_state(null_profile(), deterministic_entropy).expect("manufacture succeeds");
+        let state = manufacture_state(null_profile(), ENTROPY).expect("manufacture succeeds");
         let formatted = format!("{state:?}");
         for (label, secret) in [
             ("EPSeed", &record.ep_seed[..4]),

@@ -285,18 +285,7 @@ pub(in crate::library::tpm2) fn sym_cfb_decrypt(
 mod tests {
     use super::*;
     use crate::library::tpm2::algorithm::TPM_ALG_NULL;
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-
-    fn unhex(text: &str) -> Vec<u8> {
-        let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).expect("hexadecimal"))
-            .collect()
-    }
+    use crate::library::tpm2::test_support::{hex, hex_string};
 
     fn pattern(length: usize, base: u8) -> Vec<u8> {
         (0..length)
@@ -359,7 +348,7 @@ mod tests {
 
     #[test]
     fn nist_sp800_38a_aes_vector_match() {
-        let plaintext = unhex(NIST_PLAINTEXT);
+        let plaintext = hex(NIST_PLAINTEXT);
         let cases: [(&str, u16, &str, &str); 12] = [
             (
                 NIST_KEY_128,
@@ -447,21 +436,21 @@ mod tests {
             ),
         ];
         for (key, mode, iv, expected) in cases {
-            let expected = unhex(expected);
+            let expected = hex(expected);
             let (cipher_text, _) = run(
                 TPM_ALG_AES,
-                &unhex(key),
+                &hex(key),
                 mode,
-                &unhex(iv),
+                &hex(iv),
                 SymDirection::Encrypt,
                 &plaintext,
             );
             assert_eq!(cipher_text, expected, "mode {mode:#06x} key {key}");
             let (plain, _) = run(
                 TPM_ALG_AES,
-                &unhex(key),
+                &hex(key),
                 mode,
-                &unhex(iv),
+                &hex(iv),
                 SymDirection::Decrypt,
                 &cipher_text,
             );
@@ -637,7 +626,7 @@ mod tests {
                 &plaintext,
             );
             assert_eq!(
-                hex(&cipher_text),
+                hex_string(&cipher_text),
                 expected,
                 "alg {algorithm:#06x} mode {mode:#06x} key {key_len}"
             );
@@ -657,7 +646,7 @@ mod tests {
         let mut data = pattern(32, 0x30);
         sym_cfb_encrypt(TPM_ALG_AES, &key[..16], &iv16, &mut data).expect("encrypts");
         assert_eq!(
-            hex(&data),
+            hex_string(&data),
             "f9209121d841aa98f3cbafb5d8682c142d66f6cbbc020e1626de56bde274be27"
         );
     }

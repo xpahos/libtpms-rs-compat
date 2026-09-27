@@ -234,15 +234,14 @@ fn capability_is_defined(capability: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, response_code,
+        RC_SUCCESS, TAIL_BYTES, command, dispatch_bytes, for_each_mutation, response_code,
+        truncated_tail_replacements,
     };
     use crate::library::tpm2::command::policy::session::test_support::{
-        CC_POLICY_CAPABILITY, CC_POLICY_COUNTER_TIMER, CC_POLICY_GET_DIGEST, CC_POLICY_NV,
-        POLICY_SESSION_0, restored, session_of,
+        CC_POLICY_CAPABILITY, CC_POLICY_COUNTER_TIMER, CC_POLICY_NV, POLICY_SESSION_0, digest,
+        restored, session_of, session_only,
     };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
     use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
@@ -281,56 +280,6 @@ mod tests {
                 extra,
             ),
         )
-    }
-
-    #[track_caller]
-    fn session_only(runtime: &mut Tpm2Runtime, code: u32, extra: &[u8]) -> Vec<u8> {
-        dispatch_bytes(runtime, &command(code, &[POLICY_SESSION_0], &[], extra))
-    }
-
-    #[track_caller]
-    fn digest(runtime: &mut Tpm2Runtime) -> Vec<u8> {
-        session_only(runtime, CC_POLICY_GET_DIGEST, &[])
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (code, record, expected, handles) in [
-            (CC_POLICY_NV, "CCATTR_0149", 0x0600_0149u32, 3usize),
-            (CC_POLICY_COUNTER_TIMER, "CCATTR_016D", 0x0200_016d, 1),
-            (CC_POLICY_CAPABILITY, "CCATTR_019B", 0x0200_019b, 1),
-        ] {
-            let oracle = vector(record);
-            let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "{record}");
-            assert_eq!(descriptor.attributes, expected, "{record}");
-            assert_eq!(descriptor.handles.len(), handles, "{record}");
-            assert_eq!(descriptor.decrypt_size, 2, "{record}");
-            assert_eq!(descriptor.encrypt_size, 0, "{record}");
-            assert!(descriptor.sessions_allowed, "{record}");
-            assert!(!descriptor.physical_presence, "{record}");
-            assert!(
-                matches!(descriptor.nv_access, NvAccess::Neither),
-                "{record}"
-            );
-            assert!(
-                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
-                "{record}"
-            );
-            let policy_handle = descriptor.handles.last().expect("a policy session handle");
-            assert!(
-                matches!(policy_handle.kind, HandleKind::PolicySession),
-                "{record}"
-            );
-            assert!(!policy_handle.user_auth, "{record}");
-        }
-        let policy_nv = find(CC_POLICY_NV).expect("a registered command");
-        assert!(matches!(policy_nv.handles[0].kind, HandleKind::NvAuth));
-        assert!(policy_nv.handles[0].user_auth);
-        assert!(!policy_nv.handles[0].admin_role());
-        assert!(matches!(policy_nv.handles[1].kind, HandleKind::NvIndex));
-        assert!(!policy_nv.handles[1].user_auth);
     }
 
     #[test]
@@ -703,15 +652,12 @@ mod tests {
             &[&[]],
             &operand(&[0x00, 0x00, 0x00, 0x2a], 0, 0x0000),
         );
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("OPERAND_NV");
-                let _ = dispatch_bytes(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_PolicyNV",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = dispatch_bytes(&mut restored("OPERAND_NV"), &bytes);
+            },
+        );
     }
 }

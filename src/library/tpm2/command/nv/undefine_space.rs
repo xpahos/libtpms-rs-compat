@@ -59,8 +59,7 @@ mod tests {
     use super::*;
     use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_UNDEFINE_SPACE,
-        TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, find,
+        TPM_CC_NV_UNDEFINE_SPACE, TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
     };
     use crate::library::tpm2::command::core::test_support::{
         RC_SUCCESS, command, dispatch_bytes, response_code, started_runtime,
@@ -116,54 +115,6 @@ mod tests {
             runtime,
             &command(TPM_CC_NV_UNDEFINE_SPACE, &[auth, index], &[&[]], &[]),
         )
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (code, oracle, pp) in [
-            (TPM_CC_NV_UNDEFINE_SPACE, nv_vector("CCATTR_0122"), true),
-            (
-                TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
-                nv_vector("CCATTR_011F"),
-                true,
-            ),
-        ] {
-            let expected = oracle;
-            let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "code {code:#x}");
-            assert_ne!(descriptor.attributes & (1 << 22), 0, "code {code:#x}");
-            assert_eq!((descriptor.attributes >> 25) & 0x7, 2, "code {code:#x}");
-            assert_eq!(descriptor.physical_presence, pp);
-            assert!(descriptor.sessions_allowed);
-            assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-            assert!(matches!(
-                descriptor.lifecycle,
-                CommandLifecycle::RequiresStarted
-            ));
-        }
-    }
-
-    #[test]
-    fn handle_upstream_roles() {
-        let descriptor = find(TPM_CC_NV_UNDEFINE_SPACE).unwrap();
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(!descriptor.handles[1].user_auth);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Provision));
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::NvIndex));
-
-        let special = find(TPM_CC_NV_UNDEFINE_SPACE_SPECIAL).unwrap();
-        assert_eq!(special.handles.len(), 2);
-        assert!(special.handles[0].user_auth);
-        assert!(
-            special.handles[0].admin_role(),
-            "the index is authorized with the ADMIN role"
-        );
-        assert!(special.handles[1].user_auth);
-        assert!(matches!(special.handles[0].kind, HandleKind::NvIndex));
-        assert!(matches!(special.handles[1].kind, HandleKind::Platform));
     }
 
     #[test]

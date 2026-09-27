@@ -1,18 +1,21 @@
 use crate::library::CommandInput;
 use crate::library::cancel::CancellationToken;
 use crate::library::tpm2::clock::SteppingClock;
-pub(super) use crate::library::tpm2::command::core::test_support::{command, framed};
+use crate::library::tpm2::command::core::test_support::tpm2b;
+pub(super) use crate::library::tpm2::command::core::test_support::{
+    command, framed, get_capability, shutdown, startup,
+};
+pub(super) use crate::library::tpm2::command::core::test_support::{occupied_slots, reload};
+pub(super) use crate::library::tpm2::command::nv::test_support::nvram_handles;
+use crate::library::tpm2::crypto::EntropySource;
 use crate::library::tpm2::crypto::Hasher;
 use crate::library::tpm2::golden_responses::hierarchy_management::vector;
 use crate::library::tpm2::hierarchy::TPM_RH_LOCKOUT;
 use crate::library::tpm2::nv::build_nv_image;
-use crate::library::tpm2::object::ATTR_OCCUPIED;
-use crate::library::tpm2::persistent::{
-    OwnedPersistentState, OwnedSecret, OwnedUserNvramEntry, PersistentAllEnvelope,
-    materialize_persistent_state, persistent_all_store,
-};
+use crate::library::tpm2::persistent::{OwnedSecret, persistent_all_store};
 use crate::library::tpm2::process::process;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::library::tpm2::test_support::counter_entropy;
 use crate::library::tpm2::{attach_volatile_blob_for_replay, restore_permanent_blob_for_test};
 use crate::types::TpmResult;
 pub(super) const TPM_ALG_NULL: u16 = 0x0010;
@@ -152,30 +155,6 @@ pub(super) fn enables(runtime: &Tpm2Runtime) -> Enables {
     }
 }
 
-pub(super) fn nvram_handles(runtime: &Tpm2Runtime) -> Vec<u32> {
-    runtime
-        .state()
-        .user_nvram
-        .entries
-        .iter()
-        .map(|entry| match entry {
-            OwnedUserNvramEntry::NvIndex { handle, .. }
-            | OwnedUserNvramEntry::Persistent { handle, .. } => *handle,
-        })
-        .collect()
-}
-
-pub(super) fn occupied_slots(runtime: &Tpm2Runtime) -> Vec<usize> {
-    runtime
-        .live
-        .objects
-        .iter()
-        .enumerate()
-        .filter(|(_, object)| object.attributes & ATTR_OCCUPIED != 0)
-        .map(|(slot, _)| slot)
-        .collect()
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct Counters {
     pub(in crate::library::tpm2::command) reset_count: u32,
@@ -249,15 +228,6 @@ pub(super) fn assert_unchanged(runtime: &Tpm2Runtime, before: &Snapshot) {
 }
 
 #[track_caller]
-pub(super) fn reload(state: &OwnedPersistentState) -> OwnedPersistentState {
-    let blob = persistent_all_store(state).expect("the state serializes");
-    let envelope = PersistentAllEnvelope::parse(&blob).expect("the envelope parses");
-    let decoded =
-        crate::library::tpm2::parse_persistent_all_payload(&envelope).expect("the payload parses");
-    materialize_persistent_state(decoded).expect("the payload materializes")
-}
-
-#[track_caller]
 pub(super) fn assert_nv_image_is_current(runtime: &Tpm2Runtime) {
     assert_eq!(
         runtime.nv_memory,
@@ -278,13 +248,10 @@ pub(super) const TPM_CC_SET_PRIMARY_POLICY: u32 = 0x0000_012e;
 pub(super) const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub(super) const TPM_CC_DA_LOCK_RESET: u32 = 0x0000_0139;
 pub(super) const TPM_CC_DA_PARAMETERS: u32 = 0x0000_013a;
-pub(super) const TPM_CC_STARTUP: u32 = 0x0000_0144;
-pub(super) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
 pub(super) const TPM_CC_NV_READ: u32 = 0x0000_014e;
 pub(super) const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub(super) const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 pub(super) const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
-pub(super) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(super) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 
 pub(super) const TRANSIENT_FIRST: u32 = 0x8000_0000;
@@ -305,12 +272,6 @@ const AES_PRIMARY_PUBLIC: [u8; 18] = [
     0x00, 0x25, 0x00, 0x0b, 0x00, 0x03, 0x00, 0x72, 0x00, 0x00, 0x00, 0x06, 0x00, 0x80, 0x00, 0x43,
     0x00, 0x00,
 ];
-
-fn tpm2b(payload: &[u8]) -> Vec<u8> {
-    let mut out = (payload.len() as u16).to_be_bytes().to_vec();
-    out.extend_from_slice(payload);
-    out
-}
 
 pub(super) fn hierarchy_control(auth: u32, enable: u32, state: u8, password: &[u8]) -> Vec<u8> {
     let mut parameters = enable.to_be_bytes().to_vec();
@@ -424,13 +385,6 @@ pub(super) fn read_public(handle: u32) -> Vec<u8> {
     framed(TPM_CC_READ_PUBLIC, &handle.to_be_bytes(), false)
 }
 
-pub(super) fn get_capability(capability: u32, property: u32, count: u32) -> Vec<u8> {
-    let mut payload = capability.to_be_bytes().to_vec();
-    payload.extend_from_slice(&property.to_be_bytes());
-    payload.extend_from_slice(&count.to_be_bytes());
-    framed(TPM_CC_GET_CAPABILITY, &payload, false)
-}
-
 pub(super) fn cap_transient() -> Vec<u8> {
     get_capability(1, TRANSIENT_FIRST, 8)
 }
@@ -455,10 +409,6 @@ pub(super) fn cap_lockout() -> Vec<u8> {
     get_capability(6, 0x20e, 4)
 }
 
-pub(super) fn cap_command_attributes(code: u32) -> Vec<u8> {
-    get_capability(2, code, 1)
-}
-
 pub(super) fn pcr_read_all() -> Vec<u8> {
     let mut payload = 4u32.to_be_bytes().to_vec();
     for alg in [0x0004u16, 0x000b, 0x000c, 0x000d] {
@@ -472,14 +422,6 @@ pub(super) fn flush(handle: u32) -> Vec<u8> {
     framed(TPM_CC_FLUSH_CONTEXT, &handle.to_be_bytes(), false)
 }
 
-pub(super) fn startup(kind: u16) -> Vec<u8> {
-    framed(TPM_CC_STARTUP, &kind.to_be_bytes(), false)
-}
-
-pub(super) fn shutdown(kind: u16) -> Vec<u8> {
-    framed(TPM_CC_SHUTDOWN, &kind.to_be_bytes(), false)
-}
-
 pub(super) fn change_auth_command(hierarchy: u32, password: &[u8], new_auth: &[u8]) -> Vec<u8> {
     command(
         TPM_CC_HIERARCHY_CHANGE_AUTH,
@@ -489,13 +431,7 @@ pub(super) fn change_auth_command(hierarchy: u32, password: &[u8], new_auth: &[u
     )
 }
 
-pub(super) fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-    let len = buffer.len() as u8;
-    for (index, byte) in buffer.iter_mut().enumerate() {
-        *byte = (index as u8).wrapping_add(len) ^ 0x55;
-    }
-    Ok(())
-}
+const ENTROPY: EntropySource = counter_entropy::<0x55>;
 
 fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
     panic!("the replayed reference state never reseeds from host entropy");
@@ -514,8 +450,11 @@ pub(super) fn oracle_runtime(clock: &SteppingClock) -> Tpm2Runtime {
     runtime
 }
 
-#[track_caller]
-pub(super) fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: &[u8]) -> Vec<u8> {
+pub(super) fn try_exec(
+    runtime: &mut Tpm2Runtime,
+    clock: &SteppingClock,
+    bytes: &[u8],
+) -> Result<Vec<u8>, TpmResult> {
     let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
     process(
         runtime,
@@ -525,7 +464,11 @@ pub(super) fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: &[u8
         |_| Ok(()),
         CancellationToken::disabled(),
     )
-    .expect("the command processes")
+}
+
+#[track_caller]
+pub(super) fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, bytes: &[u8]) -> Vec<u8> {
+    try_exec(runtime, clock, bytes).expect("the command processes")
 }
 
 #[track_caller]
@@ -580,6 +523,6 @@ pub(super) fn reboot(runtime: &Tpm2Runtime, clock: &SteppingClock) -> Tpm2Runtim
     let _ = clock;
     let mut rebooted =
         restore_permanent_blob_for_test(&blob).expect("the permanent state restores");
-    rebooted.entropy = deterministic_entropy;
+    rebooted.entropy = ENTROPY;
     rebooted
 }

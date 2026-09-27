@@ -315,11 +315,10 @@ fn build_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, manufactured_runtime, response_code,
+        RC_SUCCESS, TAIL_BYTES, assert_scenario_response, command, context_array, dispatch_bytes,
+        for_each_mutation, hex, manufactured_runtime, response_code, truncated_tail_replacements,
     };
     use crate::library::tpm2::command::policy::session::test_support::{
         CC_START_AUTH_SESSION, HMAC_SESSION_0, POLICY_SESSION_0, restored, session_of,
@@ -342,13 +341,6 @@ mod tests {
 
     const SALT_RSA: &str = "88499b20c9d3c25808e7ab35f9b514d799ddc4bc0c4846873cb16e02e0571f537b43ff9ae3013b0a02717ae3a2717a15fc4db7c75ad31219245af67f0e235e3984c346cc34a15800dedd961055e081ce056f82536b433eb23d597c40e81676a7d673418f7523e66ecabad4b6ac910a7a9486e029ce5cb88a975ff7f69e4522ccaf3a8a1c63f89b3a225c95e4ee9694363903477fa9f2e54e2878b7dd6ed8b31f02eb84c644e6112d3e7e096c47c5e31bb0477c875e2225875ae579d93594567519d71bdb1a3f3f29c06156dfa15371e6078d7b83d82e227c59bd85d79bd95e9f2e4fb1fcd363a81ec1afa78e1f8b94d1698233acfa4fdf01f81b91283171828a";
     const SALT_ECC: &str = "00206413e370318a922cecfaa94ba2188dd419f586356fa774c766cd6c450295fee900205dce9ce0557b0a8f1cef5c663f362cfffc910e3094afc82bbbc7a0a92b0b6bdb";
-
-    fn hex(text: &str) -> Vec<u8> {
-        (0..text.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex digits"))
-            .collect()
-    }
 
     fn nonce(length: usize) -> Vec<u8> {
         vec![0x5a; length]
@@ -425,45 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_0176");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        let descriptor = find(0x0000_0176).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x1400_0176);
-        assert_eq!(
-            (descriptor.attributes >> 25) & 0x7,
-            2,
-            "two command handles"
-        );
-        assert_ne!(descriptor.attributes & (1 << 28), 0, "a response handle");
-        assert_eq!(descriptor.attributes & (1 << 22), 0, "no NV writes");
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles.iter().all(|spec| !spec.user_auth));
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::ObjectAllowNull
-        ));
-        assert!(matches!(
-            descriptor.handles[1].kind,
-            HandleKind::EntityAllowNull
-        ));
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
-        assert_eq!(
-            start(&mut runtime, &Request::default()),
-            vector("SAS_BEFORE_STARTUP")
+        assert_scenario_response(
+            "TPM2_StartAuthSession before TPM2_Startup: policy-sessions SAS_BEFORE_STARTUP",
+            vector("SAS_BEFORE_STARTUP"),
+            || start(&mut runtime, &Request::default()),
         );
     }
 
@@ -1363,16 +1322,6 @@ mod tests {
         }
     }
 
-    fn context_array(runtime: &Tpm2Runtime) -> Vec<u16> {
-        runtime
-            .live
-            .state_reset
-            .as_ref()
-            .expect("state reset present")
-            .context_array
-            .to_vec()
-    }
-
     #[test]
     fn session_creation_permanent_orderly_nv_preservation() {
         use crate::library::tpm2::persistent::persistent_all_store;
@@ -1441,15 +1390,12 @@ mod tests {
     #[test]
     fn parameter_mutation_panic_safety() {
         let valid = Request::default().bytes();
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("READY");
-                let _ = dispatch_bytes(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_StartAuthSession",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = dispatch_bytes(&mut restored("READY"), &bytes);
+            },
+        );
     }
 }

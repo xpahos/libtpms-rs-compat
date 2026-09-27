@@ -1991,13 +1991,8 @@ mod tests {
     }
 
     #[cfg(feature = "tpm2")]
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x3c;
-        }
-        Ok(())
-    }
+    const ENTROPY: fn(&mut [u8]) -> Result<(), TpmResult> =
+        crate::library::tpm2::test_support::counter_entropy::<0x3c>;
 
     #[cfg(feature = "tpm2")]
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
@@ -2012,7 +2007,7 @@ mod tests {
             TPM_SUCCESS
         );
         library.register_storage(manufacture_storage().arc());
-        library.lock_state().entropy_override = Some(deterministic_entropy);
+        library.lock_state().entropy_override = Some(ENTROPY);
         library
     }
 
@@ -3126,7 +3121,7 @@ mod tests {
             library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        library.lock_state().entropy_override = Some(deterministic_entropy);
+        library.lock_state().entropy_override = Some(ENTROPY);
         assert_eq!(library.initialize(), TPM_SUCCESS);
         assert!(library.was_manufactured(), "a clean re-manufacture");
         assert_eq!(*BACKEND_STORES.lock().unwrap(), 2);

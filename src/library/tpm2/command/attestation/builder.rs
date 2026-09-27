@@ -426,6 +426,7 @@ pub(in crate::library::tpm2::command) fn sign_and_respond(
 
 #[cfg(test)]
 pub(in crate::library::tpm2::command) mod test_support {
+    pub(in crate::library::tpm2::command) use crate::library::tpm2::command::core::test_support::tpm2b;
     use crate::library::tpm2::command::core::test_support::{
         dispatch_bytes, framed, response_code,
     };
@@ -469,12 +470,6 @@ pub(in crate::library::tpm2::command) mod test_support {
     pub(in crate::library::tpm2::command) const QUALIFY: [u8; 8] =
         [0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7];
     pub(in crate::library::tpm2::command) const NONCE_CALLER: [u8; 32] = [0x5a; 32];
-
-    pub(in crate::library::tpm2::command) fn tpm2b(data: &[u8]) -> Vec<u8> {
-        let mut out = (data.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(data);
-        out
-    }
 
     pub(in crate::library::tpm2::command) fn pw() -> Vec<u8> {
         session_area(TPM_RS_PW, &[], 0x00, &[])
@@ -621,6 +616,32 @@ pub(in crate::library::tpm2::command) mod test_support {
     }
 
     #[track_caller]
+    pub(in crate::library::tpm2::command) fn assert_trailing_byte_oracle(
+        runtime: &mut Tpm2Runtime,
+        code: u32,
+        handles: &[u32],
+        sessions: &[Vec<u8>],
+        parameters: &[u8],
+        label: &str,
+    ) {
+        let mut parameters = parameters.to_vec();
+        parameters.push(0x00);
+        assert_eq!(
+            run(
+                runtime,
+                &command(code, handles, Some(sessions), &parameters)
+            ),
+            vector(label),
+            "{label}"
+        );
+        assert_eq!(
+            response_code(vector(label)),
+            crate::library::constants::TPM_RC_SIZE,
+            "{label} records TPM_RC_SIZE"
+        );
+    }
+
+    #[track_caller]
     pub(in crate::library::tpm2::command) fn run_ok(
         runtime: &mut Tpm2Runtime,
         bytes: &[u8],
@@ -678,6 +699,10 @@ pub(in crate::library::tpm2::command) mod test_support {
     pub(in crate::library::tpm2::command) fn attested_body(attest: &[u8]) -> Vec<u8> {
         let (_, _, _, at) = attest_prefix(attest);
         attest[at + 8 + 4 + 4 + 1 + 8..].to_vec()
+    }
+
+    pub(in crate::library::tpm2::command) fn get_random() -> Vec<u8> {
+        command(CC_GET_RANDOM, &[], None, &4u16.to_be_bytes())
     }
 
     #[track_caller]

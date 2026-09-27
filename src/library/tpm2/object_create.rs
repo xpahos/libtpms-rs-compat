@@ -538,28 +538,16 @@ pub(super) fn hierarchy_is_enabled(runtime: &Tpm2Runtime, hierarchy: u32) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE;
-    use crate::library::tpm2::public::StateFormatLimit;
+    use crate::library::tpm2::test_support::{default_algorithm_policy, primary_creation_rand};
+
     use crate::library::tpm2::public::{
         TPM_ALG_AES, TPM_ALG_CFB, TPM_ALG_ECC, TPM_ALG_RSA, TPM_ALG_SHA256,
     };
     use crate::library::tpm2::runtime::empty_state_runtime;
     use crate::library::tpm2::template::{
-        AlgorithmPolicy, TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM,
-        TPMA_OBJECT_USER_WITH_AUTH, TemplateReader, marshal_public_area, parse_public_area,
+        TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM, TPMA_OBJECT_USER_WITH_AUTH,
+        TemplateReader, marshal_public_area, parse_public_area,
     };
-
-    fn rand(label: &[u8]) -> SeededRand {
-        SeededRand::instantiate(&[0x77; 64], PRIMARY_OBJECT_CREATION, label, &[], 1, false)
-            .expect("a non-empty derivation input")
-    }
-
-    fn policy() -> AlgorithmPolicy<'static> {
-        AlgorithmPolicy {
-            profile_algorithms: DEFAULT_ALGORITHMS_PROFILE,
-            state_format: StateFormatLimit::CURRENT,
-        }
-    }
 
     fn template(object_type: u16, attributes: u32, tail: &[u8]) -> OwnedTpmtPublic {
         let mut bytes = Vec::new();
@@ -569,7 +557,8 @@ mod tests {
         bytes.extend_from_slice(&0u16.to_be_bytes());
         bytes.extend_from_slice(tail);
         let mut reader = TemplateReader::new(&bytes);
-        parse_public_area(&mut reader, &policy(), false).expect("a valid template")
+        parse_public_area(&mut reader, &default_algorithm_policy(), false)
+            .expect("a valid template")
     }
 
     fn rsa_storage(key_bits: u16) -> OwnedTpmtPublic {
@@ -664,7 +653,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"rsa"),
+            &mut primary_creation_rand(b"rsa"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -692,7 +681,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"seed"),
+            &mut primary_creation_rand(b"seed"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -722,7 +711,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"sign"),
+            &mut primary_creation_rand(b"sign"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -738,7 +727,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"ecc"),
+            &mut primary_creation_rand(b"ecc"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -769,7 +758,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"name"),
+            &mut primary_creation_rand(b"name"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -791,7 +780,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"eps"),
+            &mut primary_creation_rand(b"eps"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -801,7 +790,7 @@ mod tests {
             &[],
             true,
             &secrets(),
-            &mut rand(b"eps"),
+            &mut primary_creation_rand(b"eps"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -880,7 +869,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"store"),
+            &mut primary_creation_rand(b"store"),
             CancellationToken::disabled(),
         )
         .expect("a key");
@@ -908,7 +897,7 @@ mod tests {
             &[],
             false,
             &secrets(),
-            &mut rand(b"eccstore"),
+            &mut primary_creation_rand(b"eccstore"),
             CancellationToken::disabled(),
         )
         .expect("a key");

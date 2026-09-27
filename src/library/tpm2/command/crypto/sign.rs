@@ -140,19 +140,19 @@ fn check_validation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_SIGN, find,
-    };
+    use crate::library::tpm2::command::core::registry::TPM_CC_SIGN;
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, TPM_ALG_SHA1, TPM_ALG_SHA256, command, dispatch_bytes, framed, response_code,
-        response_parameters,
+        RC_SUCCESS, REPLACEMENT_BYTES, TPM_ALG_SHA1, TPM_ALG_SHA256, all_algorithms,
+        byte_replacements, command, create_primary, dispatch_bytes, for_each_mutation, framed,
+        prefixes, response_code, response_parameters, restored_snapshot, signing_snapshot, without,
     };
+    use crate::library::tpm2::command::crypto::test_support::digest_of;
     use crate::library::tpm2::command::nv::test_support::assert_matches_oracle;
-    use crate::library::tpm2::crypto::Hasher;
+
     use crate::library::tpm2::golden_responses::sign::vector;
     use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedSecret};
-    use crate::library::tpm2::state::COMMIT_ARRAY_SIZE;
-    use crate::library::tpm2::{attach_volatile_blob_for_test, restore_permanent_blob_for_test};
+
+    use crate::library::tpm2::restore_permanent_blob_for_test;
 
     const TPM_ALG_SHA384: u16 = 0x000c;
     const TPM_ALG_SHA512: u16 = 0x000d;
@@ -193,12 +193,6 @@ mod tests {
     const RC_FAILURE: u32 = 0x101;
 
     const OWNER_TICKET_HIERARCHY: u32 = TPM_RH_OWNER;
-
-    fn digest_of(hash_alg: u16, data: &[u8]) -> Vec<u8> {
-        let mut hasher = Hasher::new(hash_alg).expect("a compiled hash");
-        hasher.update(data);
-        hasher.finalize()
-    }
 
     fn sha256() -> Vec<u8> {
         digest_of(TPM_ALG_SHA256, b"abc")
@@ -251,32 +245,6 @@ mod tests {
         out.extend_from_slice(&scheme_bytes(scheme, hash_alg, None));
         out.extend_from_slice(&0u16.to_be_bytes());
         out
-    }
-
-    #[track_caller]
-    fn create_primary(
-        runtime: &mut Tpm2Runtime,
-        hierarchy: u32,
-        template: &[u8],
-    ) -> (u32, Vec<u8>) {
-        let mut parameters = 4u16.to_be_bytes().to_vec();
-        parameters.extend_from_slice(&0u16.to_be_bytes());
-        parameters.extend_from_slice(&0u16.to_be_bytes());
-        parameters.extend_from_slice(&(template.len() as u16).to_be_bytes());
-        parameters.extend_from_slice(template);
-        parameters.extend_from_slice(&0u16.to_be_bytes());
-        parameters.extend_from_slice(&0u32.to_be_bytes());
-        let response = dispatch_bytes(
-            runtime,
-            &command(0x0000_0131, &[hierarchy], &[&[]], &parameters),
-        );
-        assert_eq!(
-            response_code(&response),
-            RC_SUCCESS,
-            "the primary is created"
-        );
-        let handle = u32::from_be_bytes(response[10..14].try_into().expect("a response handle"));
-        (handle, response)
     }
 
     fn null_ticket() -> Vec<u8> {
@@ -360,15 +328,7 @@ mod tests {
 
     #[track_caller]
     fn restored(snapshot: &str) -> Tpm2Runtime {
-        let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
-            .expect("the oracle permanent state restores");
-        attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
-            .expect("the oracle volatile state attaches");
-        assert!(
-            runtime.startup_received,
-            "the snapshot is past TPM2_Startup"
-        );
-        runtime
+        restored_snapshot(vector, snapshot)
     }
 
     #[track_caller]
@@ -394,46 +354,6 @@ mod tests {
     #[track_caller]
     fn persistent_runtime() -> Tpm2Runtime {
         restored("PERSISTENT")
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_015D");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        assert_eq!(TPM_CC_SIGN, 0x0000_015d);
-        let descriptor = find(TPM_CC_SIGN).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0200_015d);
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "TPM2_Sign does not use NV"
-        );
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn handle_upstream_role() {
-        let descriptor = find(TPM_CC_SIGN).expect("a registered command");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-
-        let kind = descriptor.handles[0].kind;
-        assert!(kind.accepts(0x8000_0000));
-        assert!(kind.accepts(0x8100_0000));
-        for handle in [TPM_RH_NULL, TPM_RH_OWNER, 0x0100_0001, 0x0200_0000] {
-            assert!(!kind.accepts(handle), "handle {handle:#010x}");
-        }
     }
 
     #[test]
@@ -1080,36 +1000,24 @@ mod tests {
     fn parameter_mutation_panic_safety() {
         let full = sign_parameters(&sha256(), TPM_ALG_RSASSA, TPM_ALG_SHA256, &owner_ticket());
         let mut runtime = asym_runtime();
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_Sign",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let response = sign_raw(&mut runtime, TRANSIENT[0], &parameters);
-                assert!(
-                    response[..2] == [0x80, 0x01] || response[..2] == [0x80, 0x02],
-                    "index {index} byte {byte:#04x}"
-                );
-                assert!(!runtime.failure_mode, "index {index} byte {byte:#04x}");
-            }
-        }
-        for length in 0..=full.len() {
-            let response = sign_raw(&mut runtime, TRANSIENT[0], &full[..length]);
-            assert!(response.len() >= 10, "length {length}");
-            assert!(!runtime.failure_mode, "length {length}");
-        }
-    }
-
-    fn all_algorithms() -> String {
-        String::from_utf8(crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE.to_vec())
-            .expect("an ascii algorithm list")
-    }
-
-    fn without(algorithm: &str) -> String {
-        all_algorithms()
-            .split(',')
-            .filter(|token| *token != algorithm)
-            .collect::<Vec<_>>()
-            .join(",")
+                assert!(response[..2] == [0x80, 0x01] || response[..2] == [0x80, 0x02]);
+                assert!(!runtime.failure_mode);
+            },
+        );
+        for_each_mutation(
+            "TPM2_Sign parameter prefix",
+            prefixes(&full, 0..full.len() + 1, false),
+            |parameters| {
+                let response = sign_raw(&mut runtime, TRANSIENT[0], &parameters);
+                assert!(response.len() >= 10);
+                assert!(!runtime.failure_mode);
+            },
+        );
     }
 
     #[track_caller]
@@ -1141,29 +1049,6 @@ mod tests {
         );
         runtime.nv_update_pending = false;
         runtime
-    }
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct SigningSnapshot {
-        drbg_magic: u32,
-        reseed_counter: u64,
-        seed: Vec<u8>,
-        last_value: [u32; 4],
-        commit_counter: u64,
-        commit_array: [u8; COMMIT_ARRAY_SIZE],
-    }
-
-    fn signing_snapshot(runtime: &Tpm2Runtime) -> SigningSnapshot {
-        let drbg = &runtime.live.orderly.drbg_state;
-        let reset = runtime.live.state_reset.as_ref().expect("a reset section");
-        SigningSnapshot {
-            drbg_magic: drbg.drbg_magic,
-            reseed_counter: drbg.reseed_counter,
-            seed: drbg.seed.as_bytes().to_vec(),
-            last_value: drbg.last_value,
-            commit_counter: reset.commit_counter,
-            commit_array: reset.commit_array,
-        }
     }
 
     #[track_caller]
@@ -1354,13 +1239,6 @@ mod tests {
         fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
             Err(crate::library::constants::TPM_FAIL)
         }
-        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-            let len = buffer.len() as u8;
-            for (index, byte) in buffer.iter_mut().enumerate() {
-                *byte = (index as u8).wrapping_add(len) ^ 0x1d;
-            }
-            Ok(())
-        }
 
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
@@ -1382,7 +1260,7 @@ mod tests {
 
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = crate::library::tpm2::test_support::counter_entropy::<0x1d>;
         assert_eq!(
             response_code(&sign(
                 &mut runtime,

@@ -56,10 +56,11 @@ fn parse_auth(parameters: &[u8]) -> Result<&[u8], TpmResult> {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_PCR_SET_AUTH_VALUE, find,
+    use crate::library::tpm2::command::core::registry::TPM_CC_PCR_SET_AUTH_VALUE;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, command, for_each_mutation, framed, prefix_bit_flips,
+        response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{command, framed, response_code};
     use crate::library::tpm2::command::platform::test_support::{
         DIGEST32, RC_AUTH_MISSING, RC_INITIALIZE, RC_INSUFFICIENT_H1, RC_INSUFFICIENT_P1,
         RC_SESSION1_BAD_AUTH, RC_SIZE, RC_SIZE_P1, RC_VALUE, RC_VALUE_H1, TPM_CC_PCR_EXTEND,
@@ -82,50 +83,24 @@ mod tests {
     };
 
     #[test]
-    fn command_registration_reference_attributes() {
-        let descriptor = find(TPM_CC_PCR_SET_AUTH_VALUE).expect("the command is registered");
-        assert_eq!(descriptor.attributes, 0x0200_0183);
-        assert_eq!(
-            descriptor.attributes,
-            u32::from_be_bytes(
-                vector("CCATTR_0183")[19..23]
-                    .try_into()
-                    .expect("four bytes")
-            )
-        );
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Pcr));
-        assert!(descriptor.handles[0].user_auth);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 0);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert!(!descriptor.physical_presence);
-        assert!(!descriptor.physical_presence_required);
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "TPM2_PCR_SetAuthValue does not update NV"
-        );
-    }
-
-    #[test]
     fn unstarted_tpm_rejection() {
         let clock = replay_clock();
         let mut runtime = manufactured(&clock);
-        expect(
-            &mut runtime,
-            &clock,
-            "LIFECYCLE_PCR_SET_AUTH_VALUE",
-            &pcr_set_auth_value(20, &DIGEST32, &[]),
+        assert_scenario_response(
+            "TPM2_PCR_SetAuthValue before TPM2_Startup: platform-state LIFECYCLE_PCR_SET_AUTH_VALUE",
+            vector("LIFECYCLE_PCR_SET_AUTH_VALUE"),
+            || {
+                exec(
+                    &mut runtime,
+                    &clock,
+                    &pcr_set_auth_value(20, &DIGEST32, &[]),
+                )
+            },
         );
         assert_eq!(
             response_code(vector("LIFECYCLE_PCR_SET_AUTH_VALUE")),
-            RC_INITIALIZE
+            RC_INITIALIZE,
+            "platform-state LIFECYCLE_PCR_SET_AUTH_VALUE"
         );
     }
 
@@ -332,15 +307,12 @@ mod tests {
     fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
         let valid = pcr_set_auth_value(20, &DIGEST32, &[]);
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    let mut runtime = ready(&clock);
-                    let _ = exec(&mut runtime, &clock, &mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_PCR_SetAuthValue",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                let _ = exec(&mut ready(&clock), &clock, &bytes);
+            },
+        );
     }
 }

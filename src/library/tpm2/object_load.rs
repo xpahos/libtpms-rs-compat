@@ -588,16 +588,7 @@ pub(in crate::library::tpm2) mod replay {
         assert_eq!(exec_raw(runtime, clock, bytes), vector(label), "{label}");
     }
 
-    pub(in crate::library::tpm2) fn push_tpm2b(out: &mut Vec<u8>, bytes: &[u8]) {
-        out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-        out.extend_from_slice(bytes);
-    }
-
-    pub(in crate::library::tpm2) fn tpm2b(bytes: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        push_tpm2b(&mut out, bytes);
-        out
-    }
+    pub(in crate::library::tpm2) use crate::library::tpm2::test_support::{push_tpm2b, tpm2b};
 
     pub(in crate::library::tpm2) fn framed(tag: u16, code: u32, payload: &[u8]) -> Vec<u8> {
         let mut out = tag.to_be_bytes().to_vec();
@@ -644,13 +635,6 @@ pub(in crate::library::tpm2) mod replay {
             out.extend_from_slice(&handle.to_be_bytes());
         }
         out
-    }
-
-    pub(in crate::library::tpm2) fn cap_cc(code: u32) -> Vec<u8> {
-        let mut payload = 2u32.to_be_bytes().to_vec();
-        payload.extend_from_slice(&code.to_be_bytes());
-        payload.extend_from_slice(&1u32.to_be_bytes());
-        plain(CC_GET_CAPABILITY, &payload)
     }
 
     pub(in crate::library::tpm2) fn cap_transient() -> Vec<u8> {

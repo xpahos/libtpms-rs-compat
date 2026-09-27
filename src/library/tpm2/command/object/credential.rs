@@ -174,6 +174,12 @@ pub(in crate::library::tpm2::command) fn execute_activate_credential(
 
 #[cfg(test)]
 mod test_support {
+    pub(in crate::library::tpm2::command) use crate::library::tpm2::command::core::test_support::{
+        flipped, truncated, with_trailing,
+    };
+    pub(super) use crate::library::tpm2::command::object::test_support::sym_aes128_cfb;
+    use crate::library::tpm2::command::object::test_support::split_tpm2b;
+    pub(in crate::library::tpm2::command) use crate::library::tpm2::object_load::replay::clock;
     use crate::library::tpm2::clock::SteppingClock;
     use crate::library::tpm2::crypto::{HmacState, kdfa, sym_cfb_encrypt};
     pub(in crate::library::tpm2::command) use crate::library::tpm2::golden_responses::credential_activation::vector;
@@ -198,7 +204,6 @@ mod test_support {
     pub(in crate::library::tpm2::command) const CC_MAKE_CREDENTIAL: u32 = 0x0000_0168;
     pub(in crate::library::tpm2::command) const CC_READ_PUBLIC: u32 = 0x0000_0173;
     pub(in crate::library::tpm2::command) const CC_START_AUTH_SESSION: u32 = 0x0000_0176;
-    pub(in crate::library::tpm2::command) const CC_GET_CAPABILITY: u32 = 0x0000_017a;
     pub(in crate::library::tpm2::command) const CC_POLICY_COMMAND_CODE: u32 = 0x0000_016c;
 
     pub(in crate::library::tpm2::command) const ALG_RSA: u16 = 0x0001;
@@ -212,7 +217,6 @@ mod test_support {
     pub(in crate::library::tpm2::command) const ALG_RSAES: u16 = 0x0015;
     pub(in crate::library::tpm2::command) const ALG_ECC: u16 = 0x0023;
     pub(in crate::library::tpm2::command) const ALG_SYMCIPHER: u16 = 0x0025;
-    pub(in crate::library::tpm2::command) const ALG_CFB: u16 = 0x0043;
 
     const COMMON_ATTRS: u32 = 0x0000_0472;
     pub(in crate::library::tpm2::command) const STORAGE_ATTRS: u32 = COMMON_ATTRS | 0x0003_0000;
@@ -230,10 +234,6 @@ mod test_support {
 
     pub(in crate::library::tpm2::command) fn credential() -> Vec<u8> {
         (0x40u8..0x60).collect()
-    }
-
-    pub(in crate::library::tpm2::command) fn clock() -> SteppingClock {
-        crate::library::tpm2::object_load::replay::clock()
     }
 
     pub(in crate::library::tpm2::command) fn runtime_at(
@@ -289,13 +289,6 @@ mod test_support {
         payload.extend_from_slice(&blob);
         payload.extend_from_slice(parameters);
         framed(0x8002, code, &payload)
-    }
-
-    fn sym_aes128_cfb() -> Vec<u8> {
-        let mut out = ALG_AES.to_be_bytes().to_vec();
-        out.extend_from_slice(&128u16.to_be_bytes());
-        out.extend_from_slice(&ALG_CFB.to_be_bytes());
-        out
     }
 
     fn sym_null() -> Vec<u8> {
@@ -440,13 +433,6 @@ mod test_support {
         sessioned(CC_ACTIVATE_CREDENTIAL, &[activate, key], areas, parameters)
     }
 
-    pub(in crate::library::tpm2::command) fn cap_cc_page(code: u32, count: u32) -> Vec<u8> {
-        let mut payload = 2u32.to_be_bytes().to_vec();
-        payload.extend_from_slice(&code.to_be_bytes());
-        payload.extend_from_slice(&count.to_be_bytes());
-        plain(CC_GET_CAPABILITY, &payload)
-    }
-
     pub(in crate::library::tpm2::command) fn start_session(kind: u8, symmetric: &[u8]) -> Vec<u8> {
         let mut payload = handles(&[RH_NULL, RH_NULL]);
         push_tpm2b(&mut payload, &NONCE_CALLER);
@@ -473,33 +459,6 @@ mod test_support {
         let mut payload = POLICY_SESSION.to_be_bytes().to_vec();
         payload.extend_from_slice(&code.to_be_bytes());
         plain(CC_POLICY_COMMAND_CODE, &payload)
-    }
-
-    pub(in crate::library::tpm2::command) fn with_trailing(command: Vec<u8>) -> Vec<u8> {
-        let mut out = command;
-        out.push(0x00);
-        let size = (out.len() as u32).to_be_bytes();
-        out[2..6].copy_from_slice(&size);
-        out
-    }
-
-    pub(in crate::library::tpm2::command) fn truncated(command: Vec<u8>, drop: usize) -> Vec<u8> {
-        let mut out = command;
-        out.truncate(out.len() - drop);
-        let size = (out.len() as u32).to_be_bytes();
-        out[2..6].copy_from_slice(&size);
-        out
-    }
-
-    pub(in crate::library::tpm2::command) fn flipped(data: &[u8], index: usize) -> Vec<u8> {
-        let mut out = data.to_vec();
-        out[index] ^= 0x01;
-        out
-    }
-
-    fn split_tpm2b(blob: &[u8], at: usize) -> (Vec<u8>, usize) {
-        let size = u16::from_be_bytes(blob[at..at + 2].try_into().expect("two bytes")) as usize;
-        (blob[at + 2..at + 2 + size].to_vec(), at + 2 + size)
     }
 
     pub(in crate::library::tpm2::command) fn object_name(label: &str) -> Vec<u8> {
@@ -592,79 +551,13 @@ mod tests {
         AK_AUTH, ALG_SHA256, ALG_SHA384, CC_ACTIVATE_CREDENTIAL, CC_MAKE_CREDENTIAL,
         CONTINUE_SESSION, H0, H1, H2, HMAC_SESSION, POLICY_SESSION, RH_OWNER, RH_PLATFORM,
         SESSION_DECRYPT, SESSION_ENCRYPT, SRK_AUTH, activate_credential, activate_parameters,
-        activate_policy, activate_with, cap_cc_page, clock, command_hmac, create_primary,
-        credential, ecc_storage, exec, flipped, keyedhash_signer, made_credential, make_credential,
+        activate_policy, activate_with, clock, command_hmac, create_primary, credential,
+        ecc_storage, exec, flipped, keyedhash_signer, made_credential, make_credential,
         null_scheme, object_name, parameter_encrypt, password_area, policy_command_code,
         read_public, rsa_signer, rsa_storage, rsa_unrestricted, rsaes_scheme, runtime_at,
         session_area, session_nonce, sessioned, start_hmac_session, start_hmac_session_aes,
         start_policy_session, sym_storage, truncated, with_trailing,
     };
-    use crate::library::tpm2::command::core::registry::{
-        self, AuthRole, CommandLifecycle, HandleKind, NvAccess,
-    };
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let make = registry::find(CC_MAKE_CREDENTIAL).expect("TPM2_MakeCredential is registered");
-        assert_eq!(make.attributes, 0x0200_0168);
-        assert_eq!(make.decrypt_size, 2);
-        assert_eq!(make.encrypt_size, 2);
-        assert!(make.sessions_allowed);
-        assert!(!make.physical_presence);
-        assert!(!make.physical_presence_required);
-        assert!(matches!(make.nv_access, NvAccess::Neither));
-        assert!(matches!(make.lifecycle, CommandLifecycle::RequiresStarted));
-        assert_eq!(make.handles.len(), 1);
-        assert!(!make.handles[0].user_auth);
-        assert!(make.handles[0].role == AuthRole::User);
-        assert!(matches!(make.handles[0].kind, HandleKind::Object));
-
-        let activate =
-            registry::find(CC_ACTIVATE_CREDENTIAL).expect("TPM2_ActivateCredential is registered");
-        assert_eq!(activate.attributes, 0x0400_0147);
-        assert_eq!(activate.decrypt_size, 2);
-        assert_eq!(activate.encrypt_size, 2);
-        assert!(activate.sessions_allowed);
-        assert!(!activate.physical_presence);
-        assert!(matches!(activate.nv_access, NvAccess::Neither));
-        assert_eq!(activate.handles.len(), 2);
-        assert!(activate.handles[0].user_auth);
-        assert!(activate.handles[0].admin_role());
-        assert!(matches!(activate.handles[0].kind, HandleKind::Object));
-        assert!(activate.handles[1].user_auth);
-        assert!(activate.handles[1].role == AuthRole::User);
-        assert!(matches!(activate.handles[1].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let clock = clock();
-        let mut runtime = runtime_at("READY", &clock);
-        exec(
-            &mut runtime,
-            &clock,
-            "CCATTR_0147",
-            cap_cc_page(CC_ACTIVATE_CREDENTIAL, 1),
-        );
-        exec(
-            &mut runtime,
-            &clock,
-            "CCATTR_0168",
-            cap_cc_page(CC_MAKE_CREDENTIAL, 1),
-        );
-        exec(
-            &mut runtime,
-            &clock,
-            "CCLIST_FROM_ACTIVATE",
-            cap_cc_page(CC_ACTIVATE_CREDENTIAL, 4),
-        );
-        exec(
-            &mut runtime,
-            &clock,
-            "CCLIST_FROM_MAKE",
-            cap_cc_page(CC_MAKE_CREDENTIAL, 4),
-        );
-    }
 
     #[test]
     fn pre_execution_handle_resolution() {
@@ -1475,6 +1368,7 @@ mod behaviour {
         ALG_AES, ALG_SHA256, ALG_SHA384, H0, H1, activate_credential, clock, credential, flipped,
         made_credential, make_credential, object_name, runtime_at,
     };
+    use crate::library::tpm2::command::core::test_support::response_code;
     use crate::library::tpm2::crypto::CTR_DRBG_MAX_REQUESTS_PER_RESEED;
     use crate::library::tpm2::golden_responses::credential_activation::vector;
     use crate::library::tpm2::object_load::replay::exec_raw;
@@ -1484,10 +1378,6 @@ mod behaviour {
     const ALG_OAEP: u16 = 0x0017;
     const ALG_ECDH: u16 = 0x0019;
     const ALG_SHA512: u16 = 0x000d;
-
-    fn response_code(response: &[u8]) -> u32 {
-        u32::from_be_bytes(response[6..10].try_into().expect("four bytes"))
-    }
 
     fn generator_state(runtime: &Tpm2Runtime) -> (u64, [u32; 4], Vec<u8>) {
         let drbg = &runtime.live.orderly.drbg_state;

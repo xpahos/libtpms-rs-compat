@@ -210,6 +210,33 @@ pub(in crate::library::tpm2) fn assert_fixture_integrity(fixture: &Fixture) {
     }
 }
 
+#[track_caller]
+fn assert_command_responses_well_formed(
+    fixture: &str,
+    records: &[GoldenVector<'_>],
+    state_prefixes: &[&str],
+) {
+    for record in records.iter().filter(|record| {
+        !state_prefixes
+            .iter()
+            .any(|prefix| record.name.starts_with(prefix))
+    }) {
+        let name = record.name;
+        assert!(
+            record.bytes.len() >= 10,
+            "{fixture}/{name}: {} bytes",
+            record.bytes.len()
+        );
+        let tag = u16::from_be_bytes([record.bytes[0], record.bytes[1]]);
+        assert!(
+            tag == 0x8001 || tag == 0x8002,
+            "{fixture}/{name} carries a response tag, found {tag:#06x}"
+        );
+        let size = u32::from_be_bytes(record.bytes[2..6].try_into().expect("four bytes")) as usize;
+        assert_eq!(size, record.bytes.len(), "{fixture}/{name}: responseSize");
+    }
+}
+
 macro_rules! golden_fixture {
     (
         module: $module:ident,

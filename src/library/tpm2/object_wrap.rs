@@ -454,16 +454,16 @@ pub(super) fn private_to_sensitive(
 mod tests {
     use super::*;
     use crate::library::constants::{TPM_RC_INSUFFICIENT, TPM_RC_TYPE};
-    use crate::library::tpm2::object_create::PRIMARY_OBJECT_CREATION;
+    use crate::library::tpm2::test_support::{default_algorithm_policy, primary_creation_rand};
+
     use crate::library::tpm2::persistent::OwnedSecret;
-    use crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE;
+
     use crate::library::tpm2::public::{
-        StateFormatLimit, TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_CFB, TPM_ALG_ECC,
-        TPM_ALG_KEYEDHASH, TPM_ALG_RSA, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SYMCIPHER,
-        TPM_ALG_TDES,
+        TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_CFB, TPM_ALG_ECC, TPM_ALG_KEYEDHASH, TPM_ALG_RSA,
+        TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SYMCIPHER, TPM_ALG_TDES,
     };
     use crate::library::tpm2::template::{
-        AlgorithmPolicy, TPMA_OBJECT_DECRYPT, TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM,
+        TPMA_OBJECT_DECRYPT, TPMA_OBJECT_FIXED_PARENT, TPMA_OBJECT_FIXED_TPM,
         TPMA_OBJECT_RESTRICTED, TPMA_OBJECT_SENSITIVE_DATA_ORIGIN, TPMA_OBJECT_SIGN,
         TPMA_OBJECT_USER_WITH_AUTH, TemplateReader, parse_public_area,
     };
@@ -474,18 +474,6 @@ mod tests {
 
     fn no_gate() -> LazySelfTest<'static> {
         LazySelfTest::untested()
-    }
-
-    fn rand(label: &[u8]) -> SeededRand {
-        SeededRand::instantiate(&[0x77; 64], PRIMARY_OBJECT_CREATION, label, &[], 1, false)
-            .expect("a non-empty derivation input")
-    }
-
-    fn policy() -> AlgorithmPolicy<'static> {
-        AlgorithmPolicy {
-            profile_algorithms: DEFAULT_ALGORITHMS_PROFILE,
-            state_format: StateFormatLimit::CURRENT,
-        }
     }
 
     fn named_template(
@@ -500,7 +488,8 @@ mod tests {
         bytes.extend_from_slice(&0u16.to_be_bytes());
         bytes.extend_from_slice(tail);
         let mut reader = TemplateReader::new(&bytes);
-        parse_public_area(&mut reader, &policy(), false).expect("a valid template")
+        parse_public_area(&mut reader, &default_algorithm_policy(), false)
+            .expect("a valid template")
     }
 
     fn template(object_type: u16, attributes: u32, tail: &[u8]) -> OwnedTpmtPublic {
@@ -584,7 +573,7 @@ mod tests {
             name,
             &protector(&parent(sym_algorithm), seed),
             TPM_ALG_SHA256,
-            &mut rand(rand_label),
+            &mut primary_creation_rand(rand_label),
         )
         .expect("the wrap succeeds")
     }
@@ -619,7 +608,7 @@ mod tests {
                 &NAME,
                 &protector(&keyed_hash_parent(), &SEED),
                 TPM_ALG_SHA256,
-                &mut rand(b"kh"),
+                &mut primary_creation_rand(b"kh"),
             ),
             Err(TPM_RC_FAILURE)
         );
@@ -671,7 +660,7 @@ mod tests {
             false,
             b"payload",
             &mut no_gate(),
-            &mut rand(b"outer"),
+            &mut primary_creation_rand(b"outer"),
         )
         .expect("the wrap succeeds");
         assert_eq!(wrapped.len(), 2 + 32 + 7);
@@ -698,7 +687,7 @@ mod tests {
             false,
             b"payload",
             &mut no_gate(),
-            &mut rand(b"hmac"),
+            &mut primary_creation_rand(b"hmac"),
         )
         .expect("the wrap succeeds");
         let hmac_key = kdfa(TPM_ALG_SHA256, &SEED, INTEGRITY_KEY_LABEL, &[], &[], 32 * 8)
@@ -726,7 +715,7 @@ mod tests {
             false,
             b"payload",
             &mut no_gate(),
-            &mut rand(b"reject"),
+            &mut primary_creation_rand(b"reject"),
         )
         .expect("the wrap succeeds");
         for (name, seed) in [(&OTHER_NAME[..], &SEED[..]), (&NAME[..], &[0x23u8; 32][..])] {
@@ -801,7 +790,7 @@ mod tests {
                     symmetric: &symmetric,
                     key,
                 },
-                &mut rand(label),
+                &mut primary_creation_rand(label),
             )
             .expect("the duplication blob is produced");
             assert!(produced.generated_inner_key.is_none());
@@ -840,7 +829,7 @@ mod tests {
                 symmetric: &sym(TPM_ALG_AES, 128),
                 key: &[],
             },
-            &mut rand(b"generated"),
+            &mut primary_creation_rand(b"generated"),
         )
         .expect("the duplication blob is produced");
         let key = produced
@@ -850,7 +839,10 @@ mod tests {
         assert_eq!(key.len(), 16);
         assert_eq!(
             key.as_slice(),
-            rand(b"generated").random_bytes(16).unwrap().as_slice(),
+            primary_creation_rand(b"generated")
+                .random_bytes(16)
+                .unwrap()
+                .as_slice(),
             "the key is the next block from the generator"
         );
         assert!(
@@ -883,7 +875,7 @@ mod tests {
                 symmetric: &sym(TPM_ALG_AES, 128),
                 key: &key,
             },
-            &mut rand(b"bound"),
+            &mut primary_creation_rand(b"bound"),
         )
         .expect("the duplication blob is produced");
         let recover = |name: &[u8], seed: &[u8], key: &[u8]| {
@@ -924,7 +916,7 @@ mod tests {
                 symmetric: &null_sym(),
                 key: &[],
             },
-            &mut rand(b"corrupt"),
+            &mut primary_creation_rand(b"corrupt"),
         )
         .expect("the duplication blob is produced");
         for position in 0..produced.blob.len() {
@@ -961,7 +953,7 @@ mod tests {
                 symmetric: &sym(TPM_ALG_AES, 128),
                 key: &[0xa5; 16],
             },
-            &mut rand(b"prefix"),
+            &mut primary_creation_rand(b"prefix"),
         )
         .expect("the duplication blob is produced");
         for length in 0..produced.blob.len() {
@@ -1019,7 +1011,7 @@ mod tests {
             seed,
             &protector(public, &[]),
             &mut no_gate(),
-            &mut rand(b"credential"),
+            &mut primary_creation_rand(b"credential"),
         )
         .expect("the credential is produced")
     }
@@ -1136,7 +1128,7 @@ mod tests {
             false,
             payload,
             &mut no_gate(),
-            &mut rand(b"payload"),
+            &mut primary_creation_rand(b"payload"),
         )
         .expect("the payload is wrapped")
     }
@@ -1242,7 +1234,7 @@ mod tests {
                 seed,
                 &protector(public, &[]),
                 &mut LazySelfTest::runtime(&mut run),
-                &mut rand(b"credential"),
+                &mut primary_creation_rand(b"credential"),
             )
         };
         (produced, calls)
@@ -1411,7 +1403,7 @@ mod tests {
             false,
             &sized,
             &mut no_gate(),
-            &mut rand(b"type"),
+            &mut primary_creation_rand(b"type"),
         )
         .expect("the wrap succeeds");
         assert_eq!(

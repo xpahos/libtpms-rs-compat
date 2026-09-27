@@ -66,42 +66,31 @@ fn parse_event_data(parameters: &[u8]) -> Result<&[u8], TpmResult> {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::CancellationToken;
     use crate::library::constants::{TPM_RC_AUTH_MISSING, TPM_RC_INITIALIZE};
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_PCR_EVENT;
-    use crate::library::tpm2::command::session::processing::TPM_RS_PW;
-    use crate::library::tpm2::golden_responses::pcr_event::vector;
-    use crate::library::tpm2::manufacture::manufacture_state;
-    use crate::library::tpm2::nv::build_nv_image;
-    use crate::library::tpm2::parse_persistent_all_payload;
-    use crate::library::tpm2::persistent::{
-        OwnedPcrAllocation, OwnedPcrSelection, OwnedPersistentState, PersistentAllEnvelope,
-        materialize_persistent_state, persistent_all_store,
+    use crate::library::tpm2::command::core::test_support::{
+        auth_session, counter_entropy, dispatch_bytes, dispatch_ignoring_result, error_response,
+        for_each_mutation, hex, make_orderly, manufactured_runtime_with, prefix_bit_flips, process,
+        pw_session, reload, start,
     };
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::{commit_manufactured_state, commit_restored_state};
+    use crate::library::tpm2::command::pcr::test_support::{bank, pcr_counter};
+    use crate::library::tpm2::command::session::processing::TPM_RS_PW;
+    use crate::library::tpm2::crypto::EntropySource;
+    use crate::library::tpm2::golden_responses::pcr_event::vector;
+
+    use crate::library::tpm2::persistent::{
+        OwnedPcrAllocation, OwnedPcrSelection, persistent_all_store,
+    };
+
+    use crate::library::tpm2::runtime::commit_restored_state;
     use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x3c>;
 
     const TPM_ALG_SHA1: u16 = 0x0004;
     const TPM_ALG_SHA256: u16 = 0x000b;
@@ -165,66 +154,19 @@ mod tests {
 
     const ORACLE_EVENT: &[u8] = b"libtpms-rs pcr event";
 
-    fn hex(value: &str) -> Vec<u8> {
-        let cleaned: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x3c;
-        }
-        Ok(())
-    }
-
     fn no_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         panic!("TPM2_PCR_Event must not draw host entropy");
     }
 
     fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
+        manufactured_runtime_with(None, ENTROPY)
     }
 
     #[track_caller]
     fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &hex("80010000000c0000014400 00")),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
+        start(&mut runtime);
         runtime
-    }
-
-    fn password_session(handle: u32, nonce: &[u8], attributes: u8, password: &[u8]) -> Vec<u8> {
-        let mut out = handle.to_be_bytes().to_vec();
-        out.extend_from_slice(&(nonce.len() as u16).to_be_bytes());
-        out.extend_from_slice(nonce);
-        out.push(attributes);
-        out.extend_from_slice(&(password.len() as u16).to_be_bytes());
-        out.extend_from_slice(password);
-        out
-    }
-
-    fn empty_password_session() -> Vec<u8> {
-        password_session(TPM_RS_PW, &[], 0x00, &[])
     }
 
     fn event_command(handle: u32, auth: Option<&[u8]>, parameters: &[u8]) -> Vec<u8> {
@@ -250,17 +192,7 @@ mod tests {
     }
 
     fn authorized_event(handle: u32, data: &[u8]) -> Vec<u8> {
-        event_command(
-            handle,
-            Some(&empty_password_session()),
-            &event_parameters(data),
-        )
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
+        event_command(handle, Some(&pw_session(&[])), &event_parameters(data))
     }
 
     fn digest_parameters(digests: &[(u16, &str)]) -> Vec<u8> {
@@ -393,36 +325,19 @@ mod tests {
         assert_eq!(runtime.live.free_session_slots, before.free_session_slots);
     }
 
-    #[track_caller]
-    fn bank(runtime: &Tpm2Runtime, pcr: usize, slot: usize) -> Vec<u8> {
-        runtime.live.pcrs[pcr].banks[slot]
-            .clone()
-            .expect("an allocated bank")
-    }
-
-    fn pcr_counter(runtime: &Tpm2Runtime) -> u32 {
-        runtime.live.state_reset.as_ref().unwrap().pcr_counter
-    }
-
-    fn make_orderly(runtime: &mut Tpm2Runtime, orderly_state: u16) {
-        let state = runtime.state.as_mut().expect("state present");
-        state.persistent.orderly_state = orderly_state;
-        runtime.nv_memory = build_nv_image(state).expect("the orderly state serializes");
-        runtime.nv_update_pending = false;
-    }
-
     #[test]
     fn pcr_event_pre_startup_initialize_rejection() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
         assert_eq!(
             dispatch_bytes(&mut runtime, &authorized_event(10, b"abc")),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_PCR_Event before TPM2_Startup"
         );
         assert_eq!(
             dispatch_bytes(&mut runtime, &event_command(10, None, &[])),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes handle parsing"
+            "TPM2_PCR_Event before TPM2_Startup: the lifecycle check precedes handle parsing"
         );
         assert_unchanged(&runtime, &before);
     }
@@ -445,7 +360,7 @@ mod tests {
     fn nonempty_password_empty_auth_failure() {
         let mut runtime = started_runtime();
         let before = snapshot(&runtime);
-        let auth = password_session(TPM_RS_PW, &[], 0x00, b"wrong");
+        let auth = auth_session(TPM_RS_PW, &[], 0x00, b"wrong");
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,
@@ -616,7 +531,7 @@ mod tests {
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,
-                &event_command(10, Some(&empty_password_session()), &hex("ffff"))
+                &event_command(10, Some(&pw_session(&[])), &hex("ffff"))
             ),
             error_response(RC_EVENT_SIZE)
         );
@@ -632,7 +547,7 @@ mod tests {
             assert_eq!(
                 dispatch_bytes(
                     &mut runtime,
-                    &event_command(10, Some(&empty_password_session()), &full[..len])
+                    &event_command(10, Some(&pw_session(&[])), &full[..len])
                 ),
                 error_response(RC_EVENT_INSUFFICIENT),
                 "parameters truncated to {len} bytes"
@@ -650,7 +565,7 @@ mod tests {
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,
-                &event_command(10, Some(&empty_password_session()), &parameters)
+                &event_command(10, Some(&pw_session(&[])), &parameters)
             ),
             error_response(RC_SIZE)
         );
@@ -696,12 +611,12 @@ mod tests {
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,
-                &event_command(TPM_RH_NULL, Some(&empty_password_session()), &hex("ffff"))
+                &event_command(TPM_RH_NULL, Some(&pw_session(&[])), &hex("ffff"))
             ),
             error_response(RC_EVENT_SIZE),
             "the event data is unmarshaled before the null-handle shortcut"
         );
-        let auth = password_session(TPM_RS_PW, &[], 0x00, b"wrong");
+        let auth = auth_session(TPM_RS_PW, &[], 0x00, b"wrong");
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,
@@ -987,20 +902,13 @@ mod tests {
     #[test]
     fn bit_flip_panic_safety() {
         let valid = authorized_event(10, b"abc");
-        for index in 6..valid.len() {
-            for flip in [0x01u8, 0x80, 0xff] {
-                let mut mutated = valid.clone();
-                mutated[index] ^= flip;
-                let mut runtime = started_runtime();
-                let input = CommandInput::new(mutated.len() as u32, mutated);
-                let parsed = parse_command(&input).expect("the header parses");
-                let _ = serialize_response(&dispatch(
-                    &mut runtime,
-                    &parsed,
-                    CancellationToken::disabled(),
-                ));
-            }
-        }
+        for_each_mutation(
+            "TPM2_PCR_Event",
+            prefix_bit_flips(&valid, valid.len(), 6, false),
+            |bytes| {
+                dispatch_ignoring_result(&mut started_runtime(), bytes);
+            },
+        );
     }
 
     #[test]
@@ -1025,18 +933,10 @@ mod tests {
     }
 
     #[track_caller]
-    fn reload(state: &OwnedPersistentState) -> OwnedPersistentState {
-        let blob = persistent_all_store(state).expect("the state serializes");
-        let envelope = PersistentAllEnvelope::parse(&blob).expect("envelope parses");
-        let decoded = parse_persistent_all_payload(&envelope).expect("payload parses");
-        materialize_persistent_state(decoded).expect("materializes")
-    }
-
-    #[track_caller]
     fn rebooted_runtime(runtime: &Tpm2Runtime) -> Tpm2Runtime {
         let restored = reload(runtime.state.as_ref().expect("state present"));
         let mut rebooted = commit_restored_state(restored).expect("the persisted state restores");
-        rebooted.entropy = deterministic_entropy;
+        rebooted.entropy = ENTROPY;
         rebooted
     }
 
@@ -1073,7 +973,7 @@ mod tests {
             dispatch_bytes(&mut runtime, &authorized_event(0x4000_0001, ORACLE_EVENT)),
             vector("EVENT_HANDLE_OWNER")
         );
-        let wrong = password_session(TPM_RS_PW, &[], 0x00, b"wrong");
+        let wrong = auth_session(TPM_RS_PW, &[], 0x00, b"wrong");
         assert_eq!(
             dispatch_bytes(
                 &mut runtime,
@@ -1082,7 +982,7 @@ mod tests {
             vector("EVENT_WRONG_PASSWORD")
         );
 
-        let auth = empty_password_session();
+        let auth = pw_session(&[]);
         assert_eq!(
             dispatch_bytes(&mut runtime, &event_command(10, Some(&auth), &[0x00])),
             vector("EVENT_TRUNCATED_TPM2B")

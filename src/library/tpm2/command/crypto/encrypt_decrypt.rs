@@ -359,7 +359,7 @@ pub(in crate::library::tpm2) mod replay {
     }
 
     pub(in crate::library::tpm2) use crate::library::tpm2::object_load::replay::{
-        cap_cc, clock, framed, load_external, password_area, plain, tpm2b,
+        clock, framed, load_external, password_area, plain, tpm2b,
     };
     pub(in crate::library::tpm2) use crate::library::tpm2::sequence::replay::{
         RH_NULL, RH_OWNER, create_primary,
@@ -370,10 +370,15 @@ pub(in crate::library::tpm2) mod replay {
 mod tests {
     use super::replay::*;
     use crate::library::tpm2::clock::SteppingClock;
-    use crate::library::tpm2::command::core::registry::{
-        self, CommandLifecycle, HandleKind, NvAccess,
+    use crate::library::tpm2::object_load::replay::exec_raw;
+
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, occupied, prefix_bit_flips,
     };
-    use crate::library::tpm2::object::ATTR_OCCUPIED;
+    use crate::library::tpm2::command::crypto::test_support::{
+        failed_tries, plain32, rsa_public, session_nonce,
+    };
+
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
     const TPM_ALG_AES: u16 = 0x0006;
@@ -394,7 +399,6 @@ mod tests {
     const SYM_RESTRICTED: u32 = 0x0003_0472;
     const EXTERNAL_BOTH: u32 = 0x0006_0440;
     const HMAC_KEY_ATTR: u32 = 0x0004_0452;
-    const RSA_ATTR: u32 = 0x0004_0472;
 
     const HANDLE: u32 = 0x8000_0000;
 
@@ -420,14 +424,6 @@ mod tests {
 
     fn iv8() -> Vec<u8> {
         iv16()[..8].to_vec()
-    }
-
-    fn plain32() -> Vec<u8> {
-        vec![
-            0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93,
-            0x17, 0x2a, 0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c, 0x9e, 0xb7, 0x6f, 0xac,
-            0x45, 0xaf, 0x8e, 0x51,
-        ]
     }
 
     fn plain20() -> Vec<u8> {
@@ -476,24 +472,6 @@ mod tests {
         ]
     }
 
-    fn occupied(runtime: &Tpm2Runtime) -> Vec<bool> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .map(|object| object.attributes & ATTR_OCCUPIED != 0)
-            .collect()
-    }
-
-    fn failed_tries(runtime: &Tpm2Runtime) -> u32 {
-        runtime
-            .state
-            .as_ref()
-            .expect("decoded state")
-            .persistent
-            .failed_tries
-    }
-
     fn fresh_clock() -> SteppingClock {
         clock()
     }
@@ -511,79 +489,32 @@ mod tests {
     }
 
     #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = registry::find(CC_ENCRYPT_DECRYPT).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0200_0164);
-        assert_eq!(descriptor.decrypt_size, 0, "decrypt is not a sized buffer");
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-
-        let descriptor = registry::find(CC_ENCRYPT_DECRYPT2).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0200_0193);
-        assert_eq!(descriptor.decrypt_size, 2, "inData leads the parameters");
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = fresh_clock();
-        let mut runtime = base(&clock);
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_ENCRYPT_DECRYPT",
-            cap_cc(CC_ENCRYPT_DECRYPT),
-        );
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_ENCRYPT_DECRYPT2",
-            cap_cc(CC_ENCRYPT_DECRYPT2),
-        );
-        let mut payload = 2u32.to_be_bytes().to_vec();
-        payload.extend_from_slice(&CC_ENCRYPT_DECRYPT.to_be_bytes());
-        payload.extend_from_slice(&3u32.to_be_bytes());
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_FROM_ENCRYPT_DECRYPT",
-            plain(0x0000_017a, &payload),
-        );
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
-        exec(
-            &mut runtime,
-            &clock,
-            "ED_BEFORE_STARTUP",
-            encrypt_decrypt(HANDLE, false, TPM_ALG_NULL, &iv16(), &plain32()[..16]),
+        assert_scenario_response(
+            "TPM2_EncryptDecrypt before TPM2_Startup: encrypt-decrypt ED_BEFORE_STARTUP",
+            vector("ED_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    encrypt_decrypt(HANDLE, false, TPM_ALG_NULL, &iv16(), &plain32()[..16]),
+                )
+            },
         );
-        exec(
-            &mut runtime,
-            &clock,
-            "ED2_BEFORE_STARTUP",
-            encrypt_decrypt2(HANDLE, &plain32()[..16], false, TPM_ALG_NULL, &iv16()),
+        assert_scenario_response(
+            "TPM2_EncryptDecrypt2 before TPM2_Startup: encrypt-decrypt ED2_BEFORE_STARTUP",
+            vector("ED2_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    encrypt_decrypt2(HANDLE, &plain32()[..16], false, TPM_ALG_NULL, &iv16()),
+                )
+            },
         );
     }
 
@@ -988,19 +919,6 @@ mod tests {
         out
     }
 
-    fn rsa_public() -> Vec<u8> {
-        let mut out = 0x0001u16.to_be_bytes().to_vec();
-        out.extend_from_slice(&0x000bu16.to_be_bytes());
-        out.extend_from_slice(&RSA_ATTR.to_be_bytes());
-        out.extend_from_slice(&tpm2b(&[]));
-        out.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
-        out.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
-        out.extend_from_slice(&2048u16.to_be_bytes());
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out.extend_from_slice(&tpm2b(&[]));
-        out
-    }
-
     #[test]
     fn malformed_request_indexed_error_reporting() {
         let clock = fresh_clock();
@@ -1318,12 +1236,6 @@ mod tests {
         plain(CC_START_AUTH_SESSION, &payload)
     }
 
-    fn session_nonce(response: &[u8]) -> Vec<u8> {
-        let body = &response[14..];
-        let size = usize::from(u16::from_be_bytes([body[0], body[1]]));
-        body[2..2 + size].to_vec()
-    }
-
     fn parameter_cipher(nonce_tpm: &[u8], data: &[u8]) -> Vec<u8> {
         let material = crate::library::tpm2::crypto::kdfa(
             0x000b,
@@ -1558,25 +1470,23 @@ mod tests {
                 &key16(),
             ),
         );
-        for valid in [
-            encrypt_decrypt(HANDLE, false, TPM_ALG_NULL, &iv16(), &plain32()[..16]),
-            encrypt_decrypt2(HANDLE, &plain32()[..16], false, TPM_ALG_NULL, &iv16()),
+        for (case, valid) in [
+            (
+                "TPM2_EncryptDecrypt",
+                encrypt_decrypt(HANDLE, false, TPM_ALG_NULL, &iv16(), &plain32()[..16]),
+            ),
+            (
+                "TPM2_EncryptDecrypt2",
+                encrypt_decrypt2(HANDLE, &plain32()[..16], false, TPM_ALG_NULL, &iv16()),
+            ),
         ] {
-            for length in 10..=valid.len() {
-                for index in 10..length {
-                    for flip in [0x01u8, 0x80, 0xff] {
-                        let mut mutated = valid[..length].to_vec();
-                        mutated[index] ^= flip;
-                        let size = (mutated.len() as u32).to_be_bytes();
-                        mutated[2..6].copy_from_slice(&size);
-                        let _ = crate::library::tpm2::object_load::replay::exec_raw(
-                            &mut runtime,
-                            &clock,
-                            mutated,
-                        );
-                    }
-                }
-            }
+            for_each_mutation(case, prefix_bit_flips(&valid, 10, 10, true), |bytes| {
+                let _ = crate::library::tpm2::object_load::replay::exec_raw(
+                    &mut runtime,
+                    &clock,
+                    bytes,
+                );
+            });
         }
     }
 }

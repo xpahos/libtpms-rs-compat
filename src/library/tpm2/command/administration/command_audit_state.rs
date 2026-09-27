@@ -248,7 +248,7 @@ mod tests {
         ALG_NULL, ALG_RSASSA, ALG_SHA256, CC_CERTIFY, CC_GET_COMMAND_AUDIT_DIGEST, CC_GET_RANDOM,
         CC_QUOTE, CC_START_AUTH_SESSION, HMAC_SESSION, NONCE_CALLER, QUALIFY, SIGN_ATTRS,
         TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, audited_get_random, command, create_primary,
-        pw, ready_runtime, rsa_template, run, run_ok, sig_scheme, tpm2b,
+        get_random, pw, ready_runtime, rsa_template, run, run_ok, sig_scheme, tpm2b,
     };
     use crate::library::tpm2::command::core::registry::{
         TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, TPM_CC_SHUTDOWN,
@@ -278,10 +278,6 @@ mod tests {
             Some(&[pw()]),
             &parameters,
         )
-    }
-
-    fn get_random() -> Vec<u8> {
-        command(CC_GET_RANDOM, &[], None, &4u16.to_be_bytes())
     }
 
     #[track_caller]

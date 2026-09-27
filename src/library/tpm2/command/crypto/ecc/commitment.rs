@@ -162,15 +162,13 @@ pub(in crate::library::tpm2::command) fn execute_ephemeral(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        AuthRole, CommandLifecycle, HandleKind, NvAccess, TPM_CC_COMMIT, TPM_CC_EC_EPHEMERAL, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{dispatch_bytes, response_parameters};
     use crate::library::tpm2::command::crypto::ecc::key::test_support::{
         ATTR_SIGN, CC_COMMIT, CC_EC_EPHEMERAL, CURVE_P256, CURVE_P384, H0, KDF_NULL, KEYED_AUTH,
-        PRIVATE_SCALAR, SCHEME_ECDAA, SCHEME_NULL, SHA256, cmd, ecc_private, ecc_public, expect,
+        PRIVATE_SCALAR, SCHEME_ECDAA, SHA256, cmd, ecc_private, ecc_public, expect,
         generator_multiple, keyed_object, load_external, off_curve_point, point2b, public_point,
-        pw, raw_point2b, ready, ready_with, restored, tpm2b,
+        pw, raw_point2b, ready, ready_with, restored, sign_key, tpm2b,
     };
     use crate::library::tpm2::crypto::{Hasher, curve_parameters};
     use crate::library::tpm2::ecc::point_is_on_curve;
@@ -191,21 +189,6 @@ mod tests {
             tpm2b(&[])
         };
         load_external(&sensitive, &public)
-    }
-
-    fn sign_key() -> Vec<u8> {
-        let point = public_point();
-        load_external(
-            &ecc_private(&PRIVATE_SCALAR, &[]),
-            &ecc_public(
-                ATTR_SIGN,
-                &SCHEME_NULL,
-                CURVE_P256,
-                &KDF_NULL,
-                &point.x,
-                &point.y,
-            ),
-        )
     }
 
     fn commit(p1: &[u8], s2: &[u8], y2: &[u8]) -> Vec<u8> {
@@ -281,27 +264,6 @@ mod tests {
             }
         }
         panic!("no non-residue found");
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let commit = find(TPM_CC_COMMIT).expect("TPM2_Commit is registered");
-        assert_eq!(commit.attributes, 0x0200_018b);
-        assert_eq!((commit.decrypt_size, commit.encrypt_size), (2, 2));
-        assert_eq!(commit.handles.len(), 1);
-        assert!(commit.handles[0].user_auth);
-        assert!(matches!(commit.handles[0].kind, HandleKind::Object));
-        assert!(commit.handles[0].role == AuthRole::User);
-        assert!(matches!(commit.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            commit.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-
-        let ephemeral = find(TPM_CC_EC_EPHEMERAL).expect("TPM2_EC_Ephemeral is registered");
-        assert_eq!(ephemeral.attributes, 0x0000_018e);
-        assert_eq!((ephemeral.decrypt_size, ephemeral.encrypt_size), (0, 2));
-        assert!(ephemeral.handles.is_empty());
     }
 
     #[test]

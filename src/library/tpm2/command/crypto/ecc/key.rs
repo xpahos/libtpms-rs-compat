@@ -48,7 +48,7 @@ pub(super) mod test_support {
     use crate::library::tpm2::{attach_volatile_blob_for_test, restore_permanent_blob_for_test};
 
     pub(in crate::library::tpm2::command) use crate::library::tpm2::command::core::test_support::{
-        dispatch_bytes, response_code,
+        dispatch_bytes, response_code, tpm2b,
     };
 
     pub(in crate::library::tpm2::command) const TPM_RH_NULL: u32 = 0x4000_0007;
@@ -92,12 +92,6 @@ pub(super) mod test_support {
     ];
     pub(in crate::library::tpm2::command) const KEY_AUTH: &[u8] = b"ecc";
     pub(in crate::library::tpm2::command) const KEYED_AUTH: &[u8] = b"ext-auth";
-
-    pub(in crate::library::tpm2::command) fn tpm2b(bytes: &[u8]) -> Vec<u8> {
-        let mut out = (bytes.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(bytes);
-        out
-    }
 
     pub(in crate::library::tpm2::command) fn point2b(point: &EccPoint) -> Vec<u8> {
         let mut inner = tpm2b(&point.x);
@@ -210,6 +204,36 @@ pub(super) mod test_support {
 
     pub(in crate::library::tpm2::command) fn public_point() -> EccPoint {
         point_multiply(CURVE_P256, None, &PRIVATE_SCALAR).expect("the public point")
+    }
+
+    pub(in crate::library::tpm2::command) fn sign_key() -> Vec<u8> {
+        let point = public_point();
+        load_external(
+            &ecc_private(&PRIVATE_SCALAR, &[]),
+            &ecc_public(
+                ATTR_SIGN,
+                &SCHEME_NULL,
+                CURVE_P256,
+                &KDF_NULL,
+                &point.x,
+                &point.y,
+            ),
+        )
+    }
+
+    pub(in crate::library::tpm2::command) fn decrypt_key(auth: &[u8]) -> Vec<u8> {
+        let point = public_point();
+        load_external(
+            &ecc_private(&PRIVATE_SCALAR, auth),
+            &ecc_public(
+                ATTR_DECRYPT,
+                &SCHEME_NULL,
+                CURVE_P256,
+                &KDF_NULL,
+                &point.x,
+                &point.y,
+            ),
+        )
     }
 
     pub(in crate::library::tpm2::command) fn generator_multiple(scalar: u64) -> EccPoint {
@@ -346,8 +370,8 @@ mod tests {
         CC_ECC_PARAMETERS, CC_ECDH_KEYGEN, CC_ECDH_ZGEN, CC_STARTUP, CC_ZGEN_2PHASE, CURVE_P256,
         CURVE_P384, H0, KDF_NULL, KDF1_SHA256, KDF2_SHA256, KDF2_SHA384, KEY_AUTH, KEYED_AUTH,
         PRIVATE_SCALAR, SCHEME_ECDAA, SCHEME_ECDH, SCHEME_NULL, SHA256, SHA384, TPM_RH_NULL, cmd,
-        ecc_private, ecc_public, expect, framed, generator_multiple, keyed_object, load_external,
-        point2b, public_point, pw, raw_point2b, ready, ready_with, rebooted, tpm2b,
+        decrypt_key, ecc_private, ecc_public, expect, framed, generator_multiple, keyed_object,
+        load_external, point2b, public_point, pw, raw_point2b, ready, ready_with, rebooted, tpm2b,
     };
     use crate::library::tpm2::algorithm::TPM_ALG_ECDH;
     use crate::library::tpm2::command::core::registry::{
@@ -355,13 +379,12 @@ mod tests {
         TPM_CC_ECC_PARAMETERS, TPM_CC_ECDH_KEY_GEN, TPM_CC_ECDH_ZGEN, TPM_CC_ZGEN_2_PHASE, find,
     };
     use crate::library::tpm2::command::core::test_support::{
-        dispatch_bytes, response_code, response_parameters,
+        all_algorithms, dispatch_bytes, response_code, response_parameters,
     };
     use crate::library::tpm2::command::upstream_implements;
     use crate::library::tpm2::commit::CommitState;
 
     const CC_START_AUTH_SESSION: u32 = 0x0000_0176;
-    const TPM_CAP_COMMANDS: u32 = 2;
     const ECC_COMMANDS: [u32; 8] = [
         TPM_CC_ECDH_ZGEN,
         TPM_CC_ECDH_KEY_GEN,
@@ -372,13 +395,6 @@ mod tests {
         TPM_CC_ECC_ENCRYPT,
         TPM_CC_ECC_DECRYPT,
     ];
-
-    fn get_capability(capability: u32, property: u32, count: u32) -> Vec<u8> {
-        let mut payload = capability.to_be_bytes().to_vec();
-        payload.extend_from_slice(&property.to_be_bytes());
-        payload.extend_from_slice(&count.to_be_bytes());
-        framed(0x8001, 0x0000_017a, &payload)
-    }
 
     fn ecdh_key() -> Vec<u8> {
         let point = public_point();
@@ -408,44 +424,6 @@ mod tests {
         for code in ECC_COMMANDS {
             assert!(upstream_implements(code), "code {code:#x}");
             assert!(find(code).is_some(), "code {code:#x} is registered");
-        }
-    }
-
-    #[test]
-    fn capability_record_new_command_coverage() {
-        let mut runtime = ready();
-        for code in ECC_COMMANDS {
-            expect(
-                &mut runtime,
-                &format!("CCATTR_{:04X}", code),
-                &get_capability(TPM_CAP_COMMANDS, code, 1),
-            );
-        }
-    }
-
-    #[test]
-    fn capability_listing_numeric_order() {
-        let mut runtime = ready();
-        for (record, first, count) in [
-            ("CCLIST_FROM_ZGEN", TPM_CC_ECDH_ZGEN, 4),
-            ("CCLIST_FROM_COMMIT", TPM_CC_COMMIT, 6),
-            ("CCLIST_FROM_ECC_ENCRYPT", TPM_CC_ECC_ENCRYPT, 4),
-        ] {
-            let response = expect(
-                &mut runtime,
-                record,
-                &get_capability(TPM_CAP_COMMANDS, first, count),
-            );
-            let parameters = response_parameters(&response);
-            let codes: Vec<u32> = parameters[9..]
-                .chunks_exact(4)
-                .map(|entry| u32::from_be_bytes(entry.try_into().expect("four bytes")) & 0xffff)
-                .collect();
-            assert_eq!(codes[0], first & 0xffff, "{record} starts at its own code");
-            assert!(
-                codes.windows(2).all(|pair| pair[0] < pair[1]),
-                "{record} stays in numeric order"
-            );
         }
     }
 
@@ -684,11 +662,6 @@ mod tests {
         runtime
     }
 
-    fn all_algorithms() -> String {
-        String::from_utf8(crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE.to_vec())
-            .expect("an ascii algorithm list")
-    }
-
     #[test]
     fn profile_gate_kdf_rejection() {
         const TPM_RC_TYPE_CODE: u32 = 0x0000_008a;
@@ -782,21 +755,6 @@ mod tests {
         )
     }
 
-    fn decrypt_key() -> Vec<u8> {
-        let point = public_point();
-        load_external(
-            &ecc_private(&PRIVATE_SCALAR, &[]),
-            &ecc_public(
-                ATTR_DECRYPT,
-                &SCHEME_NULL,
-                CURVE_P256,
-                &KDF_NULL,
-                &point.x,
-                &point.y,
-            ),
-        )
-    }
-
     fn commit_packet(p1: &[u8], s2: &[u8], y2: &[u8]) -> Vec<u8> {
         let mut parameters = p1.to_vec();
         parameters.extend_from_slice(&tpm2b(s2));
@@ -853,7 +811,7 @@ mod tests {
         let cases = [
             (
                 "TPM2_ECDH_ZGen",
-                vec![decrypt_key()],
+                vec![decrypt_key(&[])],
                 cmd(
                     CC_ECDH_ZGEN,
                     &[H0],
@@ -864,7 +822,7 @@ mod tests {
             ),
             (
                 "TPM2_ECDH_KeyGen",
-                vec![decrypt_key()],
+                vec![decrypt_key(&[])],
                 cmd(CC_ECDH_KEYGEN, &[H0], None, &[]),
                 vec![TPM_ALG_ECDH],
             ),
@@ -882,7 +840,7 @@ mod tests {
             ),
             (
                 "TPM2_ECC_Encrypt",
-                vec![decrypt_key()],
+                vec![decrypt_key(&[])],
                 {
                     let mut parameters = tpm2b(b"gate");
                     parameters.extend_from_slice(&KDF2_SHA384);
@@ -893,7 +851,7 @@ mod tests {
             (
                 "TPM2_ZGen_2Phase",
                 vec![
-                    decrypt_key(),
+                    decrypt_key(&[]),
                     cmd(CC_EC_EPHEMERAL, &[], None, &CURVE_P256.to_be_bytes()),
                 ],
                 two_phase(0),
@@ -961,7 +919,7 @@ mod tests {
         let cases = [
             (
                 "TPM2_ECDH_ZGen",
-                vec![decrypt_key()],
+                vec![decrypt_key(&[])],
                 cmd(
                     CC_ECDH_ZGEN,
                     &[H0],
@@ -971,7 +929,7 @@ mod tests {
             ),
             (
                 "TPM2_ECDH_KeyGen",
-                vec![decrypt_key()],
+                vec![decrypt_key(&[])],
                 cmd(CC_ECDH_KEYGEN, &[H0], None, &[]),
             ),
             (
@@ -984,7 +942,7 @@ mod tests {
                 vec![ecdaa_key()],
                 commit_packet(&raw_point2b(&[], &[]), &s2, &y2),
             ),
-            ("TPM2_ECC_Encrypt", vec![decrypt_key()], {
+            ("TPM2_ECC_Encrypt", vec![decrypt_key(&[])], {
                 let mut parameters = tpm2b(b"gate");
                 parameters.extend_from_slice(&KDF2_SHA256);
                 cmd(CC_ECC_ENCRYPT, &[H0], None, &parameters)
@@ -992,7 +950,7 @@ mod tests {
             (
                 "TPM2_ZGen_2Phase",
                 vec![
-                    decrypt_key(),
+                    decrypt_key(&[]),
                     cmd(CC_EC_EPHEMERAL, &[], None, &CURVE_P256.to_be_bytes()),
                 ],
                 two_phase(0),

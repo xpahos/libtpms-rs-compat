@@ -9,12 +9,10 @@ mod test_support;
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        Host, RC_COMMAND_CODE, RC_SUCCESS, RC_VALUE_P2, TPM_CAP_ACT, TPM_CAP_COMMANDS,
-        TPM_CAP_PP_COMMANDS, TPM_CC_ACT_SET_TIMEOUT, TPM_CC_CLOCK_RATE_ADJUST, TPM_CC_CLOCK_SET,
-        TPM_CC_PCR_SET_AUTH_VALUE, TPM_CC_PP_COMMANDS, TPM_CC_READ_CLOCK, TPM_CC_SET_ALGORITHM_SET,
-        TPM_RH_ACT_0, TPM_RH_PLATFORM, act_set_timeout, assert_unchanged, cap_pp_commands,
-        capability_codes, expect, get_capability, manufactured, ready, replay_clock, restored,
-        snapshot,
+        Host, RC_COMMAND_CODE, RC_SUCCESS, RC_VALUE_P2, TPM_CAP_ACT, TPM_CAP_PP_COMMANDS,
+        TPM_CC_ACT_SET_TIMEOUT, TPM_RH_ACT_0, TPM_RH_PLATFORM, act_set_timeout, assert_unchanged,
+        cap_pp_commands, capability_codes, expect, get_capability, manufactured, ready,
+        replay_clock, restored, snapshot,
     };
     use crate::library::tpm2::capability::single::{LookupError, lookup};
     use crate::library::tpm2::command::core::registry::{TPM_CC_ECC_ENCRYPT, find};
@@ -180,28 +178,6 @@ mod tests {
                 .expect("the capability lookup answers")
                 != Vec::<u8>::new();
             assert_eq!(reported, listed.contains(&code), "code {code:#x}");
-        }
-    }
-
-    #[test]
-    fn group_command_attributes_reference_match() {
-        let clock = replay_clock();
-        let mut runtime = ready(&clock);
-        for (record, code) in [
-            ("CCATTR_0128", TPM_CC_CLOCK_SET),
-            ("CCATTR_012D", TPM_CC_PP_COMMANDS),
-            ("CCATTR_0130", TPM_CC_CLOCK_RATE_ADJUST),
-            ("CCATTR_013F", TPM_CC_SET_ALGORITHM_SET),
-            ("CCATTR_0181", TPM_CC_READ_CLOCK),
-            ("CCATTR_0183", TPM_CC_PCR_SET_AUTH_VALUE),
-            ("CCATTR_0198", TPM_CC_ACT_SET_TIMEOUT),
-        ] {
-            expect(
-                &mut runtime,
-                &clock,
-                record,
-                &get_capability(TPM_CAP_COMMANDS, code, 1),
-            );
         }
     }
 }

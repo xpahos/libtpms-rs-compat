@@ -38,9 +38,7 @@ pub(in crate::library::tpm2::command) fn execute(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, NvAccess, TPM_CC_EC_EPHEMERAL, TPM_CC_ECC_PARAMETERS, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{dispatch_bytes, response_parameters};
     use crate::library::tpm2::command::crypto::ecc::key::test_support::{
         CC_ECC_PARAMETERS, CURVE_P256, cmd, expect, framed, pw, ready,
@@ -60,26 +58,6 @@ mod tests {
 
     fn parameters(curve: u16) -> Vec<u8> {
         cmd(CC_ECC_PARAMETERS, &[], None, &curve.to_be_bytes())
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = find(TPM_CC_ECC_PARAMETERS).expect("TPM2_ECC_Parameters is registered");
-        assert_eq!(descriptor.attributes, 0x0000_0178);
-        assert_eq!(descriptor.decrypt_size, 0);
-        assert_eq!(descriptor.encrypt_size, 0);
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert!(descriptor.handles.is_empty(), "no command handles");
-        assert_eq!(
-            find(TPM_CC_EC_EPHEMERAL).expect("registered").attributes,
-            0x0000_018e
-        );
     }
 
     #[test]

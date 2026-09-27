@@ -694,12 +694,6 @@ pub(in crate::library::tpm2) fn any_object_image(
     Ok(w.out)
 }
 
-// TODO: Report the mismatch upstream: NvFlushHierarchy() reads
-// `sizeof(OBJECT_ATTRIBUTES)` bytes at `offsetof(OBJECT, attributes)` of a
-// stored evict object, but libtpms stores evict objects through
-// NvObjectToBuffer(). Only the legacy RSA3072 image starts with the attribute
-// word; the ANY_OBJECT image starts with its NV_HEADER, so the hierarchy bits
-// read there are always clear.
 pub(in crate::library::tpm2) fn stored_object_attributes(
     object: &OwnedAnyObject,
     object_format: PersistentObjectFormat,
@@ -1031,27 +1025,11 @@ mod tests {
         CompatTailFixture, OrderlyFixture, PersistentAllEnvelope, PrefixFixture,
         materialize_persistent_state,
     };
+    use crate::library::tpm2::test_support::{envelope_v4_with_profile, envelope_with_payload};
     use crate::library::tpm2::{
         audit, compile_constants, lockout, object, parse_persistent_all_payload, pp_list,
         remaining_sections_with_su_state, valid_permanent_state_fixture,
     };
-
-    fn envelope_with_payload(payload: &[u8]) -> Vec<u8> {
-        let mut blob = vec![0x00, 0x03, 0xab, 0x36, 0x47, 0x23, 0x00, 0x01];
-        blob.extend_from_slice(payload);
-        blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
-        blob
-    }
-
-    fn envelope_v4_with_profile(profile: &[u8], payload: &[u8]) -> Vec<u8> {
-        let mut blob = vec![0x00, 0x04, 0xab, 0x36, 0x47, 0x23, 0x00, 0x04];
-        blob.extend_from_slice(&u16::try_from(profile.len() + 1).unwrap().to_be_bytes());
-        blob.extend_from_slice(profile);
-        blob.push(0);
-        blob.extend_from_slice(payload);
-        blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
-        blob
-    }
 
     fn simple_payload(orderly_state: u16, sections: Vec<u8>) -> Vec<u8> {
         let mut payload = compile_constants::marshalled_section(3);

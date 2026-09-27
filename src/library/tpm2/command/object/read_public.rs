@@ -36,29 +36,18 @@ pub(in crate::library::tpm2::command) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_READ_PUBLIC, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, framed, response_code,
+        RC_SUCCESS, command, dispatch_bytes, framed, response_code, restored_snapshot,
     };
     use crate::library::tpm2::golden_responses::read_public_verify_signature::vector;
     use crate::library::tpm2::object::{ATTR_EVICT, ATTR_OCCUPIED};
-    use crate::library::tpm2::{attach_volatile_blob_for_test, restore_permanent_blob_for_test};
 
     const TPM_CC: u32 = 0x0000_0173;
 
     #[track_caller]
     fn restored(snapshot: &str) -> Tpm2Runtime {
-        let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
-            .expect("the oracle permanent state restores");
-        attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
-            .expect("the oracle volatile state attaches");
-        assert!(
-            runtime.startup_received,
-            "the snapshot is past TPM2_Startup"
-        );
-        runtime
+        restored_snapshot(vector, snapshot)
     }
 
     #[track_caller]
@@ -74,42 +63,6 @@ mod tests {
             vector(record),
             "{record} from {snapshot}"
         );
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_0173");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        assert_eq!(TPM_CC_READ_PUBLIC, TPM_CC);
-        let descriptor = find(TPM_CC_READ_PUBLIC).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0200_0173);
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "TPM2_ReadPublic does not use NV"
-        );
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn object_handle_no_authorization() {
-        let descriptor = find(TPM_CC_READ_PUBLIC).expect("a registered command");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(
-            !descriptor.handles[0].user_auth,
-            "upstream declares no HANDLE_1_USER for TPM2_ReadPublic"
-        );
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
     }
 
     #[test]

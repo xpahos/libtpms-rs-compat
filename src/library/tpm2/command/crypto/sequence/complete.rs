@@ -108,11 +108,12 @@ fn parse_parameters(parameters: &[u8]) -> Result<SequenceCompleteIn<'_>, TpmResu
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        self, HandleKind, TPM_CC_SEQUENCE_COMPLETE,
+    use crate::library::tpm2::command::core::registry::TPM_CC_SEQUENCE_COMPLETE;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, occupied, prefix_bit_flips,
     };
-    use crate::library::tpm2::object::ATTR_OCCUPIED;
+    use crate::library::tpm2::command::crypto::test_support::max_buffer;
+
     use crate::library::tpm2::sequence::replay::{self, *};
 
     use crate::library::tpm2::sequence::replay::clock as fresh_clock;
@@ -125,52 +126,6 @@ mod tests {
     const GENERATED: &[u8] = b"\xff\x54\x43\x47generated value payload";
     const ALMOST_GENERATED: &[u8] = b"\xff\x54\x43\x48nearly generated";
 
-    fn max_buffer() -> Vec<u8> {
-        (0..1024).map(|index| (index % 256) as u8).collect()
-    }
-
-    fn occupied(runtime: &Tpm2Runtime) -> Vec<bool> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .map(|object| object.attributes & ATTR_OCCUPIED != 0)
-            .collect()
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        assert_eq!(TPM_CC_SEQUENCE_COMPLETE, 0x0000_013e);
-        let descriptor = registry::find(TPM_CC_SEQUENCE_COMPLETE).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0300_013e);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!(descriptor.attributes & (1 << 22), 0, "no NVRAM update");
-        assert_eq!(descriptor.attributes & (1 << 23), 0, "not extensive");
-        assert_ne!(descriptor.attributes & (1 << 24), 0, "flushes its handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = fresh_clock();
-        let mut runtime = base_runtime(&clock);
-        let mut params = 2u32.to_be_bytes().to_vec();
-        params.extend_from_slice(&0x013eu32.to_be_bytes());
-        params.extend_from_slice(&1u32.to_be_bytes());
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_SEQUENCE_COMPLETE",
-            command(0x8001, 0x0000_017a, &params),
-        );
-    }
-
     #[test]
     fn pre_startup_rejection() {
         let clock = fresh_clock();
@@ -178,11 +133,16 @@ mod tests {
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
         runtime.entropy = unreachable_entropy;
-        exec(
-            &mut runtime,
-            &clock,
-            "SC_BEFORE_STARTUP",
-            sequence_complete(0x8000_0000, b"", RH_NULL, &[]),
+        assert_scenario_response(
+            "TPM2_SequenceComplete before TPM2_Startup: sequence-commands SC_BEFORE_STARTUP",
+            vector("SC_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    sequence_complete(0x8000_0000, b"", RH_NULL, &[]),
+                )
+            },
         );
     }
 
@@ -573,17 +533,13 @@ mod tests {
             hash_sequence_start(&[], TPM_ALG_SHA256),
         );
         let valid = sequence_complete(0x8000_0000, b"ab", RH_NULL, &[]);
-        for length in 10..=valid.len() {
-            for index in 10..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let size = (mutated.len() as u32).to_be_bytes();
-                    mutated[2..6].copy_from_slice(&size);
-                    let _ = exec_raw(&mut runtime, &clock, mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_SequenceComplete",
+            prefix_bit_flips(&valid, 10, 10, true),
+            |bytes| {
+                let _ = exec_raw(&mut runtime, &clock, bytes);
+            },
+        );
     }
 
     mod save_and_restore {

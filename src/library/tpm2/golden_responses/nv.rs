@@ -38,7 +38,9 @@ pub(in crate::library::tpm2) fn certify_vectors() -> Vec<GoldenVector<'static>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::golden_responses::golden_fixture;
+    use crate::library::tpm2::golden_responses::{
+        assert_command_responses_well_formed, golden_fixture,
+    };
 
     golden_fixture! {
         module: command_fixture,
@@ -58,21 +60,7 @@ mod tests {
 
     #[test]
     fn well_formed_command_responses() {
-        for vector in nv_vectors()
-            .into_iter()
-            .chain(certify_vectors())
-            .filter(|vector| !vector.name.starts_with("PERMALL"))
-        {
-            assert!(vector.bytes.len() >= 10, "{}", vector.name);
-            let tag = u16::from_be_bytes([vector.bytes[0], vector.bytes[1]]);
-            assert!(
-                tag == 0x8001 || tag == 0x8002,
-                "{} carries a response tag, found {tag:#06x}",
-                vector.name
-            );
-            let size =
-                u32::from_be_bytes(vector.bytes[2..6].try_into().expect("four bytes")) as usize;
-            assert_eq!(size, vector.bytes.len(), "{}", vector.name);
-        }
+        assert_command_responses_well_formed("NV command", &nv_vectors(), &["PERMALL"]);
+        assert_command_responses_well_formed("TPM2_NV_Certify", &certify_vectors(), &["PERMALL"]);
     }
 }

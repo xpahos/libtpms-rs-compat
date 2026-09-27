@@ -10,3 +10,6 @@ pub(super) mod signing_state;
 pub(super) mod stir_random;
 pub(super) mod test_parms;
 pub(super) mod verify_signature;
+
+#[cfg(test)]
+mod test_support;

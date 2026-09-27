@@ -1101,19 +1101,14 @@ mod tests {
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
 
-        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-            let len = buffer.len() as u8;
-            for (index, byte) in buffer.iter_mut().enumerate() {
-                *byte = (index as u8).wrapping_add(len) ^ 0x27;
-            }
-            Ok(())
-        }
+        const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+            crate::library::tpm2::test_support::counter_entropy::<0x27>;
 
         fn manufactured_runtime() -> Tpm2Runtime {
             let profile = validate_user_profile(None).unwrap();
-            let state = manufacture_state(profile, deterministic_entropy).unwrap();
+            let state = manufacture_state(profile, ENTROPY).unwrap();
             let mut runtime = commit_manufactured_state(state).unwrap();
-            runtime.entropy = deterministic_entropy;
+            runtime.entropy = ENTROPY;
             runtime
         }
 

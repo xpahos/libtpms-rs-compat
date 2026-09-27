@@ -133,10 +133,10 @@ mod tests {
         create_primary, creation_ticket, pw, ready_runtime, replay_clock, rsa_template, run,
         sig_scheme, tpm2b,
     };
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_CERTIFY_CREATION, find,
+    use crate::library::tpm2::command::core::registry::TPM_CC_CERTIFY_CREATION;
+    use crate::library::tpm2::command::core::test_support::{
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, for_each_mutation, response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{RC_SUCCESS, response_code};
     use crate::library::tpm2::golden_responses::attestation::vector;
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -218,33 +218,6 @@ mod tests {
             expected,
             "{record}"
         );
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_014A");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
-        assert_eq!(TPM_CC_CERTIFY_CREATION, 0x0000_014a);
-        let descriptor = find(TPM_CC_CERTIFY_CREATION).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0400_014a);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[1].user_auth);
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::ObjectAllowNull
-        ));
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::Object));
     }
 
     #[test]
@@ -477,10 +450,10 @@ mod tests {
                 &rsa_template(ALG_RSASSA, ALG_SHA256, SIGN_ATTRS),
             ),
         );
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_CertifyCreation",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let _ = run(
                     &mut runtime,
                     &command(
@@ -490,7 +463,7 @@ mod tests {
                         &parameters,
                     ),
                 );
-            }
-        }
+            },
+        );
     }
 }

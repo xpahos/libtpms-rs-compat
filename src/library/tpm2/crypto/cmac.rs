@@ -89,25 +89,14 @@ mod tests {
     use crate::library::tpm2::algorithm::{
         TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_NULL, TPM_ALG_TDES,
     };
-
-    fn unhex(text: &str) -> Vec<u8> {
-        let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).expect("hexadecimal"))
-            .collect()
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
+    use crate::library::tpm2::test_support::{hex, hex_string};
 
     #[track_caller]
     fn mac(algorithm: u16, key: &[u8], data: &[u8]) -> String {
         let mut state =
             CmacState::start(algorithm, (key.len() * 8) as u16, key).expect("a supported key");
         state.update(data).expect("the update succeeds");
-        hex(&state.finalize().expect("the digest completes"))
+        hex_string(&state.finalize().expect("the digest completes"))
     }
 
     const RFC_4493_KEY: &str = "2b7e151628aed2a6abf7158809cf4f3c";
@@ -121,8 +110,8 @@ mod tests {
 
     #[test]
     fn rfc_4493_aes_128_vector_match() {
-        let key = unhex(RFC_4493_KEY);
-        let message = unhex(SP800_38B_MESSAGE);
+        let key = hex(RFC_4493_KEY);
+        let message = hex(SP800_38B_MESSAGE);
         for (length, expected) in [
             (0usize, "bb1d6929e95937287fa37d129b756746"),
             (16, "070a16b46b4d4144f79bdd9dd04a287c"),
@@ -139,7 +128,7 @@ mod tests {
 
     #[test]
     fn sp800_38b_aes_192_256_vector_match() {
-        let message = unhex(SP800_38B_MESSAGE);
+        let message = hex(SP800_38B_MESSAGE);
         for (key, cases) in [
             (
                 SP800_38B_KEY_192,
@@ -160,7 +149,7 @@ mod tests {
                 ],
             ),
         ] {
-            let key = unhex(key);
+            let key = hex(key);
             for (length, expected) in cases {
                 assert_eq!(
                     mac(TPM_ALG_AES, &key, &message[..length]),
@@ -174,8 +163,8 @@ mod tests {
 
     #[test]
     fn supported_cipher_key_size_reference_match() {
-        let key = unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
-        let message = unhex(SP800_38B_MESSAGE);
+        let key = hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        let message = hex(SP800_38B_MESSAGE);
         let cases: [(u16, usize, usize, &str); 16] = [
             (TPM_ALG_AES, 16, 0, "97dd6e5a882cbd564c39ae7d1c5a31aa"),
             (TPM_ALG_AES, 16, 5, "893cb82d6abab924d7c503eefe541fc3"),
@@ -205,7 +194,7 @@ mod tests {
 
     #[test]
     fn incremental_update_one_shot_match() {
-        let key = unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        let key = hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         let message: Vec<u8> = (0..100u32).map(|index| index as u8).collect();
         for (algorithm, key_bytes) in [
             (TPM_ALG_AES, 16usize),
@@ -222,7 +211,7 @@ mod tests {
                 state.update(&message[..split]).expect("the first part");
                 state.update(&message[split..]).expect("the second part");
                 assert_eq!(
-                    hex(&state.finalize().expect("the digest completes")),
+                    hex_string(&state.finalize().expect("the digest completes")),
                     whole,
                     "alg {algorithm:#06x} key {key_bytes} split {split}"
                 );
@@ -233,7 +222,7 @@ mod tests {
                 state.update(chunk).expect("a chunk");
             }
             assert_eq!(
-                hex(&state.finalize().expect("the digest completes")),
+                hex_string(&state.finalize().expect("the digest completes")),
                 whole,
                 "alg {algorithm:#06x} key {key_bytes} in three-byte chunks"
             );

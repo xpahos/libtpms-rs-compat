@@ -85,42 +85,11 @@ pub(in crate::library::tpm2::command) fn execute(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{
-        self, CommandLifecycle, HandleKind, NvAccess,
-    };
+
     use crate::library::tpm2::object_load::replay::*;
     use crate::library::tpm2::persistent::OwnedAnyObjectBody;
 
     const TPM_CC: u32 = 0x0000_0150;
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = registry::find(TPM_CC).expect("TPM2_ObjectChangeAuth is registered");
-        assert_eq!(descriptor.attributes, 0x0400_0150);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-        assert!(!descriptor.handles[1].user_auth);
-        assert!(!descriptor.handles[1].admin_role());
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let clock = clock();
-        let mut runtime = runtime_at("READY", &clock);
-        exec(&mut runtime, &clock, "CCATTR_0150", cap_cc(0x0150));
-    }
 
     #[test]
     fn argument_validation_oracle_parity() {

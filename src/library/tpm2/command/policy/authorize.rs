@@ -202,32 +202,18 @@ fn parse_stored_policy(runtime: &Tpm2Runtime, stored: &[u8]) -> Result<(u16, Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, command, dispatch_bytes, response_code, response_parameters,
+        RC_SUCCESS, TAIL_BYTES, command, dispatch_bytes, for_each_mutation, response_code,
+        response_parameters, tpm2b, truncated_tail_replacements,
     };
     use crate::library::tpm2::command::policy::session::test_support::{
-        CC_POLICY_AUTH_VALUE, CC_POLICY_AUTHORIZE, CC_POLICY_AUTHORIZE_NV, CC_POLICY_GET_DIGEST,
-        POLICY_SESSION_0, restored, session_of,
+        CC_POLICY_AUTH_VALUE, CC_POLICY_AUTHORIZE, CC_POLICY_AUTHORIZE_NV, POLICY_SESSION_0,
+        digest, read_tpm2b, restored, session_of,
     };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
 
     const NV_INDEX: u32 = 0x0100_0000;
-
-    fn sized(payload: &[u8]) -> Vec<u8> {
-        let mut out = (payload.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(payload);
-        out
-    }
-
-    fn read_tpm2b(data: &[u8], offset: usize) -> (&[u8], usize) {
-        let size = usize::from(u16::from_be_bytes(
-            data[offset..offset + 2].try_into().expect("a size prefix"),
-        ));
-        (&data[offset + 2..offset + 2 + size], offset + 2 + size)
-    }
 
     fn signing_key_name() -> Vec<u8> {
         let parameters = response_parameters(vector("SIGNING_KEY_PUBLIC"));
@@ -243,7 +229,7 @@ mod tests {
     fn null_ticket() -> Vec<u8> {
         let mut out = TPM_ST_VERIFIED.to_be_bytes().to_vec();
         out.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
-        out.extend_from_slice(&sized(&[0x00; 64]));
+        out.extend_from_slice(&tpm2b(&[0x00; 64]));
         out
     }
 
@@ -253,9 +239,9 @@ mod tests {
         key_sign: &[u8],
         ticket: &[u8],
     ) -> Vec<u8> {
-        let mut out = sized(approved);
-        out.extend_from_slice(&sized(policy_ref));
-        out.extend_from_slice(&sized(key_sign));
+        let mut out = tpm2b(approved);
+        out.extend_from_slice(&tpm2b(policy_ref));
+        out.extend_from_slice(&tpm2b(key_sign));
         out.extend_from_slice(ticket);
         out
     }
@@ -279,56 +265,6 @@ mod tests {
                 extra,
             ),
         )
-    }
-
-    #[track_caller]
-    fn digest(runtime: &mut Tpm2Runtime) -> Vec<u8> {
-        dispatch_bytes(
-            runtime,
-            &command(CC_POLICY_GET_DIGEST, &[POLICY_SESSION_0], &[], &[]),
-        )
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        for (code, record, expected, handles, decrypt) in [
-            (
-                CC_POLICY_AUTHORIZE,
-                "CCATTR_016A",
-                0x0200_016au32,
-                1usize,
-                2u16,
-            ),
-            (CC_POLICY_AUTHORIZE_NV, "CCATTR_0192", 0x0600_0192, 3, 0),
-        ] {
-            let oracle = vector(record);
-            let attributes = u32::from_be_bytes(oracle[19..23].try_into().unwrap());
-            let descriptor = find(code).expect("a registered command");
-            assert_eq!(descriptor.attributes, attributes, "{record}");
-            assert_eq!(descriptor.attributes, expected, "{record}");
-            assert_eq!(descriptor.handles.len(), handles, "{record}");
-            assert_eq!(descriptor.decrypt_size, decrypt, "{record}");
-            assert_eq!(descriptor.encrypt_size, 0, "{record}");
-            assert!(descriptor.sessions_allowed, "{record}");
-            assert!(!descriptor.physical_presence, "{record}");
-            assert!(
-                matches!(descriptor.nv_access, NvAccess::Neither),
-                "{record}"
-            );
-            assert!(
-                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
-                "{record}"
-            );
-            assert!(matches!(
-                descriptor.handles.last().expect("a handle").kind,
-                HandleKind::PolicySession
-            ));
-        }
-        let authorize_nv = find(CC_POLICY_AUTHORIZE_NV).expect("a registered command");
-        assert!(matches!(authorize_nv.handles[0].kind, HandleKind::NvAuth));
-        assert!(authorize_nv.handles[0].user_auth);
-        assert!(matches!(authorize_nv.handles[1].kind, HandleKind::NvIndex));
-        assert!(!authorize_nv.handles[1].user_auth);
     }
 
     #[test]
@@ -479,15 +415,12 @@ mod tests {
                 &verified_ticket(),
             ),
         );
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("SIGNED_READY");
-                let _ = dispatch_bytes(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_PolicyAuthorize",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = dispatch_bytes(&mut restored("SIGNED_READY"), &bytes);
+            },
+        );
     }
 }

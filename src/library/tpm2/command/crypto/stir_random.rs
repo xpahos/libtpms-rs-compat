@@ -18,8 +18,6 @@ pub(in crate::library::tpm2::command) fn execute(
 ) -> Result<CommandOutput, TpmResult> {
     let in_data = parse_in_data(frame.parameters)?;
     match stir_random(runtime, in_data) {
-        // Upstream CryptRandomStir() answers TPM_RC_NO_RESULT when the
-        // entropy generator fails and TPM2_StirRandom() discards it.
         Ok(()) | Err(TPM_RC_NO_RESULT) => Ok(CommandOutput::empty()),
         Err(code) => Err(code),
     }
@@ -41,36 +39,23 @@ fn parse_in_data(parameters: &[u8]) -> Result<&[u8], TpmResult> {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
     use crate::library::constants::{TPM_FAIL, TPM_RC_FAILURE, TPM_RC_INITIALIZE};
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{TPM_CC_GET_RANDOM, TPM_CC_STIR_RANDOM};
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, error_response, hex, manufactured_runtime_with, process,
+        start,
+    };
+    use crate::library::tpm2::command::crypto::test_support::assert_live_drbg_unchanged;
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::crypto::{DRBG_MAGIC, DRBG_SEED_SIZE, DrbgStirCase, stir_record};
-    use crate::library::tpm2::manufacture::manufacture_state;
+
     use crate::library::tpm2::persistent::{OwnedDrbgState, OwnedSecret};
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
     use std::cell::RefCell;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x63>;
 
     const RC_INSUFFICIENT_IN_DATA: u32 = 0x1da;
     const RC_SIZE_IN_DATA: u32 = 0x1d5;
@@ -80,23 +65,6 @@ mod tests {
 
     const CONTINUOUS_TEST_PROFILE: &[u8] =
         br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
-
-    fn hex(s: &str) -> Vec<u8> {
-        let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x63;
-        }
-        Ok(())
-    }
 
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         Err(TPM_FAIL)
@@ -108,7 +76,7 @@ mod tests {
 
     fn recording_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
         ENTROPY_REQUESTS.with(|requests| requests.borrow_mut().push(buffer.len()));
-        deterministic_entropy(buffer)
+        ENTROPY(buffer)
     }
 
     fn take_entropy_requests() -> Vec<usize> {
@@ -116,34 +84,13 @@ mod tests {
     }
 
     fn manufactured_runtime(continuous_test: bool) -> Tpm2Runtime {
-        let profile = if continuous_test {
-            validate_user_profile(Some(CONTINUOUS_TEST_PROFILE)).expect("the profile validates")
-        } else {
-            validate_user_profile(None).expect("the null profile validates")
-        };
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
+        manufactured_runtime_with(continuous_test.then_some(CONTINUOUS_TEST_PROFILE), ENTROPY)
     }
 
     #[track_caller]
     fn started_runtime(continuous_test: bool) -> Tpm2Runtime {
         let mut runtime = manufactured_runtime(continuous_test);
-        let startup = hex("80010000000c0000014400 00");
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
+        start(&mut runtime);
         runtime
     }
 
@@ -165,12 +112,6 @@ mod tests {
         let mut out = hex("8001000000 0c");
         out.extend_from_slice(&TPM_CC_GET_RANDOM.to_be_bytes());
         out.extend_from_slice(&bytes_requested.to_be_bytes());
-        out
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
         out
     }
 
@@ -235,15 +176,6 @@ mod tests {
         );
         assert_eq!(state.persistent.orderly_state, before.orderly_state);
         assert_eq!(runtime.nv_memory, before.nv_memory);
-    }
-
-    #[track_caller]
-    fn assert_live_drbg_unchanged(runtime: &Tpm2Runtime, before: &OwnedDrbgState) {
-        let now = &runtime.live.orderly.drbg_state;
-        assert_eq!(now.seed.expose(), before.seed.expose());
-        assert_eq!(now.reseed_counter, before.reseed_counter);
-        assert_eq!(now.drbg_magic, before.drbg_magic);
-        assert_eq!(now.last_value, before.last_value);
     }
 
     #[test]

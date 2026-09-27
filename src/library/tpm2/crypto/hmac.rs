@@ -46,18 +46,7 @@ mod tests {
     use super::super::hash::COMPILED_HASHES;
     use super::*;
     use crate::library::tpm2::algorithm::{TPM_ALG_AES, TPM_ALG_NULL};
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-
-    fn unhex(text: &str) -> Vec<u8> {
-        let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).unwrap())
-            .collect()
-    }
+    use crate::library::tpm2::test_support::{hex, hex_string};
 
     fn mac_of(hash_alg: u16, key: &[u8], data: &[u8]) -> Vec<u8> {
         let mut state = HmacState::new(hash_alg, key).expect("a compiled algorithm");
@@ -88,11 +77,11 @@ mod tests {
         let key = b"Jefe";
         let data = b"what do ya want for nothing?";
         assert_eq!(
-            hex(&mac_of(TPM_ALG_SHA256, key, data)),
+            hex_string(&mac_of(TPM_ALG_SHA256, key, data)),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
         assert_eq!(
-            hex(&mac_of(TPM_ALG_SHA384, key, data)),
+            hex_string(&mac_of(TPM_ALG_SHA384, key, data)),
             "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e\
              8e2240ca5e69e2c78b3239ecfab21649"
                 .chars()
@@ -100,7 +89,7 @@ mod tests {
                 .collect::<String>()
         );
         assert_eq!(
-            hex(&mac_of(TPM_ALG_SHA512, key, data)),
+            hex_string(&mac_of(TPM_ALG_SHA512, key, data)),
             "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea250554\
              9758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737"
                 .chars()
@@ -112,7 +101,7 @@ mod tests {
     #[test]
     fn rfc_2202_sha1_case_2_vector_reproduction() {
         assert_eq!(
-            hex(&mac_of(
+            hex_string(&mac_of(
                 TPM_ALG_SHA1,
                 b"Jefe",
                 b"what do ya want for nothing?"
@@ -124,7 +113,7 @@ mod tests {
     #[test]
     fn long_key_reduction_rfc_4231_case_6() {
         assert_eq!(
-            hex(&mac_of(
+            hex_string(&mac_of(
                 TPM_ALG_SHA256,
                 &[0xaa; 131],
                 b"Test Using Larger Than Block-Size Key - Hash Key First"
@@ -175,7 +164,7 @@ mod tests {
     fn sha512_vector_independent_fixed_value_match() {
         assert_eq!(
             mac_of(TPM_ALG_SHA512, &[0x0b; 20], b"Hi There"),
-            unhex(
+            hex(
                 "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde\
                  daa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854"
             )

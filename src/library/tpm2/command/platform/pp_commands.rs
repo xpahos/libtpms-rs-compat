@@ -108,10 +108,11 @@ fn parse_command_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, implemented,
+    use crate::library::tpm2::command::core::registry::implemented;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, command, for_each_mutation, framed, prefix_bit_flips,
+        response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{command, framed, response_code};
     use crate::library::tpm2::command::platform::test_support::{
         Host, RC_AUTH_MISSING, RC_INITIALIZE, RC_INSUFFICIENT_H1, RC_INSUFFICIENT_P1,
         RC_INSUFFICIENT_P2, RC_NV_UNAVAILABLE, RC_SESSION1_BAD_AUTH, RC_SESSION1_PP, RC_SIZE,
@@ -120,8 +121,8 @@ mod tests {
         TPM_CC_HIERARCHY_CONTROL, TPM_CC_PP_COMMANDS, TPM_CC_SET_ALGORITHM_SET, TPM_RH_ENDORSEMENT,
         TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM, assert_durable_state,
         assert_matches_permall, assert_unchanged, cap_pp_commands, capability_codes, clear_control,
-        command_list, exec, expect, hierarchy_control, manufactured, pp_commands, ready,
-        replay_clock, restored, shutdown, snapshot, startup,
+        command_list, exec, hierarchy_control, manufactured, pp_commands, ready, replay_clock,
+        restored, shutdown, snapshot, startup,
     };
     use crate::library::tpm2::golden_responses::platform_state::vector;
     const TPM_CC_CHANGE_EPS: u32 = 0x0000_0124;
@@ -135,36 +136,6 @@ mod tests {
                 crate::library::tpm2::pp_list::physical_presence_is_required(runtime, code)
             })
             .collect()
-    }
-
-    #[test]
-    fn command_registration_reference_attributes() {
-        let descriptor = find(TPM_CC_PP_COMMANDS).expect("the command is registered");
-        assert_eq!(descriptor.attributes, 0x0240_012d);
-        assert_eq!(
-            descriptor.attributes,
-            u32::from_be_bytes(
-                vector("CCATTR_012D")[19..23]
-                    .try_into()
-                    .expect("four bytes")
-            )
-        );
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Platform));
-        assert!(descriptor.handles[0].user_auth);
-        assert_eq!(descriptor.decrypt_size, 0);
-        assert_eq!(descriptor.encrypt_size, 0);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert!(
-            !descriptor.physical_presence,
-            "the vendored table gives TPM2_PP_Commands PP_REQUIRED, not PP_COMMAND"
-        );
-        assert!(descriptor.physical_presence_required);
     }
 
     #[test]
@@ -213,15 +184,21 @@ mod tests {
     fn started_tpm_requirement() {
         let clock = replay_clock();
         let mut runtime = manufactured(&clock);
-        expect(
-            &mut runtime,
-            &clock,
-            "LIFECYCLE_PP_COMMANDS",
-            &pp_commands(TPM_RH_PLATFORM, &[TPM_CC_CLEAR_CONTROL], &[], &[]),
+        assert_scenario_response(
+            "TPM2_PP_Commands before TPM2_Startup: platform-state LIFECYCLE_PP_COMMANDS",
+            vector("LIFECYCLE_PP_COMMANDS"),
+            || {
+                exec(
+                    &mut runtime,
+                    &clock,
+                    &pp_commands(TPM_RH_PLATFORM, &[TPM_CC_CLEAR_CONTROL], &[], &[]),
+                )
+            },
         );
         assert_eq!(
             response_code(vector("LIFECYCLE_PP_COMMANDS")),
-            RC_INITIALIZE
+            RC_INITIALIZE,
+            "platform-state LIFECYCLE_PP_COMMANDS"
         );
     }
 
@@ -758,15 +735,12 @@ mod tests {
             &[TPM_CC_HIERARCHY_CONTROL],
             &[],
         );
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    let mut runtime = ready(&clock);
-                    let _ = exec(&mut runtime, &clock, &mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_PP_Commands",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                let _ = exec(&mut ready(&clock), &clock, &bytes);
+            },
+        );
     }
 }

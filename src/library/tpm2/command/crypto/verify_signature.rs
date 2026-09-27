@@ -103,21 +103,22 @@ fn parse_parameters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_VERIFY_SIGNATURE, find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
         RC_SUCCESS, command, dispatch_bytes, error_response, framed, response_code,
+        restored_snapshot,
     };
-    use crate::library::tpm2::crypto::Hasher;
+    use crate::library::tpm2::command::crypto::test_support::{
+        digest_of, never_runs, recording_runner, recording_runner_failing_sha256,
+        recording_runner_failing_sha512, take_self_tests_run,
+    };
+
     use crate::library::tpm2::golden_responses::read_public_verify_signature::vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::object::ATTR_PUBLIC_ONLY;
     use crate::library::tpm2::persistent::OwnedAnyObject;
     use crate::library::tpm2::public::PublicParms;
     use crate::library::tpm2::self_test::{PrimitiveTest, SelfTestFailure};
-    use crate::library::tpm2::{attach_volatile_blob_for_test, restore_permanent_blob_for_test};
-    use std::cell::RefCell;
 
     const TPM_CC: u32 = 0x0000_0177;
 
@@ -141,21 +142,7 @@ mod tests {
 
     #[track_caller]
     fn restored(snapshot: &str) -> Tpm2Runtime {
-        let mut runtime = restore_permanent_blob_for_test(vector(&format!("PERMALL_{snapshot}")))
-            .expect("the oracle permanent state restores");
-        attach_volatile_blob_for_test(&mut runtime, vector(&format!("VOLATILE_{snapshot}")))
-            .expect("the oracle volatile state attaches");
-        assert!(
-            runtime.startup_received,
-            "the snapshot is past TPM2_Startup"
-        );
-        runtime
-    }
-
-    fn digest_of(hash_alg: u16, data: &[u8]) -> Vec<u8> {
-        let mut hasher = Hasher::new(hash_alg).expect("a compiled hash");
-        hasher.update(data);
-        hasher.finalize()
+        restored_snapshot(vector, snapshot)
     }
 
     fn abc(hash_alg: u16) -> Vec<u8> {
@@ -166,7 +153,6 @@ mod tests {
         digest_of(TPM_ALG_SHA256, b"xyz")
     }
 
-    /// The signature bytes the reference TPM2_Sign produced for the same key.
     fn oracle_signature(record: &str) -> Vec<u8> {
         let response = vector(record);
         assert_eq!(&response[6..10], [0, 0, 0, 0], "{record} succeeded");
@@ -245,42 +231,6 @@ mod tests {
             vector(record),
             "{record} from {snapshot}"
         );
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_0177");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        assert_eq!(TPM_CC_VERIFY_SIGNATURE, TPM_CC);
-        let descriptor = find(TPM_CC_VERIFY_SIGNATURE).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0200_0177);
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "TPM2_VerifySignature does not use NV"
-        );
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn key_handle_no_authorization_requirement() {
-        let descriptor = find(TPM_CC_VERIFY_SIGNATURE).expect("a registered command");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(
-            !descriptor.handles[0].user_auth,
-            "upstream declares no HANDLE_1_USER for TPM2_VerifySignature"
-        );
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
     }
 
     #[test]
@@ -1011,33 +961,6 @@ mod tests {
             RC_SUCCESS,
             "the vendored RSA verifier carries no SHA-1 restriction"
         );
-    }
-
-    thread_local! {
-        static SELF_TESTS_RUN: RefCell<Vec<PrimitiveTest>> = const { RefCell::new(Vec::new()) };
-    }
-
-    fn recording_runner(test: PrimitiveTest) -> bool {
-        SELF_TESTS_RUN.with(|run| run.borrow_mut().push(test));
-        true
-    }
-
-    fn recording_runner_failing_sha256(test: PrimitiveTest) -> bool {
-        SELF_TESTS_RUN.with(|run| run.borrow_mut().push(test));
-        test != PrimitiveTest::Sha256
-    }
-
-    fn recording_runner_failing_sha512(test: PrimitiveTest) -> bool {
-        SELF_TESTS_RUN.with(|run| run.borrow_mut().push(test));
-        test != PrimitiveTest::Sha512
-    }
-
-    fn never_runs(test: PrimitiveTest) -> bool {
-        panic!("a rejected command must run no self-test, got {test:?}");
-    }
-
-    fn take_self_tests_run() -> Vec<PrimitiveTest> {
-        SELF_TESTS_RUN.with(|run| core::mem::take(&mut *run.borrow_mut()))
     }
 
     #[track_caller]

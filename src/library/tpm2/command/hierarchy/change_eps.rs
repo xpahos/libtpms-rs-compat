@@ -38,8 +38,6 @@ fn change_endorsement_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmR
         return Err(TPM_RC_FAILURE);
     }
     let orderly_state = prepare_clear_orderly(runtime)?;
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let seed_compat_level = runtime
         .state
         .as_ref()
@@ -83,56 +81,45 @@ fn change_endorsement_primary_seed(runtime: &mut Tpm2Runtime) -> Result<(), TpmR
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+
     use crate::library::constants::{TPM_FAIL, TPM_RC_INITIALIZE};
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
+    use crate::library::tpm2::capability::handles::test_state::nv_index_entry;
+
     use crate::library::tpm2::command::core::registry::TPM_CC_CHANGE_EPS;
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, dispatch_if_header_parses, error_response,
+        for_each_mutation, hex, manufactured_runtime_with, occupied_slots, prefix_bit_flips,
+        process, pw_session, reload, start,
+    };
+    use crate::library::tpm2::command::nv::test_support::push_nvram;
     use crate::library::tpm2::command::session::processing::TPM_RS_PW;
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::crypto::{CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_MAGIC};
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM_NV,
     };
-    use crate::library::tpm2::manufacture::manufacture_state;
+
     use crate::library::tpm2::marshal::BlobReader;
     use crate::library::tpm2::nv::build_nv_image;
     use crate::library::tpm2::nv::{USER_NVRAM_CAPACITY, any_object_image};
     use crate::library::tpm2::object::{ATTR_EPS_HIERARCHY, ATTR_OCCUPIED};
     use crate::library::tpm2::object::{ATTR_PPS_HIERARCHY, ATTR_SPS_HIERARCHY, parse_any_object};
     use crate::library::tpm2::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE};
-    use crate::library::tpm2::parse_persistent_all_payload;
+
     use crate::library::tpm2::persistent::own_any_object;
+    use crate::library::tpm2::persistent::persistent_all_store;
     use crate::library::tpm2::persistent::{
-        OwnedAnyObject, OwnedAnyObjectBody, OwnedPersistentState, OwnedUserNvramEntry,
-        user_nvram_required_capacity,
+        OwnedAnyObject, OwnedAnyObjectBody, OwnedUserNvramEntry,
     };
-    use crate::library::tpm2::persistent::{
-        OwnedNvIndex, PersistentAllEnvelope, materialize_persistent_state, persistent_all_store,
-    };
-    use crate::library::tpm2::profile::validate_user_profile;
+
     use crate::library::tpm2::public::StateFormatLimit;
     use crate::library::tpm2::random::regenerate_secret;
-    use crate::library::tpm2::runtime::{commit_manufactured_state, commit_restored_state};
+    use crate::library::tpm2::runtime::commit_restored_state;
     use crate::library::tpm2::volatile::CURRENT_OBJECT_VERSION;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x55>;
 
     const RC_AUTH_MISSING: u32 = 0x125;
     const RC_NV_UNAVAILABLE: u32 = 0x923;
@@ -144,23 +131,6 @@ mod tests {
 
     const DEFAULT_V1_PROFILE: &[u8] = br#"{"Name":"default-v1"}"#;
 
-    fn hex(value: &str) -> Vec<u8> {
-        let cleaned: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x55;
-        }
-        Ok(())
-    }
-
     fn failing_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         Err(TPM_FAIL)
     }
@@ -170,19 +140,7 @@ mod tests {
     }
 
     fn manufactured_runtime(profile: Option<&[u8]>) -> Tpm2Runtime {
-        let profile = validate_user_profile(profile).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
+        manufactured_runtime_with(profile, ENTROPY)
     }
 
     fn startup_command() -> Vec<u8> {
@@ -192,26 +150,13 @@ mod tests {
     #[track_caller]
     fn started_runtime_with(profile: Option<&[u8]>) -> Tpm2Runtime {
         let mut runtime = manufactured_runtime(profile);
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup_command()),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
+        start(&mut runtime);
         runtime
     }
 
     #[track_caller]
     fn started_runtime() -> Tpm2Runtime {
         started_runtime_with(None)
-    }
-
-    fn pw_session(password: &[u8]) -> Vec<u8> {
-        let mut out = TPM_RS_PW.to_be_bytes().to_vec();
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.push(0x00);
-        out.extend_from_slice(&(password.len() as u16).to_be_bytes());
-        out.extend_from_slice(password);
-        out
     }
 
     fn command(handle: u32, auth: Option<&[u8]>, parameters: &[u8]) -> Vec<u8> {
@@ -232,12 +177,6 @@ mod tests {
 
     fn change_eps() -> Vec<u8> {
         command(TPM_RH_PLATFORM, Some(&pw_session(&[])), &[])
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
     }
 
     fn success_response() -> Vec<u8> {
@@ -299,35 +238,6 @@ mod tests {
         }
     }
 
-    fn nv_index_entry(handle: u32) -> OwnedUserNvramEntry {
-        OwnedUserNvramEntry::NvIndex {
-            declared_entry_size: 0,
-            handle,
-            index: OwnedNvIndex {
-                nv_index: handle,
-                name_alg: 0x000b,
-                attributes: 0,
-                auth_policy: Vec::new(),
-                data_size: 8,
-                auth_value: OwnedSecret::from_vec(Vec::new()),
-            },
-            data: vec![0; 8],
-        }
-    }
-
-    #[track_caller]
-    fn push_nvram(
-        runtime: &mut Tpm2Runtime,
-        entries: impl IntoIterator<Item = OwnedUserNvramEntry>,
-    ) {
-        let user_nvram = &mut runtime.state.as_mut().expect("state present").user_nvram;
-        user_nvram.entries.extend(entries);
-        user_nvram.required_capacity = user_nvram_required_capacity(&user_nvram.entries)
-            .expect("the planted entries fit the dynamic region");
-        let state = runtime.state.as_ref().expect("state present");
-        runtime.nv_memory = build_nv_image(state).expect("the planted entries serialize");
-    }
-
     fn nvram_handles(runtime: &Tpm2Runtime) -> Vec<u32> {
         runtime
             .state()
@@ -338,17 +248,6 @@ mod tests {
                 OwnedUserNvramEntry::NvIndex { handle, .. } => *handle,
                 OwnedUserNvramEntry::Persistent { handle, .. } => *handle,
             })
-            .collect()
-    }
-
-    fn occupied_slots(runtime: &Tpm2Runtime) -> Vec<usize> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .enumerate()
-            .filter(|(_, object)| object.attributes & ATTR_OCCUPIED != 0)
-            .map(|(slot, _)| slot)
             .collect()
     }
 
@@ -419,25 +318,18 @@ mod tests {
         assert_eq!(snapshot(runtime), *before);
     }
 
-    #[track_caller]
-    fn reload(state: &OwnedPersistentState) -> OwnedPersistentState {
-        let blob = persistent_all_store(state).expect("the state serializes");
-        let envelope = PersistentAllEnvelope::parse(&blob).expect("the envelope parses");
-        let decoded = parse_persistent_all_payload(&envelope).expect("the payload parses");
-        materialize_persistent_state(decoded).expect("the payload materializes")
-    }
-
     #[test]
     fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime(None);
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_eps()),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_ChangeEPS before TPM2_Startup"
         );
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex("80010000000a00000124")),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes handle unmarshalling"
+            "TPM2_ChangeEPS before TPM2_Startup: the lifecycle check precedes handle unmarshalling"
         );
     }
 
@@ -1382,23 +1274,12 @@ mod tests {
     #[test]
     fn prefix_and_bit_flip_panic_safety() {
         let valid = change_eps();
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    let Ok(parsed) = parse_command(&input) else {
-                        continue;
-                    };
-                    let mut runtime = started_runtime();
-                    let _ = serialize_response(&dispatch(
-                        &mut runtime,
-                        &parsed,
-                        CancellationToken::disabled(),
-                    ));
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_ChangeEPS",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                dispatch_if_header_parses(bytes, started_runtime);
+            },
+        );
     }
 }

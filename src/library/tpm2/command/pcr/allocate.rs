@@ -48,8 +48,6 @@ pub(in crate::library::tpm2::command) fn execute(
         return Err(TPM_RC_FAILURE);
     }
 
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
     let requested = parse_parameters(&state.profile.algorithms, frame.parameters)?;
 
@@ -206,42 +204,27 @@ fn marshal_response(allocation_success: u8, size_needed: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+
     use crate::library::constants::{TPM_RC_INITIALIZE, TPM_SUCCESS};
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
+
     use crate::library::tpm2::command::core::registry::TPM_CC_PCR_ALLOCATE;
-    use crate::library::tpm2::command::session::processing::TPM_RS_PW;
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, dispatch_ignoring_result, error_response,
+        for_each_mutation, hex, manufactured_runtime, prefix_bit_flips, process, pw_session,
+        reload, started_runtime,
+    };
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::hierarchy::{
         TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_OWNER,
     };
-    use crate::library::tpm2::manufacture::manufacture_state;
-    use crate::library::tpm2::parse_persistent_all_payload;
-    use crate::library::tpm2::persistent::{
-        OwnedPersistentState, PersistentAllEnvelope, materialize_persistent_state,
-        persistent_all_store,
-    };
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::{commit_manufactured_state, commit_restored_state};
+
+    use crate::library::tpm2::persistent::persistent_all_store;
+
+    use crate::library::tpm2::runtime::commit_restored_state;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x55>;
 
     const TPM_ALG_SHA1: u16 = 0x0004;
     const TPM_ALG_SHA256: u16 = 0x000b;
@@ -271,52 +254,8 @@ mod tests {
 
     const FULL_SIZE_NEEDED: u32 = 0x0f60;
 
-    fn hex(value: &str) -> Vec<u8> {
-        let cleaned: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x55;
-        }
-        Ok(())
-    }
-
-    fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
-
     fn startup_command() -> Vec<u8> {
         hex("80010000000c0000014400 00")
-    }
-
-    #[track_caller]
-    fn started_runtime() -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime();
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup_command()),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
-        runtime
     }
 
     fn sel(hash_alg: u16, bitmap: [u8; 3]) -> Vec<u8> {
@@ -331,15 +270,6 @@ mod tests {
         for &(hash_alg, bitmap) in selections {
             out.extend_from_slice(&sel(hash_alg, bitmap));
         }
-        out
-    }
-
-    fn pw_session(password: &[u8]) -> Vec<u8> {
-        let mut out = TPM_RS_PW.to_be_bytes().to_vec();
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.push(0x00);
-        out.extend_from_slice(&(password.len() as u16).to_be_bytes());
-        out.extend_from_slice(password);
         out
     }
 
@@ -361,12 +291,6 @@ mod tests {
 
     fn allocate(parameters: &[u8]) -> Vec<u8> {
         command(TPM_RH_PLATFORM, Some(&pw_session(&[])), parameters)
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
     }
 
     fn success_response(size_needed: u32) -> Vec<u8> {
@@ -496,18 +420,10 @@ mod tests {
     }
 
     #[track_caller]
-    fn reload(state: &OwnedPersistentState) -> OwnedPersistentState {
-        let blob = persistent_all_store(state).expect("the state serializes");
-        let envelope = PersistentAllEnvelope::parse(&blob).expect("the envelope parses");
-        let decoded = parse_persistent_all_payload(&envelope).expect("the payload parses");
-        materialize_persistent_state(decoded).expect("the payload materializes")
-    }
-
-    #[track_caller]
     fn rebooted_runtime(runtime: &Tpm2Runtime) -> Tpm2Runtime {
         let restored = reload(runtime.state());
         let mut rebooted = commit_restored_state(restored).expect("the persisted state restores");
-        rebooted.entropy = deterministic_entropy;
+        rebooted.entropy = ENTROPY;
         rebooted
     }
 
@@ -516,12 +432,13 @@ mod tests {
         let mut runtime = manufactured_runtime();
         assert_eq!(
             dispatch_bytes(&mut runtime, &allocate(&params(&[]))),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_PCR_Allocate before TPM2_Startup"
         );
         assert_eq!(
             dispatch_bytes(&mut runtime, &hex("80010000000a0000012b")),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes handle unmarshalling"
+            "TPM2_PCR_Allocate before TPM2_Startup: the lifecycle check precedes handle unmarshalling"
         );
     }
 
@@ -732,23 +649,13 @@ mod tests {
             (TPM_ALG_SHA256, [0xff, 0xff, 0xff]),
             (TPM_ALG_SHA1, [0x00, 0x00, 0x00]),
         ]));
-        for len in 10..=valid.len() {
-            for index in 6..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
-                    mutated[index] ^= flip;
-                    let mut runtime = started_runtime();
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    let parsed = parse_command(&input).expect("the header parses");
-                    let _ = serialize_response(&dispatch(
-                        &mut runtime,
-                        &parsed,
-                        CancellationToken::disabled(),
-                    ));
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_PCR_Allocate",
+            prefix_bit_flips(&valid, 10, 6, true),
+            |bytes| {
+                dispatch_ignoring_result(&mut started_runtime(), bytes);
+            },
+        );
     }
 
     #[test]

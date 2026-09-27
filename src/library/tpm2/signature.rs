@@ -1049,6 +1049,7 @@ mod tests {
     use super::*;
     use crate::library::constants::TPM_RC_INSUFFICIENT;
     use crate::library::tpm2::crypto::{COMPILED_HASHES, Hasher};
+    use crate::library::tpm2::test_support::tpm2b;
 
     fn scheme(scheme: u16, hash_alg: u16) -> SigScheme {
         SigScheme {
@@ -1510,12 +1511,6 @@ mod tests {
         let parsed = parse_signature(&mut reader, profile)?;
         assert!(reader.remaining().is_empty(), "exact consumption");
         Ok(parsed)
-    }
-
-    fn tpm2b(bytes: &[u8]) -> Vec<u8> {
-        let mut out = (bytes.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(bytes);
-        out
     }
 
     #[test]

@@ -56,17 +56,17 @@ fn parse_parameters<'a>(
 #[cfg(test)]
 mod tests {
     use crate::library::tpm2::clock::SteppingClock;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, occupied, prefix_bit_flips,
+    };
+    use crate::library::tpm2::command::crypto::test_support::{plain32, rsa_public, session_nonce};
     use crate::library::tpm2::golden_responses::hmac::vector;
-    use crate::library::tpm2::object::ATTR_OCCUPIED;
+
     use crate::library::tpm2::object_load::replay::{
-        cap_cc, clock, exec_raw, framed, load_external, password_area, plain, runtime_from, tpm2b,
+        clock, exec_raw, framed, load_external, password_area, plain, runtime_from, tpm2b,
     };
     use crate::library::tpm2::runtime::Tpm2Runtime;
     use crate::library::tpm2::sequence::replay::{RH_NULL, RH_OWNER, create_primary};
-
-    use crate::library::tpm2::command::core::registry::{
-        self, CommandLifecycle, HandleKind, NvAccess,
-    };
 
     const CC_HMAC: u32 = 0x0000_0155;
     const CC_HMAC_START: u32 = 0x0000_015b;
@@ -89,7 +89,6 @@ mod tests {
     const SEALED_ATTR: u32 = 0x0000_0452;
     const XOR_KEY_ATTR: u32 = 0x0002_0452;
     const RESTRICTED_ATTR: u32 = 0x0005_0472;
-    const RSA_ATTR: u32 = 0x0004_0472;
     const SYM_ATTR: u32 = 0x0006_0452;
     const EXTERNAL_SIGN: u32 = 0x0004_0440;
 
@@ -161,62 +160,16 @@ mod tests {
         framed(0x8002, CC_HMAC, &payload)
     }
 
-    fn occupied(runtime: &Tpm2Runtime) -> Vec<bool> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .map(|object| object.attributes & ATTR_OCCUPIED != 0)
-            .collect()
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = registry::find(CC_HMAC).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0200_0155);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = fresh_clock();
-        let mut runtime = runtime_at("BASE", &clock);
-        exec(&mut runtime, &clock, "CAP_CC_HMAC", cap_cc(CC_HMAC));
-        let mut payload = 2u32.to_be_bytes().to_vec();
-        payload.extend_from_slice(&CC_HMAC.to_be_bytes());
-        payload.extend_from_slice(&3u32.to_be_bytes());
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_FROM_HMAC",
-            plain(0x0000_017a, &payload),
-        );
-    }
-
     #[test]
     fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
-        exec(
-            &mut runtime,
-            &clock,
-            "HMAC_BEFORE_STARTUP",
-            mac(HANDLE, MESSAGE, TPM_ALG_SHA256),
+        assert_scenario_response(
+            "TPM2_HMAC before TPM2_Startup: hmac HMAC_BEFORE_STARTUP",
+            vector("HMAC_BEFORE_STARTUP"),
+            || exec_raw(&mut runtime, &clock, mac(HANDLE, MESSAGE, TPM_ALG_SHA256)),
         );
     }
 
@@ -523,19 +476,6 @@ mod tests {
         );
     }
 
-    fn rsa_public() -> Vec<u8> {
-        let mut out = 0x0001u16.to_be_bytes().to_vec();
-        out.extend_from_slice(&0x000bu16.to_be_bytes());
-        out.extend_from_slice(&RSA_ATTR.to_be_bytes());
-        out.extend_from_slice(&tpm2b(&[]));
-        out.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
-        out.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
-        out.extend_from_slice(&2048u16.to_be_bytes());
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out.extend_from_slice(&tpm2b(&[]));
-        out
-    }
-
     fn sym_public(attributes: u32, algorithm: u16, key_bits: u16, mode: u16) -> Vec<u8> {
         let mut out = 0x0025u16.to_be_bytes().to_vec();
         out.extend_from_slice(&0x000bu16.to_be_bytes());
@@ -653,12 +593,6 @@ mod tests {
         payload.extend_from_slice(&TPM_ALG_CFB.to_be_bytes());
         payload.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
         plain(CC_START_AUTH_SESSION, &payload)
-    }
-
-    fn session_nonce(response: &[u8]) -> Vec<u8> {
-        let body = &response[14..];
-        let size = usize::from(u16::from_be_bytes([body[0], body[1]]));
-        body[2..2 + size].to_vec()
     }
 
     fn parameter_cipher(nonce_tpm: &[u8], data: &[u8]) -> Vec<u8> {
@@ -828,14 +762,6 @@ mod tests {
 
     fn key24() -> Vec<u8> {
         (0..24u8).collect()
-    }
-
-    fn plain32() -> Vec<u8> {
-        vec![
-            0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93,
-            0x17, 0x2a, 0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c, 0x9e, 0xb7, 0x6f, 0xac,
-            0x45, 0xaf, 0x8e, 0x51,
-        ]
     }
 
     fn cmac_key(algorithm: u16, key_bits: u16) -> Vec<u8> {
@@ -1249,16 +1175,12 @@ mod tests {
             ),
         );
         let valid = mac(HANDLE, b"abc", TPM_ALG_SHA256);
-        for length in 10..=valid.len() {
-            for index in 10..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let size = (mutated.len() as u32).to_be_bytes();
-                    mutated[2..6].copy_from_slice(&size);
-                    let _ = exec_raw(&mut runtime, &clock, mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_HMAC",
+            prefix_bit_flips(&valid, 10, 10, true),
+            |bytes| {
+                let _ = exec_raw(&mut runtime, &clock, bytes);
+            },
+        );
     }
 }

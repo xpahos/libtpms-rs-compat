@@ -2488,80 +2488,6 @@ mod tests {
     }
 
     #[test]
-    fn registered_attribute_upstream_parity() {
-        for (code, attributes) in [
-            (TPM_CC_CHANGE_EPS, 0x02c0_0124u32),
-            (TPM_CC_DICTIONARY_ATTACK_PARAMETERS, 0x0240_013a),
-            (TPM_CC_HIERARCHY_CHANGE_AUTH, 0x0240_0129),
-            (TPM_CC_PCR_ALLOCATE, 0x0240_012b),
-            (TPM_CC_PCR_EVENT, 0x0240_013c),
-            (TPM_CC_PCR_RESET, 0x0240_013d),
-            (TPM_CC_INCREMENTAL_SELF_TEST, 0x0040_0142),
-            (TPM_CC_SELF_TEST, 0x0040_0143),
-            (TPM_CC_STARTUP, 0x0040_0144),
-            (TPM_CC_SHUTDOWN, 0x0040_0145),
-            (TPM_CC_STIR_RANDOM, 0x0040_0146),
-            (TPM_CC_FLUSH_CONTEXT, 0x0000_0165),
-            (TPM_CC_GET_CAPABILITY, 0x0000_017a),
-            (TPM_CC_GET_RANDOM, 0x0000_017b),
-            (TPM_CC_HASH, 0x0000_017d),
-            (TPM_CC_PCR_READ, 0x0000_017e),
-            (TPM_CC_PCR_EXTEND, 0x0240_0182),
-        ] {
-            let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
-            assert_eq!(descriptor.attributes, attributes, "code {code:#x}");
-        }
-    }
-
-    #[test]
-    fn handle_free_command_session_acceptance() {
-        for code in [
-            TPM_CC_INCREMENTAL_SELF_TEST,
-            TPM_CC_SELF_TEST,
-            TPM_CC_STIR_RANDOM,
-            TPM_CC_GET_RANDOM,
-            TPM_CC_HASH,
-        ] {
-            let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
-            assert!(descriptor.handles.is_empty(), "code {code:#x}");
-            assert!(descriptor.sessions_allowed, "code {code:#x}");
-            assert!(
-                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
-                "code {code:#x}"
-            );
-        }
-    }
-
-    #[test]
-    fn authorized_handle_nv_attribute_parity() {
-        for (code, updates_nv) in [
-            (TPM_CC_CHANGE_EPS, true),
-            (TPM_CC_HIERARCHY_CHANGE_AUTH, true),
-            (TPM_CC_PCR_ALLOCATE, true),
-            (TPM_CC_PCR_EXTEND, true),
-            (TPM_CC_PCR_RESET, true),
-        ] {
-            let descriptor = find(code).unwrap_or_else(|| panic!("code {code:#x} is registered"));
-            assert_eq!(descriptor.handles.len(), 1, "code {code:#x}");
-            assert!(descriptor.handles[0].user_auth, "code {code:#x}");
-            assert!(descriptor.sessions_allowed, "code {code:#x}");
-            assert!(
-                matches!(descriptor.lifecycle, CommandLifecycle::RequiresStarted),
-                "code {code:#x}"
-            );
-            assert_eq!(
-                descriptor.attributes & (1 << 22) != 0,
-                updates_nv,
-                "code {code:#x}"
-            );
-        }
-        assert!(matches!(
-            find(TPM_CC_CHANGE_EPS).unwrap().handles[0].kind,
-            HandleKind::Platform
-        ));
-    }
-
-    #[test]
     fn extensive_commands_vendored_table_match() {
         const EXTENSIVE: [u32; 4] = [
             TPM_CC_HIERARCHY_CONTROL,
@@ -2577,141 +2503,6 @@ mod tests {
                 descriptor.code
             );
         }
-    }
-
-    #[test]
-    fn dictionary_attack_parameters_lockout_handle_user_auth() {
-        let descriptor = find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS).unwrap();
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Lockout));
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_ne!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "DictionaryAttackParameters updates NV"
-        );
-    }
-
-    #[test]
-    fn lockout_handle_kind_lockout_hierarchy_only() {
-        use crate::library::tpm2::hierarchy::{
-            TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
-        };
-        let kind = find(TPM_CC_DICTIONARY_ATTACK_PARAMETERS).unwrap().handles[0].kind;
-        assert!(kind.accepts(TPM_RH_LOCKOUT));
-        for handle in [
-            TPM_RH_OWNER,
-            TPM_RH_ENDORSEMENT,
-            TPM_RH_PLATFORM,
-            TPM_RH_NULL,
-            0,
-            23,
-            IMPLEMENTATION_PCR as u32,
-            0x0100_0000,
-            0x4000_0009,
-            0x8000_0000,
-            u32::MAX,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#x}");
-        }
-    }
-
-    #[test]
-    fn hierarchy_auth_handle_kind_four_hierarchies_only() {
-        use crate::library::tpm2::hierarchy::{
-            TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
-        };
-        let kind = find(TPM_CC_HIERARCHY_CHANGE_AUTH).unwrap().handles[0].kind;
-        for handle in [
-            TPM_RH_OWNER,
-            TPM_RH_ENDORSEMENT,
-            TPM_RH_PLATFORM,
-            TPM_RH_LOCKOUT,
-        ] {
-            assert!(kind.accepts(handle), "handle {handle:#x}");
-        }
-        assert!(!kind.accepts(TPM_RH_NULL), "the null hierarchy has no auth");
-        for handle in [
-            0u32,
-            23,
-            IMPLEMENTATION_PCR as u32,
-            0x0100_0000,
-            0x0200_0000,
-            0x0300_0000,
-            0x4000_0000,
-            0x4000_0009,
-            0x4000_000d,
-            0x8000_0000,
-            0x8100_0000,
-            u32::MAX,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#x}");
-        }
-    }
-
-    #[test]
-    fn platform_handle_kind_platform_hierarchy_only() {
-        use crate::library::tpm2::hierarchy::{
-            TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
-        };
-        let kind = find(TPM_CC_PCR_ALLOCATE).unwrap().handles[0].kind;
-        assert!(kind.accepts(TPM_RH_PLATFORM));
-        for handle in [
-            TPM_RH_OWNER,
-            TPM_RH_ENDORSEMENT,
-            TPM_RH_LOCKOUT,
-            TPM_RH_NULL,
-            0,
-            23,
-            IMPLEMENTATION_PCR as u32,
-            0x0100_0000,
-            0x8000_0000,
-            u32::MAX,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#x}");
-        }
-    }
-
-    #[test]
-    fn hash_command_nv_attribute_absence() {
-        assert_eq!(find(TPM_CC_HASH).unwrap().attributes & (1 << 22), 0);
-    }
-
-    #[test]
-    fn pcr_event_single_user_auth_command_handle() {
-        let descriptor = find(TPM_CC_PCR_EVENT).unwrap();
-        assert_eq!(descriptor.code, TPM_CC_PCR_EVENT);
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::PcrAllowNull
-        ));
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert_ne!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "PCR_Event advertises the upstream TPMA_CC nv bit"
-        );
-        assert_eq!(
-            descriptor.attributes & (1 << 28),
-            0,
-            "PCR_Event has no response handle"
-        );
     }
 
     #[test]
@@ -2733,17 +2524,6 @@ mod tests {
         ] {
             assert!(!kind.accepts(handle), "handle {handle:#x}");
         }
-    }
-
-    #[test]
-    fn pcr_event_registry_sort_position() {
-        let codes: Vec<u32> = implemented().map(|descriptor| descriptor.code).collect();
-        let at = codes
-            .iter()
-            .position(|&code| code == TPM_CC_PCR_EVENT)
-            .expect("PCR_Event is registered");
-        assert_eq!(codes[at - 1], TPM_CC_NV_CHANGE_AUTH);
-        assert_eq!(codes[at + 1], TPM_CC_PCR_RESET);
     }
 
     #[test]
@@ -2825,27 +2605,6 @@ mod tests {
     }
 
     #[test]
-    fn flush_context_handleless_sessionless_declaration() {
-        let descriptor = find(TPM_CC_FLUSH_CONTEXT).unwrap();
-        assert!(descriptor.handles.is_empty());
-        assert!(!descriptor.sessions_allowed);
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "FlushContext does not update NV"
-        );
-        assert_eq!(
-            descriptor.attributes & (1 << 28),
-            0,
-            "FlushContext has no response handle"
-        );
-    }
-
-    #[test]
     fn pcr_handle_kind_pcr_null_acceptance() {
         let kind = find(TPM_CC_PCR_EXTEND).unwrap().handles[0].kind;
         for pcr in 0..24u32 {
@@ -2880,6 +2639,385 @@ mod tests {
                 0,
                 "code {:#x}",
                 descriptor.code
+            );
+        }
+    }
+
+    #[test]
+    fn startup_only_command_requiring_unstarted_tpm() {
+        for descriptor in implemented() {
+            assert_eq!(
+                matches!(descriptor.lifecycle, CommandLifecycle::RequiresNotStarted),
+                descriptor.code == TPM_CC_STARTUP,
+                "code {:#x}",
+                descriptor.code
+            );
+        }
+    }
+
+    #[test]
+    fn physical_presence_requirement_pp_commands_only() {
+        for descriptor in implemented() {
+            assert_eq!(
+                descriptor.physical_presence_required,
+                descriptor.code == TPM_CC_PP_COMMANDS,
+                "code {:#x}",
+                descriptor.code
+            );
+        }
+    }
+
+    #[rustfmt::skip]
+    const HANDLE_ACCEPTANCE: &[(u32, usize, &[u32], &[u32])] = {
+        const RS_PW: u32 = 0x4000_0009;
+        const PLATFORM_NV: u32 = 0x4000_000d;
+        const ACT_0: u32 = 0x4000_0110;
+        const PCR_END: u32 = IMPLEMENTATION_PCR as u32;
+        &[
+            (TPM_CC_EVICT_CONTROL, 0, &[TPM_RH_OWNER, TPM_RH_PLATFORM],
+                &[TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, PLATFORM_NV, RS_PW, 0,
+                  0x0100_0001, 0x8000_0000, 0x8100_0000, u32::MAX]),
+            (TPM_CC_EVICT_CONTROL, 1, &[0x8000_0000, 0x8000_0002, 0x8100_0000, 0x81ff_ffff],
+                &[0x7fff_ffff, 0x8000_0003, 0x80ff_ffff, 0x8200_0000, TPM_RH_OWNER, 0x0100_0001,
+                  0x0200_0000, 0]),
+            (TPM_CC_HIERARCHY_CONTROL, 0, &[TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM],
+                &[TPM_RH_NULL, TPM_RH_LOCKOUT, PLATFORM_NV, RS_PW, 0, 23, 0x0100_0000, ACT_0,
+                  0x8000_0000, 0x8100_0000, u32::MAX]),
+            (TPM_CC_CLEAR_CONTROL, 0, &[TPM_RH_LOCKOUT, TPM_RH_PLATFORM],
+                &[TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_NULL, PLATFORM_NV, RS_PW, 0, 23,
+                  0x0100_0000, 0x8000_0000, u32::MAX]),
+            (TPM_CC_HIERARCHY_CHANGE_AUTH, 0,
+                &[TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM, TPM_RH_LOCKOUT],
+                &[TPM_RH_NULL, 0, 23, PCR_END, 0x0100_0000, 0x0200_0000, 0x0300_0000,
+                  0x4000_0000, 0x4000_0009, 0x4000_000d, 0x8000_0000, 0x8100_0000, u32::MAX]),
+            (TPM_CC_NV_DEFINE_SPACE, 0, &[TPM_RH_OWNER, TPM_RH_PLATFORM],
+                &[TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, 0x0100_0000, 0x8100_0000]),
+            (TPM_CC_PCR_ALLOCATE, 0, &[TPM_RH_PLATFORM],
+                &[TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_NULL, 0, 23, PCR_END,
+                  0x0100_0000, 0x8000_0000, u32::MAX]),
+            (TPM_CC_SET_PRIMARY_POLICY, 0,
+                &[TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM, TPM_RH_LOCKOUT],
+                &[TPM_RH_NULL, PLATFORM_NV, RS_PW, ACT_0, 0x4000_011f, 0, 0x0100_0000,
+                  0x8000_0000, u32::MAX]),
+            (TPM_CC_CREATE_PRIMARY, 0,
+                &[TPM_RH_OWNER, TPM_RH_PLATFORM, TPM_RH_ENDORSEMENT, TPM_RH_NULL],
+                &[0x4000_000a, 0x4000_0009, 0, 23, 0x8000_0000, u32::MAX]),
+            (TPM_CC_NV_WRITE, 0, &[TPM_RH_OWNER, TPM_RH_PLATFORM, 0x0100_0000, 0x01ff_ffff],
+                &[0x4000_0000, 0x4000_000b, 0x0200_0000, 0x8100_0000, 0]),
+            (TPM_CC_DICTIONARY_ATTACK_PARAMETERS, 0, &[TPM_RH_LOCKOUT],
+                &[TPM_RH_OWNER, TPM_RH_ENDORSEMENT, TPM_RH_PLATFORM, TPM_RH_NULL, 0, 23, PCR_END,
+                  0x0100_0000, 0x4000_0009, 0x8000_0000, u32::MAX]),
+            (TPM_CC_CERTIFY, 0, &[], &[TPM_RH_NULL]),
+            (TPM_CC_CERTIFY, 1, &[TPM_RH_NULL], &[]),
+            (TPM_CC_GET_TIME, 0, &[TPM_RH_ENDORSEMENT],
+                &[TPM_RH_OWNER, TPM_RH_PLATFORM, TPM_RH_NULL, 0x8000_0000]),
+            (TPM_CC_GET_SESSION_AUDIT_DIGEST, 2, &[0x0200_0000, 0x0200_003f],
+                &[0x0200_0040, 0x0300_0000, RS_PW, TPM_RH_NULL, 0]),
+            (TPM_CC_CREATE, 0,
+                &[0x8000_0000, 0x8000_0001, 0x8000_0002, 0x8100_0000, 0x81ff_ffff],
+                &[0, 23, 0x0100_0000, TPM_RH_OWNER, TPM_RH_NULL, TPM_RH_ENDORSEMENT, 0x4000_0009,
+                  0x8000_0003, 0x8200_0000, u32::MAX]),
+            (TPM_CC_SIGN, 0, &[0x8000_0000, 0x8100_0000],
+                &[TPM_RH_NULL, TPM_RH_OWNER, 0x0100_0001, 0x0200_0000]),
+            (TPM_CC_CONTEXT_SAVE, 0, &[0x8000_0000, 0x8000_0002, 0x0200_0000, 0x0300_0000],
+                &[0, 0x0100_0000, 0x8000_0003, 0x8100_0000, TPM_RH_OWNER, TPM_RH_NULL, u32::MAX]),
+            (TPM_CC_NV_CERTIFY, 0, &[0x8000_0000, 0x8100_0000, TPM_RH_NULL],
+                &[TPM_RH_OWNER, TPM_RH_ENDORSEMENT, 0x0100_0001, 0x0200_0000]),
+            (TPM_CC_CERTIFY_X509, 0, &[], &[TPM_RH_NULL]),
+            (TPM_CC_CERTIFY_X509, 1, &[], &[TPM_RH_NULL]),
+        ]
+    };
+
+    #[test]
+    fn handle_kind_acceptance_reference_table() {
+        for &(code, index, accepted, rejected) in HANDLE_ACCEPTANCE {
+            let descriptor = find(code).unwrap_or_else(|| panic!("{code:#06x} is registered"));
+            let kind = descriptor.handles[index].kind;
+            for &handle in accepted {
+                assert!(
+                    kind.accepts(handle),
+                    "{code:#06x}: handle {index} accepts {handle:#010x}"
+                );
+            }
+            for &handle in rejected {
+                assert!(
+                    !kind.accepts(handle),
+                    "{code:#06x}: handle {index} refuses {handle:#010x}"
+                );
+            }
+        }
+    }
+
+    mod metadata {
+        use super::*;
+        use Auth::{Absent, Admin, Dup, User};
+        use HandleKind::*;
+        use NvAccess::*;
+
+        #[derive(Clone, Copy, Eq, PartialEq)]
+        enum Auth {
+            Absent,
+            User,
+            Admin,
+            Dup,
+        }
+
+        impl Auth {
+            fn role(self) -> AuthRole {
+                match self {
+                    Absent | User => AuthRole::User,
+                    Admin => AuthRole::Admin,
+                    Dup => AuthRole::Dup,
+                }
+            }
+        }
+
+        struct Expected {
+            name: &'static str,
+            code: u32,
+            nv_access: Option<NvAccess>,
+            parameter_sizes: (u16, u16),
+            handles: &'static [(HandleKind, Auth)],
+        }
+
+        macro_rules! row {
+            ($code:ident, $nv_access:expr, $parameter_sizes:expr, $handles:expr $(,)?) => {
+                Expected {
+                    name: stringify!($code),
+                    code: $code,
+                    nv_access: $nv_access,
+                    parameter_sizes: $parameter_sizes,
+                    handles: $handles,
+                }
+            };
+        }
+
+        #[rustfmt::skip]
+        const METADATA: &[Expected] = &[
+            row!(TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, Some(Neither), (0, 0), &[
+                (NvIndex, Admin),
+                (Platform, User),
+            ]),
+            row!(TPM_CC_EVICT_CONTROL, None, (0, 0), &[(Provision, User), (Object, Absent)]),
+            row!(TPM_CC_HIERARCHY_CONTROL, Some(Neither), (0, 0), &[(BaseHierarchy, User)]),
+            row!(TPM_CC_NV_UNDEFINE_SPACE, Some(Neither), (0, 0), &[
+                (Provision, User),
+                (NvIndex, Absent),
+            ]),
+            row!(TPM_CC_CHANGE_EPS, None, (0, 0), &[(Platform, User)]),
+            row!(TPM_CC_CHANGE_PPS, Some(Neither), (0, 0), &[(Platform, User)]),
+            row!(TPM_CC_CLEAR, Some(Neither), (0, 0), &[(Clear, User)]),
+            row!(TPM_CC_CLEAR_CONTROL, Some(Neither), (0, 0), &[(Clear, User)]),
+            row!(TPM_CC_CLOCK_SET, Some(Neither), (0, 0), &[(Provision, User)]),
+            row!(TPM_CC_HIERARCHY_CHANGE_AUTH, None, (2, 0), &[(HierarchyAuth, User)]),
+            row!(TPM_CC_NV_DEFINE_SPACE, Some(Neither), (2, 0), &[(Provision, User)]),
+            row!(TPM_CC_PCR_ALLOCATE, None, (0, 0), &[(Platform, User)]),
+            row!(TPM_CC_PCR_SET_AUTH_POLICY, Some(Neither), (2, 0), &[(Platform, User)]),
+            row!(TPM_CC_PP_COMMANDS, Some(Neither), (0, 0), &[(Platform, User)]),
+            row!(TPM_CC_SET_PRIMARY_POLICY, Some(Neither), (2, 0), &[(HierarchyAuth, User)]),
+            row!(TPM_CC_CLOCK_RATE_ADJUST, Some(Neither), (0, 0), &[(Provision, User)]),
+            row!(TPM_CC_CREATE_PRIMARY, None, (2, 2), &[(Hierarchy, User)]),
+            row!(TPM_CC_NV_GLOBAL_WRITE_LOCK, Some(Neither), (0, 0), &[(Provision, User)]),
+            row!(TPM_CC_GET_COMMAND_AUDIT_DIGEST, Some(Neither), (2, 2), &[
+                (Endorsement, User),
+                (ObjectAllowNull, User),
+            ]),
+            row!(TPM_CC_NV_INCREMENT, Some(Write), (0, 0), &[(NvAuth, User), (NvIndex, Absent)]),
+            row!(TPM_CC_NV_SET_BITS, Some(Write), (0, 0), &[(NvAuth, User), (NvIndex, Absent)]),
+            row!(TPM_CC_NV_EXTEND, Some(Write), (2, 0), &[(NvAuth, User), (NvIndex, Absent)]),
+            row!(TPM_CC_NV_WRITE, Some(Write), (2, 0), &[(NvAuth, User), (NvIndex, Absent)]),
+            row!(TPM_CC_NV_WRITE_LOCK, Some(Write), (0, 0), &[
+                (NvAuth, User),
+                (NvIndex, Absent),
+            ]),
+            row!(TPM_CC_DICTIONARY_ATTACK_LOCK_RESET, Some(Neither), (0, 0), &[(Lockout, User)]),
+            row!(TPM_CC_DICTIONARY_ATTACK_PARAMETERS, None, (0, 0), &[(Lockout, User)]),
+            row!(TPM_CC_NV_CHANGE_AUTH, Some(Neither), (2, 0), &[(NvIndex, Admin)]),
+            row!(TPM_CC_PCR_EVENT, Some(Neither), (2, 0), &[(PcrAllowNull, User)]),
+            row!(TPM_CC_PCR_RESET, None, (0, 0), &[(Pcr, User)]),
+            row!(TPM_CC_SEQUENCE_COMPLETE, None, (2, 2), &[(Object, User)]),
+            row!(TPM_CC_SET_ALGORITHM_SET, Some(Neither), (0, 0), &[(Platform, User)]),
+            row!(TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, Some(Neither), (0, 0), &[
+                (Provision, User),
+            ]),
+            row!(TPM_CC_INCREMENTAL_SELF_TEST, None, (0, 0), &[]),
+            row!(TPM_CC_SELF_TEST, None, (0, 0), &[]),
+            row!(TPM_CC_STARTUP, None, (0, 0), &[]),
+            row!(TPM_CC_SHUTDOWN, None, (0, 0), &[]),
+            row!(TPM_CC_STIR_RANDOM, None, (2, 0), &[]),
+            row!(TPM_CC_ACTIVATE_CREDENTIAL, Some(Neither), (2, 2), &[
+                (Object, Admin),
+                (Object, User),
+            ]),
+            row!(TPM_CC_CERTIFY, Some(Neither), (2, 2), &[
+                (Object, Admin),
+                (ObjectAllowNull, User),
+            ]),
+            row!(TPM_CC_POLICY_NV, Some(Neither), (2, 0), &[
+                (NvAuth, User),
+                (NvIndex, Absent),
+                (PolicySession, Absent),
+            ]),
+            row!(TPM_CC_CERTIFY_CREATION, Some(Neither), (2, 2), &[
+                (ObjectAllowNull, User),
+                (Object, Absent),
+            ]),
+            row!(TPM_CC_DUPLICATE, Some(Neither), (2, 2), &[
+                (Object, Dup),
+                (ObjectAllowNull, Absent),
+            ]),
+            row!(TPM_CC_GET_TIME, Some(Neither), (2, 2), &[
+                (Endorsement, User),
+                (ObjectAllowNull, User),
+            ]),
+            row!(TPM_CC_GET_SESSION_AUDIT_DIGEST, Some(Neither), (2, 2), &[
+                (Endorsement, User),
+                (ObjectAllowNull, User),
+                (HmacSession, Absent),
+            ]),
+            row!(TPM_CC_NV_READ, Some(Read), (0, 2), &[(NvAuth, User), (NvIndex, Absent)]),
+            row!(TPM_CC_NV_READ_LOCK, Some(Read), (0, 0), &[(NvAuth, User), (NvIndex, Absent)]),
+            row!(TPM_CC_OBJECT_CHANGE_AUTH, Some(Neither), (2, 2), &[
+                (Object, Admin),
+                (Object, Absent),
+            ]),
+            row!(TPM_CC_POLICY_SECRET, Some(Neither), (2, 2), &[
+                (Entity, User),
+                (PolicySession, Absent),
+            ]),
+            row!(TPM_CC_REWRAP, Some(Neither), (2, 2), &[
+                (ObjectAllowNull, User),
+                (ObjectAllowNull, Absent),
+            ]),
+            row!(TPM_CC_CREATE, None, (2, 2), &[(Object, User)]),
+            row!(TPM_CC_ECDH_ZGEN, Some(Neither), (2, 2), &[(Object, User)]),
+            row!(TPM_CC_HMAC, Some(Neither), (2, 2), &[(Object, User)]),
+            row!(TPM_CC_IMPORT, Some(Neither), (2, 2), &[(Object, User)]),
+            row!(TPM_CC_LOAD, Some(Neither), (2, 2), &[(Object, User)]),
+            row!(TPM_CC_QUOTE, Some(Neither), (2, 2), &[(ObjectAllowNull, User)]),
+            row!(TPM_CC_RSA_DECRYPT, Some(Neither), (2, 2), &[(Object, User)]),
+            row!(TPM_CC_HMAC_START, None, (2, 0), &[(Object, User)]),
+            row!(TPM_CC_SEQUENCE_UPDATE, None, (2, 0), &[(Object, User)]),
+            row!(TPM_CC_SIGN, Some(Neither), (2, 0), &[(Object, User)]),
+            row!(TPM_CC_UNSEAL, Some(Neither), (0, 2), &[(Object, User)]),
+            row!(TPM_CC_POLICY_SIGNED, Some(Neither), (2, 2), &[
+                (Object, Absent),
+                (PolicySession, Absent),
+            ]),
+            row!(TPM_CC_CONTEXT_LOAD, None, (0, 0), &[]),
+            row!(TPM_CC_CONTEXT_SAVE, Some(Neither), (0, 0), &[(Context, Absent)]),
+            row!(TPM_CC_ECDH_KEY_GEN, None, (0, 2), &[(Object, Absent)]),
+            row!(TPM_CC_ENCRYPT_DECRYPT, Some(Neither), (0, 2), &[(Object, User)]),
+            row!(TPM_CC_FLUSH_CONTEXT, None, (0, 0), &[]),
+            row!(TPM_CC_LOAD_EXTERNAL, None, (2, 2), &[]),
+            row!(TPM_CC_MAKE_CREDENTIAL, Some(Neither), (2, 2), &[(Object, Absent)]),
+            row!(TPM_CC_NV_READ_PUBLIC, Some(Neither), (0, 2), &[(NvIndex, Absent)]),
+            row!(TPM_CC_POLICY_AUTHORIZE, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_AUTH_VALUE, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_COMMAND_CODE, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_COUNTER_TIMER, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_CP_HASH, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_LOCALITY, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_NAME_HASH, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_OR, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_TICKET, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_READ_PUBLIC, Some(Neither), (0, 2), &[(Object, Absent)]),
+            row!(TPM_CC_RSA_ENCRYPT, Some(Neither), (2, 2), &[(Object, Absent)]),
+            row!(TPM_CC_START_AUTH_SESSION, Some(Neither), (2, 2), &[
+                (ObjectAllowNull, Absent),
+                (EntityAllowNull, Absent),
+            ]),
+            row!(TPM_CC_VERIFY_SIGNATURE, Some(Neither), (2, 0), &[(Object, Absent)]),
+            row!(TPM_CC_ECC_PARAMETERS, Some(Neither), (0, 0), &[]),
+            row!(TPM_CC_GET_CAPABILITY, None, (0, 0), &[]),
+            row!(TPM_CC_GET_RANDOM, None, (0, 2), &[]),
+            row!(TPM_CC_GET_TEST_RESULT, None, (0, 2), &[]),
+            row!(TPM_CC_HASH, None, (2, 2), &[]),
+            row!(TPM_CC_PCR_READ, None, (0, 0), &[]),
+            row!(TPM_CC_POLICY_PCR, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_RESTART, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_READ_CLOCK, Some(Neither), (0, 0), &[]),
+            row!(TPM_CC_PCR_EXTEND, None, (0, 0), &[(PcrAllowNull, User)]),
+            row!(TPM_CC_PCR_SET_AUTH_VALUE, Some(Neither), (2, 0), &[(Pcr, User)]),
+            row!(TPM_CC_NV_CERTIFY, Some(Read), (2, 2), &[
+                (ObjectAllowNull, User),
+                (NvAuth, User),
+                (NvIndex, Absent),
+            ]),
+            row!(TPM_CC_EVENT_SEQUENCE_COMPLETE, None, (2, 0), &[
+                (PcrAllowNull, User),
+                (Object, User),
+            ]),
+            row!(TPM_CC_HASH_SEQUENCE_START, None, (2, 0), &[]),
+            row!(TPM_CC_POLICY_PHYSICAL_PRESENCE, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_DUPLICATION_SELECT, Some(Neither), (2, 0), &[
+                (PolicySession, Absent),
+            ]),
+            row!(TPM_CC_POLICY_GET_DIGEST, Some(Neither), (0, 2), &[(PolicySession, Absent)]),
+            row!(TPM_CC_TEST_PARMS, Some(Neither), (0, 0), &[]),
+            row!(TPM_CC_COMMIT, Some(Neither), (2, 2), &[(Object, User)]),
+            row!(TPM_CC_POLICY_PASSWORD, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_ZGEN_2_PHASE, None, (2, 2), &[(Object, User)]),
+            row!(TPM_CC_EC_EPHEMERAL, None, (0, 2), &[]),
+            row!(TPM_CC_POLICY_NV_WRITTEN, Some(Neither), (0, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_TEMPLATE, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_CREATE_LOADED, None, (2, 2), &[(Parent, User)]),
+            row!(TPM_CC_POLICY_AUTHORIZE_NV, Some(Neither), (0, 0), &[
+                (NvAuth, User),
+                (NvIndex, Absent),
+                (PolicySession, Absent),
+            ]),
+            row!(TPM_CC_ENCRYPT_DECRYPT2, Some(Neither), (2, 2), &[(Object, User)]),
+            row!(TPM_CC_CERTIFY_X509, Some(Neither), (2, 2), &[
+                (Object, Admin),
+                (Object, User),
+            ]),
+            row!(TPM_CC_ECC_ENCRYPT, Some(Neither), (2, 2), &[(Object, Absent)]),
+            row!(TPM_CC_ECC_DECRYPT, None, (2, 2), &[(Object, User)]),
+            row!(TPM_CC_POLICY_CAPABILITY, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+            row!(TPM_CC_POLICY_PARAMETERS, Some(Neither), (2, 0), &[(PolicySession, Absent)]),
+        ];
+
+        #[test]
+        fn descriptor_metadata_reference_table() {
+            let mut listed = Vec::new();
+            for expected in METADATA {
+                let (name, code) = (expected.name, expected.code);
+                assert!(!listed.contains(&code), "{name} has more than one row");
+                listed.push(code);
+                let descriptor = find(code).unwrap_or_else(|| panic!("{name} is registered"));
+                if let Some(nv_access) = expected.nv_access {
+                    assert!(descriptor.nv_access == nv_access, "{name}: nv_access");
+                }
+                assert_eq!(
+                    (descriptor.decrypt_size, descriptor.encrypt_size),
+                    expected.parameter_sizes,
+                    "{name}: (decrypt_size, encrypt_size)"
+                );
+                assert_eq!(
+                    descriptor.handles.len(),
+                    expected.handles.len(),
+                    "{name}: handle count"
+                );
+                for (index, (spec, &(kind, auth))) in
+                    descriptor.handles.iter().zip(expected.handles).enumerate()
+                {
+                    assert!(
+                        core::mem::discriminant(&spec.kind) == core::mem::discriminant(&kind),
+                        "{name}: handle {index} kind"
+                    );
+                    assert_eq!(
+                        spec.user_auth,
+                        auth != Absent,
+                        "{name}: handle {index} user_auth"
+                    );
+                    assert!(spec.role == auth.role(), "{name}: handle {index} role");
+                }
+            }
+            assert_eq!(
+                listed.len(),
+                implemented().count(),
+                "every registered command has a row"
             );
         }
     }

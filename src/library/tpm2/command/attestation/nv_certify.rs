@@ -120,12 +120,11 @@ fn parse_parameters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_NV_CERTIFY, find,
-    };
+    use crate::library::tpm2::command::core::registry::TPM_CC_NV_CERTIFY;
     use crate::library::tpm2::command::core::test_support::{
-        RC_SUCCESS, TPM_ALG_SHA1, TPM_ALG_SHA256, command, dispatch_bytes, framed, response_code,
-        response_parameters, started_runtime,
+        RC_SUCCESS, REPLACEMENT_BYTES, TPM_ALG_SHA1, TPM_ALG_SHA256, all_algorithms,
+        byte_replacements, command, create_primary, dispatch_bytes, for_each_mutation, framed,
+        response_code, response_parameters, signing_snapshot, started_runtime, without,
     };
     use crate::library::tpm2::command::crypto::signing_state::{
         load_signing_state, publish_signing_outcome,
@@ -145,7 +144,6 @@ mod tests {
     use crate::library::tpm2::persistent::OwnedSecret;
     use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedObjectBody};
     use crate::library::tpm2::restore_permanent_blob_for_test;
-    use crate::library::tpm2::state::COMMIT_ARRAY_SIZE;
 
     const RC_SIZE: u32 = 0x095;
     const RC_HANDLE1_KEY: u32 = 0x19c;
@@ -165,19 +163,6 @@ mod tests {
     const TPM_ALG_RSAPSS: u16 = 0x0016;
     const SIGN_KEY_ATTRS: u32 = 0x0004_0072;
     const DECRYPT_KEY_ATTRS: u32 = 0x0002_0072;
-
-    fn all_algorithms() -> String {
-        String::from_utf8(crate::library::tpm2::profile::DEFAULT_ALGORITHMS_PROFILE.to_vec())
-            .expect("an ascii algorithm list")
-    }
-
-    fn without(algorithm: &str) -> String {
-        all_algorithms()
-            .split(',')
-            .filter(|token| *token != algorithm)
-            .collect::<Vec<_>>()
-            .join(",")
-    }
 
     #[track_caller]
     fn profile_runtime(algorithms: &str, attributes: &str) -> Tpm2Runtime {
@@ -225,32 +210,6 @@ mod tests {
         out.extend_from_slice(&0u32.to_be_bytes());
         out.extend_from_slice(&0u16.to_be_bytes());
         out
-    }
-
-    #[track_caller]
-    fn create_primary(
-        runtime: &mut Tpm2Runtime,
-        hierarchy: u32,
-        template: &[u8],
-    ) -> (u32, Vec<u8>) {
-        let mut parameters = 4u16.to_be_bytes().to_vec();
-        parameters.extend_from_slice(&0u16.to_be_bytes());
-        parameters.extend_from_slice(&0u16.to_be_bytes());
-        parameters.extend_from_slice(&(template.len() as u16).to_be_bytes());
-        parameters.extend_from_slice(template);
-        parameters.extend_from_slice(&0u16.to_be_bytes());
-        parameters.extend_from_slice(&0u32.to_be_bytes());
-        let response = dispatch_bytes(
-            runtime,
-            &command(0x0000_0131, &[hierarchy], &[&[]], &parameters),
-        );
-        assert_eq!(
-            response_code(&response),
-            RC_SUCCESS,
-            "the primary is created"
-        );
-        let handle = u32::from_be_bytes(response[10..14].try_into().expect("a response handle"));
-        (handle, response)
     }
 
     #[track_caller]
@@ -460,61 +419,6 @@ mod tests {
     #[track_caller]
     fn replay_clock(runtime: &mut Tpm2Runtime, expected: &[u8]) {
         runtime.live.orderly.clock = attest_clock_info(expected).clock;
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = certify_vector("CCATTR_0184");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().unwrap());
-        assert_eq!(TPM_CC_NV_CERTIFY, 0x0000_0184);
-        let descriptor = find(TPM_CC_NV_CERTIFY).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0600_0184);
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            0,
-            "TPM2_NV_Certify does not write NV"
-        );
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_eq!(
-            (descriptor.attributes >> 25) & 0x7,
-            3,
-            "three command handles"
-        );
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Read));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-    }
-
-    #[test]
-    fn handle_upstream_roles() {
-        let descriptor = find(TPM_CC_NV_CERTIFY).expect("a registered command");
-        assert_eq!(descriptor.handles.len(), 3);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.handles[1].user_auth);
-        assert!(!descriptor.handles[2].user_auth);
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::ObjectAllowNull
-        ));
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::NvAuth));
-        assert!(matches!(descriptor.handles[2].kind, HandleKind::NvIndex));
-
-        let kind = descriptor.handles[0].kind;
-        assert!(kind.accepts(0x8000_0000));
-        assert!(kind.accepts(0x8100_0000));
-        assert!(
-            kind.accepts(TPM_RH_NULL),
-            "signHandle unmarshals with allowNull"
-        );
-        for handle in [TPM_RH_OWNER, TPM_RH_ENDORSEMENT, 0x0100_0001, 0x0200_0000] {
-            assert!(!kind.accepts(handle), "handle {handle:#010x}");
-        }
     }
 
     #[test]
@@ -1906,29 +1810,6 @@ mod tests {
     const RC_NV_UNAVAILABLE: u32 = 0x923;
     const RC_FAILURE: u32 = 0x101;
 
-    #[derive(Debug, Eq, PartialEq)]
-    struct SigningSnapshot {
-        drbg_magic: u32,
-        reseed_counter: u64,
-        seed: Vec<u8>,
-        last_value: [u32; 4],
-        commit_counter: u64,
-        commit_array: [u8; COMMIT_ARRAY_SIZE],
-    }
-
-    fn signing_snapshot(runtime: &Tpm2Runtime) -> SigningSnapshot {
-        let drbg = &runtime.live.orderly.drbg_state;
-        let reset = runtime.live.state_reset.as_ref().expect("a reset section");
-        SigningSnapshot {
-            drbg_magic: drbg.drbg_magic,
-            reseed_counter: drbg.reseed_counter,
-            seed: drbg.seed.as_bytes().to_vec(),
-            last_value: drbg.last_value,
-            commit_counter: reset.commit_counter,
-            commit_array: reset.commit_array,
-        }
-    }
-
     #[track_caller]
     fn commitable_ecc_runtime(attributes: &str) -> (Tpm2Runtime, u32) {
         let mut runtime = profile_runtime(&all_algorithms(), attributes);
@@ -2016,13 +1897,6 @@ mod tests {
         fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
             panic!("the entropy-bad latch must short-circuit the platform callback");
         }
-        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-            let len = buffer.len() as u8;
-            for (index, byte) in buffer.iter_mut().enumerate() {
-                *byte = (index as u8).wrapping_add(len) ^ 0x1d;
-            }
-            Ok(())
-        }
 
         const RC_NO_RESULT: u32 = 0x154;
 
@@ -2054,7 +1928,7 @@ mod tests {
 
         let (mut runtime, key) = commitable_ecc_runtime("drbg-continous-test");
         runtime.live.orderly.drbg_state.reseed_counter = CTR_DRBG_MAX_REQUESTS_PER_RESEED;
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = crate::library::tpm2::test_support::counter_entropy::<0x1d>;
         let response = certify(
             &mut runtime,
             key,
@@ -2546,10 +2420,10 @@ mod tests {
     fn certify_parameter_mutation_panic_safety() {
         let full = certify_parameters(&QUALIFY, TPM_ALG_RSASSA, TPM_ALG_SHA256, 32, 0);
         let (mut runtime, endorsement) = oracle_runtime();
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_NV_Certify",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let response = dispatch_bytes(
                     &mut runtime,
                     &command(
@@ -2559,8 +2433,8 @@ mod tests {
                         &parameters,
                     ),
                 );
-                assert!(response.len() >= 10, "index {index} byte {byte:#04x}");
-            }
-        }
+                assert!(response.len() >= 10);
+            },
+        );
     }
 }

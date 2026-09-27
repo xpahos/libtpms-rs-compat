@@ -111,10 +111,7 @@ pub(in crate::library::tpm2) fn mgf1(hash_alg: u16, seed: &[u8], length: usize) 
 mod tests {
     use super::*;
     use crate::library::tpm2::algorithm::{TPM_ALG_NULL, TPM_ALG_SHA1, TPM_ALG_SHA256};
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
+    use crate::library::tpm2::test_support::hex_string;
 
     #[test]
     fn unsupported_hash_empty_key_stream() {
@@ -250,7 +247,11 @@ mod tests {
         ] {
             let expected: String = expected.chars().filter(|c| !c.is_whitespace()).collect();
             let mask = mgf1(algorithm, seed, expected.len() / 2).unwrap();
-            assert_eq!(hex(&mask), expected, "{algorithm:#06x} seed {seed:?}");
+            assert_eq!(
+                hex_string(&mask),
+                expected,
+                "{algorithm:#06x} seed {seed:?}"
+            );
         }
     }
 

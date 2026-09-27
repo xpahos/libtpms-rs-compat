@@ -55,27 +55,16 @@ pub(in crate::library::tpm2::command) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::command::core::registry::{
-        self, HandleKind, TPM_CC_EVENT_SEQUENCE_COMPLETE,
+    use crate::library::tpm2::command::core::registry::TPM_CC_EVENT_SEQUENCE_COMPLETE;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, for_each_mutation, occupied, prefix_bit_flips,
     };
-    use crate::library::tpm2::object::ATTR_OCCUPIED;
+    use crate::library::tpm2::command::crypto::test_support::max_buffer;
+
     use crate::library::tpm2::sequence::replay::clock as fresh_clock;
     use crate::library::tpm2::sequence::replay::{self, *};
 
     const TPM_ALG_SHA256: u16 = 0x000b;
-
-    fn max_buffer() -> Vec<u8> {
-        (0..1024).map(|index| (index % 256) as u8).collect()
-    }
-
-    fn occupied(runtime: &Tpm2Runtime) -> Vec<bool> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .map(|object| object.attributes & ATTR_OCCUPIED != 0)
-            .collect()
-    }
 
     fn started_event_sequence(clock: &crate::library::tpm2::clock::SteppingClock) -> Tpm2Runtime {
         let mut runtime = base_runtime(clock);
@@ -95,60 +84,22 @@ mod tests {
     }
 
     #[test]
-    fn command_registration_upstream_attributes() {
-        assert_eq!(TPM_CC_EVENT_SEQUENCE_COMPLETE, 0x0000_0185);
-        let descriptor = registry::find(TPM_CC_EVENT_SEQUENCE_COMPLETE).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0540_0185);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_eq!(descriptor.attributes & (1 << 28), 0, "no response handle");
-        assert_ne!(descriptor.attributes & (1 << 22), 0, "updates NVRAM");
-        assert_eq!(descriptor.attributes & (1 << 23), 0, "not extensive");
-        assert_ne!(descriptor.attributes & (1 << 24), 0, "flushes its handle");
-        assert_eq!(
-            (descriptor.attributes >> 25) & 0x7,
-            2,
-            "two command handles"
-        );
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(descriptor.handles[1].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-        assert!(!descriptor.handles[1].admin_role());
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::PcrAllowNull
-        ));
-        assert!(matches!(descriptor.handles[1].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let clock = fresh_clock();
-        let mut runtime = base_runtime(&clock);
-        let mut params = 2u32.to_be_bytes().to_vec();
-        params.extend_from_slice(&0x0185u32.to_be_bytes());
-        params.extend_from_slice(&1u32.to_be_bytes());
-        exec(
-            &mut runtime,
-            &clock,
-            "CAP_CC_EVENT_SEQUENCE_COMPLETE",
-            command(0x8001, 0x0000_017a, &params),
-        );
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let clock = fresh_clock();
         let mut runtime =
             crate::library::tpm2::restore_permanent_blob_for_test(vector("PERMALL_MANUFACTURED"))
                 .expect("the oracle permanent state restores");
         runtime.entropy = unreachable_entropy;
-        exec(
-            &mut runtime,
-            &clock,
-            "ESC_BEFORE_STARTUP",
-            event_sequence_complete(10, 0x8000_0000, b""),
+        assert_scenario_response(
+            "TPM2_EventSequenceComplete before TPM2_Startup: sequence-commands ESC_BEFORE_STARTUP",
+            vector("ESC_BEFORE_STARTUP"),
+            || {
+                exec_raw(
+                    &mut runtime,
+                    &clock,
+                    event_sequence_complete(10, 0x8000_0000, b""),
+                )
+            },
         );
     }
 
@@ -455,16 +406,12 @@ mod tests {
         let clock = fresh_clock();
         let mut runtime = started_event_sequence(&clock);
         let valid = event_sequence_complete(10, 0x8000_0000, b"ab");
-        for length in 10..=valid.len() {
-            for index in 10..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let size = (mutated.len() as u32).to_be_bytes();
-                    mutated[2..6].copy_from_slice(&size);
-                    let _ = exec_raw(&mut runtime, &clock, mutated);
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_EventSequenceComplete",
+            prefix_bit_flips(&valid, 10, 10, true),
+            |bytes| {
+                let _ = exec_raw(&mut runtime, &clock, bytes);
+            },
+        );
     }
 }

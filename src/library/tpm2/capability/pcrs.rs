@@ -102,7 +102,6 @@ mod tests {
         const S384: u16 = TPM_ALG_SHA384;
         const S512: u16 = TPM_ALG_SHA512;
 
-        // == no_sha1 ==
         assert_eq!(filtered(&[], NO_SHA1), []);
         assert_eq!(filtered(&[S1], NO_SHA1), []);
         assert_eq!(filtered(&[S256], NO_SHA1), [(S256, 0x10)]);
@@ -151,7 +150,6 @@ mod tests {
         );
         assert_eq!(filtered(&[S1, S1, S256], NO_SHA1), []);
 
-        // == no_sha512 ==
         assert_eq!(filtered(&[S512], NO_SHA512), []);
         assert_eq!(filtered(&[S1, S512], NO_SHA512), [(S1, 0x10)]);
         assert_eq!(filtered(&[S512, S1], NO_SHA512), []);
@@ -185,7 +183,6 @@ mod tests {
             [(S1, 0x10), (S1, 0x11), (S256, 0x12)]
         );
 
-        // == no_sha1_no_sha512 ==
         assert_eq!(filtered(&[S1], NO_SHA1_SHA512), []);
         assert_eq!(filtered(&[S512], NO_SHA1_SHA512), []);
         assert_eq!(filtered(&[S1, S256], NO_SHA1_SHA512), []);
@@ -217,7 +214,6 @@ mod tests {
     fn disabled_bank_filter_removal() {
         const BANKS: [u16; 4] = [TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512];
         for profile in [ALL_BANKS, NO_SHA1, NO_SHA512, NO_SHA1_SHA512] {
-            // Every ordered arrangement of one to four banks, with repeats.
             for length in 0..=4usize {
                 let combinations = 4usize.pow(length as u32);
                 for encoded in 0..combinations {

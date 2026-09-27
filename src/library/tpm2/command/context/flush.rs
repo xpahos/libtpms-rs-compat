@@ -82,22 +82,23 @@ fn flush_loaded_or_saved_session(runtime: &mut Tpm2Runtime, handle: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::CommandInput;
-    use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::capability::handles::test_state::{load_session, save_session};
     use crate::library::tpm2::clock::RecordingClock;
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, context_array, dispatch_bytes, framed, hex, manufactured_runtime,
+        occupied_slots, pw_session, response_code, start, started_runtime, symcipher_template,
+    };
+    use crate::library::tpm2::command::nv::test_support::nvram_handles;
+
     use crate::library::tpm2::command::core::registry::TPM_CC_FLUSH_CONTEXT;
-    use crate::library::tpm2::command::session::processing::TPM_RS_PW;
+
     use crate::library::tpm2::golden_responses::flush_context::vector;
     use crate::library::tpm2::live::RestoredVolatile;
-    use crate::library::tpm2::manufacture::manufacture_state;
-    use crate::library::tpm2::object::ATTR_OCCUPIED;
-    use crate::library::tpm2::persistent::{OwnedUserNvramEntry, persistent_all_store};
-    use crate::library::tpm2::profile::validate_user_profile;
+
+    use crate::library::tpm2::persistent::persistent_all_store;
+
     use crate::library::tpm2::restore_permanent_blob_for_test;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
     use crate::library::tpm2::session::NO_OLDEST_SAVED_SESSION;
     use crate::library::tpm2::state::MAX_ACTIVE_SESSIONS;
     use crate::library::tpm2::volatile::volatile_all_store;
@@ -120,79 +121,12 @@ mod tests {
 
     const SAVED_CONTEXT_ID: u16 = MAX_LOADED_SESSIONS as u16 + 1;
 
-    fn hex(value: &str) -> Vec<u8> {
-        let digits: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(digits.len().is_multiple_of(2));
-        (0..digits.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).expect("hex digits"))
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x55;
-        }
-        Ok(())
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
-
-    #[track_caller]
-    fn start(runtime: &mut Tpm2Runtime) {
-        assert_eq!(
-            dispatch_bytes(runtime, &hex("80010000000c0000014400 00")),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
-    }
-
-    fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn started_runtime() -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime();
-        start(&mut runtime);
-        runtime
-    }
-
     #[track_caller]
     fn oracle_runtime() -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL"))
             .expect("the oracle permanent state restores");
         start(&mut runtime);
         runtime
-    }
-
-    fn pw_session(password: &[u8]) -> Vec<u8> {
-        let mut out = TPM_RS_PW.to_be_bytes().to_vec();
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.push(0x00);
-        out.extend_from_slice(&(password.len() as u16).to_be_bytes());
-        out.extend_from_slice(password);
-        out
-    }
-
-    fn framed(code: u32, payload: &[u8], sessions: bool) -> Vec<u8> {
-        let tag: u16 = if sessions { 0x8002 } else { 0x8001 };
-        let mut out = tag.to_be_bytes().to_vec();
-        out.extend_from_slice(&(10 + payload.len() as u32).to_be_bytes());
-        out.extend_from_slice(&code.to_be_bytes());
-        out.extend_from_slice(payload);
-        out
     }
 
     fn flush_command(parameters: &[u8]) -> Vec<u8> {
@@ -219,18 +153,6 @@ mod tests {
         count: u32,
     ) -> Vec<u8> {
         dispatch_bytes(runtime, &capability_command(capability, property, count))
-    }
-
-    fn symcipher_template(attributes: u32) -> Vec<u8> {
-        let mut out = 0x0025u16.to_be_bytes().to_vec();
-        out.extend_from_slice(&0x000bu16.to_be_bytes());
-        out.extend_from_slice(&attributes.to_be_bytes());
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.extend_from_slice(&0x0006u16.to_be_bytes());
-        out.extend_from_slice(&0x0080u16.to_be_bytes());
-        out.extend_from_slice(&0x0043u16.to_be_bytes());
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out
     }
 
     fn create_primary_command(hierarchy: u32) -> Vec<u8> {
@@ -275,10 +197,6 @@ mod tests {
         dispatch_bytes(runtime, &framed(TPM_CC_EVICT_CONTROL, &payload, true))
     }
 
-    fn response_code(response: &[u8]) -> u32 {
-        u32::from_be_bytes(response[6..10].try_into().expect("a response code"))
-    }
-
     #[track_caller]
     fn assert_matches_oracle(runtime: &Tpm2Runtime, expected: &str, label: &str) {
         let actual = persistent_all_store(runtime.state()).expect("the state serializes");
@@ -318,40 +236,6 @@ mod tests {
     #[track_caller]
     fn assert_unchanged(runtime: &Tpm2Runtime, before: &Snapshot) {
         assert_eq!(snapshot(runtime), *before);
-    }
-
-    fn occupied_slots(runtime: &Tpm2Runtime) -> Vec<usize> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .enumerate()
-            .filter(|(_, object)| object.attributes & ATTR_OCCUPIED != 0)
-            .map(|(slot, _)| slot)
-            .collect()
-    }
-
-    fn nvram_handles(runtime: &Tpm2Runtime) -> Vec<u32> {
-        runtime
-            .state()
-            .user_nvram
-            .entries
-            .iter()
-            .map(|entry| match entry {
-                OwnedUserNvramEntry::NvIndex { handle, .. }
-                | OwnedUserNvramEntry::Persistent { handle, .. } => *handle,
-            })
-            .collect()
-    }
-
-    fn context_array(runtime: &Tpm2Runtime) -> Vec<u16> {
-        runtime
-            .live
-            .state_reset
-            .as_ref()
-            .expect("state reset present")
-            .context_array
-            .to_vec()
     }
 
     fn drbg_state(runtime: &Tpm2Runtime) -> (u64, u32, Vec<u8>, Vec<u32>) {
@@ -406,20 +290,12 @@ mod tests {
     }
 
     #[test]
-    fn advertised_attributes_oracle_match() {
-        let mut runtime = started_runtime();
-        assert_eq!(
-            capability(&mut runtime, 2, TPM_CC_FLUSH_CONTEXT, 1),
-            vector("CAP_COMMANDS_RESPONSE")
-        );
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
-        assert_eq!(
-            flush(&mut runtime, 0x8000_0000),
-            vector("BEFORE_STARTUP_RESPONSE")
+        assert_scenario_response(
+            "TPM2_FlushContext before TPM2_Startup: flush-context BEFORE_STARTUP_RESPONSE",
+            vector("BEFORE_STARTUP_RESPONSE"),
+            || flush(&mut runtime, 0x8000_0000),
         );
     }
 

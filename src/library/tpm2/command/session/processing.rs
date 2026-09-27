@@ -1409,19 +1409,14 @@ mod tests {
     use super::*;
     use crate::library::CommandInput;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
+    use crate::library::tpm2::command::core::test_support::{
+        TAIL_BYTES, for_each_mutation, hex, truncated_tail_replacements,
+    };
     use crate::library::tpm2::command::policy::session::test_support::{
         HMAC_SESSION_0, restored, session_of,
     };
     use crate::library::tpm2::golden_responses::policy_sessions::vector;
     use crate::library::tpm2::runtime::empty_state_runtime;
-
-    fn hex(text: &str) -> Vec<u8> {
-        let digits: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        (0..digits.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).expect("hex digits"))
-            .collect()
-    }
 
     #[track_caller]
     fn send(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
@@ -2170,7 +2165,7 @@ mod tests {
     mod pre_v4_name_hash {
         use super::*;
         use crate::library::tpm2::command::core::test_support::{
-            RC_SUCCESS, command, dispatch_bytes, framed, response_code, started_runtime,
+            RC_SUCCESS, command, dispatch_bytes, framed, response_code, started_runtime, tpm2b,
         };
         use crate::library::tpm2::command::nv::test_support::nv_public;
         use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
@@ -2203,16 +2198,10 @@ mod tests {
             ])
         }
 
-        fn sized(payload: &[u8]) -> Vec<u8> {
-            let mut out = (payload.len() as u16).to_be_bytes().to_vec();
-            out.extend_from_slice(payload);
-            out
-        }
-
         #[track_caller]
         fn armed_runtime(name_hash: &[u8]) -> Tpm2Runtime {
             let mut runtime = started_runtime();
-            let mut parameters = sized(&owner_policy_for(name_hash));
+            let mut parameters = tpm2b(&owner_policy_for(name_hash));
             parameters.extend_from_slice(&0x000bu16.to_be_bytes());
             assert_eq!(
                 response_code(&dispatch_bytes(
@@ -2228,8 +2217,8 @@ mod tests {
                 "the owner policy is installed"
             );
 
-            let mut start = sized(&[0x5a; 16]);
-            start.extend_from_slice(&sized(&[]));
+            let mut start = tpm2b(&[0x5a; 16]);
+            start.extend_from_slice(&tpm2b(&[]));
             start.push(0x01);
             start.extend_from_slice(&[0x00, 0x10]);
             start.extend_from_slice(&0x000bu16.to_be_bytes());
@@ -2253,7 +2242,7 @@ mod tests {
                         TPM_CC_POLICY_NAME_HASH,
                         &[POLICY_SESSION_FIRST],
                         &[],
-                        &sized(name_hash)
+                        &tpm2b(name_hash)
                     ),
                 )),
                 RC_SUCCESS,
@@ -2268,9 +2257,9 @@ mod tests {
                 payload.extend_from_slice(&handle.to_be_bytes());
             }
             let mut area = POLICY_SESSION_FIRST.to_be_bytes().to_vec();
-            area.extend_from_slice(&sized(&[0x5a; 16]));
+            area.extend_from_slice(&tpm2b(&[0x5a; 16]));
             area.push(0x01);
-            area.extend_from_slice(&sized(&[]));
+            area.extend_from_slice(&tpm2b(&[]));
             payload.extend_from_slice(&(area.len() as u32).to_be_bytes());
             payload.extend_from_slice(&area);
             payload.extend_from_slice(parameters);
@@ -2281,7 +2270,7 @@ mod tests {
             policy_authorized(
                 TPM_CC_HIERARCHY_CHANGE_AUTH,
                 &[TPM_RH_OWNER],
-                &sized(&[0x71; 3]),
+                &tpm2b(&[0x71; 3]),
             )
         }
 
@@ -2377,7 +2366,7 @@ mod tests {
                         TPM_CC_POLICY_NAME_HASH,
                         &[POLICY_SESSION_FIRST],
                         &[],
-                        &sized(&[0x22; 32])
+                        &tpm2b(&[0x22; 32])
                     ),
                 )),
                 RC_SUCCESS
@@ -2404,8 +2393,8 @@ mod tests {
 
         #[test]
         fn duplication_select_state_format_contract() {
-            let mut parameters = sized(&[0xa1; 34]);
-            parameters.extend_from_slice(&sized(&[0xb2; 34]));
+            let mut parameters = tpm2b(&[0xa1; 34]);
+            parameters.extend_from_slice(&tpm2b(&[0xb2; 34]));
             parameters.push(0x01);
 
             let mut pre_v4 = armed_runtime(&owner_name_hash());
@@ -2571,6 +2560,7 @@ mod tests {
 
     mod transactional {
         use super::*;
+        use crate::library::tpm2::command::core::test_support::response_code;
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::persistent::persistent_all_store;
 
@@ -2715,10 +2705,6 @@ mod tests {
                 );
             }
             runtime
-        }
-
-        fn response_code(response: &[u8]) -> u32 {
-            u32::from_be_bytes(response[6..10].try_into().expect("four bytes"))
         }
 
         #[test]
@@ -3037,15 +3023,12 @@ mod tests {
     #[test]
     fn authorization_area_mutation_panic_safety() {
         let valid = hex(HMAC_AUTH_PCR_EXTEND);
-        for length in 10..valid.len() {
-            for byte in [0x00u8, 0x01, 0x80, 0xff] {
-                let mut mutated = valid[..length].to_vec();
-                *mutated.last_mut().expect("a non-empty prefix") = byte;
-                let size = (mutated.len() as u32).to_be_bytes();
-                mutated[2..6].copy_from_slice(&size);
-                let mut runtime = restored("THREE_SESSIONS");
-                let _ = send(&mut runtime, &mutated);
-            }
-        }
+        for_each_mutation(
+            "TPM2_PCR_Extend with an HMAC session",
+            truncated_tail_replacements(&valid, 10, &TAIL_BYTES),
+            |bytes| {
+                let _ = send(&mut restored("THREE_SESSIONS"), &bytes);
+            },
+        );
     }
 }

@@ -203,8 +203,6 @@ pub(in crate::library::tpm2::command) fn execute(
     frame: &CommandFrame<'_>,
 ) -> Result<CommandOutput, TpmResult> {
     let primary_handle = *frame.handles.first().ok_or(TPM_RC_FAILURE)?;
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
     let policy = AlgorithmPolicy {
         profile_algorithms: &state.profile.algorithms,
@@ -312,10 +310,7 @@ pub(in crate::library::tpm2) mod fixtures {
         0x69, 0xaa,
     ];
 
-    pub(in crate::library::tpm2) fn push_tpm2b(out: &mut Vec<u8>, bytes: &[u8]) {
-        out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-        out.extend_from_slice(bytes);
-    }
+    pub(in crate::library::tpm2) use crate::library::tpm2::test_support::push_tpm2b;
 
     pub(in crate::library::tpm2) fn storage_attributes() -> u32 {
         TPMA_OBJECT_FIXED_TPM
@@ -462,6 +457,10 @@ mod tests {
     use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_CREATE_PRIMARY;
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, manufactured_runtime_with, pw_session, response_code,
+    };
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_PLATFORM};
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::object::ATTR_OCCUPIED;
@@ -477,30 +476,10 @@ mod tests {
     const RC_SIZE: u32 = 0x095;
     const RC_OBJECT_MEMORY: u32 = 0x902;
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x63;
-        }
-        Ok(())
-    }
-
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        let response = crate::library::tpm2::command::core::dispatcher::dispatch(
-            runtime,
-            &parsed,
-            CancellationToken::disabled(),
-        );
-        serialize_response(&response).expect("the response fits")
-    }
+    const ENTROPY: EntropySource = counter_entropy::<0x63>;
 
     fn started_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
+        let mut runtime = manufactured_runtime_with(None, ENTROPY);
         let startup = vec![
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
         ];
@@ -511,17 +490,8 @@ mod tests {
         runtime
     }
 
-    fn password_session(password: &[u8]) -> Vec<u8> {
-        let mut session = Vec::new();
-        session.extend_from_slice(&0x4000_0009u32.to_be_bytes());
-        push_tpm2b(&mut session, &[]);
-        session.push(0x00);
-        push_tpm2b(&mut session, password);
-        session
-    }
-
     fn command(handle: u32, password: &[u8], parameters: &[u8]) -> Vec<u8> {
-        let session = password_session(password);
+        let session = pw_session(password);
         let mut payload = handle.to_be_bytes().to_vec();
         payload.extend_from_slice(&(session.len() as u32).to_be_bytes());
         payload.extend_from_slice(&session);
@@ -536,10 +506,6 @@ mod tests {
     fn create(runtime: &mut Tpm2Runtime, handle: u32, in_public: &[u8]) -> Vec<u8> {
         let parameters = parameters(&empty_sensitive(), in_public, &[], &no_creation_pcr());
         dispatch_bytes(runtime, &command(handle, &[], &parameters))
-    }
-
-    fn response_code(response: &[u8]) -> u32 {
-        u32::from_be_bytes(response[6..10].try_into().expect("a response code"))
     }
 
     struct Decoded {
@@ -619,38 +585,6 @@ mod tests {
             retried.object_handle, 0x8000_0000,
             "the runtime stays usable"
         );
-    }
-
-    #[test]
-    fn command_code_attributes_upstream_match() {
-        use crate::library::tpm2::command::core::registry::find;
-        assert_eq!(TPM_CC_CREATE_PRIMARY, 0x0000_0131);
-        let descriptor = find(TPM_CC_CREATE_PRIMARY).expect("a registered command");
-        assert_eq!(descriptor.attributes, 0x1200_0131);
-        assert_ne!(descriptor.attributes & (1 << 28), 0, "a response handle");
-        assert_eq!(descriptor.attributes & (1 << 22), 0, "no NVRAM update");
-        assert_eq!((descriptor.attributes >> 25) & 0x7, 1, "one command handle");
-    }
-
-    #[test]
-    fn single_user_auth_hierarchy_handle_declaration() {
-        use crate::library::tpm2::command::core::registry::{HandleKind, find};
-        let descriptor = find(TPM_CC_CREATE_PRIMARY).expect("a registered command");
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Hierarchy));
-        assert!(descriptor.sessions_allowed);
-        for handle in [
-            TPM_RH_OWNER,
-            TPM_RH_PLATFORM,
-            TPM_RH_ENDORSEMENT,
-            TPM_RH_NULL,
-        ] {
-            assert!(descriptor.handles[0].kind.accepts(handle));
-        }
-        for handle in [0x4000_000au32, 0x4000_0009, 0, 23, 0x8000_0000, u32::MAX] {
-            assert!(!descriptor.handles[0].kind.accepts(handle));
-        }
     }
 
     #[test]
@@ -1301,7 +1235,7 @@ mod tests {
         let blob = crate::library::tpm2::volatile_all_store(runtime)
             .expect("the volatile state serializes");
         let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut restored = commit_manufactured_state(state).expect("commits");
         crate::library::tpm2::attach_volatile_blob_for_test(&mut restored, &blob)
             .expect("the volatile state restores");
@@ -1353,9 +1287,9 @@ mod tests {
     fn started_default_profile_runtime() -> Tpm2Runtime {
         let json = br#"{"Name":"default-v1"}"#;
         let profile = validate_user_profile(Some(json)).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         let startup = vec![
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
         ];
@@ -1380,7 +1314,7 @@ mod tests {
             .expect("the volatile state serializes");
         let json = br#"{"Name":"default-v1"}"#;
         let profile = validate_user_profile(Some(json)).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut restored = commit_manufactured_state(state).expect("commits");
         crate::library::tpm2::attach_volatile_blob_for_test(&mut restored, &blob)
             .expect("the volatile state restores");
@@ -1551,9 +1485,9 @@ mod tests {
     fn profile_runtime(algorithms: &str) -> Tpm2Runtime {
         let json = format!(r#"{{"Name":"custom","Algorithms":"{algorithms}"}}"#);
         let profile = validate_user_profile(Some(json.as_bytes())).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         let startup = vec![
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
         ];

@@ -35,8 +35,6 @@ pub(super) fn stir_random(runtime: &mut Tpm2Runtime, in_data: &[u8]) -> Result<(
 }
 
 fn restore_live_drbg(runtime: &mut Tpm2Runtime) -> Result<(Drbg, u32), TpmResult> {
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
     let continuous_test = state
         .profile
@@ -237,13 +235,8 @@ mod tests {
     const CONTINUOUS_TEST_PROFILE: &[u8] =
         br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x63;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0x63>;
 
     fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
         panic!("generating random bytes must not draw host entropy");
@@ -259,7 +252,7 @@ mod tests {
 
     fn recording_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
         ENTROPY_REQUESTS.with(|requests| requests.borrow_mut().push(buffer.len()));
-        deterministic_entropy(buffer)
+        ENTROPY(buffer)
     }
 
     fn take_entropy_requests() -> Vec<usize> {
@@ -272,7 +265,7 @@ mod tests {
         } else {
             validate_user_profile(None).expect("the null profile validates")
         };
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
         runtime.entropy = unreachable_entropy;
         runtime
@@ -758,7 +751,7 @@ mod tests {
         let record = boundary_record(true);
         let case = &record.cases[1];
         let mut runtime = runtime_for(true);
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         install(
             &mut runtime,
             &record.initial_seed,
@@ -859,7 +852,7 @@ mod tests {
     #[test]
     fn test_entropy_pattern_oracle_block_match() {
         let mut block = [0u8; DRBG_SEED_SIZE];
-        deterministic_entropy(&mut block).expect("fills");
+        ENTROPY(&mut block).expect("fills");
         for continuous_test in [false, true] {
             for (index, case) in stir_record(continuous_test).cases.iter().enumerate() {
                 assert_eq!(case.entropy, block, "continuous {continuous_test}, {index}");
@@ -1198,9 +1191,14 @@ mod tests {
 
         const TEST_ONLY_MODULES: &[&str] = &[
             "command/core/test_support.rs",
+            "command/crypto/test_support.rs",
             "command/hierarchy/test_support.rs",
+            "command/lifecycle/test_support.rs",
             "command/nv/test_support.rs",
+            "command/object/test_support.rs",
+            "command/pcr/test_support.rs",
             "command/platform/test_support.rs",
+            "test_support.rs",
         ];
 
         fn production_slice(source: &str) -> &str {
@@ -1328,7 +1326,7 @@ mod tests {
         #[test]
         fn reseed_collision_encrypt_drbg_fatal() {
             let mut runtime = runtime_for(true);
-            runtime.entropy = deterministic_entropy;
+            runtime.entropy = ENTROPY;
             let seed = runtime.live.orderly.drbg_state.seed.expose().to_vec();
             runtime.live.orderly.drbg_state.last_value = colliding_last_value(&seed);
             let before = live_drbg(&runtime);

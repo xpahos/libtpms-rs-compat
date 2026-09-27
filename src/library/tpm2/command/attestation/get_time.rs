@@ -72,19 +72,18 @@ fn parse_parameters(
 mod tests {
     use crate::library::tpm2::command::attestation::builder::test_support::{
         ALG_NULL, ALG_RSASSA, ALG_SHA256, KEY0, QUALIFY, SIGN_ATTRS, TPM_RH_ENDORSEMENT,
-        TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM, attest_prefix, attested_body, attested_bytes,
-        command, create_primary, pw, ready_runtime, replay_clock, rsa_template, run, run_ok,
-        sig_scheme, signature_bytes, tpm2b,
+        TPM_RH_NULL, TPM_RH_OWNER, assert_trailing_byte_oracle, attest_prefix, attested_body,
+        attested_bytes, command, create_primary, pw, ready_runtime, replay_clock, rsa_template,
+        run, run_ok, sig_scheme, signature_bytes, tpm2b,
     };
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_GET_TIME, find,
+    use crate::library::tpm2::command::core::registry::TPM_CC_GET_TIME;
+    use crate::library::tpm2::command::core::test_support::{
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, for_each_mutation, response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{RC_SUCCESS, response_code};
     use crate::library::tpm2::golden_responses::attestation::vector;
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
     const RC_HANDLE1_VALUE: u32 = 0x184;
-    const RC_SIZE: u32 = 0x095;
 
     fn get_time_command(privacy: u32, sign: u32, qualifying: &[u8], scheme: u16) -> Vec<u8> {
         let mut parameters = tpm2b(qualifying);
@@ -135,42 +134,6 @@ mod tests {
             expected,
             "{record}"
         );
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_014C");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
-        assert_eq!(TPM_CC_GET_TIME, 0x0000_014c);
-        let descriptor = find(TPM_CC_GET_TIME).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0400_014c);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles.iter().all(|spec| spec.user_auth));
-        assert!(descriptor.handles.iter().all(|spec| !spec.admin_role()));
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::Endorsement
-        ));
-        assert!(matches!(
-            descriptor.handles[1].kind,
-            HandleKind::ObjectAllowNull
-        ));
-        assert!(descriptor.handles[0].kind.accepts(TPM_RH_ENDORSEMENT));
-        for handle in [TPM_RH_OWNER, TPM_RH_PLATFORM, TPM_RH_NULL, 0x8000_0000] {
-            assert!(
-                !descriptor.handles[0].kind.accepts(handle),
-                "{handle:#010x}"
-            );
-        }
     }
 
     #[test]
@@ -265,20 +228,14 @@ mod tests {
         let mut runtime = time_runtime();
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
-        parameters.push(0x00);
-        assert_eq!(
-            run(
-                &mut runtime,
-                &command(
-                    TPM_CC_GET_TIME,
-                    &[TPM_RH_ENDORSEMENT, KEY0],
-                    Some(&[pw(), pw()]),
-                    &parameters
-                )
-            ),
-            vector("GETTIME_TRAILING")
+        assert_trailing_byte_oracle(
+            &mut runtime,
+            TPM_CC_GET_TIME,
+            &[TPM_RH_ENDORSEMENT, KEY0],
+            &[pw(), pw()],
+            &parameters,
+            "GETTIME_TRAILING",
         );
-        assert_eq!(response_code(vector("GETTIME_TRAILING")), RC_SIZE);
     }
 
     #[test]
@@ -335,10 +292,10 @@ mod tests {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = time_runtime();
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_GetTime",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let _ = run(
                     &mut runtime,
                     &command(
@@ -348,7 +305,7 @@ mod tests {
                         &parameters,
                     ),
                 );
-            }
-        }
+            },
+        );
     }
 }

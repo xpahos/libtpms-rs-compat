@@ -1,7 +1,11 @@
 use crate::library::CommandInput;
 use crate::library::cancel::CancellationToken;
 use crate::library::tpm2::clock::SteppingClock;
-pub(super) use crate::library::tpm2::command::core::test_support::{command, framed};
+use crate::library::tpm2::command::core::test_support::tpm2b;
+pub(super) use crate::library::tpm2::command::core::test_support::{
+    command, framed, get_capability, shutdown, startup,
+};
+use crate::library::tpm2::crypto::EntropySource;
 use crate::library::tpm2::crypto::Hasher;
 pub(super) use crate::library::tpm2::golden_responses::platform_state::vector;
 use crate::library::tpm2::nv::command_bitmap_image;
@@ -11,6 +15,7 @@ use crate::library::tpm2::persistent::{
 use crate::library::tpm2::pp_list::PP_LIST_SIZE;
 use crate::library::tpm2::process::process;
 use crate::library::tpm2::runtime::Tpm2Runtime;
+use crate::library::tpm2::test_support::counter_entropy;
 use crate::library::tpm2::{attach_volatile_blob_for_replay, restore_permanent_blob_for_test};
 use crate::types::TpmResult;
 pub(super) const TPM_RH_OWNER: u32 = 0x4000_0001;
@@ -27,16 +32,12 @@ pub(super) const TPM_CC_PP_COMMANDS: u32 = 0x0000_012d;
 pub(super) const TPM_CC_CLOCK_RATE_ADJUST: u32 = 0x0000_0130;
 pub(super) const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub(super) const TPM_CC_SET_ALGORITHM_SET: u32 = 0x0000_013f;
-pub(super) const TPM_CC_STARTUP: u32 = 0x0000_0144;
-pub(super) const TPM_CC_SHUTDOWN: u32 = 0x0000_0145;
-pub(super) const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
 pub(super) const TPM_CC_PCR_READ: u32 = 0x0000_017e;
 pub(super) const TPM_CC_READ_CLOCK: u32 = 0x0000_0181;
 pub(super) const TPM_CC_PCR_EXTEND: u32 = 0x0000_0182;
 pub(super) const TPM_CC_PCR_SET_AUTH_VALUE: u32 = 0x0000_0183;
 pub(super) const TPM_CC_ACT_SET_TIMEOUT: u32 = 0x0000_0198;
 
-pub(super) const TPM_CAP_COMMANDS: u32 = 2;
 pub(super) const TPM_CAP_PP_COMMANDS: u32 = 3;
 pub(super) const TPM_CAP_TPM_PROPERTIES: u32 = 6;
 pub(super) const TPM_CAP_ACT: u32 = 10;
@@ -70,13 +71,7 @@ fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
     panic!("the replayed reference state never reseeds from host entropy");
 }
 
-fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-    let len = buffer.len() as u8;
-    for (index, byte) in buffer.iter_mut().enumerate() {
-        *byte = (index as u8).wrapping_add(len) ^ 0x55;
-    }
-    Ok(())
-}
+const ENTROPY: EntropySource = counter_entropy::<0x55>;
 
 pub(super) fn replay_clock() -> SteppingClock {
     SteppingClock::new(1_700_000_000_000, 4_000_000)
@@ -227,7 +222,7 @@ impl Host {
     pub(in crate::library::tpm2::command) fn reboot(&self) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(&self.stored.borrow())
             .expect("the stored permanent state restores");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         runtime
     }
 }
@@ -291,12 +286,6 @@ pub(super) fn snapshot(runtime: &Tpm2Runtime) -> Snapshot {
 #[track_caller]
 pub(super) fn assert_unchanged(runtime: &Tpm2Runtime, before: &Snapshot) {
     assert_eq!(&snapshot(runtime), before);
-}
-
-fn tpm2b(payload: &[u8]) -> Vec<u8> {
-    let mut out = (payload.len() as u16).to_be_bytes().to_vec();
-    out.extend_from_slice(payload);
-    out
 }
 
 pub(super) fn read_clock() -> Vec<u8> {
@@ -367,23 +356,8 @@ pub(super) fn hierarchy_control(auth: u32, enable: u32, state: u8) -> Vec<u8> {
     command(TPM_CC_HIERARCHY_CONTROL, &[auth], &[&[]], &parameters)
 }
 
-pub(super) fn get_capability(capability: u32, property: u32, count: u32) -> Vec<u8> {
-    let mut payload = capability.to_be_bytes().to_vec();
-    payload.extend_from_slice(&property.to_be_bytes());
-    payload.extend_from_slice(&count.to_be_bytes());
-    framed(TPM_CC_GET_CAPABILITY, &payload, false)
-}
-
 pub(super) fn cap_pp_commands(property: u32, count: u32) -> Vec<u8> {
     get_capability(TPM_CAP_PP_COMMANDS, property, count)
-}
-
-pub(super) fn startup(kind: u16) -> Vec<u8> {
-    framed(TPM_CC_STARTUP, &kind.to_be_bytes(), false)
-}
-
-pub(super) fn shutdown(kind: u16) -> Vec<u8> {
-    framed(TPM_CC_SHUTDOWN, &kind.to_be_bytes(), false)
 }
 
 pub(super) fn time_info(response: &[u8]) -> (u64, u64, u32, u32, u8) {

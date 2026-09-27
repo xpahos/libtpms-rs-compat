@@ -77,8 +77,6 @@ fn set_persistent_auth(
     auth_handle: u32,
     new_auth: &[u8],
 ) -> Result<(), TpmResult> {
-    // TODO: Support runtimes without decoded state after the NVChip fallback
-    // is implemented.
     let state = runtime.state.as_mut().ok_or(TPM_RC_FAILURE)?;
     let backup = {
         let slot = persistent_auth_slot(state, auth_handle).ok_or(TPM_RC_FAILURE)?;
@@ -115,39 +113,26 @@ fn set_platform_auth(runtime: &mut Tpm2Runtime, new_auth: &[u8]) -> Result<(), T
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+    use crate::library::cancel::CancellationToken;
     use crate::library::constants::{TPM_RC_AUTH_MISSING, TPM_RC_INITIALIZE};
     use crate::library::tpm2::command::core::dispatcher::dispatch;
     use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::{
         TPM_CC_HIERARCHY_CHANGE_AUTH, TPM_RH_NULL,
     };
+    use crate::library::tpm2::command::core::test_support::{
+        auth_session, dispatch_bytes, dispatch_ignoring_result, error_response, for_each_mutation,
+        hex, make_orderly, manufactured_runtime, prefix_bit_flips, process, pw_session,
+        session_success_response, started_runtime, tpm2b,
+    };
     use crate::library::tpm2::command::session::processing::{
         HMAC_SESSION_FIRST, POLICY_SESSION_FIRST, TPM_RS_PW,
     };
-    use crate::library::tpm2::manufacture::manufacture_state;
+
     use crate::library::tpm2::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE};
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
     use crate::library::tpm2::volatile::IMPLEMENTATION_PCR;
 
     const RC_SUCCESS: u32 = 0x000;
@@ -182,70 +167,6 @@ mod tests {
         0x0f, 0x10, 0x11, 0x12, 0x13,
     ];
 
-    fn hex(value: &str) -> Vec<u8> {
-        let cleaned: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&cleaned[index..index + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x55;
-        }
-        Ok(())
-    }
-
-    fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
-
-    #[track_caller]
-    fn started_runtime() -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime();
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &hex("80010000000c0000014400 00")),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
-        runtime
-    }
-
-    fn password_session(handle: u32, nonce: &[u8], attributes: u8, password: &[u8]) -> Vec<u8> {
-        let mut out = handle.to_be_bytes().to_vec();
-        out.extend_from_slice(&(nonce.len() as u16).to_be_bytes());
-        out.extend_from_slice(nonce);
-        out.push(attributes);
-        out.extend_from_slice(&(password.len() as u16).to_be_bytes());
-        out.extend_from_slice(password);
-        out
-    }
-
-    fn pw_session(password: &[u8]) -> Vec<u8> {
-        password_session(TPM_RS_PW, &[], 0x00, password)
-    }
-
-    fn tpm2b(bytes: &[u8]) -> Vec<u8> {
-        let mut out = (bytes.len() as u16).to_be_bytes().to_vec();
-        out.extend_from_slice(bytes);
-        out
-    }
-
     fn command(handle: u32, auth: Option<&[u8]>, parameters: &[u8]) -> Vec<u8> {
         let mut payload = handle.to_be_bytes().to_vec();
         if let Some(auth) = auth {
@@ -264,16 +185,6 @@ mod tests {
 
     fn change_auth(handle: u32, password: &[u8], new_auth: &[u8]) -> Vec<u8> {
         command(handle, Some(&pw_session(password)), &tpm2b(new_auth))
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
-    }
-
-    fn session_success_response() -> Vec<u8> {
-        hex("8002 00000013 00000000 00000000 0000 01 0000")
     }
 
     fn stored_auth(runtime: &Tpm2Runtime, handle: u32) -> Option<Vec<u8>> {
@@ -348,13 +259,17 @@ mod tests {
 
     #[track_caller]
     fn assert_unchanged(runtime: &Tpm2Runtime, before: &Snapshot) {
-        assert_eq!(runtime.failure_mode, before.failure_mode);
-        assert_eq!(runtime.nv_update_pending, before.nv_update_pending);
+        assert_eq!(runtime.failure_mode, before.failure_mode, "failure_mode");
+        assert_eq!(
+            runtime.nv_update_pending, before.nv_update_pending,
+            "nv_update_pending"
+        );
         assert_eq!(
             runtime.state().persistent.orderly_state,
-            before.orderly_state
+            before.orderly_state,
+            "orderly_state"
         );
-        assert_eq!(runtime.nv_memory, before.nv_memory);
+        assert_eq!(runtime.nv_memory, before.nv_memory, "nv_memory");
         assert_eq!(
             HIERARCHY_HANDLES.map(|handle| stored_auth(runtime, handle)),
             before.auths,
@@ -362,26 +277,34 @@ mod tests {
         );
         assert_eq!(
             runtime.state().persistent.lockout_auth_enabled,
-            before.lockout_auth_enabled
+            before.lockout_auth_enabled,
+            "lockout_auth_enabled"
         );
-        assert_eq!(runtime.live.da_pending_on_nv, before.da_pending_on_nv);
-        assert_eq!(runtime.locality, before.locality);
+        assert_eq!(
+            runtime.live.da_pending_on_nv, before.da_pending_on_nv,
+            "da_pending_on_nv"
+        );
+        assert_eq!(runtime.locality, before.locality, "locality");
         let pcr_banks: Vec<Vec<Option<Vec<u8>>>> = runtime
             .live
             .pcrs
             .iter()
             .map(|pcr| pcr.banks.to_vec())
             .collect();
-        assert_eq!(pcr_banks, before.pcr_banks);
+        assert_eq!(pcr_banks, before.pcr_banks, "pcr_banks");
         assert_eq!(
             runtime
                 .live
                 .state_reset
                 .as_ref()
                 .map(|reset| reset.pcr_counter),
-            before.pcr_counter
+            before.pcr_counter,
+            "pcr_counter"
         );
-        assert_eq!(runtime.live.free_session_slots, before.free_session_slots);
+        assert_eq!(
+            runtime.live.free_session_slots, before.free_session_slots,
+            "free_session_slots"
+        );
         assert_eq!(
             runtime
                 .live
@@ -389,15 +312,9 @@ mod tests {
                 .iter()
                 .map(|slot| slot.occupied)
                 .collect::<Vec<bool>>(),
-            before.sessions_occupied
+            before.sessions_occupied,
+            "sessions_occupied"
         );
-    }
-
-    fn make_orderly(runtime: &mut Tpm2Runtime, orderly_state: u16) {
-        let state = runtime.state.as_mut().expect("state present");
-        state.persistent.orderly_state = orderly_state;
-        runtime.nv_memory = build_nv_image(state).expect("the orderly state serializes");
-        runtime.nv_update_pending = false;
     }
 
     #[test]
@@ -406,7 +323,8 @@ mod tests {
         let before = snapshot(&runtime);
         assert_eq!(
             dispatch_bytes(&mut runtime, &change_auth(TPM_RH_PLATFORM, &[], &BIOS_AUTH)),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_HierarchyChangeAuth before TPM2_Startup"
         );
         assert_unchanged(&runtime, &before);
     }
@@ -1231,17 +1149,17 @@ mod tests {
         for (label, auth, expected) in [
             (
                 "hmac_session",
-                password_session(HMAC_SESSION_FIRST, &[], 0x00, &[]),
+                auth_session(HMAC_SESSION_FIRST, &[], 0x00, &[]),
                 RC_REFERENCE_S0,
             ),
             (
                 "policy_session",
-                password_session(POLICY_SESSION_FIRST, &[], 0x00, &[]),
+                auth_session(POLICY_SESSION_FIRST, &[], 0x00, &[]),
                 RC_REFERENCE_S0,
             ),
             (
                 "non_empty_nonce",
-                password_session(TPM_RS_PW, &[0xaa], 0x00, &[]),
+                auth_session(TPM_RS_PW, &[0xaa], 0x00, &[]),
                 0x98f,
             ),
         ] {
@@ -1298,20 +1216,13 @@ mod tests {
     #[test]
     fn bit_flip_panic_safety() {
         let valid = change_auth(TPM_RH_PLATFORM, &[], &BIOS_AUTH);
-        for index in 6..valid.len() {
-            for flip in [0x01u8, 0x80, 0xff] {
-                let mut mutated = valid.clone();
-                mutated[index] ^= flip;
-                let mut runtime = started_runtime();
-                let input = CommandInput::new(mutated.len() as u32, mutated);
-                let parsed = parse_command(&input).expect("the header parses");
-                let _ = serialize_response(&dispatch(
-                    &mut runtime,
-                    &parsed,
-                    CancellationToken::disabled(),
-                ));
-            }
-        }
+        for_each_mutation(
+            "TPM2_HierarchyChangeAuth",
+            prefix_bit_flips(&valid, valid.len(), 6, false),
+            |bytes| {
+                dispatch_ignoring_result(&mut started_runtime(), bytes);
+            },
+        );
     }
 
     #[test]

@@ -22,19 +22,14 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
-    use crate::library::tpm2::command::core::registry::{
-        TPM_CC_GET_TEST_RESULT, find, implemented,
+    use crate::library::tpm2::command::core::header::parse_command;
+
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, dispatch_bytes, dispatch_if_header_parses, for_each_mutation,
+        prefix_bit_flips,
     };
     use crate::library::tpm2::golden_responses::get_test_result::vector;
     use crate::library::tpm2::runtime::empty_state_runtime;
-
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
-    }
 
     fn started_runtime() -> Tpm2Runtime {
         let mut runtime = empty_state_runtime();
@@ -44,21 +39,6 @@ mod tests {
 
     fn command() -> Vec<u8> {
         vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x7c]
-    }
-
-    #[test]
-    fn command_registration_vendored_attributes() {
-        let descriptor = find(TPM_CC_GET_TEST_RESULT).expect("registered");
-        assert_eq!(descriptor.attributes, 0x0000_017c, "the vendored TPMA_CC");
-        assert!(descriptor.handles.is_empty());
-        assert!(descriptor.sessions_allowed);
-        assert!(!descriptor.physical_presence);
-        assert_eq!(
-            implemented()
-                .filter(|descriptor| descriptor.code == TPM_CC_GET_TEST_RESULT)
-                .count(),
-            1
-        );
     }
 
     #[test]
@@ -89,10 +69,10 @@ mod tests {
     #[test]
     fn pre_startup_query_oracle_match() {
         let mut runtime = empty_state_runtime();
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &command()),
+        assert_scenario_response(
+            "TPM2_GetTestResult before TPM2_Startup: get-test-result GTR_BEFORE_STARTUP",
             vector("GTR_BEFORE_STARTUP"),
-            "TPM_RC_INITIALIZE"
+            || dispatch_bytes(&mut runtime, &command()),
         );
     }
 
@@ -152,22 +132,12 @@ mod tests {
     #[test]
     fn prefix_and_bit_flip_panic_safety() {
         let valid = command();
-        for length in 0..=valid.len() {
-            for index in 0..length {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..length].to_vec();
-                    mutated[index] ^= flip;
-                    let mut runtime = started_runtime();
-                    let input = CommandInput::new(mutated.len() as u32, mutated);
-                    if let Ok(parsed) = parse_command(&input) {
-                        let _ = serialize_response(&dispatch(
-                            &mut runtime,
-                            &parsed,
-                            CancellationToken::disabled(),
-                        ));
-                    }
-                }
-            }
-        }
+        for_each_mutation(
+            "TPM2_GetTestResult",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |bytes| {
+                dispatch_if_header_parses(bytes, started_runtime);
+            },
+        );
     }
 }

@@ -4,3 +4,6 @@ pub(super) mod extend;
 pub(super) mod read;
 pub(super) mod reset;
 pub(super) mod update;
+
+#[cfg(test)]
+mod test_support;

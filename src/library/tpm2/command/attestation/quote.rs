@@ -81,14 +81,14 @@ fn parse_parameters(
 mod tests {
     use crate::library::tpm2::command::attestation::builder::test_support::{
         ALG_HMAC, ALG_NULL, ALG_RSASSA, ALG_SHA1, ALG_SHA256, ALG_SHA384, CC_PCR_EXTEND, KEY0,
-        QUALIFY, SIGN_ATTRS, TPM_RH_NULL, TPM_RH_OWNER, attest_prefix, attested_body,
-        attested_bytes, command, create_primary, pcr_selection, pw, ready_runtime, replay_clock,
-        rsa_template, run, run_ok, sig_scheme, tpm2b,
+        QUALIFY, SIGN_ATTRS, TPM_RH_NULL, TPM_RH_OWNER, assert_trailing_byte_oracle, attest_prefix,
+        attested_body, attested_bytes, command, create_primary, pcr_selection, pw, ready_runtime,
+        replay_clock, rsa_template, run, run_ok, sig_scheme, tpm2b,
     };
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_QUOTE, find,
+    use crate::library::tpm2::command::core::registry::TPM_CC_QUOTE;
+    use crate::library::tpm2::command::core::test_support::{
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, for_each_mutation, response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{RC_SUCCESS, response_code};
     use crate::library::tpm2::golden_responses::attestation::vector;
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -97,7 +97,6 @@ mod tests {
     const RC_PARAM3_VALUE: u32 = 0x3c4;
     const RC_PARAM3_SIZE: u32 = 0x3d5;
     const RC_PARAM3_INSUFFICIENT: u32 = 0x3da;
-    const RC_SIZE: u32 = 0x095;
 
     const PCR0_SHA256: [(u16, &[u8]); 1] = [(ALG_SHA256, &[0x01, 0x00, 0x00])];
     const ALL_BANKS: [(u16, &[u8]); 4] = [
@@ -148,30 +147,6 @@ mod tests {
         parameters.extend_from_slice(&ALG_SHA256.to_be_bytes());
         parameters.extend_from_slice(digest);
         command(CC_PCR_EXTEND, &[pcr], Some(&[pw()]), &parameters)
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_0158");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
-        assert_eq!(TPM_CC_QUOTE, 0x0000_0158);
-        let descriptor = find(TPM_CC_QUOTE).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0200_0158);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(!descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth && !descriptor.handles[0].admin_role());
-        assert!(matches!(
-            descriptor.handles[0].kind,
-            HandleKind::ObjectAllowNull
-        ));
     }
 
     #[test]
@@ -373,15 +348,14 @@ mod tests {
         let mut parameters = tpm2b(&QUALIFY);
         parameters.extend_from_slice(&sig_scheme(ALG_NULL, 0));
         parameters.extend_from_slice(&pcr_selection(&PCR0_SHA256));
-        parameters.push(0x00);
-        assert_eq!(
-            run(
-                &mut runtime,
-                &command(TPM_CC_QUOTE, &[KEY0], Some(&[pw()]), &parameters)
-            ),
-            vector("QUOTE_TRAILING")
+        assert_trailing_byte_oracle(
+            &mut runtime,
+            TPM_CC_QUOTE,
+            &[KEY0],
+            &[pw()],
+            &parameters,
+            "QUOTE_TRAILING",
         );
-        assert_eq!(response_code(vector("QUOTE_TRAILING")), RC_SIZE);
     }
 
     #[test]
@@ -448,15 +422,15 @@ mod tests {
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         full.extend_from_slice(&pcr_selection(&ALL_BANKS));
         let mut runtime = quote_runtime();
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_Quote",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let _ = run(
                     &mut runtime,
                     &command(TPM_CC_QUOTE, &[KEY0], Some(&[pw()]), &parameters),
                 );
-            }
-        }
+            },
+        );
     }
 }

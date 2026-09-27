@@ -78,10 +78,12 @@ fn parse_rate_adjust(parameters: &[u8]) -> Result<ClockAdjust, TpmResult> {
 mod tests {
     use super::*;
     use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_CLOCK_RATE_ADJUST, TPM_CC_CLOCK_SET,
-        TPM_CC_READ_CLOCK, find,
+        TPM_CC_CLOCK_RATE_ADJUST, TPM_CC_CLOCK_SET, TPM_CC_READ_CLOCK,
     };
-    use crate::library::tpm2::command::core::test_support::{command, framed, response_code};
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, command, for_each_mutation, framed, prefix_bit_flips,
+        response_code,
+    };
     use crate::library::tpm2::command::platform::test_support::{
         Host, RC_AUTH_MISSING, RC_INITIALIZE, RC_INSUFFICIENT_H1, RC_INSUFFICIENT_P1,
         RC_NV_UNAVAILABLE, RC_SESSION1_BAD_AUTH, RC_SESSION1_HANDLE, RC_SIZE, RC_SUCCESS,
@@ -101,65 +103,27 @@ mod tests {
     const COARSE_FASTER: u8 = 0x03;
 
     #[test]
-    fn registration_reference_attributes() {
-        for (code, attributes, record, handles, decrypt) in [
-            (
-                TPM_CC_CLOCK_SET,
-                0x0240_0128u32,
-                "CCATTR_0128",
-                1usize,
-                0u16,
-            ),
-            (TPM_CC_CLOCK_RATE_ADJUST, 0x0200_0130, "CCATTR_0130", 1, 0),
-            (TPM_CC_READ_CLOCK, 0x0000_0181, "CCATTR_0181", 0, 0),
-        ] {
-            let descriptor = find(code).expect("the command is registered");
-            assert_eq!(descriptor.attributes, attributes, "code {code:#x}");
-            assert_eq!(
-                descriptor.attributes,
-                u32::from_be_bytes(vector(record)[19..23].try_into().expect("four bytes")),
-                "code {code:#x}"
-            );
-            assert_eq!(descriptor.handles.len(), handles, "code {code:#x}");
-            assert_eq!(descriptor.decrypt_size, decrypt, "code {code:#x}");
-            assert_eq!(descriptor.encrypt_size, 0, "code {code:#x}");
-            assert!(descriptor.sessions_allowed, "code {code:#x}");
-            assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-            assert!(matches!(
-                descriptor.lifecycle,
-                CommandLifecycle::RequiresStarted
-            ));
-        }
-        assert!(matches!(
-            find(TPM_CC_CLOCK_SET).unwrap().handles[0].kind,
-            HandleKind::Provision
-        ));
-        assert!(matches!(
-            find(TPM_CC_CLOCK_RATE_ADJUST).unwrap().handles[0].kind,
-            HandleKind::Provision
-        ));
-        assert!(find(TPM_CC_CLOCK_SET).unwrap().physical_presence);
-        assert!(find(TPM_CC_CLOCK_RATE_ADJUST).unwrap().physical_presence);
-        assert!(!find(TPM_CC_READ_CLOCK).unwrap().physical_presence);
-    }
-
-    #[test]
     fn pre_startup_rejection() {
         let clock = replay_clock();
-        for (label, bytes) in [
-            ("LIFECYCLE_READ_CLOCK", read_clock()),
+        for (command, label, bytes) in [
+            ("TPM2_ReadClock", "LIFECYCLE_READ_CLOCK", read_clock()),
             (
+                "TPM2_ClockSet",
                 "LIFECYCLE_CLOCK_SET",
                 clock_set(TPM_RH_PLATFORM, 0x10000, &[]),
             ),
             (
+                "TPM2_ClockRateAdjust",
                 "LIFECYCLE_CLOCK_RATE_ADJUST",
                 clock_rate_adjust(TPM_RH_PLATFORM, NO_CHANGE, &[]),
             ),
         ] {
+            let scenario = format!("{command} before TPM2_Startup: platform-state {label}");
             let mut runtime = manufactured(&clock);
-            expect(&mut runtime, &clock, label, &bytes);
-            assert_eq!(response_code(vector(label)), RC_INITIALIZE, "{label}");
+            assert_scenario_response(&scenario, vector(label), || {
+                exec(&mut runtime, &clock, &bytes)
+            });
+            assert_eq!(response_code(vector(label)), RC_INITIALIZE, "{scenario}");
         }
     }
 
@@ -741,21 +705,17 @@ mod tests {
     #[test]
     fn prefix_and_bit_flip_panic_safety() {
         let clock = replay_clock();
-        for valid in [
-            clock_set(TPM_RH_PLATFORM, 0x10000, &[]),
-            clock_rate_adjust(TPM_RH_PLATFORM, NO_CHANGE, &[]),
-            read_clock(),
+        for (case, valid) in [
+            ("TPM2_ClockSet", clock_set(TPM_RH_PLATFORM, 0x10000, &[])),
+            (
+                "TPM2_ClockRateAdjust",
+                clock_rate_adjust(TPM_RH_PLATFORM, NO_CHANGE, &[]),
+            ),
+            ("TPM2_ReadClock", read_clock()),
         ] {
-            for len in 0..=valid.len() {
-                for index in 0..len {
-                    for flip in [0x01u8, 0x80, 0xff] {
-                        let mut mutated = valid[..len].to_vec();
-                        mutated[index] ^= flip;
-                        let mut runtime = ready(&clock);
-                        let _ = exec(&mut runtime, &clock, &mutated);
-                    }
-                }
-            }
+            for_each_mutation(case, prefix_bit_flips(&valid, 0, 0, false), |bytes| {
+                let _ = exec(&mut ready(&clock), &clock, &bytes);
+            });
         }
     }
 }

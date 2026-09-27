@@ -10,9 +10,6 @@ pub trait FfiPanicFallback {
 
 impl FfiPanicFallback for u32 {
     fn panic_fallback() -> Self {
-        // In the event of a panic in TPMLIB_GetVersion, the return value
-        // will be TPM_FAIL == 0x9, which is not quite correct. For now,
-        // we assume that TPMLIB_GetVersion never panics.
         TPM_FAIL
     }
 }

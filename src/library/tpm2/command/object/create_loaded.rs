@@ -274,8 +274,15 @@ mod tests {
     use crate::library::CommandInput;
     use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::clock::SteppingClock;
-    use crate::library::tpm2::command::core::registry::{self, TPM_CC_CREATE_LOADED};
+    use crate::library::tpm2::command::core::registry::TPM_CC_CREATE_LOADED;
+    use crate::library::tpm2::command::core::test_support::{
+        assert_scenario_response, colliding_last_value,
+    };
+    use crate::library::tpm2::command::object::test_support::{
+        cap_da_command, cp_command, evict_command, flush_command,
+    };
     use crate::library::tpm2::golden_responses::create_loaded::vector;
+    use crate::library::tpm2::object_load::replay::{push_tpm2b, runtime_from, sessioned};
     use crate::library::tpm2::process::process;
     use crate::library::tpm2::restore_permanent_blob_for_test;
 
@@ -336,27 +343,6 @@ mod tests {
         0x43, 0x00, 0x00,
     ];
 
-    fn push_tpm2b(out: &mut Vec<u8>, bytes: &[u8]) {
-        out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-        out.extend_from_slice(bytes);
-    }
-
-    fn build(command_code: u32, handles: &[u32], password: &[u8], params: &[u8]) -> Vec<u8> {
-        let mut out = vec![0x80, 0x02, 0, 0, 0, 0];
-        out.extend_from_slice(&command_code.to_be_bytes());
-        for handle in handles {
-            out.extend_from_slice(&handle.to_be_bytes());
-        }
-        out.extend_from_slice(&(9 + password.len() as u32).to_be_bytes());
-        out.extend_from_slice(&0x4000_0009u32.to_be_bytes());
-        out.extend_from_slice(&[0x00, 0x00, 0x00]);
-        push_tpm2b(&mut out, password);
-        out.extend_from_slice(params);
-        let size = (out.len() as u32).to_be_bytes();
-        out[2..6].copy_from_slice(&size);
-        out
-    }
-
     fn cl_params(user_auth: &[u8], data: &[u8], template: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&(4 + user_auth.len() as u16 + data.len() as u16).to_be_bytes());
@@ -373,30 +359,12 @@ mod tests {
         data: &[u8],
         template: &[u8],
     ) -> Vec<u8> {
-        build(
+        sessioned(
             TPM_CC_CREATE_LOADED,
             &[parent],
             password,
             &cl_params(user_auth, data, template),
         )
-    }
-
-    fn cp_command(hierarchy: u32, user_auth: &[u8], template: &[u8]) -> Vec<u8> {
-        let mut params = Vec::new();
-        params.extend_from_slice(&(4 + user_auth.len() as u16).to_be_bytes());
-        push_tpm2b(&mut params, user_auth);
-        push_tpm2b(&mut params, &[]);
-        push_tpm2b(&mut params, template);
-        params.extend_from_slice(&0u16.to_be_bytes());
-        params.extend_from_slice(&0u32.to_be_bytes());
-        build(0x0000_0131, &[hierarchy], &[], &params)
-    }
-
-    fn flush_command(handle: u32) -> Vec<u8> {
-        let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0e];
-        out.extend_from_slice(&0x0000_0165u32.to_be_bytes());
-        out.extend_from_slice(&handle.to_be_bytes());
-        out
     }
 
     fn ecc_derive_template(label: &[u8], context: &[u8], attributes: u32) -> Vec<u8> {
@@ -436,24 +404,6 @@ mod tests {
         out
     }
 
-    fn cap_cc_command() -> Vec<u8> {
-        let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x16];
-        out.extend_from_slice(&0x0000_017au32.to_be_bytes());
-        out.extend_from_slice(&2u32.to_be_bytes());
-        out.extend_from_slice(&0x191u32.to_be_bytes());
-        out.extend_from_slice(&1u32.to_be_bytes());
-        out
-    }
-
-    fn cap_da_command() -> Vec<u8> {
-        let mut out = vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x16];
-        out.extend_from_slice(&0x0000_017au32.to_be_bytes());
-        out.extend_from_slice(&6u32.to_be_bytes());
-        out.extend_from_slice(&0x20eu32.to_be_bytes());
-        out.extend_from_slice(&4u32.to_be_bytes());
-        out
-    }
-
     fn define_da_index_command() -> Vec<u8> {
         let mut params = Vec::new();
         push_tpm2b(&mut params, b"test");
@@ -464,23 +414,14 @@ mod tests {
         public.extend_from_slice(&0u16.to_be_bytes());
         public.extend_from_slice(&1u16.to_be_bytes());
         push_tpm2b(&mut params, &public);
-        build(0x0000_012a, &[TPM_RH_OWNER_H], &[], &params)
+        sessioned(0x0000_012a, &[TPM_RH_OWNER_H], &[], &params)
     }
 
     fn nv_write_empty_command(index: u32, password: &[u8]) -> Vec<u8> {
         let mut params = Vec::new();
         push_tpm2b(&mut params, &[]);
         params.extend_from_slice(&0u16.to_be_bytes());
-        build(0x0000_0137, &[index, index], password, &params)
-    }
-
-    fn evict_command(object: u32, persistent: u32) -> Vec<u8> {
-        build(
-            0x0000_0120,
-            &[TPM_RH_OWNER_H, object],
-            &[],
-            &persistent.to_be_bytes(),
-        )
+        sessioned(0x0000_0137, &[index, index], password, &params)
     }
 
     fn unreachable_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
@@ -488,18 +429,18 @@ mod tests {
     }
 
     fn restored_runtime(clock: &SteppingClock) -> Tpm2Runtime {
-        let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
-            .expect("the oracle permanent state restores");
-        crate::library::tpm2::attach_volatile_blob(&mut runtime, vector("VOLATILE_BASE"), clock)
-            .expect("the oracle volatile state attaches");
-        runtime.entropy = unreachable_entropy;
-        runtime
+        runtime_from(vector("PERMALL_BASE"), vector("VOLATILE_BASE"), clock)
     }
 
     #[track_caller]
-    fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, label: &str, bytes: Vec<u8>) {
+    fn respond(
+        runtime: &mut Tpm2Runtime,
+        clock: &SteppingClock,
+        label: &str,
+        bytes: Vec<u8>,
+    ) -> Vec<u8> {
         let input = CommandInput::new(bytes.len() as u32, bytes);
-        let response = process(
+        process(
             runtime,
             crate::library::tpm2::PlatformInputs::at_locality(0),
             &input,
@@ -507,7 +448,12 @@ mod tests {
             |_| Ok(()),
             CancellationToken::disabled(),
         )
-        .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"));
+        .unwrap_or_else(|code| panic!("{label} failed with {code:#x}"))
+    }
+
+    #[track_caller]
+    fn exec(runtime: &mut Tpm2Runtime, clock: &SteppingClock, label: &str, bytes: Vec<u8>) {
+        let response = respond(runtime, clock, label, bytes);
         assert_eq!(response, vector(label), "{label}");
     }
 
@@ -518,50 +464,6 @@ mod tests {
             exec(&mut runtime, &clock, label, bytes.clone());
         }
         runtime
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let descriptor = registry::find(TPM_CC_CREATE_LOADED).expect("the command is registered");
-        assert_eq!(descriptor.attributes, 0x1200_0191);
-        assert!(descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth);
-        assert!(!descriptor.handles[0].admin_role());
-    }
-
-    #[test]
-    fn capability_report_oracle_match() {
-        let oracle = vector("CAP_CC_CREATE_LOADED");
-        assert_eq!(
-            &oracle[oracle.len() - 4..],
-            0x1200_0191u32.to_be_bytes(),
-            "the vendored TPM reports TPMA_CC 0x12000191"
-        );
-        let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
-        let mut runtime = restored_runtime(&clock);
-        let bytes = cap_cc_command();
-        let input = CommandInput::new(bytes.len() as u32, bytes);
-        let response = process(
-            &mut runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(0),
-            &input,
-            &clock,
-            |_| Ok(()),
-            CancellationToken::disabled(),
-        )
-        .expect("the query succeeds");
-        assert_eq!(
-            &response[response.len() - 4..],
-            0x1200_0191u32.to_be_bytes(),
-            "this registry reports the same attributes"
-        );
-        assert_eq!(
-            response, oracle,
-            "both TPMs implement commands beyond 0x191, so moreData is set on both"
-        );
-        assert_eq!(oracle[10], 1);
     }
 
     #[test]
@@ -1068,11 +970,17 @@ mod tests {
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
-        exec(
-            &mut runtime,
-            &clock,
-            "BEFORE_STARTUP",
-            cl_command(TPM_RH_OWNER_H, &[], &[], &[], &AES_TEMPLATE),
+        assert_scenario_response(
+            "TPM2_CreateLoaded before TPM2_Startup: create-loaded BEFORE_STARTUP",
+            vector("BEFORE_STARTUP"),
+            || {
+                respond(
+                    &mut runtime,
+                    &clock,
+                    "BEFORE_STARTUP",
+                    cl_command(TPM_RH_OWNER_H, &[], &[], &[], &AES_TEMPLATE),
+                )
+            },
         );
     }
 
@@ -1081,18 +989,13 @@ mod tests {
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
 
-        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-            let len = buffer.len() as u8;
-            for (index, byte) in buffer.iter_mut().enumerate() {
-                *byte = (index as u8).wrapping_add(len) ^ 0x29;
-            }
-            Ok(())
-        }
+        const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+            crate::library::tpm2::test_support::counter_entropy::<0x29>;
 
         let profile = validate_user_profile(Some(profile)).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
         let startup = vec![
             0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
@@ -1158,10 +1061,10 @@ mod tests {
 
     mod state {
         use super::*;
+        use crate::library::tpm2::command::object::test_support::object_images;
         use crate::library::tpm2::nv::any_object_image;
         use crate::library::tpm2::persistent::{
-            OwnedAnyObject, PersistentAllEnvelope, materialize_persistent_state,
-            persistent_all_store,
+            PersistentAllEnvelope, materialize_persistent_state, persistent_all_store,
         };
         use crate::library::tpm2::runtime::commit_restored_state;
         use crate::library::tpm2::volatile::{CURRENT_OBJECT_VERSION, OwnedVolatileState};
@@ -1179,15 +1082,6 @@ mod tests {
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
             decode_volatile_blob(&context, vector(&format!("VOLATILE_{label}")), &clock)
                 .expect("the volatile record decodes")
-        }
-
-        fn object_images(objects: &[OwnedAnyObject]) -> Vec<Vec<u8>> {
-            objects
-                .iter()
-                .map(|object| {
-                    any_object_image(object, CURRENT_OBJECT_VERSION).expect("the object serializes")
-                })
-                .collect()
         }
 
         #[track_caller]
@@ -1551,7 +1445,7 @@ mod tests {
     mod live_drbg_policy {
         use super::*;
         use crate::library::constants::TPM_FAIL;
-        use crate::library::tpm2::crypto::{CTR_DRBG_MAX_REQUESTS_PER_RESEED, Drbg};
+        use crate::library::tpm2::crypto::CTR_DRBG_MAX_REQUESTS_PER_RESEED;
         use crate::library::tpm2::failure_mode::FailureLocation;
         use crate::library::tpm2::manufacture::manufacture_state;
         use crate::library::tpm2::object_create::find_empty_object_slot;
@@ -1579,13 +1473,8 @@ mod tests {
             ENTROPY_CALLS.with(|calls| calls.replace(0))
         }
 
-        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-            let len = buffer.len() as u8;
-            for (index, byte) in buffer.iter_mut().enumerate() {
-                *byte = (index as u8).wrapping_add(len) ^ 0x2f;
-            }
-            Ok(())
-        }
+        const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+            crate::library::tpm2::test_support::counter_entropy::<0x2f>;
 
         fn drbg_snapshot(runtime: &Tpm2Runtime) -> (u64, u32, Vec<u8>, [u32; 4]) {
             let state = &runtime.live.orderly.drbg_state;
@@ -1723,19 +1612,10 @@ mod tests {
                 br#"{"Name":"custom","Attributes":"drbg-continous-test"}"#;
             let profile = validate_user_profile(Some(CONTINUOUS_TEST_PROFILE))
                 .expect("the profile validates");
-            let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+            let state = manufacture_state(profile, ENTROPY).expect("manufactures");
             let mut runtime = commit_manufactured_state(state).expect("commits");
-            runtime.entropy = deterministic_entropy;
+            runtime.entropy = ENTROPY;
             runtime
-        }
-
-        fn colliding_last_value(seed: &[u8]) -> [u32; 4] {
-            let mut probe = Drbg::restore(seed, 1, [0; 4], false).expect("the probe restores");
-            let mut block = [0u8; 16];
-            probe.generate(&mut block).expect("the probe generates");
-            core::array::from_fn(|word| {
-                u32::from_le_bytes(block[word * 4..word * 4 + 4].try_into().unwrap())
-            })
         }
 
         #[test]

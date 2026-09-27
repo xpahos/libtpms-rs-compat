@@ -142,20 +142,16 @@ pub(in crate::library::tpm2::command) fn execute_decrypt(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{
-        AuthRole, CommandLifecycle, HandleKind, NvAccess, TPM_CC_ECC_DECRYPT, TPM_CC_ECC_ENCRYPT,
-        find,
-    };
+
     use crate::library::tpm2::command::core::test_support::{
         dispatch_bytes, response_code, response_parameters,
     };
     use crate::library::tpm2::command::crypto::ecc::key::test_support::{
-        ATTR_DECRYPT, ATTR_SIGN, CC_ECC_DECRYPT, CC_ECC_ENCRYPT, CURVE_P256, Ciphertext, H0,
-        KDF_NULL, KDF1_SHA256, KDF2_SHA256, KDF2_SHA384, KEY_AUTH, KEYED_AUTH, MGF1_SHA256,
-        PRIVATE_SCALAR, SCHEME_NULL, SHA256, SHA384, ciphertext, cmd, decrypt_parameters,
-        ecc_private, ecc_public, expect, framed, generator_multiple, keyed_object, load_external,
-        max_message, message, off_curve_point, point2b, public_point, pw, ready_with, restored,
-        tpm2b,
+        ATTR_DECRYPT, CC_ECC_DECRYPT, CC_ECC_ENCRYPT, CURVE_P256, Ciphertext, H0, KDF_NULL,
+        KDF1_SHA256, KDF2_SHA256, KDF2_SHA384, KEY_AUTH, KEYED_AUTH, MGF1_SHA256, SCHEME_NULL,
+        SHA256, SHA384, ciphertext, cmd, decrypt_key, decrypt_parameters, ecc_public, expect,
+        framed, generator_multiple, keyed_object, load_external, max_message, message,
+        off_curve_point, point2b, public_point, pw, ready_with, restored, sign_key, tpm2b,
     };
 
     const EPHEMERAL_ONE: [u8; 32] = [
@@ -178,36 +174,6 @@ mod tests {
         0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
         0x28,
     ];
-
-    fn decrypt_key(auth: &[u8]) -> Vec<u8> {
-        let point = public_point();
-        load_external(
-            &ecc_private(&PRIVATE_SCALAR, auth),
-            &ecc_public(
-                ATTR_DECRYPT,
-                &SCHEME_NULL,
-                CURVE_P256,
-                &KDF_NULL,
-                &point.x,
-                &point.y,
-            ),
-        )
-    }
-
-    fn sign_key() -> Vec<u8> {
-        let point = public_point();
-        load_external(
-            &ecc_private(&PRIVATE_SCALAR, &[]),
-            &ecc_public(
-                ATTR_SIGN,
-                &SCHEME_NULL,
-                CURVE_P256,
-                &KDF_NULL,
-                &point.x,
-                &point.y,
-            ),
-        )
-    }
 
     fn public_only_key() -> Vec<u8> {
         let point = public_point();
@@ -237,30 +203,6 @@ mod tests {
             Some(&pw(auth)),
             &decrypt_parameters(cipher, scheme),
         )
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let encrypt = find(TPM_CC_ECC_ENCRYPT).expect("TPM2_ECC_Encrypt is registered");
-        assert_eq!(encrypt.attributes, 0x0200_0199);
-        assert_eq!((encrypt.decrypt_size, encrypt.encrypt_size), (2, 2));
-        assert_eq!(encrypt.handles.len(), 1);
-        assert!(
-            !encrypt.handles[0].user_auth,
-            "the reference does not set HANDLE_1_USER for encryption"
-        );
-        assert!(matches!(encrypt.handles[0].kind, HandleKind::Object));
-        assert!(matches!(encrypt.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            encrypt.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-
-        let decrypt = find(TPM_CC_ECC_DECRYPT).expect("TPM2_ECC_Decrypt is registered");
-        assert_eq!(decrypt.attributes, 0x0200_019a);
-        assert_eq!((decrypt.decrypt_size, decrypt.encrypt_size), (2, 2));
-        assert!(decrypt.handles[0].user_auth);
-        assert!(decrypt.handles[0].role == AuthRole::User);
     }
 
     #[test]

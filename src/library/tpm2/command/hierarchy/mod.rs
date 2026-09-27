@@ -136,7 +136,8 @@ mod tests {
     };
     use super::*;
     use crate::library::tpm2::command::core::test_support::{
-        dispatch_bytes, manufactured_runtime, response_code, started_runtime,
+        assert_scenario_response, dispatch_bytes, manufactured_runtime, response_code,
+        started_runtime,
     };
     use crate::library::tpm2::golden_responses::hierarchy_management::vector;
     use crate::library::tpm2::hierarchy::{TPM_RH_LOCKOUT, TPM_RH_NULL, TPM_RH_PLATFORM_NV};
@@ -277,34 +278,43 @@ mod tests {
     #[test]
     fn pre_startup_lifecycle_reference_match() {
         let mut runtime = manufactured_runtime();
-        for (label, bytes) in [
+        for (command, label, bytes) in [
             (
+                "TPM2_HierarchyControl",
                 "LIFECYCLE_HIERARCHY_CONTROL",
                 hierarchy_control(TPM_RH_PLATFORM, TPM_RH_OWNER, 0, &[]),
             ),
-            ("LIFECYCLE_CHANGE_PPS", change_pps(TPM_RH_PLATFORM, &[])),
-            ("LIFECYCLE_CLEAR", clear(TPM_RH_PLATFORM, &[])),
             (
+                "TPM2_ChangePPS",
+                "LIFECYCLE_CHANGE_PPS",
+                change_pps(TPM_RH_PLATFORM, &[]),
+            ),
+            ("TPM2_Clear", "LIFECYCLE_CLEAR", clear(TPM_RH_PLATFORM, &[])),
+            (
+                "TPM2_ClearControl",
                 "LIFECYCLE_CLEAR_CONTROL",
                 clear_control(TPM_RH_PLATFORM, 1, &[]),
             ),
             (
+                "TPM2_PCR_SetAuthPolicy",
                 "LIFECYCLE_PCR_SET_AUTH_POLICY",
                 pcr_set_auth_policy(TPM_RH_PLATFORM, &[], TPM_ALG_NULL, 20, &[]),
             ),
             (
+                "TPM2_SetPrimaryPolicy",
                 "LIFECYCLE_SET_PRIMARY_POLICY",
                 set_primary_policy(TPM_RH_OWNER, &[], TPM_ALG_NULL, &[]),
             ),
             (
+                "TPM2_DictionaryAttackLockReset",
                 "LIFECYCLE_DA_LOCK_RESET",
                 da_lock_reset(TPM_RH_LOCKOUT, &[]),
             ),
         ] {
-            assert_eq!(
-                dispatch_bytes(&mut runtime, &bytes),
+            assert_scenario_response(
+                &format!("{command} before TPM2_Startup: hierarchy-management {label}"),
                 vector(label),
-                "{label}"
+                || dispatch_bytes(&mut runtime, &bytes),
             );
         }
     }

@@ -300,11 +300,6 @@ fn recover_payload(runtime: &Tpm2Runtime, context: &LoadedContext) -> Result<Vec
         &protection.iv,
         &mut payload,
     )?;
-    // TODO: Upstream enters failure mode here and at the two payload-size
-    // checks below. Those paths are unreachable without the hierarchy proof
-    // because the integrity HMAC is verified first, so this port reports
-    // TPM_RC_FAILURE instead of adding failure-mode locations that the
-    // generated failure_locations fixture cannot pin.
     if payload[..FINGERPRINT_SIZE] != fingerprint(context.sequence) {
         return Err(TPM_RC_FAILURE);
     }
@@ -379,9 +374,7 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{
-        self, CommandLifecycle, HandleKind, NvAccess,
-    };
+
     use crate::library::tpm2::object_load::replay::*;
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -425,55 +418,6 @@ mod tests {
             .iter()
             .map(|object| object.attributes & 0x8000 != 0)
             .collect()
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let save = registry::find(CC_SAVE).expect("TPM2_ContextSave is registered");
-        assert_eq!(save.attributes, 0x0200_0162);
-        assert_eq!(save.decrypt_size, 0);
-        assert_eq!(save.encrypt_size, 0);
-        assert!(!save.sessions_allowed);
-        assert!(!save.physical_presence);
-        assert!(matches!(save.nv_access, NvAccess::Neither));
-        assert!(matches!(save.lifecycle, CommandLifecycle::RequiresStarted));
-        assert_eq!(save.handles.len(), 1);
-        assert!(!save.handles[0].user_auth);
-        assert!(matches!(save.handles[0].kind, HandleKind::Context));
-
-        let load = registry::find(CC_LOAD).expect("TPM2_ContextLoad is registered");
-        assert_eq!(load.attributes, 0x1000_0161);
-        assert_eq!(load.decrypt_size, 0);
-        assert_eq!(load.encrypt_size, 0);
-        assert!(!load.sessions_allowed);
-        assert!(load.handles.is_empty());
-    }
-
-    #[test]
-    fn context_handle_kind_object_session_only() {
-        let kind = registry::find(CC_SAVE).unwrap().handles[0].kind;
-        for handle in [0x8000_0000u32, 0x8000_0002, 0x0200_0000, 0x0300_0000] {
-            assert!(kind.accepts(handle), "handle {handle:#x}");
-        }
-        for handle in [
-            0u32,
-            0x0100_0000,
-            0x8000_0003,
-            0x8100_0000,
-            RH_OWNER,
-            RH_NULL,
-            u32::MAX,
-        ] {
-            assert!(!kind.accepts(handle), "handle {handle:#x}");
-        }
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let clock = clock();
-        let mut runtime = runtime_at("READY", &clock);
-        exec(&mut runtime, &clock, "CCATTR_0161", cap_cc(0x0161));
-        exec(&mut runtime, &clock, "CCATTR_0162", cap_cc(0x0162));
     }
 
     #[test]

@@ -660,13 +660,8 @@ mod tests {
         }
     }
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), crate::types::TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x2c;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0x2c>;
 
     fn manufactured_runtime() -> Tpm2Runtime {
         use crate::library::tpm2::manufacture::manufacture_state;
@@ -674,9 +669,9 @@ mod tests {
         use crate::library::tpm2::runtime::commit_manufactured_state;
 
         let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         runtime
     }
 

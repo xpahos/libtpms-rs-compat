@@ -38,86 +38,38 @@ fn parse_bytes_requested(parameters: &[u8]) -> Result<u16, TpmResult> {
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
     use crate::library::constants::TPM_RC_INITIALIZE;
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
     use crate::library::tpm2::command::core::registry::TPM_CC_GET_RANDOM;
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, error_response, hex, manufactured_runtime_with, process,
+        start,
+    };
+    use crate::library::tpm2::command::crypto::test_support::assert_live_drbg_unchanged;
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::crypto::{
         CTR_DRBG_MAX_REQUESTS_PER_RESEED, DRBG_MAGIC, DrbgGenerateRecord, boundary_record,
         generate_record,
     };
-    use crate::library::tpm2::manufacture::manufacture_state;
+
     use crate::library::tpm2::persistent::{OwnedDrbgState, OwnedSecret};
-    use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
+
+    const ENTROPY: EntropySource = counter_entropy::<0x63>;
 
     const RC_INSUFFICIENT_PARAM1: u32 = 0x1da;
     const RC_SIZE: u32 = 0x095;
     const RC_SESSION1_HANDLE: u32 = 0x98b;
     const RC_INSUFFICIENT: u32 = 0x09a;
 
-    fn hex(s: &str) -> Vec<u8> {
-        let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x63;
-        }
-        Ok(())
-    }
-
     fn manufactured_runtime() -> Tpm2Runtime {
-        let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
+        manufactured_runtime_with(None, ENTROPY)
     }
 
     #[track_caller]
     fn started_runtime() -> Tpm2Runtime {
         let mut runtime = manufactured_runtime();
-        let startup = hex("80010000000c0000014400 00");
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
+        start(&mut runtime);
         runtime
     }
 
@@ -140,12 +92,6 @@ mod tests {
     #[track_caller]
     fn request(runtime: &mut Tpm2Runtime, bytes_requested: u16) -> Vec<u8> {
         dispatch_bytes(runtime, &get_random_command(&bytes_requested.to_be_bytes()))
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
-        out
     }
 
     #[track_caller]
@@ -217,20 +163,24 @@ mod tests {
     fn pre_startup_rejection() {
         let mut runtime = manufactured_runtime();
         let before = snapshot(&runtime);
-        assert_eq!(request(&mut runtime, 4), error_response(TPM_RC_INITIALIZE));
+        assert_eq!(
+            request(&mut runtime, 4),
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_GetRandom before TPM2_Startup"
+        );
         assert_eq!(
             dispatch_bytes(&mut runtime, &get_random_command(&[])),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes parameter parsing"
+            "TPM2_GetRandom before TPM2_Startup: the lifecycle check precedes parameter parsing"
         );
         assert_eq!(
             runtime.live.orderly.drbg_state.reseed_counter, before.persistent_drbg_counter,
-            "a rejected command leaves the live DRBG alone"
+            "TPM2_GetRandom before TPM2_Startup: a rejected command leaves the live DRBG alone"
         );
         assert_persistent_unchanged(&runtime, &before);
         assert!(
             !runtime.failure_mode,
-            "the lifecycle check is not a fatal error"
+            "TPM2_GetRandom before TPM2_Startup: the lifecycle check is not a fatal error"
         );
     }
 
@@ -407,15 +357,6 @@ mod tests {
         let response = request(&mut runtime, 8);
         assert_eq!(&response[..2], &[0x80, 0x01]);
         assert_eq!(response.len(), 12 + 8, "no trailing authorization area");
-    }
-
-    #[track_caller]
-    fn assert_live_drbg_unchanged(runtime: &Tpm2Runtime, before: &OwnedDrbgState) {
-        let now = &runtime.live.orderly.drbg_state;
-        assert_eq!(now.seed.expose(), before.seed.expose());
-        assert_eq!(now.reseed_counter, before.reseed_counter);
-        assert_eq!(now.drbg_magic, before.drbg_magic);
-        assert_eq!(now.last_value, before.last_value);
     }
 
     #[test]

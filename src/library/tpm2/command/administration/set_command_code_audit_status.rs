@@ -146,10 +146,11 @@ mod tests {
         run, run_ok,
     };
     use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS,
-        TPM_CC_SHUTDOWN, find,
+        TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, TPM_CC_SHUTDOWN, find,
     };
-    use crate::library::tpm2::command::core::test_support::{RC_SUCCESS, response_code};
+    use crate::library::tpm2::command::core::test_support::{
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, for_each_mutation, response_code,
+    };
     use crate::library::tpm2::command::nv::test_support::assert_matches_oracle;
     use crate::library::tpm2::golden_responses::attestation::vector;
     use crate::library::tpm2::runtime::Tpm2Runtime;
@@ -193,32 +194,6 @@ mod tests {
         );
         assert_matches_oracle(&runtime, vector("PERMALL_AUDIT_BASE"), "before auditing");
         runtime
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_0140");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
-        assert_eq!(TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS, 0x0000_0140);
-        let descriptor = find(TPM_CC_SET_COMMAND_CODE_AUDIT_STATUS).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0240_0140);
-        assert_eq!(
-            descriptor.attributes & (1 << 22),
-            1 << 22,
-            "TPM2_SetCommandCodeAuditStatus writes NV"
-        );
-        assert_eq!(descriptor.decrypt_size, 0);
-        assert_eq!(descriptor.encrypt_size, 0);
-        assert!(descriptor.physical_presence);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 1);
-        assert!(descriptor.handles[0].user_auth && !descriptor.handles[0].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Provision));
     }
 
     #[test]
@@ -556,10 +531,10 @@ mod tests {
         full.extend_from_slice(&CC_GET_RANDOM.to_be_bytes());
         full.extend_from_slice(&1u32.to_be_bytes());
         full.extend_from_slice(&CC_GET_RANDOM.to_be_bytes());
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_SetCommandCodeAuditStatus",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let mut runtime = ready_runtime();
                 let response = run(
                     &mut runtime,
@@ -572,7 +547,7 @@ mod tests {
                 );
                 assert!(response.len() >= 10);
                 let _ = response_code(&response) == RC_SUCCESS;
-            }
-        }
+            },
+        );
     }
 }

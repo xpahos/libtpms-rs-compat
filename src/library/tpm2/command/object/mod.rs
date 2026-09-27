@@ -8,3 +8,6 @@ pub(super) mod evict_control;
 pub(super) mod load;
 pub(super) mod read_public;
 pub(super) mod unseal;
+
+#[cfg(test)]
+mod test_support;

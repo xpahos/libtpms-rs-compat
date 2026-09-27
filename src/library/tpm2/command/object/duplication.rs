@@ -404,8 +404,18 @@ pub(in crate::library::tpm2::command) fn execute_import(
 #[cfg(test)]
 mod test_support {
     use crate::library::tpm2::clock::SteppingClock;
+    pub(in crate::library::tpm2::command) use crate::library::tpm2::command::core::test_support::{
+        flipped, truncated, with_trailing,
+    };
+    use crate::library::tpm2::command::object::test_support::split_tpm2b;
+    pub(super) use crate::library::tpm2::command::object::test_support::{
+        cap_cc_page, sym_aes128_cfb,
+    };
     use crate::library::tpm2::crypto::Hasher;
     use crate::library::tpm2::golden_responses::object_transfer::vector;
+    pub(in crate::library::tpm2::command) use crate::library::tpm2::object_load::replay::{
+        clock, password_area,
+    };
     use crate::library::tpm2::object_load::replay::{
         exec_raw, framed, handles, plain, push_tpm2b, response_parameters, runtime_from, tpm2b,
     };
@@ -414,7 +424,6 @@ mod test_support {
     pub(in crate::library::tpm2::command) const RH_OWNER: u32 = 0x4000_0001;
     pub(in crate::library::tpm2::command) const RH_NULL: u32 = 0x4000_0007;
     pub(in crate::library::tpm2::command) const RH_PLATFORM: u32 = 0x4000_000c;
-    pub(in crate::library::tpm2::command) const RS_PW: u32 = 0x4000_0009;
     pub(in crate::library::tpm2::command) const SESSION: u32 = 0x0300_0000;
 
     pub(in crate::library::tpm2::command) const H0: u32 = 0x8000_0000;
@@ -451,10 +460,6 @@ mod test_support {
     pub(in crate::library::tpm2::command) const ATTR_FIXED: u32 = 0x0000_0452;
     pub(in crate::library::tpm2::command) const STORAGE_ATTRS: u32 = 0x0003_0472;
 
-    pub(in crate::library::tpm2::command) fn clock() -> SteppingClock {
-        crate::library::tpm2::object_load::replay::clock()
-    }
-
     pub(in crate::library::tpm2::command) fn runtime_at(
         snapshot: &str,
         clock: &SteppingClock,
@@ -485,16 +490,6 @@ mod test_support {
         exec_raw(runtime, clock, bytes);
     }
 
-    pub(in crate::library::tpm2::command) fn password_area(password: &[u8]) -> Vec<u8> {
-        let mut area = RS_PW.to_be_bytes().to_vec();
-        push_tpm2b(&mut area, &[]);
-        area.push(0x00);
-        push_tpm2b(&mut area, password);
-        let mut out = (area.len() as u32).to_be_bytes().to_vec();
-        out.extend_from_slice(&area);
-        out
-    }
-
     pub(in crate::library::tpm2::command) fn policy_area() -> Vec<u8> {
         let mut area = SESSION.to_be_bytes().to_vec();
         push_tpm2b(&mut area, &[0x5a; 16]);
@@ -515,13 +510,6 @@ mod test_support {
         payload.extend_from_slice(auth);
         payload.extend_from_slice(parameters);
         framed(0x8002, code, &payload)
-    }
-
-    pub(in crate::library::tpm2::command) fn sym_aes128_cfb() -> Vec<u8> {
-        let mut out = ALG_AES.to_be_bytes().to_vec();
-        out.extend_from_slice(&128u16.to_be_bytes());
-        out.extend_from_slice(&ALG_CFB.to_be_bytes());
-        out
     }
 
     pub(in crate::library::tpm2::command) fn sym_null() -> Vec<u8> {
@@ -723,17 +711,6 @@ mod test_support {
         plain(CC_READ_PUBLIC, &handle.to_be_bytes())
     }
 
-    pub(in crate::library::tpm2::command) fn cap_cc(code: u32) -> Vec<u8> {
-        cap_cc_page(code, 1)
-    }
-
-    pub(in crate::library::tpm2::command) fn cap_cc_page(code: u32, count: u32) -> Vec<u8> {
-        let mut payload = 2u32.to_be_bytes().to_vec();
-        payload.extend_from_slice(&code.to_be_bytes());
-        payload.extend_from_slice(&count.to_be_bytes());
-        plain(CC_GET_CAPABILITY, &payload)
-    }
-
     pub(in crate::library::tpm2::command) fn command_page(
         runtime: &mut Tpm2Runtime,
         clock: &SteppingClock,
@@ -811,28 +788,6 @@ mod test_support {
         plain(CC_FLUSH_CONTEXT, &handle.to_be_bytes())
     }
 
-    pub(in crate::library::tpm2::command) fn with_trailing(command: Vec<u8>) -> Vec<u8> {
-        let mut out = command;
-        out.push(0x00);
-        let size = (out.len() as u32).to_be_bytes();
-        out[2..6].copy_from_slice(&size);
-        out
-    }
-
-    pub(in crate::library::tpm2::command) fn truncated(command: Vec<u8>, drop: usize) -> Vec<u8> {
-        let mut out = command;
-        out.truncate(out.len() - drop);
-        let size = (out.len() as u32).to_be_bytes();
-        out[2..6].copy_from_slice(&size);
-        out
-    }
-
-    pub(in crate::library::tpm2::command) fn flipped(data: &[u8], index: usize) -> Vec<u8> {
-        let mut out = data.to_vec();
-        out[index] ^= 0x01;
-        out
-    }
-
     pub(in crate::library::tpm2::command) fn sha256(parts: &[&[u8]]) -> Vec<u8> {
         let mut hasher = Hasher::new(ALG_SHA256).expect("sha256");
         for part in parts {
@@ -864,11 +819,6 @@ mod test_support {
             parent_name,
             &[0u8],
         ])
-    }
-
-    fn split_tpm2b(blob: &[u8], at: usize) -> (Vec<u8>, usize) {
-        let size = u16::from_be_bytes(blob[at..at + 2].try_into().expect("two bytes")) as usize;
-        (blob[at + 2..at + 2 + size].to_vec(), at + 2 + size)
     }
 
     pub(in crate::library::tpm2::command) fn created(label: &str) -> (Vec<u8>, Vec<u8>) {
@@ -913,7 +863,7 @@ mod tests {
     use super::test_support::{
         ALG_AES, ALG_CFB, ATTR_FIXED, ATTR_USER_NODA, ATTR_USER_NODA_ENCDUP, CC_DUPLICATE,
         CC_IMPORT, CC_LOAD, CC_REWRAP, H0, H1, H2, INNER_KEY, RH_NULL, RH_OWNER, RH_PLATFORM,
-        SEAL_AUTH, SEAL_DATA, WRONG_INNER_KEY, cap_cc, cap_transient, clock, command_page, create,
+        SEAL_AUTH, SEAL_DATA, WRONG_INNER_KEY, cap_transient, clock, command_page, create,
         create_primary, created, dup_policy, duplicate, duplicate_with, duplicated,
         duplication_select_policy, ecc_storage_template, exec, exec_counting_nv, flipped, flush,
         generator_state, import, import_with, imported, load, object_images, object_name,
@@ -922,21 +872,11 @@ mod tests {
         run, runtime_at, sealed_template, start_policy_session, sym_aes128_cfb, sym_null,
         sym_storage_template, truncated, unseal, with_trailing,
     };
-    use crate::library::tpm2::command::core::registry::{
-        self, AuthRole, CommandLifecycle, HandleKind, NvAccess,
-    };
-    use crate::library::tpm2::object::ATTR_OCCUPIED;
+
+    use crate::library::tpm2::command::core::test_support::occupied;
+
     use crate::library::tpm2::object_load::replay::{exec_raw, handles, plain, tpm2b};
     use crate::library::tpm2::runtime::Tpm2Runtime;
-
-    fn occupied(runtime: &Tpm2Runtime) -> Vec<bool> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .map(|object| object.attributes & ATTR_OCCUPIED != 0)
-            .collect()
-    }
 
     fn child() -> (Vec<u8>, Vec<u8>) {
         created("CREATE_DUP_CHILD")
@@ -956,76 +896,6 @@ mod tests {
     ) {
         run(runtime, clock, start_policy_session());
         run(runtime, clock, policy_command_code(CC_DUPLICATE));
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let duplicate = registry::find(CC_DUPLICATE).expect("TPM2_Duplicate is registered");
-        assert_eq!(duplicate.attributes, 0x0400_014b);
-        assert_eq!(duplicate.decrypt_size, 2);
-        assert_eq!(duplicate.encrypt_size, 2);
-        assert!(duplicate.sessions_allowed);
-        assert!(!duplicate.physical_presence);
-        assert!(matches!(duplicate.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            duplicate.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(duplicate.handles.len(), 2);
-        assert!(duplicate.handles[0].user_auth);
-        assert!(duplicate.handles[0].dup_role());
-        assert!(!duplicate.handles[0].admin_role());
-        assert!(matches!(duplicate.handles[0].kind, HandleKind::Object));
-        assert!(!duplicate.handles[1].user_auth);
-        assert!(duplicate.handles[1].role == AuthRole::User);
-        assert!(matches!(
-            duplicate.handles[1].kind,
-            HandleKind::ObjectAllowNull
-        ));
-
-        let rewrap = registry::find(CC_REWRAP).expect("TPM2_Rewrap is registered");
-        assert_eq!(rewrap.attributes, 0x0400_0152);
-        assert_eq!(rewrap.decrypt_size, 2);
-        assert_eq!(rewrap.encrypt_size, 2);
-        assert!(rewrap.sessions_allowed);
-        assert!(!rewrap.physical_presence);
-        assert!(matches!(rewrap.nv_access, NvAccess::Neither));
-        assert_eq!(rewrap.handles.len(), 2);
-        assert!(rewrap.handles[0].user_auth);
-        assert!(
-            rewrap
-                .handles
-                .iter()
-                .all(|spec| spec.role == AuthRole::User)
-        );
-        assert!(
-            rewrap
-                .handles
-                .iter()
-                .all(|spec| matches!(spec.kind, HandleKind::ObjectAllowNull))
-        );
-        assert!(!rewrap.handles[1].user_auth);
-
-        let import = registry::find(CC_IMPORT).expect("TPM2_Import is registered");
-        assert_eq!(import.attributes, 0x0200_0156);
-        assert_eq!(import.decrypt_size, 2);
-        assert_eq!(import.encrypt_size, 2);
-        assert!(import.sessions_allowed);
-        assert!(!import.physical_presence);
-        assert!(matches!(import.nv_access, NvAccess::Neither));
-        assert_eq!(import.handles.len(), 1);
-        assert!(import.handles[0].user_auth);
-        assert!(import.handles[0].role == AuthRole::User);
-        assert!(matches!(import.handles[0].kind, HandleKind::Object));
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let clock = clock();
-        let mut runtime = runtime_at("READY", &clock);
-        exec(&mut runtime, &clock, "CCATTR_014B", cap_cc(0x014b));
-        exec(&mut runtime, &clock, "CCATTR_0152", cap_cc(0x0152));
-        exec(&mut runtime, &clock, "CCATTR_0156", cap_cc(0x0156));
     }
 
     #[test]

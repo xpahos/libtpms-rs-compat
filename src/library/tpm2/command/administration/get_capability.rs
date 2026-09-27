@@ -74,8 +74,6 @@ fn collect_capability(
 ) -> Result<Vec<u8>, TpmResult> {
     match input.capability {
         TPM_CAP_ALGS => {
-            // TODO: Support runtimes without decoded state after the NVChip
-            // fallback is implemented.
             let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
             let page = algorithms::implemented(
                 &state.profile.algorithms,
@@ -90,8 +88,6 @@ fn collect_capability(
             Ok(out)
         }
         TPM_CAP_HANDLES => {
-            // TODO: Support runtimes without decoded state after the NVChip
-            // fallback is implemented.
             let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
             let page = handles::collect(&runtime.live, state, input.property, input.property_count)
                 .ok_or(TPM_RC_HANDLE + RC_GET_CAPABILITY_PROPERTY)?;
@@ -134,8 +130,6 @@ fn collect_capability(
             Ok(out)
         }
         TPM_CAP_ECC_CURVES => {
-            // TODO: Support runtimes without decoded state after the NVChip
-            // fallback is implemented.
             let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
             let page = ecc_curves::collect(state, input.property, input.property_count);
             let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
@@ -162,13 +156,9 @@ fn collect_capability(
             Ok(response_prefix(false, input.capability, 0))
         }
         TPM_CAP_PCRS => {
-            // Upstream rejects a non-zero property inside the selector arm, so
-            // the lifecycle and parameter checks still run first.
             if input.property != 0 {
                 return Err(TPM_RC_VALUE + RC_GET_CAPABILITY_PROPERTY);
             }
-            // TODO: Support runtimes without decoded state after the NVChip
-            // fallback is implemented.
             let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
             let allocation = runtime.effective_pcr_allocated().ok_or(TPM_RC_FAILURE)?;
             let page = pcrs::collect(allocation, &state.profile.algorithms, input.property_count);
@@ -181,8 +171,6 @@ fn collect_capability(
             Ok(out)
         }
         TPM_CAP_TPM_PROPERTIES => {
-            // TODO: Support runtimes without decoded state after the NVChip
-            // fallback is implemented.
             let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
             let page = properties::collect(runtime, state, input.property, input.property_count);
             let mut out = response_prefix(page.more_data, input.capability, page.entries.len());
@@ -198,37 +186,23 @@ fn collect_capability(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::cancel::CancellationToken;
-    fn process(
-        runtime: &mut crate::library::tpm2::runtime::Tpm2Runtime,
-        locality: u8,
-        command: &crate::library::CommandInput,
-        commit_nv: impl FnOnce(
-            &crate::library::tpm2::runtime::Tpm2Runtime,
-        ) -> Result<(), crate::types::TpmResult>,
-    ) -> Result<Vec<u8>, crate::types::TpmResult> {
-        crate::library::tpm2::process(
-            runtime,
-            crate::library::tpm2::PlatformInputs::at_locality(locality),
-            command,
-            &crate::library::tpm2::clock::RecordingClock::new(1_600_000_000_000, 5_000_000),
-            commit_nv,
-            CancellationToken::disabled(),
-        )
-    }
     use super::*;
     use crate::library::CommandInput;
+
     use crate::library::constants::TPM_RC_INITIALIZE;
     use crate::library::tpm2::capability::handles::test_state::{
         load_session, nv_index_entry, occupy_object, persistent_entry, push_nvram, save_session,
     };
-    use crate::library::tpm2::command::core::dispatcher::dispatch;
-    use crate::library::tpm2::command::core::header::{parse_command, serialize_response};
+
     use crate::library::tpm2::command::core::registry::TPM_CC_GET_CAPABILITY;
+    use crate::library::tpm2::command::core::test_support::{
+        counter_entropy, dispatch_bytes, dispatch_ignoring_result, error_response,
+        for_each_mutation, hex, manufactured_runtime_with, prefix_bit_flips, process, start,
+    };
+    use crate::library::tpm2::crypto::EntropySource;
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::persistent::{OwnedPcrAllocation, OwnedPcrSelection};
     use crate::library::tpm2::profile::validate_user_profile;
-    use crate::library::tpm2::runtime::commit_manufactured_state;
 
     const RC_INSUFFICIENT_PARAM1: u32 = 0x1da;
     const RC_INSUFFICIENT_PARAM2: u32 = 0x2da;
@@ -243,41 +217,10 @@ mod tests {
         crate::library::tpm2::command::implemented_commands().count() as u32
     }
 
-    fn hex(s: &str) -> Vec<u8> {
-        let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(cleaned.len().is_multiple_of(2));
-        (0..cleaned.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x63;
-        }
-        Ok(())
-    }
+    const ENTROPY: EntropySource = counter_entropy::<0x63>;
 
     fn manufactured_runtime() -> Tpm2Runtime {
-        manufactured_runtime_with_profile(None)
-    }
-
-    fn manufactured_runtime_with_profile(profile: Option<&[u8]>) -> Tpm2Runtime {
-        let profile = validate_user_profile(profile).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        runtime
-    }
-
-    #[track_caller]
-    fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-        let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-        let parsed = parse_command(&input).expect("the header parses");
-        serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-            .expect("the response serializes")
+        manufactured_runtime_with(None, ENTROPY)
     }
 
     #[track_caller]
@@ -287,13 +230,8 @@ mod tests {
 
     #[track_caller]
     fn started_runtime_with_profile(profile: Option<&[u8]>) -> Tpm2Runtime {
-        let mut runtime = manufactured_runtime_with_profile(profile);
-        let startup = hex("80010000000c0000014400 00");
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
+        let mut runtime = manufactured_runtime_with(profile, ENTROPY);
+        start(&mut runtime);
         runtime
     }
 
@@ -303,12 +241,6 @@ mod tests {
         out.extend_from_slice(&capability.to_be_bytes());
         out.extend_from_slice(&property.to_be_bytes());
         out.extend_from_slice(&count.to_be_bytes());
-        out
-    }
-
-    fn error_response(code: u32) -> Vec<u8> {
-        let mut out = hex("80010000000a");
-        out.extend_from_slice(&code.to_be_bytes());
         out
     }
 
@@ -424,14 +356,15 @@ mod tests {
         let before = snapshot(&runtime);
         assert_eq!(
             query(&mut runtime, 6, 0x100, 10),
-            error_response(TPM_RC_INITIALIZE)
+            error_response(TPM_RC_INITIALIZE),
+            "TPM2_GetCapability TPM_CAP_TPM_PROPERTIES before TPM2_Startup"
         );
         let mut truncated = hex("80010000000a");
         truncated.extend_from_slice(&TPM_CC_GET_CAPABILITY.to_be_bytes());
         assert_eq!(
             dispatch_bytes(&mut runtime, &truncated),
             error_response(TPM_RC_INITIALIZE),
-            "the lifecycle check precedes parameter parsing"
+            "TPM2_GetCapability before TPM2_Startup: the lifecycle check precedes parameter parsing"
         );
         assert_unchanged(&runtime, &before);
     }
@@ -650,28 +583,20 @@ mod tests {
 
     #[test]
     fn capability_request_mutation_panic_safety() {
-        for valid in [
-            get_capability_command(6, 0x100, 10),
-            get_capability_command(TPM_CAP_HANDLES, 0x4000_0000, 10),
-            get_capability_command(TPM_CAP_PCRS, 0, 64),
+        for (case, valid) in [
+            (
+                "TPM_CAP_TPM_PROPERTIES",
+                get_capability_command(6, 0x100, 10),
+            ),
+            (
+                "TPM_CAP_HANDLES",
+                get_capability_command(TPM_CAP_HANDLES, 0x4000_0000, 10),
+            ),
+            ("TPM_CAP_PCRS", get_capability_command(TPM_CAP_PCRS, 0, 64)),
         ] {
-            for len in 10..=valid.len() {
-                for index in 6..len {
-                    for flip in [0x01u8, 0x80, 0xff] {
-                        let mut mutated = valid[..len].to_vec();
-                        mutated[2..6].copy_from_slice(&(len as u32).to_be_bytes());
-                        mutated[index] ^= flip;
-                        let mut runtime = started_runtime();
-                        let input = CommandInput::new(mutated.len() as u32, mutated);
-                        let parsed = parse_command(&input).expect("the header parses");
-                        let _ = serialize_response(&dispatch(
-                            &mut runtime,
-                            &parsed,
-                            CancellationToken::disabled(),
-                        ));
-                    }
-                }
-            }
+            for_each_mutation(case, prefix_bit_flips(&valid, 10, 6, true), |bytes| {
+                dispatch_ignoring_result(&mut started_runtime(), bytes);
+            });
         }
     }
 
@@ -1550,7 +1475,6 @@ mod tests {
             &mut runtime,
             (0..300u32).map(|index| nv_index_entry(0x0100_1000 + index)),
         );
-        // `oracle16 nv_bulk_count1000`: 254 handles, more data, 1035 bytes.
         for count in [254u32, 255, 300, 1000] {
             let response = handles(&mut runtime, 0x0100_0000, count);
             assert_eq!(response.len(), 0x40b, "count {count}");
@@ -1583,7 +1507,7 @@ mod tests {
             assert_eq!(
                 handles(&mut runtime, property, 10),
                 error_response(TPM_RC_INITIALIZE),
-                "{label}"
+                "TPM2_GetCapability TPM_CAP_HANDLES {property:#010x} before TPM2_Startup: {label}"
             );
         }
         assert_unchanged(&runtime, &before);
@@ -1666,17 +1590,7 @@ mod tests {
 
     fn started_runtime_with_algorithms(algorithms: &str) -> Tpm2Runtime {
         let json = format!(r#"{{"Name":"custom","Algorithms":"{algorithms}"}}"#);
-        let profile = validate_user_profile(Some(json.as_bytes())).expect("the profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-        let mut runtime = commit_manufactured_state(state).expect("commits");
-        runtime.entropy = deterministic_entropy;
-        let startup = hex("80010000000c0000014400 00");
-        assert_eq!(
-            dispatch_bytes(&mut runtime, &startup),
-            hex("80010000000a00000000")
-        );
-        runtime.nv_update_pending = false;
-        runtime
+        started_runtime_with_profile(Some(json.as_bytes()))
     }
 
     fn restored_runtime_with_allocation(selections: Vec<OwnedPcrSelection>) -> Tpm2Runtime {
@@ -1687,14 +1601,14 @@ mod tests {
         use crate::library::tpm2::runtime::commit_restored_state;
 
         let profile = validate_user_profile(None).expect("the null profile validates");
-        let mut state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let mut state = manufacture_state(profile, ENTROPY).expect("manufactures");
         state.persistent.pcr_allocated = OwnedPcrAllocation { selections };
         let blob = persistent_all_store(&state).expect("the state serializes");
         let envelope = PersistentAllEnvelope::parse(&blob).expect("the envelope parses");
         let decoded = parse_persistent_all_payload(&envelope).expect("the payload parses");
         let candidate = materialize_persistent_state(decoded).expect("materializes");
         let mut runtime = commit_restored_state(candidate).expect("commits");
-        runtime.entropy = deterministic_entropy;
+        runtime.entropy = ENTROPY;
         let startup = hex("80010000000c0000014400 00");
         assert_eq!(
             dispatch_bytes(&mut runtime, &startup),
@@ -1853,7 +1767,8 @@ ecc-bn,ecc-sm2-p256,symcipher,camellia,camellia-min-size=128,cmac,ctr,ofb,cbc,cf
             assert_eq!(
                 pcr_banks(&mut runtime, property, 64),
                 error_response(TPM_RC_INITIALIZE),
-                "{label}: the lifecycle check precedes the property check"
+                "TPM2_GetCapability TPM_CAP_PCRS property {property} before TPM2_Startup: {label}: \
+                 the lifecycle check precedes the property check"
             );
         }
         assert_unchanged(&runtime, &before);

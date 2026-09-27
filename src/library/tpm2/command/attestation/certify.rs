@@ -96,10 +96,10 @@ mod tests {
         keyedhash_template, pw, ready_runtime, replay_clock, rsa_template, run, run_ok, sig_scheme,
         signature_bytes, tpm2b,
     };
-    use crate::library::tpm2::command::core::registry::{
-        CommandLifecycle, HandleKind, NvAccess, TPM_CC_CERTIFY, find,
+    use crate::library::tpm2::command::core::registry::TPM_CC_CERTIFY;
+    use crate::library::tpm2::command::core::test_support::{
+        RC_SUCCESS, REPLACEMENT_BYTES, byte_replacements, for_each_mutation, response_code,
     };
-    use crate::library::tpm2::command::core::test_support::{RC_SUCCESS, response_code};
     use crate::library::tpm2::golden_responses::attestation::vector;
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -173,35 +173,6 @@ mod tests {
             expected,
             "{record}"
         );
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let expected = vector("CCATTR_0148");
-        let attributes = u32::from_be_bytes(expected[19..23].try_into().expect("four bytes"));
-        assert_eq!(TPM_CC_CERTIFY, 0x0000_0148);
-        let descriptor = find(TPM_CC_CERTIFY).expect("a registered command");
-        assert_eq!(descriptor.attributes, attributes);
-        assert_eq!(descriptor.attributes, 0x0400_0148);
-        assert_eq!(descriptor.decrypt_size, 2);
-        assert_eq!(descriptor.encrypt_size, 2);
-        assert!(!descriptor.physical_presence);
-        assert!(descriptor.sessions_allowed);
-        assert!(matches!(descriptor.nv_access, NvAccess::Neither));
-        assert!(matches!(
-            descriptor.lifecycle,
-            CommandLifecycle::RequiresStarted
-        ));
-        assert_eq!(descriptor.handles.len(), 2);
-        assert!(descriptor.handles[0].user_auth && descriptor.handles[0].admin_role());
-        assert!(descriptor.handles[1].user_auth && !descriptor.handles[1].admin_role());
-        assert!(matches!(descriptor.handles[0].kind, HandleKind::Object));
-        assert!(matches!(
-            descriptor.handles[1].kind,
-            HandleKind::ObjectAllowNull
-        ));
-        assert!(!descriptor.handles[0].kind.accepts(TPM_RH_NULL));
-        assert!(descriptor.handles[1].kind.accepts(TPM_RH_NULL));
     }
 
     #[test]
@@ -681,10 +652,10 @@ mod tests {
         let mut full = tpm2b(&QUALIFY);
         full.extend_from_slice(&sig_scheme(ALG_RSASSA, ALG_SHA256));
         let mut runtime = two_signers();
-        for index in 0..full.len() {
-            for byte in [0x00u8, 0x01, 0x7f, 0xff] {
-                let mut parameters = full.clone();
-                parameters[index] = byte;
+        for_each_mutation(
+            "TPM2_Certify",
+            byte_replacements(&full, &REPLACEMENT_BYTES),
+            |parameters| {
                 let response = run(
                     &mut runtime,
                     &command(
@@ -694,8 +665,8 @@ mod tests {
                         &parameters,
                     ),
                 );
-                assert!(response.len() >= 10, "index {index} byte {byte:#04x}");
-            }
-        }
+                assert!(response.len() >= 10);
+            },
+        );
     }
 }

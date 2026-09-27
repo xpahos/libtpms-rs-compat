@@ -336,6 +336,9 @@ mod tests {
     use crate::library::tpm2::command::core::registry::{
         TPM_CC_PCR_EXTEND, TPM_CC_SHUTDOWN, TPM_CC_STARTUP,
     };
+    use crate::library::tpm2::command::core::test_support::{
+        dispatch_ignoring_result, for_each_mutation, prefix_bit_flips,
+    };
     use crate::library::tpm2::runtime::empty_state_runtime;
 
     fn command(code: u32) -> CommandInput {
@@ -557,7 +560,8 @@ mod tests {
         let parsed = parse_command(&input).unwrap();
         assert_eq!(
             dispatch(&mut runtime, &parsed, CancellationToken::disabled()).code(),
-            TPM_RC_INITIALIZE
+            TPM_RC_INITIALIZE,
+            "TPM2_Shutdown before TPM2_Startup: the lifecycle check precedes parameter parsing"
         );
     }
 
@@ -749,24 +753,266 @@ mod tests {
         valid.extend_from_slice(&0x09u32.to_be_bytes());
         valid.extend_from_slice(&[0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00]);
         valid.extend_from_slice(&0u32.to_be_bytes());
-        for len in 0..=valid.len() {
-            for index in 0..len {
-                for flip in [0x01u8, 0x80, 0xff] {
-                    let mut mutated = valid[..len].to_vec();
-                    mutated[index] ^= flip;
-                    for tag in [0x8001u16, 0x8002] {
-                        let bytes = framed(tag, TPM_CC_PCR_EXTEND, &mutated);
-                        let input = CommandInput::new(bytes.len() as u32, bytes);
-                        let parsed = parse_command(&input).expect("the header parses");
-                        let mut runtime = empty_state_runtime();
-                        runtime.startup_received = true;
-                        let _ = serialize_response(&dispatch(
-                            &mut runtime,
-                            &parsed,
-                            CancellationToken::disabled(),
-                        ));
-                    }
+        for_each_mutation(
+            "TPM2_PCR_Extend parameter area",
+            prefix_bit_flips(&valid, 0, 0, false),
+            |payload| {
+                for tag in [0x8001u16, 0x8002] {
+                    let mut runtime = empty_state_runtime();
+                    runtime.startup_received = true;
+                    dispatch_ignoring_result(
+                        &mut runtime,
+                        framed(tag, TPM_CC_PCR_EXTEND, &payload),
+                    );
                 }
+            },
+        );
+    }
+
+    mod lifecycle_gate {
+        use super::*;
+        use crate::library::tpm2::clock::RecordingClock;
+        use crate::library::tpm2::command::core::registry::implemented;
+        use crate::library::tpm2::command::core::test_support::{
+            counter_entropy, dispatch_bytes, error_response, manufactured_runtime_with, pw_session,
+            run_scenario,
+        };
+        use crate::library::tpm2::golden_responses::{
+            create, create_loaded, encrypt_decrypt, flush_context, get_test_result,
+            hierarchy_management, hmac, platform_state, policy_sessions, rsa_encryption,
+            sequence_commands, test_parms,
+        };
+        use crate::library::tpm2::persistent::persistent_all_store;
+        use crate::library::tpm2::restore_permanent_blob_for_test;
+        use crate::library::tpm2::self_test::PrimitiveTestSet;
+        use crate::library::tpm2::volatile::volatile_all_store;
+        use crate::library::tpm2::{PlatformInputs, process};
+
+        type Fixture = fn(&str) -> &'static [u8];
+
+        const DISPATCH_LOCALITY: u8 = 3;
+        const PLATFORM_LOCALITY: u8 = 2;
+
+        fn unrequested_entropy(_buffer: &mut [u8]) -> Result<(), TpmResult> {
+            panic!("a command refused before TPM2_Startup requested host entropy");
+        }
+
+        fn manufactured() -> Tpm2Runtime {
+            manufactured_runtime_with(Some(br#"{"Name":"default-v1"}"#), counter_entropy::<0x6c>)
+        }
+
+        #[rustfmt::skip]
+        const REFERENCE_STATES: &[(&str, Fixture, &str)] = &[
+            ("encrypt-decrypt", encrypt_decrypt::vector, "PERMALL_MANUFACTURED"),
+            ("hmac", hmac::vector, "PERMALL_MANUFACTURED"),
+            ("platform-state", platform_state::vector, "PERMALL_MANUFACTURED"),
+            ("rsa-encryption", rsa_encryption::vector, "PERMALL_BASE"),
+            ("sequence-commands", sequence_commands::vector, "PERMALL_MANUFACTURED"),
+            ("test-parms", test_parms::vector, "PERMALL_MANUFACTURED"),
+        ];
+
+        fn runtimes() -> Vec<(String, Tpm2Runtime)> {
+            let mut runtimes = vec![("manufactured default-v1".to_owned(), manufactured())];
+            for &(family, fixture, record) in REFERENCE_STATES {
+                let runtime = restore_permanent_blob_for_test(fixture(record))
+                    .expect("the reference permanent state restores");
+                runtimes.push((format!("{family} {record}"), runtime));
+            }
+            runtimes.push(("stateless".to_owned(), empty_state_runtime()));
+            for (_, runtime) in &mut runtimes {
+                runtime.entropy = unrequested_entropy;
+                runtime.nv_update_pending = false;
+                runtime.locality = DISPATCH_LOCALITY;
+            }
+            runtimes
+        }
+
+        fn requests(code: u32) -> [Vec<u8>; 5] {
+            let mut sessioned = Vec::new();
+            for _ in 0..3 {
+                sessioned.extend_from_slice(&TPM_RH_OWNER.to_be_bytes());
+            }
+            let session = pw_session(&[]);
+            sessioned.extend_from_slice(&(session.len() as u32).to_be_bytes());
+            sessioned.extend_from_slice(&session);
+            [
+                framed(TPM_ST_NO_SESSIONS, code, &[]),
+                framed(TPM_ST_SESSIONS, code, &[]),
+                framed(TPM_ST_NO_SESSIONS, code, &[0xff; 8]),
+                framed(TPM_ST_SESSIONS, code, &[0xff; 8]),
+                framed(TPM_ST_SESSIONS, code, &sessioned),
+            ]
+        }
+
+        struct Snapshot {
+            startup_received: bool,
+            failure_mode: bool,
+            nv_update_pending: bool,
+            locality: u8,
+            pending_self_tests: PrimitiveTestSet,
+            nv_memory: Box<[u8]>,
+            permanent: Option<Vec<u8>>,
+            volatile: Option<Vec<u8>>,
+            live: String,
+        }
+
+        fn snapshot(runtime: &Tpm2Runtime) -> Snapshot {
+            let clock = RecordingClock::new(1_600_000_000_000, 5_000_000);
+            Snapshot {
+                startup_received: runtime.startup_received,
+                failure_mode: runtime.failure_mode,
+                nv_update_pending: runtime.nv_update_pending,
+                locality: runtime.locality,
+                pending_self_tests: runtime.self_test.pending,
+                nv_memory: runtime.nv_memory.clone(),
+                permanent: runtime
+                    .state
+                    .as_ref()
+                    .map(|state| persistent_all_store(state).expect("the state serializes")),
+                volatile: runtime
+                    .state
+                    .as_ref()
+                    .map(|_| volatile_all_store(runtime, &clock).expect("the state serializes")),
+                live: format!("{:?}", runtime.live),
+            }
+        }
+
+        fn changed_fields(expected: &Snapshot, actual: &Snapshot) -> Vec<&'static str> {
+            [
+                (
+                    "startup_received",
+                    expected.startup_received == actual.startup_received,
+                ),
+                ("failure_mode", expected.failure_mode == actual.failure_mode),
+                (
+                    "nv_update_pending",
+                    expected.nv_update_pending == actual.nv_update_pending,
+                ),
+                ("locality", expected.locality == actual.locality),
+                (
+                    "pending_self_tests",
+                    expected.pending_self_tests == actual.pending_self_tests,
+                ),
+                ("nv_memory", expected.nv_memory == actual.nv_memory),
+                ("permanent", expected.permanent == actual.permanent),
+                ("volatile", expected.volatile == actual.volatile),
+                ("live", expected.live == actual.live),
+            ]
+            .into_iter()
+            .filter(|&(_, unchanged)| !unchanged)
+            .map(|(field, _)| field)
+            .collect()
+        }
+
+        #[track_caller]
+        fn sweep(
+            label: &str,
+            runtime: &mut Tpm2Runtime,
+            send: fn(&mut Tpm2Runtime, &[u8]) -> Vec<u8>,
+            locality: u8,
+        ) {
+            let mut expected = snapshot(runtime);
+            expected.locality = locality;
+            let mut swept = 0;
+            for descriptor in implemented() {
+                let code = descriptor.code;
+                if code == TPM_CC_STARTUP {
+                    continue;
+                }
+                for request in requests(code) {
+                    let scenario =
+                        format!("{label}: {code:#06x} before TPM2_Startup, request {request:02x?}");
+                    let response = run_scenario(&scenario, || send(runtime, &request));
+                    assert_eq!(response, error_response(TPM_RC_INITIALIZE), "{scenario}");
+                    let changed = changed_fields(&expected, &snapshot(runtime));
+                    assert!(changed.is_empty(), "{scenario} changed {changed:?}");
+                }
+                swept += 1;
+            }
+            assert_eq!(
+                swept,
+                implemented().count() - 1,
+                "{label}: every command but Startup"
+            );
+        }
+
+        fn processed(runtime: &mut Tpm2Runtime, request: &[u8]) -> Vec<u8> {
+            let input = CommandInput::new(request.len() as u32, request.to_vec());
+            process(
+                runtime,
+                PlatformInputs::at_locality(PLATFORM_LOCALITY),
+                &input,
+                &RecordingClock::new(1_600_000_000_000, 5_000_000),
+                |_| panic!("a refused command schedules no NV commit"),
+                CancellationToken::disabled(),
+            )
+            .expect("the command processes")
+        }
+
+        #[test]
+        fn dispatch_refuses_every_command_before_startup() {
+            for (label, mut runtime) in runtimes() {
+                sweep(&label, &mut runtime, dispatch_bytes, DISPATCH_LOCALITY);
+            }
+        }
+
+        #[test]
+        fn processing_refuses_every_command_before_startup() {
+            for (label, mut runtime) in runtimes() {
+                sweep(&label, &mut runtime, processed, PLATFORM_LOCALITY);
+            }
+        }
+
+        #[test]
+        fn startup_passes_the_lifecycle_gate() {
+            let mut runtime = manufactured();
+            let startup = framed(TPM_ST_NO_SESSIONS, TPM_CC_STARTUP, &[0x00, 0x00]);
+            assert_eq!(dispatch_bytes(&mut runtime, &startup), error_response(0));
+            assert!(runtime.startup_received);
+        }
+
+        #[rustfmt::skip]
+        const REFERENCE_REJECTIONS: &[(&str, Fixture, &str)] = &[
+            ("create", create::vector, "BEFORE_STARTUP"),
+            ("create-loaded", create_loaded::vector, "BEFORE_STARTUP"),
+            ("encrypt-decrypt", encrypt_decrypt::vector, "ED_BEFORE_STARTUP"),
+            ("encrypt-decrypt", encrypt_decrypt::vector, "ED2_BEFORE_STARTUP"),
+            ("flush-context", flush_context::vector, "BEFORE_STARTUP_RESPONSE"),
+            ("get-test-result", get_test_result::vector, "GTR_BEFORE_STARTUP"),
+            ("hierarchy-management", hierarchy_management::vector, "LIFECYCLE_CHANGE_PPS"),
+            ("hierarchy-management", hierarchy_management::vector, "LIFECYCLE_CLEAR"),
+            ("hierarchy-management", hierarchy_management::vector, "LIFECYCLE_CLEAR_CONTROL"),
+            ("hierarchy-management", hierarchy_management::vector, "LIFECYCLE_DA_LOCK_RESET"),
+            ("hierarchy-management", hierarchy_management::vector, "LIFECYCLE_HIERARCHY_CONTROL"),
+            ("hierarchy-management", hierarchy_management::vector, "LIFECYCLE_PCR_SET_AUTH_POLICY"),
+            ("hierarchy-management", hierarchy_management::vector, "LIFECYCLE_SET_PRIMARY_POLICY"),
+            ("hmac", hmac::vector, "HMAC_BEFORE_STARTUP"),
+            ("platform-state", platform_state::vector, "LIFECYCLE_CLOCK_RATE_ADJUST"),
+            ("platform-state", platform_state::vector, "LIFECYCLE_CLOCK_SET"),
+            ("platform-state", platform_state::vector, "LIFECYCLE_PCR_SET_AUTH_VALUE"),
+            ("platform-state", platform_state::vector, "LIFECYCLE_PP_COMMANDS"),
+            ("platform-state", platform_state::vector, "LIFECYCLE_READ_CLOCK"),
+            ("platform-state", platform_state::vector, "LIFECYCLE_SET_ALGORITHM_SET"),
+            ("policy-sessions", policy_sessions::vector, "PGD_BEFORE_STARTUP"),
+            ("policy-sessions", policy_sessions::vector, "SAS_BEFORE_STARTUP"),
+            ("rsa-encryption", rsa_encryption::vector, "DEC_BEFORE_STARTUP"),
+            ("rsa-encryption", rsa_encryption::vector, "ENC_BEFORE_STARTUP"),
+            ("sequence-commands", sequence_commands::vector, "ESC_BEFORE_STARTUP"),
+            ("sequence-commands", sequence_commands::vector, "HMS_BEFORE_STARTUP"),
+            ("sequence-commands", sequence_commands::vector, "HSS_BEFORE_STARTUP"),
+            ("sequence-commands", sequence_commands::vector, "SC_BEFORE_STARTUP"),
+            ("sequence-commands", sequence_commands::vector, "SU_BEFORE_STARTUP"),
+            ("test-parms", test_parms::vector, "TP_BEFORE_STARTUP"),
+        ];
+
+        #[test]
+        fn reference_rejections_match_the_gate_response() {
+            for &(family, fixture, record) in REFERENCE_REJECTIONS {
+                assert_eq!(
+                    fixture(record),
+                    error_response(TPM_RC_INITIALIZE),
+                    "{family} {record}"
+                );
             }
         }
     }
@@ -774,11 +1020,12 @@ mod tests {
     mod exclusive_audit_lifecycle {
         use super::*;
         use crate::library::tpm2::clock::RecordingClock;
+        use crate::library::tpm2::command::core::test_support::{
+            counter_entropy, dispatch_bytes, manufactured_runtime_with,
+        };
         use crate::library::tpm2::hierarchy::{TPM_RH_OWNER, TPM_RH_UNASSIGNED, TPM_RS_PW};
         use crate::library::tpm2::live::RestoredVolatile;
-        use crate::library::tpm2::manufacture::manufacture_state;
-        use crate::library::tpm2::profile::validate_user_profile;
-        use crate::library::tpm2::runtime::commit_manufactured_state;
+
         use crate::library::tpm2::volatile::volatile_all_store;
         use crate::library::tpm2::{decode_volatile_blob, volatile_validation_context};
 
@@ -786,27 +1033,8 @@ mod tests {
         const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
         const TPM_CC_HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
 
-        fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-            let len = buffer.len() as u8;
-            for (index, byte) in buffer.iter_mut().enumerate() {
-                *byte = (index as u8).wrapping_add(len) ^ 0x66;
-            }
-            Ok(())
-        }
-
         fn manufactured_runtime() -> Tpm2Runtime {
-            let profile = validate_user_profile(None).expect("the null profile validates");
-            let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
-            let mut runtime = commit_manufactured_state(state).expect("commits");
-            runtime.entropy = deterministic_entropy;
-            runtime
-        }
-
-        fn dispatch_bytes(runtime: &mut Tpm2Runtime, bytes: &[u8]) -> Vec<u8> {
-            let input = CommandInput::new(bytes.len() as u32, bytes.to_vec());
-            let parsed = parse_command(&input).expect("the header parses");
-            serialize_response(&dispatch(runtime, &parsed, CancellationToken::disabled()))
-                .expect("the response serializes")
+            manufactured_runtime_with(None, counter_entropy::<0x66>)
         }
 
         fn started_runtime_with_restored_audit() -> Tpm2Runtime {

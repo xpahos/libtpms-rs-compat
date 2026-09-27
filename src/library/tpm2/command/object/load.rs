@@ -193,12 +193,9 @@ pub(in crate::library::tpm2::command) fn execute_external(
 
 #[cfg(test)]
 mod tests {
-    use crate::library::tpm2::command::core::registry::{
-        self, CommandLifecycle, HandleKind, NvAccess,
-    };
-    use crate::library::tpm2::object::{
-        ATTR_EXTERNAL, ATTR_OCCUPIED, ATTR_PUBLIC_ONLY, ATTR_TEMPORARY,
-    };
+
+    use crate::library::tpm2::command::core::test_support::occupied;
+    use crate::library::tpm2::object::{ATTR_EXTERNAL, ATTR_PUBLIC_ONLY, ATTR_TEMPORARY};
     use crate::library::tpm2::object_load::replay::*;
     use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -211,48 +208,6 @@ mod tests {
 
     fn sealed_sensitive() -> Vec<u8> {
         keyed_hash_sensitive(&seal_seed(), SEAL_DATA, b"ext-auth")
-    }
-
-    fn occupied(runtime: &Tpm2Runtime) -> Vec<bool> {
-        runtime
-            .live
-            .objects
-            .iter()
-            .map(|object| object.attributes & ATTR_OCCUPIED != 0)
-            .collect()
-    }
-
-    #[test]
-    fn command_registration_upstream_attributes() {
-        let load = registry::find(TPM_CC_LOAD).expect("TPM2_Load is registered");
-        assert_eq!(load.attributes, 0x1200_0157);
-        assert_eq!(load.decrypt_size, 2);
-        assert_eq!(load.encrypt_size, 2);
-        assert!(load.sessions_allowed);
-        assert!(!load.physical_presence);
-        assert!(matches!(load.nv_access, NvAccess::Neither));
-        assert!(matches!(load.lifecycle, CommandLifecycle::RequiresStarted));
-        assert_eq!(load.handles.len(), 1);
-        assert!(load.handles[0].user_auth);
-        assert!(!load.handles[0].admin_role());
-        assert!(matches!(load.handles[0].kind, HandleKind::Object));
-
-        let external =
-            registry::find(TPM_CC_LOAD_EXTERNAL).expect("TPM2_LoadExternal is registered");
-        assert_eq!(external.attributes, 0x1000_0167);
-        assert_eq!(external.decrypt_size, 2);
-        assert_eq!(external.encrypt_size, 2);
-        assert!(external.sessions_allowed);
-        assert!(!external.physical_presence);
-        assert!(external.handles.is_empty());
-    }
-
-    #[test]
-    fn command_attributes_oracle_match() {
-        let clock = clock();
-        let mut runtime = runtime_at("READY", &clock);
-        exec(&mut runtime, &clock, "CCATTR_0157", cap_cc(0x0157));
-        exec(&mut runtime, &clock, "CCATTR_0167", cap_cc(0x0167));
     }
 
     #[test]

@@ -50,19 +50,13 @@ mod tests {
     use crate::library::tpm2::manufacture::manufacture_state;
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::commit_manufactured_state;
-    use crate::types::TpmResult;
 
-    fn deterministic_entropy(buffer: &mut [u8]) -> Result<(), TpmResult> {
-        let len = buffer.len() as u8;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_add(len) ^ 0x63;
-        }
-        Ok(())
-    }
+    const ENTROPY: crate::library::tpm2::crypto::EntropySource =
+        crate::library::tpm2::test_support::counter_entropy::<0x63>;
 
     fn manufactured_persistent() -> crate::library::tpm2::Tpm2Runtime {
         let profile = validate_user_profile(None).expect("the null profile validates");
-        let state = manufacture_state(profile, deterministic_entropy).expect("manufactures");
+        let state = manufacture_state(profile, ENTROPY).expect("manufactures");
         commit_manufactured_state(state).expect("commits")
     }
 
@@ -137,7 +131,6 @@ mod tests {
 
     #[test]
     fn implemented_permanent_handles_oracle_match() {
-        // `oracle16 perm_all` on the vendored C libtpms.
         assert_eq!(
             IMPLEMENTED_PERMANENT_HANDLES,
             [
