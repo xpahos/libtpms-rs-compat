@@ -8,15 +8,16 @@ use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::crypto::DRBG_MAGIC;
 use crate::library::tpm2::live::{unoccupied_objects, unoccupied_sessions};
 use crate::library::tpm2::nv::{
-    MAX_ORDERLY_COUNT, TPMA_NV_ORDERLY, build_nv_image, is_counter_index, startup_attributes,
+    MAX_ORDERLY_COUNT, OrderlyRamImage, TPMA_NV_ORDERLY, build_nv_image, is_counter_index,
+    startup_attributes,
 };
 use crate::library::tpm2::orderly::{SU_DA_USED_VALUE, SU_NONE_VALUE, is_orderly};
 use crate::library::tpm2::pcr::{
     HCRTM_PCR, PCR_SLOT_BANKS, allocation_selects, pcr_in_tcb_group, pcr_resets_to_ones,
 };
 use crate::library::tpm2::persistent::{
-    OwnedDrbgState, OwnedIndexOrderlyRam, OwnedPcrAllocation, OwnedSecret, OwnedStateClearData,
-    OwnedStateResetData, OwnedUserNvramEntry,
+    OwnedDrbgState, OwnedPcrAllocation, OwnedSecret, OwnedStateClearData, OwnedStateResetData,
+    OwnedUserNvramEntry,
 };
 use crate::library::tpm2::random::{startup_live_drbg, startup_secret};
 use crate::library::tpm2::runtime::Tpm2Runtime;
@@ -93,7 +94,7 @@ struct PreparedStartup {
     time_epoch: Option<u32>,
     live_pcrs: Vec<OwnedPcr>,
     oldest_saved_session: u32,
-    live_orderly_ram: OwnedIndexOrderlyRam,
+    live_orderly_ram: OrderlyRamImage,
     max_nv_counter: u64,
     user_nvram_attributes: Vec<(usize, u32)>,
 }
@@ -250,14 +251,19 @@ fn prepare_startup(
     let mut live_orderly_ram = state.index_orderly_ram.clone();
     let mut user_nvram_attributes = Vec::new();
     if mode != StartupMode::Resume {
-        for entry in &mut live_orderly_ram.entries {
-            entry.attributes = nv_startup_attributes(entry.attributes, mode);
-            if is_counter_index(entry.attributes) && prev_orderly == SU_NONE_VALUE {
-                let counter_bytes: &mut [u8] = entry.data.get_mut(..8).ok_or(TPM_RC_FAILURE)?;
-                let counter =
-                    u64::from_be_bytes(counter_bytes.try_into().map_err(|_| TPM_RC_FAILURE)?)
-                        | MAX_ORDERLY_COUNT;
-                counter_bytes.copy_from_slice(&counter.to_be_bytes());
+        let entries: Vec<_> = live_orderly_ram.entries().collect();
+        for entry in entries {
+            let attributes = nv_startup_attributes(live_orderly_ram.attributes(entry), mode);
+            live_orderly_ram.set_attributes(entry, attributes);
+            if is_counter_index(attributes) && prev_orderly == SU_NONE_VALUE {
+                let counter = live_orderly_ram
+                    .read(entry, 0, 8)
+                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+                    .ok_or(TPM_RC_FAILURE)?;
+                let counter = u64::from_be_bytes(counter) | MAX_ORDERLY_COUNT;
+                live_orderly_ram
+                    .write(entry, 0, &counter.to_be_bytes())
+                    .ok_or(TPM_RC_FAILURE)?;
             }
         }
         for (index, entry) in state.user_nvram.entries.iter().enumerate() {
@@ -749,7 +755,7 @@ mod tests {
         nv_memory: Box<[u8]>,
         live_pcrs_present: bool,
         nv_index_attributes: Vec<u32>,
-        live_orderly_entries: Vec<(u32, Vec<u8>)>,
+        live_orderly_ram: OrderlyRamImage,
         live_drbg_counter: u64,
         live_drbg_seed: Vec<u8>,
         live_clock_safe: u8,
@@ -785,13 +791,7 @@ mod tests {
                 .iter()
                 .all(|pcr| pcr.banks.iter().all(Option::is_none)),
             nv_index_attributes: nv_index_attributes(state),
-            live_orderly_entries: runtime
-                .live
-                .index_orderly_ram
-                .entries
-                .iter()
-                .map(|entry| (entry.attributes, entry.data.clone()))
-                .collect(),
+            live_orderly_ram: runtime.live.index_orderly_ram.clone(),
             live_drbg_counter: runtime.live.orderly.drbg_state.reseed_counter,
             live_drbg_seed: runtime.live.orderly.drbg_state.seed.expose().to_vec(),
             live_clock_safe: runtime.live.orderly.clock_safe,
@@ -854,16 +854,7 @@ mod tests {
         assert_eq!(state.state_clear.is_some(), snapshot.clear_present);
         assert_eq!(runtime.nv_memory, snapshot.nv_memory);
         assert_eq!(nv_index_attributes(state), snapshot.nv_index_attributes);
-        assert_eq!(
-            runtime
-                .live
-                .index_orderly_ram
-                .entries
-                .iter()
-                .map(|entry| (entry.attributes, entry.data.clone()))
-                .collect::<Vec<_>>(),
-            snapshot.live_orderly_entries
-        );
+        assert_eq!(runtime.live.index_orderly_ram, snapshot.live_orderly_ram);
         assert_eq!(
             !runtime
                 .live
@@ -1609,7 +1600,7 @@ mod tests {
         assert_eq!(live.context_slot_mask, 0xffff);
         assert_eq!(live.null_seed_compat_level, SEED_COMPAT_LEVEL_LAST);
         assert_eq!(live.pcrs.len(), IMPLEMENTATION_PCR);
-        assert!(live.index_orderly_ram.entries.is_empty());
+        assert!(live.index_orderly_ram.views().is_empty());
         assert_eq!(live.max_nv_counter, 0);
     }
 
@@ -1717,9 +1708,10 @@ mod tests {
 
         let carry = with_volatile.restored_volatile.as_ref().unwrap();
         assert_eq!(carry.time, carry_time);
-        assert!(
-            carry.index_orderly_ram_bytes.len() == 512,
-            "the raw RAM snapshot survives as restore-time data"
+        assert_eq!(
+            with_volatile.live.index_orderly_ram,
+            with_volatile.state().index_orderly_ram.clone(),
+            "Startup reloads the orderly RAM from its NV copy"
         );
     }
 
@@ -2147,23 +2139,23 @@ mod tests {
             ]
         );
 
-        let live_ram = &runtime.live.index_orderly_ram;
-        assert_eq!(live_ram.entries[0].attributes, TPMA_NV_ORDERLY);
-        assert_eq!(live_ram.entries[0].data, vec![0xaa; 8], "data preserved");
-        assert_eq!(live_ram.entries[1].attributes, ORDERLY_RAM_COUNTER);
+        let live_ram = runtime.live.index_orderly_ram.views();
+        assert_eq!(live_ram[0].attributes, TPMA_NV_ORDERLY);
+        assert_eq!(live_ram[0].data, vec![0xaa; 8], "data preserved");
+        assert_eq!(live_ram[1].attributes, ORDERLY_RAM_COUNTER);
         assert_eq!(
-            live_ram.entries[1].data,
+            live_ram[1].data,
             0x0000_0000_0034_00ffu64.to_be_bytes().to_vec(),
             "counter low bits forced to ones after a non-orderly startup"
         );
 
         let state = runtime.state.as_ref().unwrap();
         assert_eq!(
-            state.index_orderly_ram.entries[1].data,
+            state.index_orderly_ram.views()[1].data,
             vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x00, 0x00]
         );
         assert_eq!(
-            state.index_orderly_ram.entries[0].attributes,
+            state.index_orderly_ram.views()[0].attributes,
             ORDERLY_RAM_WRITTEN
         );
         assert_eq!(runtime.live.max_nv_counter, 7, "NvSetMaxCount from NV");
@@ -2178,10 +2170,10 @@ mod tests {
             SUCCESS_RESPONSE
         );
 
-        let live_ram = &runtime.live.index_orderly_ram;
-        assert_eq!(live_ram.entries[0].attributes, ORDERLY_RAM_WRITTEN);
+        let live_ram = runtime.live.index_orderly_ram.views();
+        assert_eq!(live_ram[0].attributes, ORDERLY_RAM_WRITTEN);
         assert_eq!(
-            live_ram.entries[1].data,
+            live_ram[1].data,
             vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x00, 0x00]
         );
         assert_eq!(nv_attrs(&runtime)[1], STCLEAR_DEFINED & !TPMA_NV_WRITTEN);
@@ -2197,12 +2189,12 @@ mod tests {
         );
 
         assert_eq!(nv_attrs(&runtime), attrs_before, "NV attributes untouched");
-        let live_ram = &runtime.live.index_orderly_ram;
-        assert_eq!(live_ram.entries.len(), 2, "RAM view restored from NV");
-        assert_eq!(live_ram.entries[0].attributes, ORDERLY_RAM_WRITTEN);
-        assert_eq!(live_ram.entries[1].attributes, ORDERLY_RAM_COUNTER);
+        let live_ram = runtime.live.index_orderly_ram.views();
+        assert_eq!(live_ram.len(), 2, "RAM view restored from NV");
+        assert_eq!(live_ram[0].attributes, ORDERLY_RAM_WRITTEN);
+        assert_eq!(live_ram[1].attributes, ORDERLY_RAM_COUNTER);
         assert_eq!(
-            live_ram.entries[1].data,
+            live_ram[1].data,
             vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x00, 0x00],
             "no counter adjustment on Resume"
         );

@@ -156,11 +156,112 @@ records begin with `VOLATILE_`.
 | `fail-stores <0\|1>` | Turn simulated NVRAM write failures off or on. |
 | `patch-failure-code <n>` | Change the saved failure-mode code and restore that state. |
 | `version` | Save the libtpms version. |
+| `case <name>` ... `end-case` | Run the enclosed lifecycle steps in a fresh process (see below). |
+
+A `checkpoint` may move an earlier checkpoint but must not reuse the name of a
+recorded `snapshot`: the fixture keeps the snapshot's records, so a case that
+read the checkpoint instead would replay different bytes than it captured.
+The audit and the runner both reject such a checkpoint. A `snapshot` may take
+over a checkpoint's name, because its records then match what the runner holds.
 
 `make golden-audit` validates the scenario language before Docker starts. It
 rejects unknown operations, invalid arguments, duplicate record names, broken
-restore references, and incorrect command coverage. Malformed TPM packets are
-allowed because error handling is part of the compatibility surface.
+restore references, checkpoints over recorded snapshots, and incorrect command
+coverage. Malformed TPM packets are allowed because error handling is part of
+the compatibility surface.
+
+## Lifecycle cases
+
+Everything above runs in one process against one TPM that the runner has
+already initialized. The library lifecycle itself (`TPMLIB_MainInit`, state
+staging, the host callbacks, `TPMLIB_Terminate`) needs more: libtpms keeps the
+TPM, the staged blobs, the callbacks and the failure diagnostics in process
+globals, so every lifecycle case must start from a fresh process.
+
+A `case <name>` block does exactly that. The runner re-executes itself for
+the block, hands it the snapshots recorded so far (never a checkpoint),
+selects TPM 2.0 and registers its callbacks, and runs the block without
+initializing the TPM first. The parent skips the block and continues where it left off. A failing
+case fails the capture. Case names are lower-case snake_case; they name the
+Rust test that replays the case.
+
+```text
+snapshot BUSY
+case partially_restored_volatile_state_keeps_unmarshalled_fields
+nvram-put permall PERMALL_BUSY
+nvram-put volatilestate VOLATILE_BUSY@drop=21
+main-init LC_PARTIAL_LATE_INIT
+get-state LC_PARTIAL_LATE_VOLATILE volatile
+io-init 42
+main-init LC_PARTIAL_LATE_UNFAIL
+process LC_PARTIAL_LATE_GTR 80010000000a0000017c
+end-case
+```
+
+Only these steps are valid inside a case, and none of them outside one:
+
+| Step | Record |
+| --- | --- |
+| `main-init NAME` | `TPMLIB_MainInit` result. |
+| `terminate` | None. |
+| `set-state NAME permanent\|volatile BLOB` | `TPMLIB_SetState` result. |
+| `get-state NAME permanent\|volatile` | Result, a buffer-present byte, and the state. |
+| `volatile-all-store NAME` | Result, a buffer-present byte, and the state. |
+| `set-profile NAME <json>` | `TPMLIB_SetProfile` result. |
+| `process NAME <hex>` | `TPMLIB_Process` result followed by the response. |
+| `was-manufactured NAME` | `TPMLIB_WasManufactured` as one byte. |
+| `established NAME` | `TPM_IO_TpmEstablished_Get` result and flag. |
+| `established-reset NAME` | `TPM_IO_TpmEstablished_Reset` result. |
+| `hash-start NAME`, `hash-data NAME <hex>`, `hash-end NAME` | The `TPM_IO_Hash_*` result. |
+| `nvram-put permall\|volatilestate BLOB` | None; stores the blob behind `tpm_nvram_loaddata`. |
+| `load-fails permall\|volatilestate <code>` | None; `tpm_nvram_loaddata` answers the code (0 restores it). |
+| `io-init <code>`, `nvram-init <code>` | None; `tpm_io_init` or `tpm_nvram_init` answers the code. |
+| `callbacks NAME` | The callbacks since the last `callbacks` step: a 32-bit count, then one line each. |
+
+Results are 32-bit big-endian values. A `BLOB` is a `PERMALL_<snapshot>` or
+`VOLATILE_<snapshot>` record from an earlier `snapshot`, followed by any
+number of modifiers applied from left to right: `@head=N` (keep N bytes),
+`@drop=N` (remove the last N), `@flip=N` (invert byte N), `@flip-end=N`
+(invert byte N counted from the end, 1 being the last), `@set=N:HEX` (write
+the lower-case hex bytes at offset N) and `@sha1` (recompute a volatile
+blob's SHA-1 trailer over the bytes before it). For example,
+`VOLATILE_S@set=4183:0003@sha1@drop=21` edits a field, reseals the blob and
+then cuts it. Callback lines name each call and its answer; loaded and stored
+blobs appear with their length and `content=` the first blob of the case with
+the same bytes, or `new`. `tpm_io_getphysicalpresence` is not logged: the Rust
+port samples physical presence for every command it executes, libtpms only
+when a command needs it.
+
+A cut or flipped volatile blob leaves libtpms holding every field it wrote
+before the defect. Export such a state only when libtpms can marshal it: a cut
+that leaves a union selector unset, for example inside an object's public area
+or before a session's symmetric algorithm, makes libtpms assert outside a
+command. Observe those states through `GetCapability`, `FlushContext` and an
+export after the flush instead.
+
+Export permanent state before a case's first command or after its
+`TPM2_Shutdown`. In between, libtpms writes the orderly data, DRBG state
+included, to NV whenever the clock crosses an update interval, and a restored
+TPM's clock has moved by the host time since the capture.
+
+`cargo test --test abi_lifecycle` replays every case against the library
+under test through its exported C ABI: it `dlopen`s the library in a child
+process per case, performs the same steps, and compares every record with the
+fixture. Blobs a running TPM exports embed host time. A volatile export must
+first carry a valid SHA-1 trailer over its own payload, in the reference record
+and in the library's output alike; the comparison then covers every byte
+except `g_time`, `go.clock`, `go.time`, the timer and host-clock tail fields,
+`backthen`, and the already checked trailer. Permanent state is compared
+except its NV copies of `go.clock` and `go.time`. Two environment variables
+change what the test loads and keeps:
+
+| Variable | Effect |
+| --- | --- |
+| `LIBTPMS_ABI_LIBRARY=/path/libtpms.so` | Load this library instead of the cdylib cargo built, for example a C libtpms. |
+| `LIBTPMS_ABI_TRANSCRIPT_DIR=/dir` | Write one transcript per case: every ABI call with its native result and sizes, and every callback. |
+
+A C libtpms built from the `libtpms` submodule passes the same test, which
+keeps the replay honest about what it compares.
 
 ## Keeping scenario sections independent
 
@@ -337,7 +438,8 @@ python3 scripts/golden_responses/golden.py <command>
 
 The repository has three complementary layers:
 
-1. `cargo test` checks Rust logic and state transitions.
+1. `cargo test` checks Rust logic and state transitions, and replays the
+   lifecycle cases through the exported C ABI.
 2. Golden tests compare deterministic command behavior with reference libtpms.
 3. `make test-swtpm` and `make test-swtpm-docker` exercise the Rust library as
    `libtpms.so` in a full swtpm workflow.

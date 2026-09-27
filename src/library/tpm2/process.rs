@@ -1003,9 +1003,10 @@ mod tests {
 
             let response = library.process_input(&startup_command()).unwrap();
             assert!(response.is_empty());
-            assert!(
-                EVENTS.lock().unwrap().is_empty(),
-                "an uninitialized TPM never queries the locality callback"
+            assert_eq!(
+                *EVENTS.lock().unwrap(),
+                ["locality"],
+                "TPM2_Process samples the locality before it finds the TPM powered off"
             );
 
             library.stage_empty_state(StateBlobKind::Permanent);

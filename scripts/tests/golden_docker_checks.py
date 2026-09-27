@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import shutil
 import subprocess
@@ -195,6 +196,115 @@ class GoldenImagePackageTest(unittest.TestCase):
         facts["image_packages"]["python3"] = "9.9.9"
         violations = golden.validate_image(manifest, facts)
         self.assertTrue(any("python3" in violation.render() for violation in violations))
+
+
+class GoldenCaseIsolationTest(unittest.TestCase):
+    PARENT = (
+        'profile {"Name":"default-v1"}\n'
+        "send STARTUP 80010000000c000001440000\n"
+        "snapshot READY\n"
+    )
+
+    def run_runner(self, text):
+        manifest = golden.load_manifest()
+        platform = manifest["reference"]["docker_platform"]
+        tag, error = golden.resolve_image(manifest)
+        self.assertIsNone(error)
+        directory = tempfile.mkdtemp(dir="/tmp", prefix="golden-case-")
+        try:
+            Path(directory, "cases.scenario").write_text(text)
+            command = ["run", "--rm"]
+            if platform:
+                command += ["--platform", platform]
+            command += ["-v", f"{directory}:/w", tag, "/w/cases.scenario"]
+            return golden.run_docker(command)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def run_scenario(self, text):
+        outcome = self.run_runner(text)
+        return outcome.stdout if outcome.ok else None
+
+    def test_a_case_starts_in_a_fresh_process_and_the_parent_resumes(self):
+        output = self.run_scenario(
+            self.PARENT
+            + "case isolated\n"
+            + "get-state CASE_VOLATILE volatile\n"
+            + "process CASE_GET_TEST_RESULT 80010000000a0000017c\n"
+            + "callbacks CASE_CALLBACKS\n"
+            + "end-case\n"
+            + "send PARENT_GET_TEST_RESULT 80010000000a0000017c\n"
+        )
+        self.assertIsNotNone(output)
+        records = dict(line.split() for line in output.splitlines())
+        self.assertEqual(records["CASE_VOLATILE"], "0000080000")
+        self.assertEqual(records["CASE_GET_TEST_RESULT"], "00000000")
+        log = bytes.fromhex(records["CASE_CALLBACKS"])
+        self.assertEqual(
+            log[4:].decode("ascii").splitlines(),
+            [
+                "tpm_nvram_init -> 0x0",
+                "tpm_nvram_loaddata(volatilestate) -> 0x800",
+                "tpm_io_getlocality",
+            ],
+        )
+        parent = bytes.fromhex(records["PARENT_GET_TEST_RESULT"])
+        self.assertEqual((len(parent), parent[6:10]), (16, b"\x00\x00\x00\x00"))
+
+    def test_a_failing_case_fails_the_capture(self):
+        output = self.run_scenario(
+            self.PARENT + "case broken\nnvram-put permall PERMALL_MISSING\nend-case\n"
+        )
+        self.assertIsNone(output)
+
+    def test_blob_modifiers_apply_from_left_to_right(self):
+        output = self.run_scenario(
+            self.PARENT
+            + "case edited\n"
+            + "nvram-put volatilestate VOLATILE_READY@set=10:abcd@flip=12@sha1@drop=1\n"
+            + "get-state CASE_INPUT volatile\n"
+            + "end-case\n"
+        )
+        self.assertIsNotNone(output)
+        records = dict(line.split() for line in output.splitlines())
+        expected = bytearray.fromhex(records["VOLATILE_READY"])
+        expected[10:12] = b"\xab\xcd"
+        expected[12] ^= 0xFF
+        expected[-20:] = hashlib.sha1(expected[:-20]).digest()
+        del expected[-1]
+        self.assertEqual(records["CASE_INPUT"], "0000000001" + expected.hex())
+
+    def test_a_checkpoint_cannot_overwrite_a_recorded_snapshot(self):
+        outcome = self.run_runner(
+            'profile {"Name":"default-v1"}\n'
+            "snapshot S\n"
+            "send STARTUP 80010000000c000001440000\n"
+            "checkpoint S\n"
+            "case collision\n"
+            "nvram-put volatilestate VOLATILE_S\n"
+            "get-state CASE_INPUT volatile\n"
+            "end-case\n"
+        )
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("checkpoint S would overwrite the recorded snapshot S", outcome.stderr)
+        self.assertNotIn("CASE_INPUT", outcome.stdout)
+
+    def test_a_case_reads_the_recorded_snapshot_and_never_a_checkpoint(self):
+        tail = (
+            "send LATER_GET_TEST_RESULT 80010000000a0000017c\n"
+            "checkpoint LATER\n"
+            "case reads\n"
+            "nvram-put volatilestate VOLATILE_{}\n"
+            "get-state CASE_INPUT volatile\n"
+            "end-case\n"
+        )
+        output = self.run_scenario(self.PARENT + tail.format("READY"))
+        self.assertIsNotNone(output)
+        records = dict(line.split() for line in output.splitlines())
+        self.assertEqual(records["CASE_INPUT"], "0000000001" + records["VOLATILE_READY"])
+        outcome = self.run_runner(self.PARENT + tail.format("LATER"))
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("no snapshot named 'LATER'", outcome.stderr)
 
 
 class GoldenStaleMigrationTest(unittest.TestCase):

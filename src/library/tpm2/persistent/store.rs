@@ -3,17 +3,16 @@ use crate::types::TpmResult;
 
 use super::PERSISTENT_ALL_MAGIC;
 use super::attach::{
-    OwnedCommandBitmap, OwnedIndexOrderlyRam, OwnedOrderlyData, OwnedPcrAllocation,
-    OwnedPersistentData, OwnedPersistentState, OwnedStateClearData, OwnedStateResetData,
-    OwnedUserNvram, OwnedUserNvramEntry,
+    OwnedCommandBitmap, OwnedOrderlyData, OwnedPcrAllocation, OwnedPersistentData,
+    OwnedPersistentState, OwnedStateClearData, OwnedStateResetData, OwnedUserNvram,
+    OwnedUserNvramEntry,
 };
-use super::compat_tail::SEED_COMPAT_LEVEL_ORIGINAL;
 use super::data::PERSISTENT_DATA_MAGIC;
 use super::orderly::{DRBG_STATE_MAGIC, ORDERLY_DATA_MAGIC};
 use crate::library::tpm2::compile_constants;
 use crate::library::tpm2::nv::{
     COMPRESSED_COMMAND_BITS, INDEX_ORDERLY_RAM_MAGIC, NATIVE_SIZEOF_NV_INDEX, NV_INDEX_MAGIC,
-    NV_RAM_HEADER_SIZE, RAM_INDEX_SPACE, USER_NVRAM_CAPACITY, USER_NVRAM_MAGIC, WireWriter,
+    OrderlyRamImage, RAM_INDEX_SPACE, USER_NVRAM_CAPACITY, USER_NVRAM_MAGIC, WireWriter,
     any_object_image, command_bitmap_image,
 };
 use crate::library::tpm2::pcr::{NUM_POLICY_PCR_GROUP, PCR_POLICY_MAGIC};
@@ -258,25 +257,10 @@ pub(in crate::library::tpm2) fn marshal_state_clear(
     w.block(true, |_| Ok(()))
 }
 
-fn marshal_index_orderly_ram(
-    w: &mut WireWriter,
-    ram: &OwnedIndexOrderlyRam,
-) -> Result<(), TpmResult> {
+fn marshal_index_orderly_ram(w: &mut WireWriter, ram: &OrderlyRamImage) -> Result<(), TpmResult> {
     w.nv_header(INDEX_ORDERLY_RAM_VERSION, INDEX_ORDERLY_RAM_MAGIC, 1);
     w.u32(RAM_INDEX_SPACE as u32);
-    let mut offset: u64 = 0;
-    for entry in &ram.entries {
-        let size = NV_RAM_HEADER_SIZE + entry.data.len() as u64;
-        w.u32(u32::try_from(size).map_err(|_| TPM_FAIL)?);
-        w.u32(entry.handle);
-        w.u32(entry.attributes);
-        w.u16(u16::try_from(entry.data.len()).map_err(|_| TPM_FAIL)?);
-        w.bytes(&entry.data);
-        offset += size;
-    }
-    if offset + NV_RAM_HEADER_SIZE <= RAM_INDEX_SPACE {
-        w.u32(0);
-    }
+    w.bytes(&ram.portable_entries());
     w.block(true, |_| Ok(()))
 }
 
@@ -365,7 +349,7 @@ pub(in crate::library::tpm2) fn persistent_all_store(
         let (Some(reset), Some(clear)) = (&state.state_reset, &state.state_clear) else {
             return Err(TPM_FAIL);
         };
-        marshal_state_reset(&mut w, reset, SEED_COMPAT_LEVEL_ORIGINAL)?;
+        marshal_state_reset(&mut w, reset, reset.null_seed_compat_level)?;
         marshal_state_clear(&mut w, clear)?;
     }
 
@@ -577,25 +561,35 @@ mod tests {
         blob.extend_from_slice(&payload);
         blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
 
-        let state = materialize(&blob);
+        let mut state = materialize(&blob);
         assert_eq!(
             state.state_reset.as_ref().unwrap().null_seed_compat_level,
-            1
+            0,
+            "the NV image keeps its default"
+        );
+        assert_eq!(
+            state.loaded_null_seed_compat_level, 1,
+            "the decoded value goes to the live global"
         );
 
         let stored = persistent_all_store(&state).unwrap();
         let state2 = materialize(&stored);
         let reset = state2.state_reset.as_ref().expect("SU sections survive");
-        assert_eq!(
-            reset.null_seed_compat_level, 0,
-            "the NV image default, not the decoded live-global value"
-        );
+        assert_eq!(reset.null_seed_compat_level, 0);
+        assert_eq!(state2.loaded_null_seed_compat_level, 0);
         assert_eq!(
             reset.null_proof.expose(),
             state.state_reset.as_ref().unwrap().null_proof.expose()
         );
         assert!(state2.state_clear.is_some());
         assert_eq!(persistent_all_store(&state2).unwrap(), stored);
+
+        state.state_reset.as_mut().unwrap().null_seed_compat_level = 1;
+        let saved = materialize(&persistent_all_store(&state).unwrap());
+        assert_eq!(
+            saved.loaded_null_seed_compat_level, 1,
+            "a Shutdown(STATE) copy of gr keeps its level in the NV image"
+        );
     }
 
     #[test]

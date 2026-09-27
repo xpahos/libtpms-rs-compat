@@ -38,7 +38,7 @@ pub(super) fn parent_storage_symmetric(
     let symmetric = match &parent_public.parameters {
         PublicParms::Rsa { symmetric, .. } | PublicParms::Ecc { symmetric, .. } => symmetric,
         PublicParms::SymCipher(sym) => sym,
-        PublicParms::KeyedHash(_) => return Err(TPM_RC_FAILURE),
+        PublicParms::KeyedHash(_) | PublicParms::Unselected => return Err(TPM_RC_FAILURE),
     };
     Ok((symmetric.algorithm, symmetric.key_bits.unwrap_or(0)))
 }

@@ -6,8 +6,7 @@ use super::orderly::{DrbgState, OrderlyData};
 use crate::library::tpm2::DecodedPersistentAll;
 use crate::library::tpm2::crypto::CmacState;
 use crate::library::tpm2::nv::{
-    IndexOrderlyRam, NV_RAM_HEADER_SIZE, NvIndex, OrderlyRamEntry, RAM_INDEX_SPACE,
-    USER_NVRAM_CAPACITY, UserNvram, UserNvramEntry,
+    NvIndex, OrderlyRamImage, USER_NVRAM_CAPACITY, UserNvram, UserNvramEntry,
 };
 use crate::library::tpm2::object::{
     AnyObject, AnyObjectBody, BnPrime, HASH_STATE_COUNT, HashObjectBody, HashPayload, HashState,
@@ -328,50 +327,6 @@ pub(in crate::library::tpm2) fn own_state_clear(clear: &StateClearData<'_>) -> O
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::library::tpm2) struct OwnedOrderlyRamEntry {
-    pub(in crate::library::tpm2) declared_size: u32,
-    pub(in crate::library::tpm2) handle: u32,
-    pub(in crate::library::tpm2) attributes: u32,
-    pub(in crate::library::tpm2) data: Vec<u8>,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub(in crate::library::tpm2) struct OwnedIndexOrderlyRam {
-    pub(in crate::library::tpm2) sourceside_size: u32,
-    pub(in crate::library::tpm2) entries: Vec<OwnedOrderlyRamEntry>,
-    pub(in crate::library::tpm2) terminated: bool,
-    pub(in crate::library::tpm2) used_bytes: u64,
-}
-
-fn own_index_orderly_ram(ram: &IndexOrderlyRam<'_>) -> Result<OwnedIndexOrderlyRam, TpmResult> {
-    let mut used_bytes: u64 = 0;
-    for entry in &ram.entries {
-        let entry: &OrderlyRamEntry<'_> = entry;
-        used_bytes = used_bytes
-            .checked_add(NV_RAM_HEADER_SIZE)
-            .and_then(|used| used.checked_add(entry.data.len() as u64))
-            .filter(|&used| used <= RAM_INDEX_SPACE)
-            .ok_or(TPM_FAIL)?;
-    }
-    Ok(OwnedIndexOrderlyRam {
-        sourceside_size: ram.sourceside_size,
-        entries: ram
-            .entries
-            .iter()
-            .map(|entry| OwnedOrderlyRamEntry {
-                declared_size: entry.declared_size,
-                handle: entry.handle,
-                attributes: entry.attributes,
-                data: entry.data.to_vec(),
-            })
-            .collect(),
-        terminated: ram.terminated,
-        used_bytes,
-    })
-}
-
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) enum OwnedHashPayload {
@@ -435,6 +390,7 @@ pub(in crate::library::tpm2) struct OwnedTpmtPublic {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) enum OwnedPublicId {
+    Unselected,
     KeyedHash(Vec<u8>),
     Sym(Vec<u8>),
     Rsa(Vec<u8>),
@@ -769,10 +725,11 @@ pub(in crate::library::tpm2) struct OwnedPersistentState {
     pub(in crate::library::tpm2) orderly: OwnedOrderlyData,
     pub(in crate::library::tpm2) state_reset: Option<OwnedStateResetData>,
     pub(in crate::library::tpm2) state_clear: Option<OwnedStateClearData>,
-    pub(in crate::library::tpm2) index_orderly_ram: OwnedIndexOrderlyRam,
+    pub(in crate::library::tpm2) index_orderly_ram: OrderlyRamImage,
     pub(in crate::library::tpm2) user_nvram: OwnedUserNvram,
     pub(in crate::library::tpm2) envelope_version: u16,
     pub(in crate::library::tpm2) read_su_state: bool,
+    pub(in crate::library::tpm2) loaded_null_seed_compat_level: u8,
 }
 
 pub(in crate::library::tpm2) fn materialize_persistent_state(
@@ -780,7 +737,7 @@ pub(in crate::library::tpm2) fn materialize_persistent_state(
 ) -> Result<OwnedPersistentState, TpmResult> {
     let profile = decoded.profile;
 
-    let (state_reset, state_clear) = match (
+    let (mut state_reset, state_clear) = match (
         decoded.read_su_state,
         &decoded.state_reset_data,
         &decoded.state_clear_data,
@@ -791,12 +748,22 @@ pub(in crate::library::tpm2) fn materialize_persistent_state(
         (false, None, None) => (None, None),
         _ => return Err(TPM_FAIL),
     };
+    let loaded_null_seed_compat_level =
+        state_reset
+            .as_mut()
+            .map_or(super::compat_tail::SEED_COMPAT_LEVEL_ORIGINAL, |reset| {
+                core::mem::replace(
+                    &mut reset.null_seed_compat_level,
+                    super::compat_tail::SEED_COMPAT_LEVEL_ORIGINAL,
+                )
+            });
 
     let persistent = own_persistent_data(&decoded.persistent_data);
 
     let orderly = own_orderly_data(&decoded.orderly_data);
 
-    let index_orderly_ram = own_index_orderly_ram(&decoded.index_orderly_ram)?;
+    let index_orderly_ram =
+        OrderlyRamImage::from_portable(&decoded.index_orderly_ram).ok_or(TPM_FAIL)?;
     let user_nvram = own_user_nvram(&decoded.user_nvram)?;
 
     Ok(OwnedPersistentState {
@@ -809,6 +776,7 @@ pub(in crate::library::tpm2) fn materialize_persistent_state(
         user_nvram,
         envelope_version: decoded.envelope_version,
         read_su_state: decoded.read_su_state,
+        loaded_null_seed_compat_level,
     })
 }
 
@@ -923,9 +891,7 @@ mod tests {
         assert_eq!(candidate.orderly.clock_safe, 1);
         assert_eq!(candidate.orderly.drbg_state.seed.expose(), &[0x5a; 48][..]);
 
-        assert!(candidate.index_orderly_ram.entries.is_empty());
-        assert!(candidate.index_orderly_ram.terminated);
-        assert_eq!(candidate.index_orderly_ram.used_bytes, 0);
+        assert_eq!(candidate.index_orderly_ram, OrderlyRamImage::zeroed());
         assert!(candidate.user_nvram.entries.is_empty());
         assert_eq!(candidate.user_nvram.max_count, 0);
         assert_eq!(candidate.user_nvram.required_capacity, 12);
@@ -1292,12 +1258,15 @@ mod tests {
         let blob = valid_permanent_state_fixture();
         let mut decoded = decode(&blob);
         for _ in 0..3 {
-            decoded.index_orderly_ram.entries.push(OrderlyRamEntry {
-                declared_size: 212,
-                handle: 0x0100_0002,
-                attributes: 0,
-                data: &BIG,
-            });
+            decoded
+                .index_orderly_ram
+                .entries
+                .push(crate::library::tpm2::nv::OrderlyRamEntry {
+                    declared_size: 212,
+                    handle: 0x0100_0002,
+                    attributes: 0,
+                    data: &BIG,
+                });
         }
         assert_eq!(materialize_persistent_state(decoded).unwrap_err(), TPM_FAIL);
     }

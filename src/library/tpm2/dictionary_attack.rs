@@ -818,9 +818,7 @@ mod tests {
         use crate::library::tpm2::clock::SteppingClock;
         use crate::library::tpm2::runtime::merge_volatile_state;
         use crate::library::tpm2::volatile::volatile_all_store;
-        use crate::library::tpm2::{
-            VolatileDecodeBoundary, decode_volatile_blob, volatile_validation_context,
-        };
+        use crate::library::tpm2::{decode_volatile_blob, volatile_validation_context};
 
         let clock = SteppingClock::new(1_600_000_000_000, 5_000_000);
         let mut runtime = manufactured_runtime();
@@ -837,8 +835,8 @@ mod tests {
 
         let blob = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
         let context = volatile_validation_context(&runtime).expect("the context builds");
-        let owned = decode_volatile_blob(&context, &blob, &clock, VolatileDecodeBoundary::Restore)
-            .expect("the volatile state decodes");
+        let owned =
+            decode_volatile_blob(&context, &blob, &clock).expect("the volatile state decodes");
 
         let mut restored = manufactured_runtime();
         merge_volatile_state(&mut restored, owned);

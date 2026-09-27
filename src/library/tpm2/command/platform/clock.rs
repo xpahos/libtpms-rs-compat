@@ -688,8 +688,8 @@ mod tests {
 
     #[test]
     fn adjustment_rate_volatile_round_trip() {
+        use crate::library::tpm2::attach_volatile_blob;
         use crate::library::tpm2::volatile::volatile_all_store;
-        use crate::library::tpm2::{VolatileDecodeBoundary, attach_volatile_blob};
 
         let clock = replay_clock();
         let mut runtime = ready(&clock);
@@ -700,13 +700,7 @@ mod tests {
         );
         let blob = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
         let mut restored = ready(&clock);
-        attach_volatile_blob(
-            &mut restored,
-            &blob,
-            &clock,
-            VolatileDecodeBoundary::Restore,
-        )
-        .expect("the volatile state attaches");
+        attach_volatile_blob(&mut restored, &blob, &clock).expect("the volatile state attaches");
         assert_eq!(restored.timer.adjust_rate, NOMINAL + 300);
     }
 

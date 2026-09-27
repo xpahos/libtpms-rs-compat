@@ -15,7 +15,7 @@ use crate::library::tpm2::persistent::{
 use crate::library::tpm2::public::SymDefObject;
 use crate::library::tpm2::session::{Session, SessionSlot};
 
-fn resumable_sequence(attributes: u32, body: &AnyObjectBody<'_>) -> bool {
+pub(super) fn resumable_sequence(attributes: u32, body: &AnyObjectBody<'_>) -> bool {
     if attributes & (ATTR_OCCUPIED | ATTR_HMAC_SEQ) != ATTR_OCCUPIED | ATTR_HMAC_SEQ {
         return true;
     }

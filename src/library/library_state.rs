@@ -81,6 +81,8 @@ struct TpmState {
     configured_profile: Option<Vec<u8>>,
     #[cfg(feature = "tpm2")]
     installed_permanent: Option<tpm2::VolatileValidationContext>,
+    #[cfg(feature = "tpm2")]
+    failure_diagnostics: tpm2::FailureDiagnostics,
     #[cfg(all(test, feature = "tpm2"))]
     entropy_override: Option<tpm2::EntropySource>,
 }
@@ -98,6 +100,8 @@ impl TpmState {
             configured_profile: None,
             #[cfg(feature = "tpm2")]
             installed_permanent: None,
+            #[cfg(feature = "tpm2")]
+            failure_diagnostics: tpm2::FailureDiagnostics::default(),
             #[cfg(all(test, feature = "tpm2"))]
             entropy_override: None,
         }
@@ -258,6 +262,11 @@ impl Tpm {
                 runtime,
                 services: state.services.clone(),
             };
+            let mut displaced = op.runtime.take();
+            if let Some(running) = displaced.as_mut() {
+                tpm2::main_init_prologue(running);
+                state.failure_diagnostics = tpm2::failure_diagnostics(running);
+            }
             let context = tpm2::Tpm2InitContext {
                 platform: op.services.platform_ref(),
                 storage: op.services.storage_ref(),
@@ -269,20 +278,26 @@ impl Tpm {
                 #[cfg(test)]
                 entropy: state.entropy_override.unwrap_or(tpm2::os_entropy),
                 clock: &tpm2::OsClock,
+                failure_diagnostics: state.failure_diagnostics,
             };
             drop(state);
-            let displaced = op.runtime.take();
             let result = match tpm2::main_init(context) {
-                Ok(mut runtime) => {
-                    let mut state = self.lock_state();
-                    state.preloaded_state.take(StateBlobKind::Permanent);
-                    state.preloaded_state.take(StateBlobKind::Volatile);
-                    runtime.buffer_size = state.tpm2_buffer_size;
-                    drop(state);
-                    *op.runtime = Some(runtime);
+                Ok(runtime) => {
+                    self.power_on(&mut op.runtime, runtime, true);
                     TPM_SUCCESS
                 }
-                Err(code) => code,
+                Err(failure) => {
+                    let code = failure.code();
+                    match failure {
+                        tpm2::InitFailure::FailureMode {
+                            runtime,
+                            volatile_loaded,
+                        } => self.power_on(&mut op.runtime, *runtime, volatile_loaded),
+                        tpm2::InitFailure::Callback(_) => *op.runtime = displaced.take(),
+                        tpm2::InitFailure::NoRuntime(_) => {}
+                    }
+                    code
+                }
             };
             drop(op);
             drop(displaced);
@@ -293,6 +308,23 @@ impl Tpm {
             self.lock_state().version_locked = true;
             TPM_FAIL
         }
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn power_on(
+        &self,
+        slot: &mut Option<tpm2::Tpm2Runtime>,
+        mut runtime: tpm2::Tpm2Runtime,
+        volatile_loaded: bool,
+    ) {
+        let mut state = self.lock_state();
+        state.preloaded_state.take(StateBlobKind::Permanent);
+        if volatile_loaded {
+            state.preloaded_state.take(StateBlobKind::Volatile);
+        }
+        runtime.buffer_size = state.tpm2_buffer_size;
+        drop(state);
+        *slot = Some(runtime);
     }
 
     #[cfg(feature = "tpm2")]
@@ -312,7 +344,10 @@ impl Tpm {
     ) -> Result<Vec<u8>, TpmResult> {
         let mut op = self.acquire_tpm2()?;
         match op.runtime.as_mut() {
-            None => Ok(Vec::new()),
+            None => {
+                op.services.platform_ref().locality();
+                Ok(Vec::new())
+            }
             Some(runtime) => {
                 let inputs = host_platform_inputs(op.services.platform_ref());
                 self.cancellation.run(|cancellation| {
@@ -395,6 +430,9 @@ impl Tpm {
             let mut runtime_slot = self.lock_runtime();
             let displaced = runtime_slot.take();
             let mut state = self.lock_state();
+            if let Some(runtime) = displaced.as_ref() {
+                state.failure_diagnostics = tpm2::failure_diagnostics(runtime);
+            }
             if state.selected == crate::library::TpmVersion::V2_0 {
                 tpm2::terminate();
                 state.configured_profile = None;
@@ -808,6 +846,8 @@ impl Default for Tpm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tpm2")]
+    use crate::library::constants::TPM_RC_FAILURE;
     #[cfg(feature = "tpm2")]
     use crate::library::platform::test_support::TestPlatform;
     #[cfg(feature = "tpm2")]
@@ -1333,6 +1373,192 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
+    fn powered_off_process_locality_sample() {
+        let library = tpm2_library();
+        let localities = Arc::new(Mutex::new(0u32));
+        let presences = Arc::new(Mutex::new(0u32));
+        let (locality_count, presence_count) = (Arc::clone(&localities), Arc::clone(&presences));
+        library.register_platform(
+            TestPlatform::new()
+                .on_locality(move || {
+                    *locality_count.lock().unwrap() += 1;
+                    0
+                })
+                .on_physical_presence(move || {
+                    *presence_count.lock().unwrap() += 1;
+                    false
+                })
+                .arc(),
+        );
+        assert_eq!(execute(&library, &get_test_result()), Vec::<u8>::new());
+        assert_eq!(
+            *localities.lock().unwrap(),
+            1,
+            "TPM2_Process samples the locality even for a powered-off TPM"
+        );
+        assert_eq!(*presences.lock().unwrap(), 0);
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn init_callback_failure_running_runtime_retention() {
+        let library = tpm2_library();
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Volatile,
+            crate::library::tpm2::failure_mode_volatile_state_fixture(),
+        );
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            FAILURE_WITHOUT_DIAGNOSTICS
+        );
+
+        library.register_platform(TestPlatform::new().on_initialize(|| Err(42)).arc());
+        assert_eq!(library.initialize(), 42);
+        assert!(
+            library.runtime_is_initialized(),
+            "tpm_io_init failed before the power cycle, so the TPM still runs"
+        );
+        let response = execute(&library, &get_test_result());
+        assert_eq!(
+            response.len(),
+            16,
+            "TPM2_MainInit cleared g_inFailureMode before the callback: {response:02x?}"
+        );
+        assert_eq!(response_code(&response), 0);
+        assert_eq!(
+            library.set_state(
+                StateBlobKind::Permanent,
+                StateInput::Data(crate::library::tpm2::valid_permanent_state_fixture()),
+            ),
+            TPM_INVALID_POSTINIT
+        );
+        library.terminate();
+        assert!(!library.runtime_is_initialized());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn init_callback_failure_manufactured_flag_reset() {
+        let _serial = MANUFACTURE_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let library = started_library();
+        assert!(library.was_manufactured());
+
+        library.register_platform(TestPlatform::new().on_initialize(|| Err(42)).arc());
+        assert_eq!(library.initialize(), 42);
+        assert!(library.runtime_is_initialized());
+        assert!(
+            !library.was_manufactured(),
+            "TPM2_MainInit cleared g_wasManufactured before the callback"
+        );
+        assert_eq!(
+            response_code(&execute(&library, &startup_clear())),
+            TPM_RC_INITIALIZE,
+            "the TPM that already ran TPM2_Startup is still the one answering"
+        );
+        library.terminate();
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn failure_diagnostics_power_cycle_persistence() {
+        const NV_COMMIT_FAILURE: [u8; 28] = [
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x63, 0x65,
+            0x78, 0x45, 0x00, 0x00, 0x01, 0x3e, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x01, 0x01,
+        ];
+        let library = tpm2_library();
+        let stage = |volatile: Vec<u8>| {
+            let mut state = library.lock_state();
+            state.preloaded_state.set_data(
+                StateBlobKind::Permanent,
+                crate::library::tpm2::valid_permanent_state_fixture(),
+            );
+            state
+                .preloaded_state
+                .set_data(StateBlobKind::Volatile, volatile);
+        };
+
+        stage(crate::library::tpm2::diagnosed_failure_mode_volatile_state_fixture());
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_eq!(execute(&library, &get_test_result()), NV_COMMIT_FAILURE);
+        library.terminate();
+
+        stage(vec![0xd0; 64]);
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            NV_COMMIT_FAILURE,
+            "the rejected blob never reached its own diagnostics, and the \
+             earlier ones survived TPMLIB_Terminate"
+        );
+
+        stage(vec![0xd0; 64]);
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            NV_COMMIT_FAILURE,
+            "and a MainInit that powers the TPM off and on again"
+        );
+
+        stage(crate::library::tpm2::valid_volatile_state_fixture());
+        assert_eq!(library.initialize(), TPM_SUCCESS);
+        library.terminate();
+        stage(vec![0xd0; 64]);
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            FAILURE_WITHOUT_DIAGNOSTICS,
+            "a restored operational state carried all-zero diagnostics"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn rejected_set_state_blob_publishes_none_of_its_fields() {
+        let library = tpm2_library();
+        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
+        let volatile = crate::library::tpm2::diagnosed_failure_mode_volatile_state_fixture();
+        assert_eq!(
+            library.set_state(
+                StateBlobKind::Permanent,
+                StateInput::Data(permanent.clone())
+            ),
+            TPM_SUCCESS
+        );
+        assert_ne!(
+            library.set_state(
+                StateBlobKind::Volatile,
+                StateInput::Data(volatile[..volatile.len() - 21].to_vec())
+            ),
+            TPM_SUCCESS,
+            "the blob stops short of its trailing magic"
+        );
+        {
+            let mut state = library.lock_state();
+            state
+                .preloaded_state
+                .set_data(StateBlobKind::Permanent, permanent);
+            state
+                .preloaded_state
+                .set_data(StateBlobKind::Volatile, vec![0xd0; 64]);
+        }
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            FAILURE_WITHOUT_DIAGNOSTICS,
+            "validation never handed the rejected blob's diagnostics to a TPM"
+        );
+        assert_eq!(library.tis_established_get(), Ok(false));
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
     fn external_service_replacement() {
         let library = Tpm::default();
         library.register_external_services(ExternalServices::new(
@@ -1399,7 +1625,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn failed_preloaded_empty_init_staged_entry_preservation() {
+    fn short_staged_volatile_blob_power_on_consumption() {
         let library = Tpm::default();
         assert_eq!(
             library.set_version(crate::library::TpmVersion::V2_0),
@@ -1415,24 +1641,45 @@ mod tests {
             .set_data(StateBlobKind::Volatile, vec![0xd0, 0x0d]);
         assert_eq!(
             library.initialize(),
-            crate::library::constants::TPM_RC_FAILURE
+            TPM_SUCCESS,
+            "VolatileState_Load refuses the blob before touching the TPM"
+        );
+        assert_staged_entries_consumed(&library);
+        assert!(library.runtime_is_initialized());
+        assert_eq!(
+            response_code(&execute(&library, &get_test_result())),
+            TPM_RC_INITIALIZE,
+            "an operational TPM still waiting for TPM2_Startup"
+        );
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn failure_mode_power_on_staged_entry_consumption() {
+        let library = Tpm::default();
+        assert_eq!(
+            library.set_version(crate::library::TpmVersion::V2_0),
+            TPM_SUCCESS
+        );
+        library
+            .lock_state()
+            .preloaded_state
+            .set_empty(StateBlobKind::Permanent);
+        library
+            .lock_state()
+            .preloaded_state
+            .set_data(StateBlobKind::Volatile, vec![0xd0; 64]);
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_staged_entries_consumed(&library);
+        assert!(
+            library.runtime_is_initialized(),
+            "the TPM powered on in failure mode"
         );
         assert_eq!(
-            *library
-                .lock_state()
-                .preloaded_state
-                .get(StateBlobKind::Permanent),
-            PreloadedBlob::Empty,
-            "the staged entry must survive a failed MainInit"
+            execute(&library, &get_test_result()),
+            FAILURE_WITHOUT_DIAGNOSTICS,
+            "failure mode, before any diagnostics were unmarshalled"
         );
-        assert_eq!(
-            *library
-                .lock_state()
-                .preloaded_state
-                .get(StateBlobKind::Volatile),
-            PreloadedBlob::Data(vec![0xd0, 0x0d])
-        );
-        assert!(!library.runtime_is_initialized());
     }
 
     #[cfg(feature = "tpm2")]
@@ -1589,7 +1836,7 @@ mod tests {
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn volatile_boundary_failure_staged_blob_preservation() {
+    fn undecodable_staged_volatile_blob_failure_mode_publication() {
         const INFO_ACTIVE_PROFILE: InformationFlags = InformationFlags::ACTIVE_PROFILE;
 
         let library = Tpm::default();
@@ -1597,83 +1844,73 @@ mod tests {
             library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
-        let volatile = vec![0xd0, 0x0d];
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
         library
             .lock_state()
             .preloaded_state
-            .set_data(StateBlobKind::Permanent, permanent.clone());
-        library
-            .lock_state()
-            .preloaded_state
-            .set_data(StateBlobKind::Volatile, volatile.clone());
-        for attempt in 0..2 {
-            assert_eq!(
-                library.initialize(),
-                crate::library::constants::TPM_RC_FAILURE,
-                "attempt {attempt}"
-            );
-            let state = library.lock_state();
-            assert_eq!(
-                *state.preloaded_state.get(StateBlobKind::Permanent),
-                PreloadedBlob::Data(permanent.clone()),
-                "attempt {attempt}: the staged permanent blob survives"
-            );
-            assert_eq!(
-                *state.preloaded_state.get(StateBlobKind::Volatile),
-                PreloadedBlob::Data(volatile.clone()),
-                "attempt {attempt}: the staged volatile blob survives"
-            );
-            drop(state);
-            assert!(!library.runtime_is_initialized());
-            assert_eq!(
-                library.get_info(INFO_ACTIVE_PROFILE).as_deref(),
-                Some("{}"),
-                "attempt {attempt}: no ActiveProfile without a published runtime"
-            );
-        }
+            .set_data(StateBlobKind::Volatile, vec![0xd0; 64]);
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_staged_entries_consumed(&library);
+        assert!(library.runtime_is_initialized());
+        assert!(!library.was_manufactured());
+        let info = library.get_info(INFO_ACTIVE_PROFILE).unwrap();
+        assert!(
+            info.contains(r#""ActiveProfile":{"Name":"null""#),
+            "the restored permanent state is active: {info}"
+        );
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            FAILURE_WITHOUT_DIAGNOSTICS
+        );
+        assert_eq!(
+            execute(&library, &startup_clear()),
+            [0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x01],
+            "every other command answers TPM_RC_FAILURE"
+        );
+
+        assert_eq!(
+            library.initialize(),
+            TPM_FAIL,
+            "the staged blobs are gone and no backend is registered"
+        );
+        assert!(
+            !library.runtime_is_initialized(),
+            "that power cycle dropped the TPM in failure mode"
+        );
     }
 
     #[cfg(feature = "tpm2")]
     #[test]
-    fn bad_volatile_digest_staged_blob_preservation() {
+    fn bad_volatile_digest_failure_mode_publication() {
         let library = Tpm::default();
         assert_eq!(
             library.set_version(crate::library::TpmVersion::V2_0),
             TPM_SUCCESS
         );
-        let permanent = crate::library::tpm2::valid_permanent_state_fixture();
         let mut volatile = crate::library::tpm2::valid_volatile_state_fixture();
         let last = volatile.len() - 1;
         volatile[last] ^= 0xff;
+        library.lock_state().preloaded_state.set_data(
+            StateBlobKind::Permanent,
+            crate::library::tpm2::valid_permanent_state_fixture(),
+        );
         library
             .lock_state()
             .preloaded_state
-            .set_data(StateBlobKind::Permanent, permanent.clone());
-        library
-            .lock_state()
-            .preloaded_state
-            .set_data(StateBlobKind::Volatile, volatile.clone());
-        for attempt in 0..2 {
-            assert_eq!(
-                library.initialize(),
-                crate::library::constants::TPM_RC_FAILURE,
-                "attempt {attempt}"
-            );
-            let state = library.lock_state();
-            assert_eq!(
-                *state.preloaded_state.get(StateBlobKind::Permanent),
-                PreloadedBlob::Data(permanent.clone()),
-                "attempt {attempt}: the staged permanent blob survives"
-            );
-            assert_eq!(
-                *state.preloaded_state.get(StateBlobKind::Volatile),
-                PreloadedBlob::Data(volatile.clone()),
-                "attempt {attempt}: the staged volatile blob survives"
-            );
-            drop(state);
-            assert!(!library.runtime_is_initialized());
-        }
+            .set_data(StateBlobKind::Volatile, volatile);
+        assert_eq!(library.initialize(), TPM_RC_FAILURE);
+        assert_staged_entries_consumed(&library);
+        assert!(library.runtime_is_initialized());
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            FAILURE_WITHOUT_DIAGNOSTICS,
+            "the blob's own, all-zero diagnostics"
+        );
+        library.terminate();
+        assert!(!library.runtime_is_initialized());
     }
 
     #[cfg(feature = "tpm2")]
@@ -3799,8 +4036,6 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn restore_volatile_error_code_collapse() {
-        use crate::library::constants::TPM_RC_FAILURE;
-
         let valid = crate::library::tpm2::valid_volatile_state_fixture();
         for blob in [
             valid[..valid.len() / 2].to_vec(),
@@ -3817,6 +4052,11 @@ mod tests {
                 .preloaded_state
                 .set_data(StateBlobKind::Volatile, blob);
             assert_eq!(library.initialize(), TPM_RC_FAILURE);
+            assert!(
+                library.runtime_is_initialized(),
+                "every rejected blob leaves a TPM in failure mode"
+            );
+            assert_eq!(execute(&library, &get_test_result()).len(), 28);
         }
     }
 
@@ -5181,8 +5421,6 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn failure_mode_volatile_set_state_failure_boundary() {
-        use crate::library::constants::TPM_RC_FAILURE;
-
         let blob = crate::library::tpm2::failure_mode_volatile_state_fixture();
 
         let library = tpm2_library();
@@ -5208,7 +5446,20 @@ mod tests {
             TPM_RC_FAILURE,
             "restoring the same blob still reaches the failure boundary"
         );
-        assert!(!library.runtime_is_initialized());
+        assert!(
+            library.runtime_is_initialized(),
+            "MainInit reports the failure, yet the TPM stays powered in failure mode"
+        );
+        assert_staged_entries_consumed(&library);
+        assert_eq!(
+            execute(&library, &get_test_result()),
+            FAILURE_WITHOUT_DIAGNOSTICS
+        );
+        assert_eq!(
+            library.set_state(StateBlobKind::Volatile, StateInput::Data(blob)),
+            TPM_INVALID_POSTINIT,
+            "a running TPM refuses new state"
+        );
     }
 
     #[test]
@@ -5254,6 +5505,36 @@ mod tests {
                 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00,
             ],
         )
+    }
+
+    #[cfg(feature = "tpm2")]
+    fn get_test_result() -> crate::library::CommandInput {
+        crate::library::CommandInput::new(
+            10,
+            vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x7c],
+        )
+    }
+
+    #[cfg(feature = "tpm2")]
+    const FAILURE_WITHOUT_DIAGNOSTICS: [u8; 28] = [
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01,
+    ];
+
+    #[cfg(feature = "tpm2")]
+    const TPM_RC_INITIALIZE: u32 = 0x100;
+
+    #[cfg(feature = "tpm2")]
+    #[track_caller]
+    fn assert_staged_entries_consumed(library: &Tpm) {
+        let state = library.lock_state();
+        for kind in [StateBlobKind::Permanent, StateBlobKind::Volatile] {
+            assert_eq!(
+                *state.preloaded_state.get(kind),
+                PreloadedBlob::Missing,
+                "_TPM_Init took the staged {kind:?} entry"
+            );
+        }
     }
 
     #[cfg(feature = "tpm2")]

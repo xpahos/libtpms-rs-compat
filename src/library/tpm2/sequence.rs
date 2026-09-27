@@ -551,9 +551,7 @@ pub(in crate::library::tpm2) mod replay {
     use crate::library::tpm2::process::process;
     use crate::library::tpm2::runtime::Tpm2Runtime;
     use crate::library::tpm2::volatile::volatile_all_store;
-    use crate::library::tpm2::{
-        VolatileDecodeBoundary, attach_volatile_blob, restore_permanent_blob_for_test,
-    };
+    use crate::library::tpm2::{attach_volatile_blob, restore_permanent_blob_for_test};
     use crate::types::TpmResult;
 
     pub(in crate::library::tpm2) const RH_OWNER: u32 = 0x4000_0001;
@@ -589,15 +587,9 @@ pub(in crate::library::tpm2) mod replay {
     ) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector(permanent))
             .expect("the oracle permanent state restores");
-        attach_volatile_blob(
-            &mut runtime,
-            vector(volatile),
-            clock,
-            VolatileDecodeBoundary::Restore,
-        )
-        .expect("the oracle volatile state attaches");
+        attach_volatile_blob(&mut runtime, vector(volatile), clock)
+            .expect("the oracle volatile state attaches");
         runtime.entropy = unreachable_entropy;
-        runtime.was_manufactured = true;
         runtime
     }
 
@@ -626,15 +618,9 @@ pub(in crate::library::tpm2) mod replay {
     ) -> Tpm2Runtime {
         let mut runtime =
             restore_permanent_blob_for_test(permanent).expect("the saved permanent state restores");
-        attach_volatile_blob(
-            &mut runtime,
-            volatile,
-            clock,
-            VolatileDecodeBoundary::Restore,
-        )
-        .expect("the saved volatile state attaches");
+        attach_volatile_blob(&mut runtime, volatile, clock)
+            .expect("the saved volatile state attaches");
         runtime.entropy = unreachable_entropy;
-        runtime.was_manufactured = true;
         runtime
     }
 

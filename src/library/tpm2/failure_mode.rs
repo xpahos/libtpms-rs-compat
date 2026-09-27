@@ -24,6 +24,7 @@ pub(super) const FATAL_ERROR_NV_UNRECOVERABLE: u32 = 8;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2) enum FailureLocation {
     NvCommit,
+    NvPowerOn,
     HashSelfTest,
     SymmetricSelfTest,
     EcdhSelfTest,
@@ -47,8 +48,9 @@ const fn function_word(name: &[u8; 4]) -> u32 {
 
 impl FailureLocation {
     #[cfg(test)]
-    pub(in crate::library::tpm2) const ALL: [Self; 16] = [
+    pub(in crate::library::tpm2) const ALL: [Self; 17] = [
         Self::NvCommit,
+        Self::NvPowerOn,
         Self::HashSelfTest,
         Self::SymmetricSelfTest,
         Self::EcdhSelfTest,
@@ -70,27 +72,29 @@ impl FailureLocation {
     const fn position(self) -> usize {
         match self {
             Self::NvCommit => 0,
-            Self::HashSelfTest => 1,
-            Self::SymmetricSelfTest => 2,
-            Self::EcdhSelfTest => 3,
-            Self::RsaRawEncrypt => 4,
-            Self::RsaRawEncryptCompare => 5,
-            Self::RsaRawDecrypt => 6,
-            Self::RsaRawDecryptCompare => 7,
-            Self::RsaOaepEncrypt => 8,
-            Self::RsaOaepRoundTripDecrypt => 9,
-            Self::RsaOaepRoundTripCompare => 10,
-            Self::RsaOaepKnownAnswerDecrypt => 11,
-            Self::RsaOaepKnownAnswerCompare => 12,
-            Self::DrbgInvalidState => 13,
-            Self::DrbgEntropy => 14,
-            Self::MathDivideZero => 15,
+            Self::NvPowerOn => 1,
+            Self::HashSelfTest => 2,
+            Self::SymmetricSelfTest => 3,
+            Self::EcdhSelfTest => 4,
+            Self::RsaRawEncrypt => 5,
+            Self::RsaRawEncryptCompare => 6,
+            Self::RsaRawDecrypt => 7,
+            Self::RsaRawDecryptCompare => 8,
+            Self::RsaOaepEncrypt => 9,
+            Self::RsaOaepRoundTripDecrypt => 10,
+            Self::RsaOaepRoundTripCompare => 11,
+            Self::RsaOaepKnownAnswerDecrypt => 12,
+            Self::RsaOaepKnownAnswerCompare => 13,
+            Self::DrbgInvalidState => 14,
+            Self::DrbgEntropy => 15,
+            Self::MathDivideZero => 16,
         }
     }
 
     pub(in crate::library::tpm2) const fn diagnostics(self) -> FailureDiagnostics {
         let (name, line, code) = match self {
             Self::NvCommit => (b"Exec", 318, FATAL_ERROR_INTERNAL),
+            Self::NvPowerOn => (b"NvPo", 175, FATAL_ERROR_NV_UNRECOVERABLE),
             Self::HashSelfTest => (b"Test", 155, FATAL_ERROR_SELF_TEST),
             Self::SymmetricSelfTest => (b"Test", 259, FATAL_ERROR_SELF_TEST),
             Self::EcdhSelfTest => (b"Test", 675, FATAL_ERROR_SELF_TEST),
@@ -776,16 +780,22 @@ mod tests {
             if form == "SELF_TEST_FAILURE" {
                 return FATAL_ERROR_SELF_TEST;
             }
-            let arguments = form
+            let (site, arguments) = form
                 .split_once('(')
-                .and_then(|(_, rest)| rest.split_once(')'))
-                .map(|(inside, _)| inside)
+                .and_then(|(site, rest)| Some((site, rest.split_once(')')?.0)))
                 .unwrap_or_else(|| panic!("{form} carries no fatal error code"));
-            match arguments.split(',').next().map(str::trim) {
+            let mut arguments = arguments.split(',').map(str::trim);
+            let code = if site == "TpmLogFailure" {
+                arguments.nth(2)
+            } else {
+                arguments.next()
+            };
+            match code {
                 Some("FATAL_ERROR_INTERNAL") => FATAL_ERROR_INTERNAL,
                 Some("FATAL_ERROR_ENTROPY") => FATAL_ERROR_ENTROPY,
                 Some("FATAL_ERROR_SELF_TEST") => FATAL_ERROR_SELF_TEST,
                 Some("FATAL_ERROR_DIVIDE_ZERO") => FATAL_ERROR_DIVIDE_ZERO,
+                Some("FATAL_ERROR_NV_UNRECOVERABLE") => FATAL_ERROR_NV_UNRECOVERABLE,
                 other => panic!("unexpected fatal error code {other:?}"),
             }
         }
@@ -802,6 +812,7 @@ mod tests {
         fn vendored_site(location: FailureLocation) -> (&'static str, u32) {
             match location {
                 FailureLocation::NvCommit => ("ExecuteCommand", 318),
+                FailureLocation::NvPowerOn => ("NvPowerOn", 175),
                 FailureLocation::HashSelfTest => ("TestHash", 155),
                 FailureLocation::SymmetricSelfTest => ("TestSymmetricAlgorithm", 259),
                 FailureLocation::EcdhSelfTest => ("TestECDH", 675),

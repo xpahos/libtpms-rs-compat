@@ -55,8 +55,8 @@ mod tests {
         OwnedVolatileState, marshal_volatile_state, volatile_all_store,
     };
     use crate::library::tpm2::{
-        VolatileDecodeBoundary, attach_volatile_blob, decode_volatile_blob,
-        parse_persistent_all_payload, volatile_validation_context,
+        attach_volatile_blob, decode_volatile_blob, parse_persistent_all_payload,
+        volatile_validation_context,
     };
     use crate::types::TpmResult;
 
@@ -179,8 +179,7 @@ mod tests {
         let context =
             volatile_validation_context(&runtime).map_err(|code| format!("context: {code:#x}"))?;
         let clock = SteppingClock::new(1_600_000_000_000, 5_000_000);
-        decode_volatile_blob(&context, bytes, &clock, VolatileDecodeBoundary::Validate)
-            .map_err(|code| format!("decode: {code:#x}"))
+        decode_volatile_blob(&context, bytes, &clock).map_err(|code| format!("decode: {code:#x}"))
     }
 
     #[track_caller]
@@ -732,13 +731,7 @@ mod tests {
         let state = materialize_persistent_state(decoded).expect("the state materializes");
         let mut runtime = commit_restored_state(state).expect("the restored state commits");
         runtime.entropy = deterministic_entropy;
-        attach_volatile_blob(
-            &mut runtime,
-            volatile,
-            clock,
-            VolatileDecodeBoundary::Restore,
-        )
-        .expect("the volatile state attaches");
+        attach_volatile_blob(&mut runtime, volatile, clock).expect("the volatile state attaches");
         runtime
     }
 
@@ -765,7 +758,7 @@ mod tests {
             .expect("the manufactured permall decodes");
         let mut runtime = commit_restored_state(boot_state).expect("the manufactured state boots");
         runtime.entropy = deterministic_entropy;
-        runtime.was_manufactured = true;
+        runtime.manufactured = true;
 
         let fresh = volatile_record("FRESH_STARTUP");
         let fresh_tail = fresh.tail_v4.expect("the capture carries a tail");

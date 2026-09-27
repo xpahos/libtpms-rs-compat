@@ -1,10 +1,12 @@
 mod attach;
+mod restore;
 mod store;
 
 pub(super) use attach::{
     OwnedPcr, OwnedSession, OwnedSessionProcess, OwnedSessionSlot, OwnedVolatileState,
     materialize_volatile_state,
 };
+pub(super) use restore::{RestoreContext, restore_until_defect};
 pub(super) use store::{CURRENT_OBJECT_VERSION, volatile_all_store, volatile_object_version};
 #[cfg(test)]
 pub(super) use store::{capture_volatile_state, marshal_volatile_state};
@@ -436,13 +438,18 @@ fn unmarshal_volatile_state<'a>(
     })
 }
 
-pub(super) fn parse_volatile_state_blob<'a>(
+pub(super) enum UnmarshalledBlob<'a> {
+    Verified(DecodedVolatileState<'a>),
+    Unverified(DecodedVolatileState<'a>, PersistentAllError),
+}
+
+pub(super) fn unmarshal_volatile_state_blob<'a>(
     blob: &'a [u8],
     shadow: &[PcrSelection<'_>],
     seed_tie: SeedTie<'_>,
     host_clock: &dyn HostClock,
     state_format: StateFormatLimit,
-) -> Result<DecodedVolatileState<'a>, PersistentAllError> {
+) -> Result<UnmarshalledBlob<'a>, PersistentAllError> {
     let Some(payload_len) = blob.len().checked_sub(SHA1_DIGEST_SIZE) else {
         return Err(truncated());
     };
@@ -454,14 +461,31 @@ pub(super) fn parse_volatile_state_blob<'a>(
 
     let remaining = reader.remaining();
     if remaining.len() < SHA1_DIGEST_SIZE {
-        return Err(truncated());
+        return Ok(UnmarshalledBlob::Unverified(decoded, truncated()));
     }
     let digest = &remaining[remaining.len() - SHA1_DIGEST_SIZE..];
 
     if digest != computed.as_slice() {
-        return Err(PersistentAllError::IntegrityDigestMismatch);
+        return Ok(UnmarshalledBlob::Unverified(
+            decoded,
+            PersistentAllError::IntegrityDigestMismatch,
+        ));
     }
-    Ok(decoded)
+    Ok(UnmarshalledBlob::Verified(decoded))
+}
+
+#[cfg(test)]
+pub(super) fn parse_volatile_state_blob<'a>(
+    blob: &'a [u8],
+    shadow: &[PcrSelection<'_>],
+    seed_tie: SeedTie<'_>,
+    host_clock: &dyn HostClock,
+    state_format: StateFormatLimit,
+) -> Result<DecodedVolatileState<'a>, PersistentAllError> {
+    match unmarshal_volatile_state_blob(blob, shadow, seed_tie, host_clock, state_format)? {
+        UnmarshalledBlob::Verified(decoded) => Ok(decoded),
+        UnmarshalledBlob::Unverified(_, error) => Err(error),
+    }
 }
 
 #[cfg(test)]

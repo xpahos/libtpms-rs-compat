@@ -1164,8 +1164,58 @@ SCENARIO_OPS = {
     "patch-failure-code": "number",
     "send": "labelled",
     "raw": "hex",
+    "case": "case",
+    "end-case": "none",
+    "terminate": "none",
+    "main-init": "record",
+    "set-state": "set-state",
+    "get-state": "get-state",
+    "volatile-all-store": "record",
+    "set-profile": "labelled-json",
+    "process": "labelled",
+    "was-manufactured": "record",
+    "established": "record",
+    "established-reset": "record",
+    "hash-start": "record",
+    "hash-data": "labelled-data",
+    "hash-end": "record",
+    "nvram-put": "nvram-blob",
+    "load-fails": "nvram-code",
+    "io-init": "code",
+    "nvram-init": "code",
+    "callbacks": "record",
 }
+CASE_OPS = frozenset(
+    {
+        "end-case",
+        "terminate",
+        "main-init",
+        "set-state",
+        "get-state",
+        "volatile-all-store",
+        "set-profile",
+        "process",
+        "was-manufactured",
+        "established",
+        "established-reset",
+        "hash-start",
+        "hash-data",
+        "hash-end",
+        "nvram-put",
+        "load-fails",
+        "io-init",
+        "nvram-init",
+        "callbacks",
+    }
+)
 RECORD_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+CASE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+BLOB_REFERENCE = re.compile(
+    r"^(?:PERMALL|VOLATILE)_([A-Z][A-Z0-9_]*)"
+    r"(?:@(?:(?:head|drop|flip|flip-end)=[0-9]+|set=[0-9]+:(?:[0-9a-f]{2})+|sha1))*$"
+)
+STATE_KINDS = ("permanent", "volatile")
+NVRAM_NAMES = ("permall", "volatilestate")
 HEX_PAYLOAD = re.compile(r"^[0-9a-f]+$")
 COMMAND_TAGS = (0x8001, 0x8002)
 
@@ -1185,11 +1235,24 @@ def scenario_command_code(payload, errors, lineno):
     return int.from_bytes(packet[6:10], "big")
 
 
+def json_object_error(op, argument):
+    try:
+        profile = json.loads(argument)
+    except ValueError as error:
+        return f"{op} argument is not valid JSON: {error}"
+    if not isinstance(profile, dict):
+        return f"{op} argument must be a JSON object"
+    return None
+
+
 def parse_scenario(text):
     errors = []
     records = []
     codes = []
     known = set()
+    snapshots = {}
+    cases = {}
+    open_case = None
     seen = {}
 
     def record(name, lineno):
@@ -1197,6 +1260,31 @@ def parse_scenario(text):
             errors.append(f"line {lineno}: duplicate record name {name} (also line {seen[name]})")
         seen.setdefault(name, lineno)
         records.append(name)
+
+    def record_argument(op, name, lineno):
+        if not RECORD_NAME.match(name):
+            errors.append(f"line {lineno}: {op} name {name!r} is not upper-case ASCII")
+            return False
+        record(name, lineno)
+        return True
+
+    def blob_argument(op, reference, lineno):
+        match = BLOB_REFERENCE.match(reference)
+        if match is None:
+            errors.append(
+                f"line {lineno}: {op} blob {reference!r} is not PERMALL_<snapshot> or "
+                "VOLATILE_<snapshot> followed by @head=N, @drop=N, @flip=N, @flip-end=N, "
+                "@set=N:HEX or @sha1 modifiers"
+            )
+        elif match.group(1) not in snapshots:
+            errors.append(f"line {lineno}: {op} refers to the unknown snapshot {match.group(1)}")
+
+    def split(op, argument, count, lineno):
+        parts = argument.split()
+        if len(parts) != count:
+            errors.append(f"line {lineno}: {op} takes {count} arguments, got {len(parts)}")
+            return None
+        return parts
 
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -1208,23 +1296,82 @@ def parse_scenario(text):
         if kind is None:
             errors.append(f"line {lineno}: unknown op {op!r}")
             continue
+        if kind == "case":
+            if open_case is not None:
+                errors.append(f"line {lineno}: case {argument} opens inside case {open_case[0]}")
+                continue
+            if not CASE_NAME.match(argument):
+                errors.append(f"line {lineno}: case name {argument!r} is not lower-case snake_case")
+            elif argument in cases:
+                errors.append(f"line {lineno}: duplicate case {argument} (also line {cases[argument]})")
+            cases.setdefault(argument, lineno)
+            open_case = (argument, lineno)
+            continue
+        if op in CASE_OPS and open_case is None:
+            errors.append(f"line {lineno}: {op} is only valid inside a case")
+            continue
+        if op not in CASE_OPS and open_case is not None:
+            errors.append(f"line {lineno}: {op} is not valid inside a case")
+            continue
         if kind == "none":
             if argument:
                 errors.append(f"line {lineno}: {op} takes no argument")
             elif op == "version":
                 record("VERSION", lineno)
+            elif op == "end-case":
+                open_case = None
             continue
         if not argument:
             errors.append(f"line {lineno}: {op} needs an argument")
             continue
         if kind == "json":
-            try:
-                profile = json.loads(argument)
-            except ValueError as error:
-                errors.append(f"line {lineno}: {op} argument is not valid JSON: {error}")
-                continue
-            if not isinstance(profile, dict):
-                errors.append(f"line {lineno}: {op} argument must be a JSON object")
+            error = json_object_error(op, argument)
+            if error is not None:
+                errors.append(f"line {lineno}: {error}")
+        elif kind == "code":
+            if not argument.isdigit() or int(argument) > 0xFFFFFFFF:
+                errors.append(f"line {lineno}: {op} needs a 32-bit decimal code, got {argument!r}")
+        elif kind == "set-state":
+            parts = split(op, argument, 3, lineno)
+            if parts is not None:
+                record_argument(op, parts[0], lineno)
+                if parts[1] not in STATE_KINDS:
+                    errors.append(f"line {lineno}: {op} state {parts[1]!r} is not permanent or volatile")
+                blob_argument(op, parts[2], lineno)
+        elif kind == "get-state":
+            parts = split(op, argument, 2, lineno)
+            if parts is not None:
+                record_argument(op, parts[0], lineno)
+                if parts[1] not in STATE_KINDS:
+                    errors.append(f"line {lineno}: {op} state {parts[1]!r} is not permanent or volatile")
+        elif kind == "nvram-blob":
+            parts = split(op, argument, 2, lineno)
+            if parts is not None:
+                if parts[0] not in NVRAM_NAMES:
+                    errors.append(f"line {lineno}: {op} name {parts[0]!r} is not permall or volatilestate")
+                blob_argument(op, parts[1], lineno)
+        elif kind == "nvram-code":
+            parts = split(op, argument, 2, lineno)
+            if parts is not None:
+                if parts[0] not in NVRAM_NAMES:
+                    errors.append(f"line {lineno}: {op} name {parts[0]!r} is not permall or volatilestate")
+                if not parts[1].isdigit() or int(parts[1]) > 0xFFFFFFFF:
+                    errors.append(f"line {lineno}: {op} needs a 32-bit decimal code, got {parts[1]!r}")
+        elif kind == "labelled-json":
+            name, _, payload = argument.partition(" ")
+            if not payload.strip():
+                errors.append(f"line {lineno}: {op} needs a name and a profile")
+            elif record_argument(op, name, lineno):
+                error = json_object_error(op, payload.strip())
+                if error is not None:
+                    errors.append(f"line {lineno}: {error}")
+        elif kind == "labelled-data":
+            parts = split(op, argument, 2, lineno)
+            if parts is not None and record_argument(op, parts[0], lineno):
+                if len(parts[1]) % 2:
+                    errors.append(f"line {lineno}: the {op} hex has an odd number of digits")
+                elif not HEX_PAYLOAD.match(parts[1]):
+                    errors.append(f"line {lineno}: the {op} hex is not lower-case hexadecimal")
         elif kind == "number":
             if not argument.isdigit():
                 errors.append(f"line {lineno}: {op} needs a decimal argument, got {argument!r}")
@@ -1241,7 +1388,14 @@ def parse_scenario(text):
                 record(f"PERMALL_{argument}", lineno)
                 record(f"VOLATILE_{argument}", lineno)
                 known.add(argument)
+                snapshots.setdefault(argument, lineno)
             elif kind == "checkpoint":
+                if argument in snapshots:
+                    errors.append(
+                        f"line {lineno}: checkpoint {argument} would overwrite the snapshot recorded "
+                        f"on line {snapshots[argument]}; cases would read the checkpoint while the "
+                        "fixture keeps the snapshot, so give the checkpoint its own name"
+                    )
                 known.add(argument)
             elif argument not in known:
                 errors.append(f"line {lineno}: {op} refers to the unknown checkpoint {argument}")
@@ -1261,6 +1415,8 @@ def parse_scenario(text):
             code = scenario_command_code(argument, errors, lineno)
             if code is not None:
                 codes.append(code)
+    if open_case is not None:
+        errors.append(f"line {open_case[1]}: case {open_case[0]} is never closed by end-case")
     return records, codes, errors
 
 

@@ -14,7 +14,7 @@ use super::volatile::OwnedVolatileState;
 pub const NV_MEMORY_SIZE: usize = 128 * 1024 + 65 * 704;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct FailureDiagnostics {
+pub(in crate::library) struct FailureDiagnostics {
     pub(super) function: u32,
     pub(super) line: u32,
     pub(super) code: u32,
@@ -167,7 +167,7 @@ pub(super) fn format_active_profile(profile: &ValidatedProfile) -> String {
 pub(super) fn commit_restored_state(
     candidate: OwnedPersistentState,
 ) -> Result<Tpm2Runtime, TpmResult> {
-    let live = LiveState::power_on_with_state_reset(candidate.state_reset.as_ref());
+    let live = LiveState::power_on_with_state_reset(&candidate);
     commit_state(candidate, false, live, true)
 }
 
@@ -180,7 +180,7 @@ pub(super) fn commit_manufactured_state(
 pub(super) fn commit_first_boot_reloaded_state(
     candidate: OwnedPersistentState,
 ) -> Result<Tpm2Runtime, TpmResult> {
-    let live = LiveState::power_on_with_state_reset(candidate.state_reset.as_ref());
+    let live = LiveState::power_on_with_state_reset(&candidate);
     commit_state(candidate, true, live, true)
 }
 
@@ -221,7 +221,7 @@ fn commit_state(
         active_profile_commands,
         drtm_sequence: None,
         self_test,
-        manufactured: true,
+        manufactured: was_manufactured,
         was_manufactured,
         startup_received: false,
         tpm_established: false,

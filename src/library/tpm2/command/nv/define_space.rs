@@ -817,12 +817,12 @@ mod tests {
         assert_eq!(define(&mut runtime, TPM_RH_OWNER, &public), RC_SUCCESS);
 
         let stored = resolved(&runtime, OWNER_INDEX);
-        assert_eq!(stored.ram, Some(0));
+        assert_eq!(stored.ram.map(|entry| entry.offset), Some(0));
         assert_eq!(
-            runtime.live.index_orderly_ram.entries[0].handle,
+            runtime.live.index_orderly_ram.views()[0].handle,
             OWNER_INDEX
         );
-        assert_eq!(runtime.live.index_orderly_ram.entries[0].data, vec![0u8; 8]);
+        assert_eq!(runtime.live.index_orderly_ram.views()[0].data, vec![0u8; 8]);
         let OwnedUserNvramEntry::NvIndex { data, .. } =
             &runtime.state().user_nvram.entries[stored.entry]
         else {

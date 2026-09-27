@@ -1,7 +1,7 @@
 use crate::library::cancel::CancellationToken;
 use crate::library::constants::{
     TPM_RC_CANCELED, TPM_RC_CURVE, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY, TPM_RC_KEY_SIZE,
-    TPM_RC_NO_RESULT, TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_VALUE,
+    TPM_RC_NO_RESULT, TPM_RC_RANGE, TPM_RC_SIZE, TPM_RC_TYPE, TPM_RC_VALUE,
 };
 use crate::types::TpmResult;
 
@@ -229,6 +229,7 @@ pub(super) fn create_object(
 
     let mut private_exponent = None;
     let sensitive_composite = match &public.parameters {
+        PublicParms::Unselected => return Err(TPM_RC_TYPE),
         PublicParms::Rsa {
             key_bits, exponent, ..
         } => {

@@ -5,11 +5,11 @@ use crate::library::tpm2::persistent::{
 };
 
 pub(in crate::library::tpm2) const STATE_CLEAR_DATA_MAGIC: u32 = 0x9889_7667;
-const STATE_CLEAR_DATA_VERSION: u16 = 2;
+pub(in crate::library::tpm2) const STATE_CLEAR_DATA_VERSION: u16 = 2;
 pub(in crate::library::tpm2) const PCR_SAVE_MAGIC: u32 = 0x7372_eabc;
-const PCR_SAVE_VERSION: u16 = 2;
+pub(in crate::library::tpm2) const PCR_SAVE_VERSION: u16 = 2;
 pub(in crate::library::tpm2) const PCR_AUTHVALUE_MAGIC: u32 = 0x6be8_2eaf;
-const PCR_AUTHVALUE_VERSION: u16 = 2;
+pub(in crate::library::tpm2) const PCR_AUTHVALUE_VERSION: u16 = 2;
 
 const DIGEST_SIZE: usize = 64;
 pub(in crate::library::tpm2) const NUM_STATIC_PCR: usize = 16;

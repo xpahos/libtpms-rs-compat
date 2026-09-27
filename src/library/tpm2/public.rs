@@ -241,6 +241,80 @@ pub(super) struct SymDefObject {
     pub(super) mode: Option<u16>,
 }
 
+impl SymDefObject {
+    pub(super) const UNSELECTED: Self = Self {
+        algorithm: 0,
+        key_bits: None,
+        mode: None,
+    };
+
+    pub(super) fn select(&mut self, algorithm: u16) {
+        let key_bits = self.key_bits.unwrap_or(0);
+        let mode = self.mode.unwrap_or(0);
+        self.algorithm = algorithm;
+        (self.key_bits, self.mode) = match algorithm {
+            TPM_ALG_NULL => (None, None),
+            TPM_ALG_XOR => (Some(key_bits), None),
+            _ => (Some(key_bits), Some(mode)),
+        };
+    }
+}
+
+pub(super) fn is_sym_algorithm(algorithm: u16, with_xor: bool, allow_null: bool) -> bool {
+    let compiled: &[u16] = if with_xor {
+        &COMPILED_SYMS
+    } else {
+        &COMPILED_SYM_OBJECTS
+    };
+    compiled.contains(&algorithm) || (allow_null && algorithm == TPM_ALG_NULL)
+}
+
+pub(super) fn sym_key_bits_valid(
+    algorithm: u16,
+    key_bits: u16,
+    state_format: StateFormatLimit,
+) -> bool {
+    let valid = match algorithm {
+        TPM_ALG_AES | TPM_ALG_CAMELLIA => matches!(key_bits, 128 | 192 | 256),
+        TPM_ALG_TDES => matches!(key_bits, 128 | 192),
+        _ => false,
+    };
+    valid
+        && state_format
+            .check_symmetric_key_bits(StateSection::Session, algorithm, key_bits)
+            .is_ok()
+}
+
+pub(super) fn is_sym_mode(mode: u16) -> bool {
+    COMPILED_SYM_MODES.contains(&mode) || mode == TPM_ALG_NULL
+}
+
+pub(super) fn is_public_type(object_type: u16) -> bool {
+    COMPILED_PUBLIC_TYPES.contains(&object_type)
+}
+
+pub(super) fn is_hash_alg(hash_alg: u16, allow_null: bool) -> bool {
+    COMPILED_HASHES.contains(&hash_alg) || (allow_null && hash_alg == TPM_ALG_NULL)
+}
+
+pub(super) fn object_attributes_valid(attributes: u32) -> bool {
+    attributes & TPMA_OBJECT_RESERVED == 0
+}
+
+pub(super) fn rsa_key_bits_valid(key_bits: u16, state_format: StateFormatLimit) -> bool {
+    matches!(key_bits, 1024 | 2048 | 3072)
+        && state_format
+            .check_rsa_key_bits(StateSection::Object, key_bits)
+            .is_ok()
+}
+
+pub(super) fn ecc_curve_valid(curve: u16, state_format: StateFormatLimit) -> bool {
+    COMPILED_ECC_CURVES.contains(&curve)
+        && state_format
+            .check_ecc_curve(StateSection::Object, curve)
+            .is_ok()
+}
+
 pub(super) fn parse_sym_def_object(
     reader: &mut BlobReader<'_>,
     section: StateSection,
@@ -332,6 +406,59 @@ impl Scheme {
             count: None,
             kdf: None,
         }
+    }
+
+    pub(super) const UNSELECTED: Self = Self {
+        scheme: 0,
+        hash_alg: None,
+        count: None,
+        kdf: None,
+    };
+
+    pub(super) fn select(&mut self, kind: SchemeKind, scheme: u16) {
+        let hash_alg = self.hash_alg.unwrap_or(0);
+        let count = self.count.unwrap_or(0);
+        let kdf = self.kdf.unwrap_or(0);
+        *self = Self::empty(scheme);
+        match (kind, scheme) {
+            (_, TPM_ALG_NULL) => {}
+            (SchemeKind::KeyedHash, TPM_ALG_HMAC) => self.hash_alg = Some(hash_alg),
+            (SchemeKind::KeyedHash, TPM_ALG_XOR) => {
+                self.hash_alg = Some(hash_alg);
+                self.kdf = Some(kdf);
+            }
+            (SchemeKind::Rsa | SchemeKind::Ecc, TPM_ALG_ECDAA) => {
+                self.hash_alg = Some(hash_alg);
+                self.count = Some(count);
+            }
+            (
+                SchemeKind::Rsa | SchemeKind::Ecc,
+                TPM_ALG_RSASSA | TPM_ALG_RSAPSS | TPM_ALG_OAEP | TPM_ALG_ECDSA | TPM_ALG_SM2
+                | TPM_ALG_ECSCHNORR | TPM_ALG_ECDH | TPM_ALG_ECMQV,
+            ) => self.hash_alg = Some(hash_alg),
+            (SchemeKind::Kdf, _) => self.hash_alg = Some(hash_alg),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SchemeKind {
+    KeyedHash,
+    Rsa,
+    Ecc,
+    Kdf,
+}
+
+impl SchemeKind {
+    pub(super) fn allows(self, scheme: u16, allow_null: bool) -> bool {
+        let compiled: &[u16] = match self {
+            Self::KeyedHash => &COMPILED_KEYEDHASH_SCHEMES,
+            Self::Rsa => &COMPILED_RSA_SCHEMES,
+            Self::Ecc => &COMPILED_ECC_SCHEMES,
+            Self::Kdf => &COMPILED_KDFS,
+        };
+        compiled.contains(&scheme) || (allow_null && scheme == TPM_ALG_NULL)
     }
 }
 
@@ -459,6 +586,7 @@ fn read_ecc_curve(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PublicParms {
+    Unselected,
     KeyedHash(Scheme),
     SymCipher(SymDefObject),
     Rsa {
@@ -473,6 +601,28 @@ pub(super) enum PublicParms {
         curve_id: u16,
         kdf: Scheme,
     },
+}
+
+impl PublicParms {
+    pub(super) fn selected_by(object_type: u16) -> Self {
+        match object_type {
+            TPM_ALG_KEYEDHASH => Self::KeyedHash(Scheme::UNSELECTED),
+            TPM_ALG_SYMCIPHER => Self::SymCipher(SymDefObject::UNSELECTED),
+            TPM_ALG_RSA => Self::Rsa {
+                symmetric: SymDefObject::UNSELECTED,
+                scheme: Scheme::UNSELECTED,
+                key_bits: 0,
+                exponent: 0,
+            },
+            TPM_ALG_ECC => Self::Ecc {
+                symmetric: SymDefObject::UNSELECTED,
+                scheme: Scheme::UNSELECTED,
+                curve_id: 0,
+                kdf: Scheme::UNSELECTED,
+            },
+            _ => Self::Unselected,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -7,15 +7,15 @@ use crate::library::tpm2::persistent::{
 };
 
 pub(in crate::library::tpm2) const STATE_RESET_DATA_MAGIC: u32 = 0x0110_2332;
-const STATE_RESET_DATA_VERSION: u16 = 4;
+pub(in crate::library::tpm2) const STATE_RESET_DATA_VERSION: u16 = 4;
 
-const PROOF_SIZE: usize = 64;
+pub(in crate::library::tpm2) const PROOF_SIZE: usize = 64;
 const PRIMARY_SEED_SIZE: usize = 64;
 const DIGEST_SIZE: usize = 64;
 pub(in crate::library::tpm2) const MAX_ACTIVE_SESSIONS: usize = 64;
 pub(in crate::library::tpm2) const COMMIT_ARRAY_SIZE: usize = 16;
 
-const WIDE_CONTEXT_SLOTS_SINCE_VERSION: u16 = 4;
+pub(in crate::library::tpm2) const WIDE_CONTEXT_SLOTS_SINCE_VERSION: u16 = 4;
 const BLOCK_SKIP_SINCE_VERSION: u16 = 2;
 const SEED_COMPAT_REQUIRED_SINCE_VERSION: u16 = 3;
 

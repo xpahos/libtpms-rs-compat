@@ -12,9 +12,7 @@ use super::{
 };
 use crate::library::tpm2::clock::HostClock;
 use crate::library::tpm2::live::{RestoredVolatile, power_on_state_clear, power_on_state_reset};
-use crate::library::tpm2::nv::{
-    NV_INDEX_RAM_DATA, WireWriter, any_object_image, marshal_sym_def_object,
-};
+use crate::library::tpm2::nv::{WireWriter, any_object_image, marshal_sym_def_object};
 use crate::library::tpm2::pcr::{PCR_MAGIC, PCR_SLOT_BANKS, PCR_VERSION};
 use crate::library::tpm2::persistent::{
     OwnedSecret, marshal_orderly_data, marshal_state_clear, marshal_state_reset,
@@ -276,11 +274,7 @@ pub(in crate::library::tpm2) fn capture_volatile_state(
 
     let live = &runtime.live;
 
-    let index_orderly_ram = runtime
-        .nv_memory
-        .get(NV_INDEX_RAM_DATA..NV_INDEX_RAM_DATA + RAM_INDEX_SPACE)
-        .ok_or(TPM_FAIL)?
-        .to_vec();
+    let index_orderly_ram = live.index_orderly_ram.as_bytes().to_vec();
 
     let mut state_reset = live
         .state_reset
@@ -316,7 +310,7 @@ pub(in crate::library::tpm2) fn capture_volatile_state(
             .clone()
             .unwrap_or_else(power_on_state_clear),
         state_reset,
-        manufactured: runtime.was_manufactured,
+        manufactured: runtime.manufactured,
         initialized: runtime.startup_received,
         session_process,
         evict_nv_end: compat.evict_nv_end,
@@ -370,6 +364,7 @@ mod tests {
     use crate::library::tpm2::clock::{ClockCall, RecordingClock, RuntimeClock};
     use crate::library::tpm2::hierarchy::TPM_RH_UNASSIGNED;
     use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::nv::OrderlyRamImage;
     use crate::library::tpm2::object::ATTR_OCCUPIED;
     use crate::library::tpm2::persistent::ProfileField;
     use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedPcrBank};
@@ -838,6 +833,9 @@ mod tests {
         runtime.live.nv_ok = false;
         runtime.live.prev_orderly_state = 0x0001;
         runtime.live.power_was_lost = false;
+        let mut ram = runtime.live.index_orderly_ram.as_bytes().to_vec();
+        ram[511] ^= 0xa5;
+        runtime.live.index_orderly_ram = OrderlyRamImage::from_bytes(&ram).unwrap();
 
         let restored = runtime.restored_volatile.as_ref().unwrap();
         assert_eq!(restored.max_counter, 0x2a, "the stale carry disagrees");
@@ -853,8 +851,8 @@ mod tests {
         assert!(!decoded.power_was_lost);
         assert_eq!(
             decoded.index_orderly_ram,
-            &runtime.nv_memory[NV_INDEX_RAM_DATA..NV_INDEX_RAM_DATA + RAM_INDEX_SPACE],
-            "s_indexOrderlyRam is the live NV image region, not the stale carry"
+            &ram[..],
+            "s_indexOrderlyRam is the live RAM image, not the NV copy"
         );
     }
 
@@ -875,6 +873,7 @@ mod tests {
         runtime.live.null_seed_compat_level = 1;
         runtime.live.free_session_slots = 2;
         runtime.live.oldest_saved_session = 9;
+        runtime.live.index_orderly_ram = OrderlyRamImage::from_bytes(&[0x3c; 512]).unwrap();
         runtime.startup_received = true;
         runtime.failure_mode = true;
         runtime.tpm_established = true;
@@ -901,10 +900,7 @@ mod tests {
         assert!(decoded.initialized);
         assert!(decoded.in_failure_mode);
         assert!(decoded.tpm_established);
-        assert_eq!(
-            decoded.index_orderly_ram,
-            &runtime.nv_memory[NV_INDEX_RAM_DATA..NV_INDEX_RAM_DATA + RAM_INDEX_SPACE]
-        );
+        assert_eq!(decoded.index_orderly_ram, &[0x3c; 512][..]);
     }
 
     #[test]

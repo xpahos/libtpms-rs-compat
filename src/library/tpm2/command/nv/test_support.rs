@@ -1,5 +1,7 @@
 use crate::library::tpm2::command::core::test_support::TPM_ALG_SHA256;
-use crate::library::tpm2::nv::{NvPublic, ResolvedIndex, TPMA_NV_TPM_NT_SHIFT, resolve_index};
+use crate::library::tpm2::nv::{
+    NvPublic, OrderlyRamImage, ResolvedIndex, TPMA_NV_TPM_NT_SHIFT, resolve_index,
+};
 use crate::library::tpm2::persistent::{OwnedUserNvramEntry, persistent_all_store};
 use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -45,7 +47,7 @@ pub(in crate::library::tpm2::command) struct Snapshot {
     max_count: u64,
     max_nv_counter: u64,
     orderly_state: u16,
-    orderly_ram: Vec<(u32, u32, Vec<u8>)>,
+    orderly_ram: OrderlyRamImage,
     nv_memory: Box<[u8]>,
     permanent: Vec<u8>,
 }
@@ -57,13 +59,7 @@ pub(in crate::library::tpm2::command) fn snapshot(runtime: &Tpm2Runtime) -> Snap
         max_count: runtime.state().user_nvram.max_count,
         max_nv_counter: runtime.live.max_nv_counter,
         orderly_state: runtime.state().persistent.orderly_state,
-        orderly_ram: runtime
-            .live
-            .index_orderly_ram
-            .entries
-            .iter()
-            .map(|entry| (entry.handle, entry.attributes, entry.data.clone()))
-            .collect(),
+        orderly_ram: runtime.live.index_orderly_ram.clone(),
         nv_memory: runtime.nv_memory.clone(),
         permanent: persistent_all_store(runtime.state()).expect("the state serializes"),
     }

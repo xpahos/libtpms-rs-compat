@@ -277,7 +277,7 @@ mod tests {
     use crate::library::tpm2::command::core::registry::{self, TPM_CC_CREATE_LOADED};
     use crate::library::tpm2::golden_responses::create_loaded::vector;
     use crate::library::tpm2::process::process;
-    use crate::library::tpm2::{VolatileDecodeBoundary, restore_permanent_blob_for_test};
+    use crate::library::tpm2::restore_permanent_blob_for_test;
 
     const TPM_RH_OWNER_H: u32 = 0x4000_0001;
     const TPM_RH_NULL_H: u32 = 0x4000_0007;
@@ -490,13 +490,8 @@ mod tests {
     fn restored_runtime(clock: &SteppingClock) -> Tpm2Runtime {
         let mut runtime = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
             .expect("the oracle permanent state restores");
-        crate::library::tpm2::attach_volatile_blob(
-            &mut runtime,
-            vector("VOLATILE_BASE"),
-            clock,
-            VolatileDecodeBoundary::Restore,
-        )
-        .expect("the oracle volatile state attaches");
+        crate::library::tpm2::attach_volatile_blob(&mut runtime, vector("VOLATILE_BASE"), clock)
+            .expect("the oracle volatile state attaches");
         runtime.entropy = unreachable_entropy;
         runtime
     }
@@ -1182,13 +1177,8 @@ mod tests {
             let runtime = commit_restored_state(state).expect("the state commits");
             let context = volatile_validation_context(&runtime).expect("the context builds");
             let clock = SteppingClock::new(1_700_000_000_000, 4_000_000);
-            decode_volatile_blob(
-                &context,
-                vector(&format!("VOLATILE_{label}")),
-                &clock,
-                VolatileDecodeBoundary::Validate,
-            )
-            .expect("the volatile record decodes")
+            decode_volatile_blob(&context, vector(&format!("VOLATILE_{label}")), &clock)
+                .expect("the volatile record decodes")
         }
 
         fn object_images(objects: &[OwnedAnyObject]) -> Vec<Vec<u8>> {
@@ -1281,13 +1271,8 @@ mod tests {
                 let blob = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
                 let mut resumed = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
                     .expect("the permanent state restores");
-                crate::library::tpm2::attach_volatile_blob(
-                    &mut resumed,
-                    &blob,
-                    &clock,
-                    VolatileDecodeBoundary::Restore,
-                )
-                .expect("the saved volatile state attaches");
+                crate::library::tpm2::attach_volatile_blob(&mut resumed, &blob, &clock)
+                    .expect("the saved volatile state attaches");
                 exec(
                     &mut resumed,
                     &clock,
@@ -1459,13 +1444,8 @@ mod tests {
 
             let mut restored = restore_permanent_blob_for_test(vector("PERMALL_BASE"))
                 .expect("the permanent state restores");
-            crate::library::tpm2::attach_volatile_blob(
-                &mut restored,
-                &blob,
-                &clock,
-                VolatileDecodeBoundary::Restore,
-            )
-            .expect("the saved volatile state attaches");
+            crate::library::tpm2::attach_volatile_blob(&mut restored, &blob, &clock)
+                .expect("the saved volatile state attaches");
             assert_eq!(object_images(&restored.live.objects), images_before);
 
             exec(

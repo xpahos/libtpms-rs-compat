@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,11 +7,15 @@
 #include <string.h>
 #include <time.h>
 #include <dlfcn.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
 
 #include <libtpms/tpm_library.h>
 #include <libtpms/tpm_error.h>
+#include <libtpms/tpm_tis.h>
 
 struct nvram_entry {
     struct nvram_entry *next;
@@ -40,6 +45,58 @@ static uint32_t g_session_response_len;
 static uint32_t g_locality;
 static TPM_BOOL g_physical_presence;
 
+struct known_blob {
+    struct known_blob *next;
+    char *label;
+    unsigned char *data;
+    uint32_t length;
+};
+
+static int g_in_case;
+static TPM_RESULT g_io_init_result;
+static TPM_RESULT g_nvram_init_result;
+static TPM_RESULT g_permall_load_result;
+static TPM_RESULT g_volatile_load_result;
+static char *g_callback_log;
+static size_t g_callback_log_length;
+static uint32_t g_callback_count;
+static struct known_blob *g_known_blobs;
+
+static void die(int lineno, const char *fmt, ...);
+
+static void log_callback(const char *fmt, ...)
+{
+    char line[512];
+    va_list ap;
+    int written;
+    char *grown;
+
+    if (!g_in_case)
+        return;
+    va_start(ap, fmt);
+    written = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (written < 0 || (size_t)written >= sizeof(line))
+        die(0, "a callback log line does not fit");
+    grown = realloc(g_callback_log, g_callback_log_length + (size_t)written + 1);
+    if (!grown)
+        die(0, "out of memory");
+    g_callback_log = grown;
+    memcpy(g_callback_log + g_callback_log_length, line, (size_t)written);
+    g_callback_log_length += (size_t)written;
+    g_callback_log[g_callback_log_length++] = '\n';
+    g_callback_count++;
+}
+
+static const char *blob_label(const unsigned char *data, uint32_t length)
+{
+    struct known_blob *k;
+    for (k = g_known_blobs; k; k = k->next)
+        if (k->length == length && (length == 0 || memcmp(k->data, data, length) == 0))
+            return k->label;
+    return "new";
+}
+
 static struct nvram_entry *nvram_find(uint32_t tpm_number, const char *name)
 {
     struct nvram_entry *e;
@@ -49,26 +106,45 @@ static struct nvram_entry *nvram_find(uint32_t tpm_number, const char *name)
     return NULL;
 }
 
+static TPM_RESULT load_result(const char *name)
+{
+    if (strcmp(name, "permall") == 0)
+        return g_permall_load_result;
+    if (strcmp(name, "volatilestate") == 0)
+        return g_volatile_load_result;
+    return TPM_SUCCESS;
+}
+
 static TPM_RESULT cb_nvram_init(void)
 {
-    return TPM_SUCCESS;
+    log_callback("tpm_nvram_init -> 0x%x", g_nvram_init_result);
+    return g_nvram_init_result;
 }
 
 static TPM_RESULT cb_nvram_loaddata(unsigned char **data, uint32_t *length,
                                     uint32_t tpm_number, const char *name)
 {
     struct nvram_entry *e = nvram_find(tpm_number, name);
+    TPM_RESULT failure = load_result(name);
 
     *data = NULL;
     *length = 0;
-    if (!e)
+    if (failure != TPM_SUCCESS) {
+        log_callback("tpm_nvram_loaddata(%s) -> 0x%x", name, failure);
+        return failure;
+    }
+    if (!e) {
+        log_callback("tpm_nvram_loaddata(%s) -> 0x%x", name, TPM_RETRY);
         return TPM_RETRY;
+    }
 
     *data = malloc(e->length ? e->length : 1);
     if (!*data)
         return TPM_SIZE;
     memcpy(*data, e->data, e->length);
     *length = e->length;
+    log_callback("tpm_nvram_loaddata(%s) -> 0x0 len=%u content=%s", name,
+                 (unsigned)e->length, blob_label(e->data, e->length));
     return TPM_SUCCESS;
 }
 
@@ -79,6 +155,8 @@ static TPM_RESULT cb_nvram_storedata(const unsigned char *data,
     struct nvram_entry *e = nvram_find(tpm_number, name);
     unsigned char *copy;
 
+    log_callback("tpm_nvram_storedata(%s) len=%u content=%s", name,
+                 (unsigned)length, blob_label(data, length));
     if (g_store_fails)
         return TPM_FAIL;
 
@@ -114,6 +192,7 @@ static TPM_RESULT cb_nvram_deletename(uint32_t tpm_number, const char *name,
                                       TPM_BOOL mustExist)
 {
     struct nvram_entry **pp;
+    log_callback("tpm_nvram_deletename(%s) must_exist=%d", name, mustExist ? 1 : 0);
     for (pp = &g_nvram; *pp; pp = &(*pp)->next) {
         if ((*pp)->tpm_number == tpm_number &&
             strcmp((*pp)->name, name) == 0) {
@@ -130,13 +209,15 @@ static TPM_RESULT cb_nvram_deletename(uint32_t tpm_number, const char *name,
 
 static TPM_RESULT cb_io_init(void)
 {
-    return TPM_SUCCESS;
+    log_callback("tpm_io_init -> 0x%x", g_io_init_result);
+    return g_io_init_result;
 }
 
 static TPM_RESULT cb_io_getlocality(TPM_MODIFIER_INDICATOR *localityModifier,
                                     uint32_t tpm_number)
 {
     (void)tpm_number;
+    log_callback("tpm_io_getlocality");
     *localityModifier = g_locality;
     return TPM_SUCCESS;
 }
@@ -152,6 +233,7 @@ static TPM_RESULT cb_io_getphysicalpresence(TPM_BOOL *physicalPresence,
 struct snapshot {
     struct snapshot *next;
     char *name;
+    int recorded;
     unsigned char *permanent;
     uint32_t permanent_len;
     unsigned char *volatil;
@@ -293,24 +375,9 @@ static void run_command(int lineno, const char *hex, const char *print_name)
         print_hex(print_name, resp, resp_size);
 }
 
-int main(int argc, char **argv)
+static TPM_RESULT register_callbacks(void)
 {
-    FILE *fp;
-    char line[65536];
-    char label[256];
-    int lineno = 0;
-    TPM_RESULT res;
     struct libtpms_callbacks cbs;
-
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <scenario-file>\n", argv[0]);
-        return 2;
-    }
-    fp = fopen(argv[1], "r");
-    if (!fp) {
-        fprintf(stderr, "runner: cannot open %s\n", argv[1]);
-        return 2;
-    }
 
     memset(&cbs, 0, sizeof(cbs));
     cbs.sizeOfStruct = sizeof(cbs);
@@ -321,8 +388,601 @@ int main(int argc, char **argv)
     cbs.tpm_io_init = cb_io_init;
     cbs.tpm_io_getlocality = cb_io_getlocality;
     cbs.tpm_io_getphysicalpresence = cb_io_getphysicalpresence;
+    return TPMLIB_RegisterCallbacks(&cbs);
+}
 
-    res = TPMLIB_RegisterCallbacks(&cbs);
+static char *next_token(char **cursor)
+{
+    char *start = *cursor;
+    char *end;
+
+    while (*start == ' ' || *start == '\t')
+        start++;
+    if (*start == '\0') {
+        *cursor = start;
+        return start;
+    }
+    end = start;
+    while (*end != '\0' && *end != ' ' && *end != '\t')
+        end++;
+    if (*end != '\0')
+        *end++ = '\0';
+    *cursor = end;
+    return start;
+}
+
+static void no_more_tokens(int lineno, const char *op, char **cursor)
+{
+    if (*next_token(cursor) != '\0')
+        die(lineno, "%s: unexpected trailing argument", op);
+}
+
+static const char *case_record(int lineno, const char *op, char **cursor)
+{
+    const char *name = next_token(cursor);
+    record_name(lineno, op, name, 0, 256);
+    return name;
+}
+
+static enum TPMLIB_StateType state_type(int lineno, const char *op, const char *kind)
+{
+    if (strcmp(kind, "permanent") == 0)
+        return TPMLIB_STATE_PERMANENT;
+    if (strcmp(kind, "volatile") == 0)
+        return TPMLIB_STATE_VOLATILE;
+    die(lineno, "%s: '%s' is neither permanent nor volatile", op, kind);
+    return TPMLIB_STATE_PERMANENT;
+}
+
+static const char *nvram_name(int lineno, const char *op, const char *name)
+{
+    if (strcmp(name, "permall") != 0 && strcmp(name, "volatilestate") != 0)
+        die(lineno, "%s: '%s' is neither permall nor volatilestate", op, name);
+    return name;
+}
+
+static void remember_blob(const char *label, const unsigned char *data,
+                          uint32_t length)
+{
+    struct known_blob **tail = &g_known_blobs;
+    struct known_blob *k;
+
+    for (k = g_known_blobs; k; k = k->next) {
+        if (strcmp(k->label, label) == 0)
+            return;
+        tail = &k->next;
+    }
+    k = calloc(1, sizeof(*k));
+    if (!k || !(k->label = strdup(label)) || !(k->data = malloc(length ? length : 1)))
+        die(0, "out of memory");
+    memcpy(k->data, data, length);
+    k->length = length;
+    *tail = k;
+}
+
+static unsigned char *resolve_blob(int lineno, const char *op, const char *ref,
+                                   uint32_t *length)
+{
+    char name[256];
+    char *modifier;
+    const char *snapshot_name;
+    const unsigned char *source;
+    unsigned char *blob;
+    unsigned long amount = 0;
+    struct snapshot *s;
+    int permanent;
+
+    if (strlen(ref) >= sizeof(name))
+        die(lineno, "%s: blob '%s' is too long", op, ref);
+    strcpy(name, ref);
+    modifier = strchr(name, '@');
+    if (modifier)
+        *modifier++ = '\0';
+    if (strncmp(name, "PERMALL_", 8) == 0) {
+        permanent = 1;
+        snapshot_name = name + 8;
+    } else if (strncmp(name, "VOLATILE_", 9) == 0) {
+        permanent = 0;
+        snapshot_name = name + 9;
+    } else {
+        die(lineno, "%s: blob '%s' names no snapshot record", op, ref);
+        return NULL;
+    }
+    s = snapshot_find(snapshot_name);
+    if (!s)
+        die(lineno, "%s: no snapshot named '%s'", op, snapshot_name);
+    source = permanent ? s->permanent : s->volatil;
+    *length = permanent ? s->permanent_len : s->volatil_len;
+    blob = malloc(*length ? *length : 1);
+    if (!blob)
+        die(lineno, "out of memory");
+    memcpy(blob, source, *length);
+    while (modifier) {
+        char *next = strchr(modifier, '@');
+        if (next)
+            *next++ = '\0';
+        if (strncmp(modifier, "head=", 5) == 0) {
+            amount = parse_number(lineno, op, modifier + 5, *length);
+            *length = (uint32_t)amount;
+        } else if (strncmp(modifier, "drop=", 5) == 0) {
+            amount = parse_number(lineno, op, modifier + 5, *length);
+            *length -= (uint32_t)amount;
+        } else if (strncmp(modifier, "flip=", 5) == 0) {
+            amount = parse_number(lineno, op, modifier + 5, UINT32_MAX);
+            if (amount >= *length)
+                die(lineno, "%s: byte %lu is outside the %u-byte blob", op, amount,
+                    (unsigned)*length);
+            blob[amount] ^= 0xff;
+        } else if (strncmp(modifier, "flip-end=", 9) == 0) {
+            amount = parse_number(lineno, op, modifier + 9, *length);
+            if (amount == 0)
+                die(lineno, "%s: flip-end counts from 1", op);
+            blob[*length - amount] ^= 0xff;
+        } else if (strncmp(modifier, "set=", 4) == 0) {
+            char *bytes_hex = strchr(modifier + 4, ':');
+            unsigned char *bytes;
+            uint32_t count = 0;
+            if (!bytes_hex)
+                die(lineno, "%s: set needs N:HEX", op);
+            *bytes_hex++ = '\0';
+            amount = parse_number(lineno, op, modifier + 4, *length);
+            bytes = hex_decode(bytes_hex, &count);
+            if (!bytes || count == 0 || count > *length - amount)
+                die(lineno, "%s: set=%lu:%s does not fit the %u-byte blob", op, amount,
+                    bytes_hex, (unsigned)*length);
+            memcpy(blob + amount, bytes, count);
+            free(bytes);
+        } else if (strcmp(modifier, "sha1") == 0) {
+            if (*length < SHA_DIGEST_LENGTH)
+                die(lineno, "%s: a %u-byte blob has no SHA-1 trailer", op,
+                    (unsigned)*length);
+            SHA1(blob, *length - SHA_DIGEST_LENGTH, blob + *length - SHA_DIGEST_LENGTH);
+        } else {
+            die(lineno, "%s: unknown blob modifier '%s'", op, modifier);
+        }
+        modifier = next;
+    }
+    remember_blob(ref, blob, *length);
+    return blob;
+}
+
+static void nvram_put(const char *name, unsigned char *data, uint32_t length)
+{
+    struct nvram_entry *e = nvram_find(0, name);
+
+    if (!e) {
+        e = calloc(1, sizeof(*e));
+        if (!e || !(e->name = strdup(name)))
+            die(0, "out of memory");
+        e->next = g_nvram;
+        g_nvram = e;
+    } else {
+        free(e->data);
+    }
+    e->data = data;
+    e->length = length;
+}
+
+static void print_result(const char *name, TPM_RESULT res)
+{
+    unsigned char out[4];
+
+    put32(out, res);
+    print_hex(name, out, sizeof(out));
+}
+
+static void print_status_blob(int lineno, const char *name, TPM_RESULT res,
+                              unsigned char *blob, uint32_t length)
+{
+    unsigned char *out;
+    uint32_t used = 5;
+
+    if (res == TPM_SUCCESS && !blob && length != 0)
+        die(lineno, "%s: no buffer for %u bytes", name, (unsigned)length);
+    if (!blob)
+        length = 0;
+    out = malloc((size_t)length + 5);
+    if (!out)
+        die(lineno, "out of memory");
+    put32(out, res);
+    out[4] = blob != NULL;
+    if (blob) {
+        memcpy(out + 5, blob, length);
+        used += length;
+    }
+    print_hex(name, out, used);
+    free(out);
+    free(blob);
+}
+
+static void case_process(int lineno, const char *name, const char *hex)
+{
+    unsigned char *resp = NULL;
+    unsigned char *cmd;
+    unsigned char *record;
+    uint32_t resp_size = 0, respbufsize = 0, cmd_len;
+    TPM_RESULT res;
+
+    cmd = hex_decode(hex, &cmd_len);
+    if (!cmd || cmd_len == 0)
+        die(lineno, "bad command hex '%s'", hex);
+    res = TPMLIB_Process(&resp, &resp_size, &respbufsize, cmd, cmd_len);
+    free(cmd);
+    if (res != TPM_SUCCESS) {
+        free(resp);
+        print_result(name, res);
+        return;
+    }
+    if (!resp && resp_size != 0)
+        die(lineno, "%s: TPMLIB_Process returned no buffer for %u bytes", name,
+            (unsigned)resp_size);
+    if (resp && resp_size > respbufsize)
+        die(lineno, "%s: TPMLIB_Process returned %u bytes in a %u-byte buffer", name,
+            (unsigned)resp_size, (unsigned)respbufsize);
+    record = malloc((size_t)resp_size + 4);
+    if (!record)
+        die(lineno, "out of memory");
+    put32(record, res);
+    if (resp_size)
+        memcpy(record + 4, resp, resp_size);
+    print_hex(name, record, resp_size + 4);
+    free(record);
+    free(resp);
+}
+
+static void run_case_op(int lineno, char *p)
+{
+    char *cursor;
+    const char *name;
+    unsigned char *blob;
+    uint32_t length = 0;
+    TPM_RESULT res;
+
+    if (strcmp(p, "terminate") == 0) {
+        TPMLIB_Terminate();
+    } else if (strncmp(p, "main-init ", 10) == 0) {
+        cursor = p + 10;
+        name = case_record(lineno, "main-init", &cursor);
+        no_more_tokens(lineno, "main-init", &cursor);
+        print_result(name, TPMLIB_MainInit());
+    } else if (strncmp(p, "set-state ", 10) == 0) {
+        enum TPMLIB_StateType type;
+        const char *ref;
+        cursor = p + 10;
+        name = case_record(lineno, "set-state", &cursor);
+        type = state_type(lineno, "set-state", next_token(&cursor));
+        ref = next_token(&cursor);
+        no_more_tokens(lineno, "set-state", &cursor);
+        blob = resolve_blob(lineno, "set-state", ref, &length);
+        res = TPMLIB_SetState(type, blob, length);
+        free(blob);
+        print_result(name, res);
+    } else if (strncmp(p, "get-state ", 10) == 0) {
+        enum TPMLIB_StateType type;
+        cursor = p + 10;
+        name = case_record(lineno, "get-state", &cursor);
+        type = state_type(lineno, "get-state", next_token(&cursor));
+        no_more_tokens(lineno, "get-state", &cursor);
+        blob = NULL;
+        res = TPMLIB_GetState(type, &blob, &length);
+        print_status_blob(lineno, name, res, blob, length);
+    } else if (strncmp(p, "volatile-all-store ", 19) == 0) {
+        cursor = p + 19;
+        name = case_record(lineno, "volatile-all-store", &cursor);
+        no_more_tokens(lineno, "volatile-all-store", &cursor);
+        blob = NULL;
+        res = TPMLIB_VolatileAll_Store(&blob, &length);
+        print_status_blob(lineno, name, res, blob, length);
+    } else if (strncmp(p, "set-profile ", 12) == 0) {
+        cursor = p + 12;
+        name = case_record(lineno, "set-profile", &cursor);
+        while (*cursor == ' ' || *cursor == '\t')
+            cursor++;
+        if (*cursor == '\0')
+            die(lineno, "set-profile needs a profile");
+        print_result(name, TPMLIB_SetProfile(cursor));
+    } else if (strncmp(p, "process ", 8) == 0) {
+        const char *hex;
+        cursor = p + 8;
+        name = case_record(lineno, "process", &cursor);
+        hex = next_token(&cursor);
+        no_more_tokens(lineno, "process", &cursor);
+        case_process(lineno, name, hex);
+    } else if (strncmp(p, "was-manufactured ", 17) == 0) {
+        unsigned char manufactured;
+        cursor = p + 17;
+        name = case_record(lineno, "was-manufactured", &cursor);
+        no_more_tokens(lineno, "was-manufactured", &cursor);
+        manufactured = TPMLIB_WasManufactured() ? 1 : 0;
+        print_hex(name, &manufactured, 1);
+    } else if (strncmp(p, "established ", 12) == 0) {
+        unsigned char out[5];
+        TPM_BOOL established = 0xee;
+        cursor = p + 12;
+        name = case_record(lineno, "established", &cursor);
+        no_more_tokens(lineno, "established", &cursor);
+        res = TPM_IO_TpmEstablished_Get(&established);
+        put32(out, res);
+        out[4] = (unsigned char)established;
+        print_hex(name, out, sizeof(out));
+    } else if (strncmp(p, "established-reset ", 18) == 0) {
+        cursor = p + 18;
+        name = case_record(lineno, "established-reset", &cursor);
+        no_more_tokens(lineno, "established-reset", &cursor);
+        print_result(name, TPM_IO_TpmEstablished_Reset());
+    } else if (strncmp(p, "hash-start ", 11) == 0) {
+        cursor = p + 11;
+        name = case_record(lineno, "hash-start", &cursor);
+        no_more_tokens(lineno, "hash-start", &cursor);
+        print_result(name, TPM_IO_Hash_Start());
+    } else if (strncmp(p, "hash-data ", 10) == 0) {
+        const char *hex;
+        cursor = p + 10;
+        name = case_record(lineno, "hash-data", &cursor);
+        hex = next_token(&cursor);
+        no_more_tokens(lineno, "hash-data", &cursor);
+        blob = hex_decode(hex, &length);
+        if (!blob || length == 0)
+            die(lineno, "bad hash-data hex '%s'", hex);
+        res = TPM_IO_Hash_Data(blob, length);
+        free(blob);
+        print_result(name, res);
+    } else if (strncmp(p, "hash-end ", 9) == 0) {
+        cursor = p + 9;
+        name = case_record(lineno, "hash-end", &cursor);
+        no_more_tokens(lineno, "hash-end", &cursor);
+        print_result(name, TPM_IO_Hash_End());
+    } else if (strncmp(p, "nvram-put ", 10) == 0) {
+        const char *target, *ref;
+        cursor = p + 10;
+        target = nvram_name(lineno, "nvram-put", next_token(&cursor));
+        ref = next_token(&cursor);
+        no_more_tokens(lineno, "nvram-put", &cursor);
+        blob = resolve_blob(lineno, "nvram-put", ref, &length);
+        nvram_put(target, blob, length);
+    } else if (strncmp(p, "load-fails ", 11) == 0) {
+        const char *target;
+        TPM_RESULT code;
+        cursor = p + 11;
+        target = nvram_name(lineno, "load-fails", next_token(&cursor));
+        code = (TPM_RESULT)parse_number(lineno, "load-fails", next_token(&cursor),
+                                        UINT32_MAX);
+        if (strcmp(target, "permall") == 0)
+            g_permall_load_result = code;
+        else
+            g_volatile_load_result = code;
+    } else if (strncmp(p, "io-init ", 8) == 0) {
+        g_io_init_result = (TPM_RESULT)parse_number(lineno, "io-init", p + 8, UINT32_MAX);
+    } else if (strncmp(p, "nvram-init ", 11) == 0) {
+        g_nvram_init_result =
+            (TPM_RESULT)parse_number(lineno, "nvram-init", p + 11, UINT32_MAX);
+    } else if (strncmp(p, "callbacks ", 10) == 0) {
+        unsigned char *record;
+        cursor = p + 10;
+        name = case_record(lineno, "callbacks", &cursor);
+        no_more_tokens(lineno, "callbacks", &cursor);
+        record = malloc(g_callback_log_length + 4);
+        if (!record)
+            die(lineno, "out of memory");
+        put32(record, g_callback_count);
+        if (g_callback_log_length)
+            memcpy(record + 4, g_callback_log, g_callback_log_length);
+        print_hex(name, record, (uint32_t)g_callback_log_length + 4);
+        free(record);
+        free(g_callback_log);
+        g_callback_log = NULL;
+        g_callback_log_length = 0;
+        g_callback_count = 0;
+    } else {
+        die(lineno, "unknown case op '%s'", p);
+    }
+}
+
+static void write_all(int fd, const void *data, size_t length)
+{
+    const unsigned char *at = data;
+
+    while (length) {
+        ssize_t written = write(fd, at, length);
+        if (written < 0 && errno == EINTR)
+            continue;
+        if (written <= 0)
+            die(0, "cannot hand the snapshots to a case: %s", strerror(errno));
+        at += written;
+        length -= (size_t)written;
+    }
+}
+
+static void write_chunk(int fd, const void *data, uint32_t length)
+{
+    unsigned char size[4];
+
+    put32(size, length);
+    write_all(fd, size, sizeof(size));
+    write_all(fd, data, length);
+}
+
+static unsigned char *read_chunk(FILE *in, uint32_t *length)
+{
+    unsigned char size[4];
+    unsigned char *data;
+
+    if (fread(size, 1, sizeof(size), in) != sizeof(size))
+        die(0, "the snapshot stream ends early");
+    *length = ((uint32_t)size[0] << 24) | ((uint32_t)size[1] << 16)
+              | ((uint32_t)size[2] << 8) | size[3];
+    data = malloc(*length ? *length : 1);
+    if (!data)
+        die(0, "out of memory");
+    if (*length && fread(data, 1, *length, in) != *length)
+        die(0, "the snapshot stream ends early");
+    return data;
+}
+
+static void send_snapshots(int fd)
+{
+    struct snapshot *s;
+
+    for (s = g_snapshots; s; s = s->next) {
+        if (!s->recorded)
+            continue;
+        write_chunk(fd, s->name, (uint32_t)strlen(s->name));
+        write_chunk(fd, s->permanent, s->permanent_len);
+        write_chunk(fd, s->volatil, s->volatil_len);
+    }
+    write_chunk(fd, "", 0);
+}
+
+static void receive_snapshots(FILE *in)
+{
+    for (;;) {
+        uint32_t name_len;
+        unsigned char *name = read_chunk(in, &name_len);
+        struct snapshot *s;
+
+        if (name_len == 0) {
+            free(name);
+            return;
+        }
+        s = calloc(1, sizeof(*s));
+        if (!s || !(s->name = calloc(1, (size_t)name_len + 1)))
+            die(0, "out of memory");
+        memcpy(s->name, name, name_len);
+        free(name);
+        s->recorded = 1;
+        s->permanent = read_chunk(in, &s->permanent_len);
+        s->volatil = read_chunk(in, &s->volatil_len);
+        s->next = g_snapshots;
+        g_snapshots = s;
+    }
+}
+
+static void spawn_case(int lineno, const char *name, const char *scenario)
+{
+    char line_text[32];
+    int fds[2];
+    int status;
+    pid_t pid;
+
+    if (*name == '\0')
+        die(lineno, "case needs a name");
+    fflush(stdout);
+    fflush(stderr);
+    if (pipe(fds) != 0)
+        die(lineno, "pipe: %s", strerror(errno));
+    pid = fork();
+    if (pid < 0)
+        die(lineno, "fork: %s", strerror(errno));
+    if (pid == 0) {
+        close(fds[1]);
+        if (dup2(fds[0], STDIN_FILENO) < 0)
+            _exit(126);
+        close(fds[0]);
+        snprintf(line_text, sizeof(line_text), "%d", lineno);
+        execl("/proc/self/exe", "golden-runner", "--case", scenario, line_text,
+              (char *)NULL);
+        fprintf(stderr, "runner: line %d: exec: %s\n", lineno, strerror(errno));
+        _exit(127);
+    }
+    close(fds[0]);
+    send_snapshots(fds[1]);
+    close(fds[1]);
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR)
+            die(lineno, "waitpid: %s", strerror(errno));
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        die(lineno, "case %s failed (wait status 0x%x)", name, status);
+}
+
+static int read_line(FILE *fp, char *line, size_t capacity, int *lineno, char **op)
+{
+    char *p = line;
+    char *nl;
+
+    for (;;) {
+        if (!fgets(line, (int)capacity, fp))
+            return 0;
+        (*lineno)++;
+        nl = strchr(line, '\n');
+        if (!nl && !feof(fp))
+            die(*lineno, "line too long");
+        if (nl)
+            *nl = '\0';
+        p = line;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (*p != '\0' && *p != '#') {
+            *op = p;
+            return 1;
+        }
+    }
+}
+
+static int run_case(const char *scenario, const char *line_text)
+{
+    static char line[65536];
+    unsigned long target;
+    int lineno = 0;
+    char *p = NULL;
+    TPM_RESULT res;
+    FILE *fp;
+
+    receive_snapshots(stdin);
+    target = parse_number(0, "--case", line_text, 1000000);
+    fp = fopen(scenario, "r");
+    if (!fp)
+        die(0, "cannot open %s", scenario);
+    while ((unsigned long)lineno < target) {
+        if (!read_line(fp, line, sizeof(line), &lineno, &p))
+            die(lineno, "the scenario ends before line %lu", target);
+    }
+    if ((unsigned long)lineno != target || strncmp(p, "case ", 5) != 0)
+        die(lineno, "line %lu does not open a case", target);
+
+    res = TPMLIB_ChooseTPMVersion(TPMLIB_TPM_VERSION_2);
+    if (res != TPM_SUCCESS)
+        die(lineno, "TPMLIB_ChooseTPMVersion failed: 0x%x", res);
+    res = register_callbacks();
+    if (res != TPM_SUCCESS)
+        die(lineno, "TPMLIB_RegisterCallbacks failed: 0x%x", res);
+    g_in_case = 1;
+
+    while (read_line(fp, line, sizeof(line), &lineno, &p)) {
+        if (strcmp(p, "end-case") == 0) {
+            fclose(fp);
+            fflush(stdout);
+            return 0;
+        }
+        run_case_op(lineno, p);
+    }
+    die(lineno, "the case is not closed");
+    return 1;
+}
+
+int main(int argc, char **argv)
+{
+    FILE *fp;
+    char line[65536];
+    char label[256];
+    int lineno = 0;
+    int skipping = 0;
+    TPM_RESULT res;
+
+    if (argc == 4 && strcmp(argv[1], "--case") == 0)
+        return run_case(argv[2], argv[3]);
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s <scenario-file>\n", argv[0]);
+        return 2;
+    }
+    fp = fopen(argv[1], "r");
+    if (!fp) {
+        fprintf(stderr, "runner: cannot open %s\n", argv[1]);
+        return 2;
+    }
+    signal(SIGPIPE, SIG_IGN);
+
+    res = register_callbacks();
     if (res != TPM_SUCCESS)
         die(0, "TPMLIB_RegisterCallbacks failed: 0x%x", res);
 
@@ -346,6 +1006,17 @@ int main(int argc, char **argv)
             p++;
         if (*p == '\0' || *p == '#')
             continue;
+
+        if (skipping) {
+            if (strcmp(p, "end-case") == 0)
+                skipping = 0;
+            continue;
+        }
+        if (strncmp(p, "case ", 5) == 0) {
+            spawn_case(lineno, p + 5, argv[1]);
+            skipping = 1;
+            continue;
+        }
 
         if (strncmp(p, "profile ", 8) == 0) {
             TPMLIB_Terminate();
@@ -541,6 +1212,9 @@ int main(int argc, char **argv)
             record_name(lineno, quiet ? "checkpoint" : "snapshot", name,
                         strlen("VOLATILE_"), sizeof(label));
             s = snapshot_find(name);
+            if (s && quiet && s->recorded)
+                die(lineno, "checkpoint %s would overwrite the recorded snapshot %s",
+                    name, name);
             if (!s) {
                 s = calloc(1, sizeof(*s));
                 if (!s || !(s->name = strdup(name)))
@@ -563,6 +1237,7 @@ int main(int argc, char **argv)
                 die(lineno, "GetState(VOLATILE, %s) failed: 0x%x",
                     name, res);
             if (!quiet) {
+                s->recorded = 1;
                 snprintf(label, sizeof(label), "PERMALL_%s", name);
                 print_hex(label, s->permanent, s->permanent_len);
                 snprintf(label, sizeof(label), "VOLATILE_%s", name);
@@ -600,6 +1275,8 @@ int main(int argc, char **argv)
         }
     }
 
+    if (skipping)
+        die(lineno, "the last case is not closed");
     fclose(fp);
     TPMLIB_Terminate();
     return 0;

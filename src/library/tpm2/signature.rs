@@ -143,7 +143,7 @@ fn object_scheme(body: &OwnedObjectBody) -> Option<Scheme> {
     match &body.public.parameters {
         PublicParms::Rsa { scheme, .. } | PublicParms::Ecc { scheme, .. } => Some(*scheme),
         PublicParms::KeyedHash(scheme) => Some(*scheme),
-        PublicParms::SymCipher(_) => None,
+        PublicParms::SymCipher(_) | PublicParms::Unselected => None,
     }
 }
 

@@ -116,9 +116,12 @@ fn apply_global_lock(runtime: &mut Tpm2Runtime) -> Result<(), TpmResult> {
         write_index_attributes(runtime, &resolved, attributes | TPMA_NV_WRITELOCKED)?;
     }
 
-    for entry in &mut runtime.live.index_orderly_ram.entries {
-        if entry.attributes & TPMA_NV_GLOBALLOCK != 0 {
-            entry.attributes |= TPMA_NV_WRITELOCKED;
+    let ram = &mut runtime.live.index_orderly_ram;
+    let entries: Vec<_> = ram.entries().collect();
+    for entry in entries {
+        let attributes = ram.attributes(entry);
+        if attributes & TPMA_NV_GLOBALLOCK != 0 {
+            ram.set_attributes(entry, attributes | TPMA_NV_WRITELOCKED);
         }
     }
     Ok(())
@@ -428,14 +431,14 @@ mod tests {
             RC_SUCCESS
         );
         assert_ne!(
-            runtime.live.index_orderly_ram.entries[0].attributes & TPMA_NV_WRITELOCKED,
+            runtime.live.index_orderly_ram.views()[0].attributes & TPMA_NV_WRITELOCKED,
             0
         );
         assert_eq!(
             response_code(&write(&mut runtime, INDEX, &DATA8)),
             RC_NV_LOCKED
         );
-        let stored = &runtime.state().index_orderly_ram.entries[0];
+        let stored = &runtime.state().index_orderly_ram.views()[0];
         assert_eq!(
             stored.attributes & TPMA_NV_WRITELOCKED,
             0,

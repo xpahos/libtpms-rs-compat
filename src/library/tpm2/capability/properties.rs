@@ -1,5 +1,4 @@
 use super::super::live::LiveState;
-use super::super::nv::RAM_INDEX_SPACE;
 use super::super::orderly::SU_NONE_VALUE;
 use super::super::persistent::{OwnedPersistentState, OwnedUserNvramEntry};
 use super::super::runtime::Tpm2Runtime;
@@ -399,7 +398,7 @@ fn nv_counter_avail(state: &OwnedPersistentState, live: &LiveState) -> u32 {
             + (u64::from(MIN_EVICT_OBJECTS) - persistent_num) * NV_EVICT_OBJECT_SIZE;
         avail_nv_space = avail_nv_space.saturating_sub(reserved);
     }
-    let avail_ram_space = RAM_INDEX_SPACE.saturating_sub(live.index_orderly_ram.used_bytes);
+    let avail_ram_space = u64::from(live.index_orderly_ram.available());
     (avail_nv_space / NV_INDEX_COUNTER_SIZE).min(avail_ram_space / NV_RAM_INDEX_COUNTER_SIZE) as u32
 }
 
@@ -410,6 +409,7 @@ mod tests {
     use crate::library::cancel::CancellationToken;
     use crate::library::tpm2::command::{dispatch, parse_command};
     use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::nv::OrderlyRamImage;
     use crate::library::tpm2::persistent::{
         OwnedAnyObject, OwnedAnyObjectBody, OwnedNvIndex, OwnedSecret, OwnedUserNvramEntry,
     };
@@ -869,14 +869,18 @@ mod tests {
         let mut runtime = started_runtime();
         assert_eq!(value(&runtime, TPM_PT_NV_COUNTERS_AVAIL), 25);
 
-        runtime.live.index_orderly_ram.used_bytes = 100;
+        runtime
+            .live
+            .index_orderly_ram
+            .add(0x0100_0001, 0, 88)
+            .unwrap();
         assert_eq!(
             value(&runtime, TPM_PT_NV_COUNTERS_AVAIL),
             20,
             "(512 - 100) / 20"
         );
 
-        runtime.live.index_orderly_ram.used_bytes = 0;
+        runtime.live.index_orderly_ram = OrderlyRamImage::zeroed();
         for index in 0..7 {
             runtime
                 .state

@@ -940,9 +940,7 @@ mod tracking_tests {
     fn saved_session_state_round_trip() {
         use crate::library::tpm2::persistent::persistent_all_store;
         use crate::library::tpm2::volatile::volatile_all_store;
-        use crate::library::tpm2::{
-            VolatileDecodeBoundary, attach_volatile_blob, restore_permanent_blob_for_test,
-        };
+        use crate::library::tpm2::{attach_volatile_blob, restore_permanent_blob_for_test};
 
         let clock = clock();
         let mut runtime = runtime_at("READY", &clock);
@@ -955,13 +953,8 @@ mod tracking_tests {
         let volatile = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
         let mut restored =
             restore_permanent_blob_for_test(&permanent).expect("the permanent state restores");
-        attach_volatile_blob(
-            &mut restored,
-            &volatile,
-            &clock,
-            VolatileDecodeBoundary::Restore,
-        )
-        .expect("the volatile state attaches");
+        attach_volatile_blob(&mut restored, &volatile, &clock)
+            .expect("the volatile state attaches");
 
         assert_eq!(context_array(&restored), context_array(&runtime));
         assert_eq!(context_counter(&restored), context_counter(&runtime));

@@ -1095,8 +1095,8 @@ mod tests {
             1
         );
         assert_eq!(
-            runtime.state().index_orderly_ram.entries[0].data,
-            runtime.live.index_orderly_ram.entries[0].data,
+            runtime.state().index_orderly_ram.views()[0].data,
+            runtime.live.index_orderly_ram.views()[0].data,
             "the first write of an orderly counter is written back to NV"
         );
     }

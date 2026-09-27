@@ -749,8 +749,8 @@ mod tests {
 
     #[test]
     fn restored_running_timer_no_epoch_roll() {
+        use crate::library::tpm2::attach_volatile_blob;
         use crate::library::tpm2::volatile::volatile_all_store;
-        use crate::library::tpm2::{VolatileDecodeBoundary, attach_volatile_blob};
 
         let host = SteppingClock::new(1_600_000_000_000, 5_000_000);
         let mut runtime = manufactured_runtime();
@@ -760,8 +760,7 @@ mod tests {
 
         let mut restored = manufactured_runtime();
         host.advance(50);
-        attach_volatile_blob(&mut restored, &blob, &host, VolatileDecodeBoundary::Restore)
-            .expect("restores");
+        attach_volatile_blob(&mut restored, &blob, &host).expect("restores");
         assert!(!restored.timer.timer_stopped);
         assert_eq!(epoch(&restored), 0);
 
@@ -778,8 +777,8 @@ mod tests {
 
     #[test]
     fn restored_stopped_timer_single_epoch_roll() {
+        use crate::library::tpm2::attach_volatile_blob;
         use crate::library::tpm2::volatile::volatile_all_store;
-        use crate::library::tpm2::{VolatileDecodeBoundary, attach_volatile_blob};
 
         let host = SteppingClock::new(1_600_000_000_000, 5_000_000);
         let mut runtime = manufactured_runtime();
@@ -790,8 +789,7 @@ mod tests {
 
         let mut restored = manufactured_runtime();
         host.advance(50);
-        attach_volatile_blob(&mut restored, &blob, &host, VolatileDecodeBoundary::Restore)
-            .expect("restores");
+        attach_volatile_blob(&mut restored, &blob, &host).expect("restores");
         assert!(
             restored.timer.timer_stopped,
             "the blob carries the stopped flag"

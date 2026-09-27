@@ -350,18 +350,18 @@ mod tests {
             TPM_RH_OWNER,
             &nv_public(0x0100_0002, READ_WRITE | TPMA_NV_ORDERLY, 8),
         );
-        assert_eq!(runtime.live.index_orderly_ram.entries.len(), 2);
+        assert_eq!(runtime.live.index_orderly_ram.views().len(), 2);
         assert_eq!(
             response_code(&undefine(&mut runtime, TPM_RH_OWNER, INDEX)),
             RC_SUCCESS
         );
-        assert_eq!(runtime.live.index_orderly_ram.entries.len(), 1);
+        assert_eq!(runtime.live.index_orderly_ram.views().len(), 1);
         assert_eq!(
-            runtime.live.index_orderly_ram.entries[0].handle,
+            runtime.live.index_orderly_ram.views()[0].handle,
             0x0100_0002
         );
         assert_eq!(
-            runtime.state().index_orderly_ram.entries.len(),
+            runtime.state().index_orderly_ram.views().len(),
             1,
             "the RAM image is written back to NV"
         );

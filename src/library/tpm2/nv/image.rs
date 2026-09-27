@@ -2,6 +2,7 @@ use crate::library::constants::TPM_FAIL;
 use crate::types::TpmResult;
 
 use super::layout;
+use super::ram_image::OrderlyRamImage;
 use crate::library::tpm2::hierarchy::{
     TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
 };
@@ -16,8 +17,8 @@ use crate::library::tpm2::object::{
 };
 use crate::library::tpm2::persistent::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedBnPrime, OwnedCommandBitmap, OwnedHashObjectBody,
-    OwnedHashPayload, OwnedHashState, OwnedIndexOrderlyRam, OwnedNvIndex, OwnedObjectBody,
-    OwnedOrderlyData, OwnedPcrAllocation, OwnedPersistentData, OwnedPersistentState, OwnedPublicId,
+    OwnedHashPayload, OwnedHashState, OwnedNvIndex, OwnedObjectBody, OwnedOrderlyData,
+    OwnedPcrAllocation, OwnedPersistentData, OwnedPersistentState, OwnedPublicId,
     OwnedStateClearData, OwnedStateResetData, OwnedTpmtPublic, OwnedTpmtSensitive, OwnedUserNvram,
     OwnedUserNvramEntry,
 };
@@ -326,25 +327,9 @@ fn write_state_clear(region: &mut Region<'_>, data: &OwnedStateClearData) -> Res
 
 fn write_index_orderly_ram(
     region: &mut Region<'_>,
-    ram: &OwnedIndexOrderlyRam,
+    ram: &OrderlyRamImage,
 ) -> Result<(), TpmResult> {
-    use layout::*;
-
-    let mut offset = 0usize;
-    for entry in &ram.entries {
-        let size = SIZEOF_NV_RAM_HEADER
-            .checked_add(entry.data.len())
-            .ok_or(TPM_FAIL)?;
-        region.put_u32(
-            offset + NV_RAM_HEADER_SIZE_FIELD,
-            u32::try_from(size).map_err(|_| TPM_FAIL)?,
-        )?;
-        region.put_u32(offset + NV_RAM_HEADER_HANDLE, entry.handle)?;
-        region.put_u32(offset + NV_RAM_HEADER_ATTRIBUTES, entry.attributes)?;
-        region.put(offset + SIZEOF_NV_RAM_HEADER, &entry.data)?;
-        offset = offset.checked_add(size).ok_or(TPM_FAIL)?;
-    }
-    Ok(())
+    region.put(0, ram.as_bytes())
 }
 
 pub(in crate::library::tpm2) struct WireWriter {
@@ -439,6 +424,7 @@ fn marshal_tpmt_public(w: &mut WireWriter, public: &OwnedTpmtPublic) -> Result<(
     w.u32(public.object_attributes);
     w.tpm2b(&public.auth_policy)?;
     match &public.parameters {
+        PublicParms::Unselected => {}
         PublicParms::KeyedHash(scheme) => marshal_scheme(w, scheme),
         PublicParms::SymCipher(sym) => marshal_sym_def_object(w, sym),
         PublicParms::Rsa {
@@ -465,6 +451,7 @@ fn marshal_tpmt_public(w: &mut WireWriter, public: &OwnedTpmtPublic) -> Result<(
         }
     }
     match &public.unique {
+        OwnedPublicId::Unselected => {}
         OwnedPublicId::KeyedHash(bytes) | OwnedPublicId::Sym(bytes) | OwnedPublicId::Rsa(bytes) => {
             w.tpm2b(bytes)?
         }
@@ -795,6 +782,7 @@ pub(in crate::library::tpm2) fn rsa3072_object_image(
         Ok::<(), TpmResult>(())
     };
     match &public.parameters {
+        PublicParms::Unselected => {}
         PublicParms::KeyedHash(scheme) => {
             put_scheme(
                 &mut region,
@@ -845,6 +833,7 @@ pub(in crate::library::tpm2) fn rsa3072_object_image(
 
     let unique = base + R3K_PUBLIC_UNIQUE;
     match &public.unique {
+        OwnedPublicId::Unselected => {}
         OwnedPublicId::KeyedHash(bytes) | OwnedPublicId::Sym(bytes) => {
             region.put_tpm2b(unique, SIZEOF_TPM2B_DIGEST, bytes)?
         }

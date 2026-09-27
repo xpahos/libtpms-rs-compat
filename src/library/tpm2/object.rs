@@ -11,7 +11,7 @@ use super::public::{
 pub(super) const ANY_OBJECT_MAGIC: u32 = 0xfe9a_3974;
 pub(super) const ANY_OBJECT_VERSION: u16 = 2;
 pub(super) const OBJECT_MAGIC: u32 = 0x75be_73af;
-const OBJECT_VERSION: u16 = 4;
+pub(super) const OBJECT_VERSION: u16 = 4;
 pub(super) const HASH_OBJECT_MAGIC: u32 = 0xb874_fe38;
 pub(super) const HASH_OBJECT_VERSION: u16 = 3;
 pub(super) const HASH_STATE_MAGIC: u32 = 0x5628_78a2;
@@ -28,8 +28,8 @@ pub(super) const PRIVATE_EXPONENT_T_VERSION: u16 = 2;
 pub(super) const BN_PRIME_T_MAGIC: u32 = 0x2fe7_36ab;
 pub(super) const BN_PRIME_T_VERSION: u16 = 2;
 
-const BN_PRIME_WORDS: usize = 24;
-const CRYPT_UWORD_BYTES: usize = 8;
+pub(super) const BN_PRIME_WORDS: usize = 24;
+pub(super) const CRYPT_UWORD_BYTES: usize = 8;
 
 pub(super) const ATTR_PUBLIC_ONLY: u32 = 1 << 0;
 pub(super) const ATTR_EPS_HIERARCHY: u32 = 1 << 1;
@@ -59,8 +59,8 @@ pub(super) const HASH_STATE_HASH: u8 = 1;
 pub(super) const HASH_STATE_HMAC: u8 = 2;
 pub(super) const HASH_STATE_SMAC: u8 = 3;
 
-const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
-const SEED_COMPAT_LEVEL_LAST: u8 = 1;
+pub(super) const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
+pub(super) const SEED_COMPAT_LEVEL_LAST: u8 = 1;
 
 const BLOCK_SKIP_SINCE_VERSION: u16 = 2;
 
@@ -241,17 +241,42 @@ fn parse_sha512_state<'a>(
     })
 }
 
-fn live_state_is_usable(state: &HashState<'_>, mac: bool) -> bool {
+pub(super) fn hash_state_is_usable(
+    state_type: u8,
+    hash_alg: u16,
+    has_payload: bool,
+    mac: bool,
+) -> bool {
     let digested = matches!(
-        state.hash_alg,
+        hash_alg,
         TPM_ALG_SHA1 | TPM_ALG_SHA256 | TPM_ALG_SHA384 | TPM_ALG_SHA512
     );
-    match state.state_type {
-        HASH_STATE_HASH => !mac && digested && state.payload.is_some(),
-        HASH_STATE_HMAC => mac && digested && state.payload.is_some(),
-        HASH_STATE_SMAC => mac && state.hash_alg == 0 && state.payload.is_none(),
+    match state_type {
+        HASH_STATE_HASH => !mac && digested && has_payload,
+        HASH_STATE_HMAC => mac && digested && has_payload,
+        HASH_STATE_SMAC => mac && hash_alg == 0 && !has_payload,
         _ => false,
     }
+}
+
+pub(super) fn event_state_is_usable(
+    index: usize,
+    state_type: u8,
+    hash_alg: u16,
+    has_payload: bool,
+) -> bool {
+    state_type == HASH_STATE_HASH
+        && COMPILED_HASHES.get(index).map(|&(alg, _)| alg) == Some(hash_alg)
+        && has_payload
+}
+
+fn live_state_is_usable(state: &HashState<'_>, mac: bool) -> bool {
+    hash_state_is_usable(
+        state.state_type,
+        state.hash_alg,
+        state.payload.is_some(),
+        mac,
+    )
 }
 
 fn check_live_state(state: &HashState<'_>, mac: bool) -> Result<(), PersistentAllError> {
@@ -271,15 +296,24 @@ fn unusable_state(state: &HashState<'_>) -> PersistentAllError {
 fn check_event_states(
     states: &[HashState<'_>; HASH_STATE_COUNT],
 ) -> Result<(), PersistentAllError> {
-    for (state, &(hash_alg, _)) in states.iter().zip(COMPILED_HASHES.iter()) {
-        if state.state_type != HASH_STATE_HASH
-            || state.hash_alg != hash_alg
-            || state.payload.is_none()
-        {
+    for (index, state) in states.iter().enumerate() {
+        if !event_state_is_usable(
+            index,
+            state.state_type,
+            state.hash_alg,
+            state.payload.is_some(),
+        ) {
             return Err(unusable_state(state));
         }
     }
     Ok(())
+}
+
+pub(super) fn peek_u16(reader: &BlobReader<'_>) -> Option<u16> {
+    reader
+        .remaining()
+        .get(..2)
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
 }
 
 fn parse_hash_state<'a>(reader: &mut BlobReader<'a>) -> Result<HashState<'a>, PersistentAllError> {
@@ -288,15 +322,19 @@ fn parse_hash_state<'a>(reader: &mut BlobReader<'a>) -> Result<HashState<'a>, Pe
     let state_type = reader.read_u8().map_err(|_| truncated(S))?;
     let hash_alg = reader.read_u16().map_err(|_| truncated(S))?;
 
-    let any_header = parse_nv_header(reader, S, ANY_HASH_STATE_MAGIC, ANY_HASH_STATE_VERSION)?;
+    let any_version = peek_u16(reader);
+    let any_header = parse_nv_header(reader, S, ANY_HASH_STATE_MAGIC, ANY_HASH_STATE_VERSION);
     let payload = match hash_alg {
         TPM_ALG_SHA1 => Some(parse_sha1_state(reader)?),
         TPM_ALG_SHA256 => Some(parse_sha256_state(reader)?),
         TPM_ALG_SHA384 => Some(parse_sha512_state(reader, HASH_STATE_SHA384_MAGIC)?),
         TPM_ALG_SHA512 => Some(parse_sha512_state(reader, HASH_STATE_SHA512_MAGIC)?),
-        _ => None,
+        _ => {
+            any_header?;
+            None
+        }
     };
-    if any_header.version >= BLOCK_SKIP_SINCE_VERSION {
+    if any_version.is_some_and(|version| version >= BLOCK_SKIP_SINCE_VERSION) {
         read_block(reader, S, false)?;
     }
     if header.version >= BLOCK_SKIP_SINCE_VERSION {
@@ -537,6 +575,11 @@ fn parse_hash_object<'a>(
     let header = parse_nv_header(reader, S, HASH_OBJECT_MAGIC, HASH_OBJECT_VERSION)?;
 
     let object_type = reader.read_u16().map_err(|_| truncated(S))?;
+    let object_type = if public::is_public_type(object_type) {
+        object_type
+    } else {
+        0
+    };
     let name_alg = public::read_hash_alg(reader, S, true)?;
     let object_attributes = reader.read_u32().map_err(|_| truncated(S))?;
     if object_attributes & 0xfff0_f009 != 0 {
@@ -1139,6 +1182,51 @@ mod tests {
                 "prefix {length}"
             );
         }
+    }
+
+    fn any_hash_state_header(state: &[u8]) -> usize {
+        state
+            .windows(4)
+            .position(|window| window == ANY_HASH_STATE_MAGIC.to_be_bytes())
+            .expect("the state carries an ANY_HASH_STATE header")
+            - 2
+    }
+
+    #[test]
+    fn a_sha_state_replaces_an_error_in_its_any_hash_state_header() {
+        let mut state = typed_hash_state(HASH_STATE_HASH, TPM_ALG_SHA256);
+        let at = any_hash_state_header(&state);
+        state[at + 6..at + 8].copy_from_slice(&3u16.to_be_bytes());
+        let mut reader = BlobReader::new(&state);
+        let parsed =
+            parse_hash_state(&mut reader).expect("the SHA-256 result replaces the header's");
+        assert!(parsed.payload.is_some());
+        assert!(reader.remaining().is_empty());
+    }
+
+    #[test]
+    fn an_any_hash_state_header_error_stands_without_a_sha_state() {
+        let mut state = typed_hash_state(HASH_STATE_EMPTY, 0);
+        let at = any_hash_state_header(&state);
+        state[at + 6..at + 8].copy_from_slice(&3u16.to_be_bytes());
+        assert!(matches!(
+            parse_hash_state(&mut BlobReader::new(&state)),
+            Err(PersistentAllError::MinimumVersionTooNew { .. })
+        ));
+    }
+
+    #[test]
+    fn a_bad_any_hash_state_magic_leaves_the_sha_state_misaligned() {
+        let mut state = typed_hash_state(HASH_STATE_HASH, TPM_ALG_SHA256);
+        let at = any_hash_state_header(&state);
+        state[at + 2] ^= 0xff;
+        assert!(matches!(
+            parse_hash_state(&mut BlobReader::new(&state)),
+            Err(PersistentAllError::InvalidHeaderMagic {
+                actual: 0x0002_6ea0,
+                ..
+            })
+        ));
     }
 
     fn event_banks() -> [(u8, u16); HASH_STATE_COUNT] {

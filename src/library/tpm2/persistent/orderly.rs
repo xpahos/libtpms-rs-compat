@@ -4,9 +4,9 @@ use crate::library::tpm2::marshal::{
 };
 
 pub(in crate::library::tpm2) const ORDERLY_DATA_MAGIC: u32 = 0x5665_7887;
-const ORDERLY_DATA_VERSION: u16 = 2;
+pub(in crate::library::tpm2) const ORDERLY_DATA_VERSION: u16 = 2;
 pub(in crate::library::tpm2) const DRBG_STATE_MAGIC: u32 = 0x6fe8_3ea1;
-const DRBG_STATE_VERSION: u16 = 2;
+pub(in crate::library::tpm2) const DRBG_STATE_VERSION: u16 = 2;
 
 pub(in crate::library::tpm2) const DRBG_SEED_SIZE: usize = 48;
 pub(in crate::library::tpm2) const DRBG_LAST_VALUE_COUNT: usize = 4;

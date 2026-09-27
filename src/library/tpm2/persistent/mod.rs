@@ -14,19 +14,21 @@ mod store;
 
 pub(super) use attach::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedBnPrime, OwnedCommandBitmap, OwnedDrbgState,
-    OwnedHashObjectBody, OwnedHashPayload, OwnedHashState, OwnedIndexOrderlyRam, OwnedNvIndex,
-    OwnedObjectBody, OwnedOrderlyData, OwnedOrderlyRamEntry, OwnedPcrAllocation, OwnedPcrBank,
-    OwnedPcrPolicyEntry, OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState,
-    OwnedPrivateExponent, OwnedPublicId, OwnedSecret, OwnedStateClearData, OwnedStateResetData,
-    OwnedTpmtPublic, OwnedTpmtSensitive, OwnedUserNvram, OwnedUserNvramEntry,
-    materialize_persistent_state, own_any_object, own_orderly_data, own_state_clear,
-    own_state_reset, user_nvram_required_capacity,
+    OwnedHashObjectBody, OwnedHashPayload, OwnedHashState, OwnedNvIndex, OwnedObjectBody,
+    OwnedOrderlyData, OwnedPcrAllocation, OwnedPcrBank, OwnedPcrPolicyEntry, OwnedPcrSelection,
+    OwnedPersistentData, OwnedPersistentState, OwnedPrivateExponent, OwnedPublicId, OwnedSecret,
+    OwnedStateClearData, OwnedStateResetData, OwnedTpmtPublic, OwnedTpmtSensitive, OwnedUserNvram,
+    OwnedUserNvramEntry, materialize_persistent_state, own_any_object, own_orderly_data,
+    own_state_clear, own_state_reset, user_nvram_required_capacity,
 };
 pub(super) use compat_tail::{
     CompatTail, SEED_COMPAT_LEVEL_LAST, SEED_COMPAT_LEVEL_ORIGINAL, parse_compat_tail,
 };
 pub(super) use data::{PersistentDataPrefix, parse_persistent_data_prefix};
-pub(super) use orderly::{OrderlyData, parse_orderly_data};
+pub(super) use orderly::{
+    DRBG_LAST_VALUE_COUNT, DRBG_SEED_SIZE, DRBG_STATE_MAGIC, DRBG_STATE_VERSION,
+    ORDERLY_DATA_MAGIC, ORDERLY_DATA_VERSION, OrderlyData, parse_orderly_data,
+};
 pub(super) use store::{
     marshal_orderly_data, marshal_state_clear, marshal_state_reset, persistent_all_store,
 };

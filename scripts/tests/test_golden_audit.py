@@ -2469,19 +2469,35 @@ class GoldenRunnerContractTest(unittest.TestCase):
         ]
         self.assertEqual(unassigned, [])
 
+    RECORDED_MAIN_INIT = "print_result(name, TPMLIB_MainInit());"
+
+    def checked_main_init_calls(self):
+        return [
+            index
+            for index, line in enumerate(self.lines)
+            if "TPMLIB_MainInit()" in line and line.strip() != self.RECORDED_MAIN_INIT
+        ]
+
     def test_every_main_init_result_is_checked(self):
-        for index, line in enumerate(self.lines):
-            if "TPMLIB_MainInit()" not in line:
-                continue
-            self.assertRegex(line.strip(), r"^res = TPMLIB_MainInit\(\);$")
+        for index in self.checked_main_init_calls():
+            self.assertRegex(self.lines[index].strip(), r"^res = TPMLIB_MainInit\(\);$")
             self.assertRegex(self.lines[index + 1].strip(), r"^if \(res")
 
     def test_every_main_init_check_can_abort(self):
-        for index, line in enumerate(self.lines):
-            if "TPMLIB_MainInit()" not in line:
-                continue
+        for index in self.checked_main_init_calls():
             window = " ".join(self.lines[index + 1 : index + 5])
             self.assertIn("die(", window)
+
+    def test_only_the_case_step_records_a_main_init_result(self):
+        recorded = [line.strip() for line in self.lines if "TPMLIB_MainInit()" in line]
+        self.assertEqual(recorded.count(self.RECORDED_MAIN_INIT), 1)
+        start = self.source.index('strncmp(p, "main-init ", 10)')
+        self.assertIn(self.RECORDED_MAIN_INIT, self.source[start : start + 300])
+        self.assertLess(
+            self.source.index("static void run_case_op("),
+            start,
+            "the recorded result belongs to a lifecycle case step",
+        )
 
     def test_the_failure_mode_result_is_a_named_constant(self):
         self.assertIn("#define FAILURE_MODE_RESULT 0x101", self.source)
@@ -2739,6 +2755,188 @@ class GoldenScenarioParserTest(unittest.TestCase):
             code = golden.run_audit(manifest=manifest, facts=facts)
         self.assertEqual(code, 1)
         self.assertIn("unknown op 'teleport'", err.getvalue())
+
+
+class GoldenScenarioCaseTest(unittest.TestCase):
+    SNAPSHOT = "snapshot S\n"
+
+    def parse(self, text):
+        return golden.parse_scenario(text)
+
+    def errors(self, text):
+        return self.parse(text)[2]
+
+    def case(self, body, prefix=SNAPSHOT):
+        return f"{prefix}case one\n{body}end-case\n"
+
+    def test_a_case_records_every_recording_step(self):
+        records, _codes, errors = self.parse(
+            self.case(
+                "set-state A permanent PERMALL_S\n"
+                "nvram-put volatilestate VOLATILE_S@drop=21\n"
+                "load-fails permall 9\n"
+                "io-init 42\n"
+                "nvram-init 0\n"
+                "main-init B\n"
+                "get-state C volatile\n"
+                "volatile-all-store D\n"
+                "set-profile E {\"Name\":\"default-v1\"}\n"
+                "process F 80010000000a0000017c\n"
+                "was-manufactured G\n"
+                "established H\n"
+                "established-reset I\n"
+                "hash-start J\n"
+                "hash-data K 0102\n"
+                "hash-end L\n"
+                "callbacks M\n"
+                "terminate\n"
+            )
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            records, ["PERMALL_S", "VOLATILE_S", *"ABCDEFGHIJKLM"]
+        )
+
+    def test_process_steps_count_their_command_codes(self):
+        _records, codes, errors = self.parse(
+            self.case(
+                "process A 80010000000a0000017c\n"
+                "process B 80010000000c0000017b0008\n"
+            )
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(codes, [0x17C, 0x17B])
+
+    def test_a_case_step_outside_a_case_is_rejected(self):
+        self.assertIn("main-init is only valid inside a case", self.errors("main-init A\n")[0])
+
+    def test_end_case_without_a_case_is_rejected(self):
+        self.assertIn("end-case is only valid inside a case", self.errors("end-case\n")[0])
+
+    def test_a_scenario_step_inside_a_case_is_rejected(self):
+        errors = self.errors(self.case("send A 80010000000a0000017c\n"))
+        self.assertIn("send is not valid inside a case", errors[0])
+
+    def test_a_nested_case_is_rejected(self):
+        errors = self.errors("case one\ncase two\nend-case\n")
+        self.assertIn("case two opens inside case one", errors[0])
+
+    def test_an_unclosed_case_is_rejected(self):
+        self.assertIn("case one is never closed", self.errors("case one\nterminate\n")[0])
+
+    def test_a_duplicate_case_is_rejected(self):
+        errors = self.errors("case one\nend-case\ncase one\nend-case\n")
+        self.assertIn("duplicate case one", errors[0])
+
+    def test_a_case_name_is_lower_snake_case(self):
+        self.assertIn("is not lower-case snake_case", self.errors("case One\nend-case\n")[0])
+
+    def test_a_blob_names_an_earlier_snapshot(self):
+        for prefix in ("checkpoint S\n", ""):
+            errors = self.errors(self.case("nvram-put permall PERMALL_S\n", prefix))
+            self.assertIn("refers to the unknown snapshot S", errors[0], prefix)
+        later = "case one\nnvram-put permall PERMALL_S\nend-case\nsnapshot S\n"
+        self.assertIn("refers to the unknown snapshot S", self.errors(later)[0])
+
+    def test_a_checkpoint_cannot_overwrite_a_recorded_snapshot(self):
+        text = (
+            'profile {"Name":"default-v1"}\n'
+            "snapshot S\n"
+            "send STARTUP 80010000000c000001440000\n"
+            "checkpoint S\n"
+            "case collision\n"
+            "nvram-put volatilestate VOLATILE_S\n"
+            "get-state CASE_INPUT volatile\n"
+            "end-case\n"
+        )
+        errors = self.errors(text)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(
+            "line 4: checkpoint S would overwrite the snapshot recorded on line 2", errors[0]
+        )
+
+    def test_distinct_snapshot_and_checkpoint_names_remain_valid(self):
+        text = "snapshot S\ncheckpoint T\nrestore S\ncheckpoint T\nrestore T\n" + self.case(
+            "nvram-put volatilestate VOLATILE_S@drop=21\n", prefix=""
+        )
+        self.assertEqual(self.errors(text), [])
+
+    def test_a_snapshot_may_record_a_checkpoint_name(self):
+        text = "checkpoint S\nrestore S\nsnapshot S\n" + self.case(
+            "nvram-put volatilestate VOLATILE_S\n", prefix=""
+        )
+        self.assertEqual(self.errors(text), [])
+
+    def test_blob_modifiers(self):
+        for modifier in (
+            "",
+            "@head=64",
+            "@drop=21",
+            "@flip=10",
+            "@flip-end=1",
+            "@set=10:00ff",
+            "@sha1",
+            "@set=4183:0003@sha1@drop=21",
+        ):
+            text = self.case(f"nvram-put volatilestate VOLATILE_S{modifier}\n")
+            self.assertEqual(self.errors(text), [], modifier)
+        for modifier in (
+            "@cut=3",
+            "@head=x",
+            "@head",
+            "@flip=-1",
+            "@set=10",
+            "@set=10:",
+            "@set=10:0",
+            "@set=10:0A",
+            "@sha1=1",
+            "@sha1@",
+        ):
+            text = self.case(f"nvram-put volatilestate VOLATILE_S{modifier}\n")
+            self.assertIn("is not PERMALL_<snapshot>", self.errors(text)[0], modifier)
+
+    def test_state_kinds_and_nvram_names_are_checked(self):
+        self.assertIn("is not permanent or volatile", self.errors(self.case("get-state A both\n"))[0])
+        self.assertIn(
+            "is not permall or volatilestate",
+            self.errors(self.case("nvram-put savestate PERMALL_S\n"))[0],
+        )
+        self.assertIn(
+            "is not permall or volatilestate",
+            self.errors(self.case("load-fails savestate 9\n"))[0],
+        )
+
+    def test_codes_are_32_bit_decimal(self):
+        self.assertEqual(self.errors(self.case("io-init 4294967295\n")), [])
+        for step in ("io-init 4294967296\n", "nvram-init 0x2a\n", "load-fails permall nine\n"):
+            self.assertIn("needs a 32-bit decimal code", self.errors(self.case(step))[0], step)
+
+    def test_argument_counts_are_checked(self):
+        self.assertIn(
+            "set-state takes 3 arguments", self.errors(self.case("set-state A permanent\n"))[0]
+        )
+        self.assertIn("get-state takes 2 arguments", self.errors(self.case("get-state A\n"))[0])
+
+    def test_set_profile_takes_a_json_object(self):
+        self.assertIn("must be a JSON object", self.errors(self.case("set-profile A 7\n"))[0])
+        self.assertIn("needs a name and a profile", self.errors(self.case("set-profile A\n"))[0])
+
+    def test_hash_data_takes_lower_case_hex(self):
+        self.assertIn("odd number of digits", self.errors(self.case("hash-data A 010\n"))[0])
+        self.assertIn("not lower-case hexadecimal", self.errors(self.case("hash-data A 0A\n"))[0])
+
+    def test_case_records_are_upper_case(self):
+        self.assertIn("is not upper-case ASCII", self.errors(self.case("main-init lower\n"))[0])
+
+    def test_the_committed_cases_each_open_and_close(self):
+        manifest = golden.load_manifest()
+        entry = manifest["families"]["get-test-result"]
+        text = (golden.ROOT / entry["scenario"]).read_text("utf-8")
+        opened = [line.split()[1] for line in text.splitlines() if line.startswith("case ")]
+        closed = [line for line in text.splitlines() if line.strip() == "end-case"]
+        self.assertEqual(len(opened), len(set(opened)))
+        self.assertEqual(len(opened), len(closed))
+        self.assertGreaterEqual(len(opened), 20)
 
 
 class GoldenSubmoduleScopeTest(unittest.TestCase):

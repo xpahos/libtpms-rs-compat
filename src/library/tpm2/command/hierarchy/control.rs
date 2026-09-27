@@ -666,9 +666,7 @@ mod tests {
     #[test]
     fn hierarchy_change_volatile_round_trip() {
         use crate::library::tpm2::volatile::volatile_all_store;
-        use crate::library::tpm2::{
-            VolatileDecodeBoundary, decode_volatile_blob, volatile_validation_context,
-        };
+        use crate::library::tpm2::{decode_volatile_blob, volatile_validation_context};
 
         let clock = replay_clock();
         let mut runtime = oracle_runtime(&clock);
@@ -681,8 +679,7 @@ mod tests {
         let blob = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
         let context = volatile_validation_context(&runtime).expect("the context builds");
         let decoded =
-            decode_volatile_blob(&context, &blob, &clock, VolatileDecodeBoundary::Validate)
-                .expect("the volatile state decodes");
+            decode_volatile_blob(&context, &blob, &clock).expect("the volatile state decodes");
         assert!(decoded.ph_enable);
         assert!(!decoded.state_clear.sh_enable);
         assert!(decoded.state_clear.eh_enable);

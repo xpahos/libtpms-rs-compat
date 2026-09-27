@@ -1,8 +1,9 @@
 use super::clock::RuntimeClock;
 use super::hierarchy::TPM_RH_UNASSIGNED;
-use super::nv::RAM_INDEX_SPACE;
+use super::nv::OrderlyRamImage;
+use super::pcr::PCR_SLOT_BANKS;
 use super::persistent::{
-    OwnedAnyObject, OwnedAnyObjectBody, OwnedDrbgState, OwnedIndexOrderlyRam, OwnedOrderlyData,
+    OwnedAnyObject, OwnedAnyObjectBody, OwnedDrbgState, OwnedOrderlyData, OwnedPersistentState,
     OwnedSecret, OwnedStateClearData, OwnedStateResetData,
 };
 use super::runtime::{FailureDiagnostics, NV_MEMORY_SIZE};
@@ -33,7 +34,7 @@ pub(super) struct LiveState {
     pub(super) objects: Vec<OwnedAnyObject>,
     pub(super) context_slot_mask: u16,
     pub(super) null_seed_compat_level: u8,
-    pub(super) index_orderly_ram: OwnedIndexOrderlyRam,
+    pub(super) index_orderly_ram: OrderlyRamImage,
     pub(super) max_nv_counter: u64,
     pub(super) orderly: OwnedOrderlyData,
     pub(super) state_reset: Option<OwnedStateResetData>,
@@ -62,7 +63,7 @@ pub(super) fn unoccupied_objects() -> Vec<OwnedAnyObject> {
 pub(super) fn empty_pcrs() -> Vec<OwnedPcr> {
     (0..IMPLEMENTATION_PCR)
         .map(|_| OwnedPcr {
-            banks: core::array::from_fn(|_| None),
+            banks: core::array::from_fn(|slot| Some(vec![0u8; PCR_SLOT_BANKS[slot].1])),
         })
         .collect()
 }
@@ -80,15 +81,6 @@ fn empty_orderly_data() -> OwnedOrderlyData {
         self_heal_timer: 0,
         lockout_timer: 0,
         time: 0,
-    }
-}
-
-pub(super) fn empty_index_orderly_ram() -> OwnedIndexOrderlyRam {
-    OwnedIndexOrderlyRam {
-        sourceside_size: RAM_INDEX_SPACE as u32,
-        entries: Vec::new(),
-        terminated: true,
-        used_bytes: 0,
     }
 }
 
@@ -152,12 +144,12 @@ impl LiveState {
             pcr_reconfig: false,
             pcrs: empty_pcrs(),
             sessions: unoccupied_sessions(),
-            free_session_slots: MAX_LOADED_SESSIONS as u32,
-            oldest_saved_session: MAX_ACTIVE_SESSIONS as u32 + 1,
+            free_session_slots: 0,
+            oldest_saved_session: 0,
             objects: unoccupied_objects(),
             context_slot_mask: 0xffff,
             null_seed_compat_level: SEED_COMPAT_LEVEL_ORIGINAL,
-            index_orderly_ram: empty_index_orderly_ram(),
+            index_orderly_ram: OrderlyRamImage::zeroed(),
             max_nv_counter: 0,
             orderly: empty_orderly_data(),
             state_reset: None,
@@ -166,11 +158,11 @@ impl LiveState {
         }
     }
 
-    pub(super) fn power_on_with_state_reset(reset: Option<&OwnedStateResetData>) -> Self {
+    pub(super) fn power_on_with_state_reset(state: &OwnedPersistentState) -> Self {
         let mut live = Self::power_on();
-        if let Some(reset) = reset {
+        if let Some(reset) = state.state_reset.as_ref() {
             live.context_slot_mask = reset.context_slot_mask;
-            live.null_seed_compat_level = reset.null_seed_compat_level;
+            live.null_seed_compat_level = state.loaded_null_seed_compat_level;
         }
         live
     }
@@ -185,7 +177,6 @@ pub(super) struct RestoredVolatile {
     pub(super) drtm_handle: u32,
     pub(super) session_process: OwnedSessionProcess,
     pub(super) evict_nv_end: u32,
-    pub(super) index_orderly_ram_bytes: Vec<u8>,
     pub(super) max_counter: u64,
     pub(super) real_time_previous: u64,
     pub(super) tpm_time: u64,
@@ -206,7 +197,6 @@ impl RestoredVolatile {
             drtm_handle: TPM_RH_UNASSIGNED,
             session_process: empty_session_process(),
             evict_nv_end: NV_MEMORY_SIZE as u32,
-            index_orderly_ram_bytes: Vec::new(),
             max_counter: 0,
             real_time_previous: 0,
             tpm_time: 0,
@@ -295,7 +285,8 @@ pub(super) fn split_restored_volatile(
         objects,
         context_slot_mask: state_reset.context_slot_mask,
         null_seed_compat_level: state_reset.null_seed_compat_level,
-        index_orderly_ram: empty_index_orderly_ram(),
+        index_orderly_ram: OrderlyRamImage::from_bytes(&index_orderly_ram)
+            .unwrap_or_else(OrderlyRamImage::zeroed),
         max_nv_counter: max_counter,
         orderly,
         state_reset: Some(state_reset),
@@ -323,7 +314,6 @@ pub(super) fn split_restored_volatile(
         drtm_handle,
         session_process,
         evict_nv_end,
-        index_orderly_ram_bytes: index_orderly_ram,
         max_counter,
         real_time_previous,
         tpm_time,

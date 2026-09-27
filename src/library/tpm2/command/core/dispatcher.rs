@@ -780,9 +780,7 @@ mod tests {
         use crate::library::tpm2::profile::validate_user_profile;
         use crate::library::tpm2::runtime::commit_manufactured_state;
         use crate::library::tpm2::volatile::volatile_all_store;
-        use crate::library::tpm2::{
-            VolatileDecodeBoundary, decode_volatile_blob, volatile_validation_context,
-        };
+        use crate::library::tpm2::{decode_volatile_blob, volatile_validation_context};
 
         const RESTORED_AUDIT_SESSION: u32 = 0x0200_0000;
         const TPM_CC_GET_CAPABILITY: u32 = 0x0000_017a;
@@ -861,8 +859,7 @@ mod tests {
             let blob = volatile_all_store(&runtime, &clock).expect("the volatile state saves");
             let context = volatile_validation_context(&runtime).expect("the context builds");
             let decoded =
-                decode_volatile_blob(&context, &blob, &clock, VolatileDecodeBoundary::Validate)
-                    .expect("the volatile state decodes");
+                decode_volatile_blob(&context, &blob, &clock).expect("the volatile state decodes");
             assert_eq!(
                 decoded.exclusive_audit_session, TPM_RH_UNASSIGNED,
                 "the serialized volatile blob carries the cleared value"

@@ -7,12 +7,13 @@ use super::attributes::{
     TPMA_NV_ORDERLY, TPMA_NV_PLATFORMCREATE, TPMA_NV_WRITTEN, is_counter_index, is_ordinary_index,
 };
 use super::image::build_nv_image;
-use super::orderly_ram::{NV_RAM_HEADER_SIZE, RAM_INDEX_SPACE};
+use super::orderly_ram::NV_RAM_HEADER_SIZE;
 use super::public_area::NvPublic;
+use super::ram_image::{OrderlyRamImage, RamEntry};
 use super::user::{SIZEOF_NV_INDEX, USER_NVRAM_CAPACITY};
 use crate::library::tpm2::persistent::{
-    OwnedIndexOrderlyRam, OwnedNvIndex, OwnedOrderlyRamEntry, OwnedPersistentState, OwnedSecret,
-    OwnedUserNvramEntry, user_nvram_required_capacity,
+    OwnedNvIndex, OwnedPersistentState, OwnedSecret, OwnedUserNvramEntry,
+    user_nvram_required_capacity,
 };
 use crate::library::tpm2::runtime::Tpm2Runtime;
 
@@ -30,7 +31,7 @@ const NV_INDEX_COUNTER_SIZE: u64 = 4 + SIZEOF_NV_INDEX + 8;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2) struct ResolvedIndex {
     pub(in crate::library::tpm2) entry: usize,
-    pub(in crate::library::tpm2) ram: Option<usize>,
+    pub(in crate::library::tpm2) ram: Option<RamEntry>,
     pub(in crate::library::tpm2) public: NvPublic,
 }
 
@@ -70,10 +71,6 @@ fn index_entry_position(state: &OwnedPersistentState, handle: u32) -> Option<usi
         .position(|entry| matches!(entry, OwnedUserNvramEntry::NvIndex { handle: stored, .. } if *stored == handle))
 }
 
-fn ram_entry_position(ram: &OwnedIndexOrderlyRam, handle: u32) -> Option<usize> {
-    ram.entries.iter().position(|entry| entry.handle == handle)
-}
-
 pub(in crate::library::tpm2) fn resolve_index(
     runtime: &Tpm2Runtime,
     handle: u32,
@@ -83,9 +80,9 @@ pub(in crate::library::tpm2) fn resolve_index(
     let index = stored_index(state, entry)?;
     let mut public = NvPublic::of(index);
     let ram = if index.attributes & TPMA_NV_ORDERLY != 0 {
-        let position = ram_entry_position(&runtime.live.index_orderly_ram, handle)?;
-        public.attributes = runtime.live.index_orderly_ram.entries[position].attributes;
-        Some(position)
+        let entry = runtime.live.index_orderly_ram.find(handle)?;
+        public.attributes = runtime.live.index_orderly_ram.attributes(entry);
+        Some(entry)
     } else {
         None
     };
@@ -136,27 +133,29 @@ pub(in crate::library::tpm2) fn read_index_data(
     offset: usize,
     size: usize,
 ) -> Result<Vec<u8>, TpmResult> {
-    let end = offset.checked_add(size).ok_or(TPM_RC_FAILURE)?;
-    let bytes = match resolved.ram {
-        Some(position) => runtime
+    if let Some(entry) = resolved.ram {
+        let declared = u64::from(entry.size)
+            .wrapping_sub(NV_RAM_HEADER_SIZE)
+            .wrapping_sub(offset as u64);
+        if size as u64 > declared {
+            return Err(TPM_RC_FAILURE);
+        }
+        return runtime
             .live
             .index_orderly_ram
-            .entries
-            .get(position)
-            .map(|entry| entry.data.as_slice())
-            .ok_or(TPM_RC_FAILURE)?,
-        None => {
-            let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
-            match state.user_nvram.entries.get(resolved.entry) {
-                Some(OwnedUserNvramEntry::NvIndex { data, .. }) => data.as_slice(),
-                _ => return Err(TPM_RC_FAILURE),
-            }
-        }
-    };
-    bytes
-        .get(offset..end)
-        .map(<[u8]>::to_vec)
-        .ok_or(TPM_RC_FAILURE)
+            .read(entry, offset, size)
+            .map(<[u8]>::to_vec)
+            .ok_or(TPM_RC_FAILURE);
+    }
+    let end = offset.checked_add(size).ok_or(TPM_RC_FAILURE)?;
+    let state = runtime.state.as_ref().ok_or(TPM_RC_FAILURE)?;
+    match state.user_nvram.entries.get(resolved.entry) {
+        Some(OwnedUserNvramEntry::NvIndex { data, .. }) => data
+            .get(offset..end)
+            .map(<[u8]>::to_vec)
+            .ok_or(TPM_RC_FAILURE),
+        _ => Err(TPM_RC_FAILURE),
+    }
 }
 
 pub(in crate::library::tpm2) fn read_uint64_data(
@@ -228,16 +227,7 @@ pub(in crate::library::tpm2) fn test_orderly_ram_space(
     runtime: &Tpm2Runtime,
     data_size: u64,
 ) -> bool {
-    let used = runtime.live.index_orderly_ram.used_bytes;
-    RAM_INDEX_SPACE.saturating_sub(used) >= NV_RAM_HEADER_SIZE + data_size
-}
-
-fn recompute_ram_usage(ram: &mut OwnedIndexOrderlyRam) {
-    ram.used_bytes = ram
-        .entries
-        .iter()
-        .map(|entry| NV_RAM_HEADER_SIZE + entry.data.len() as u64)
-        .sum();
+    runtime.live.index_orderly_ram.has_room_for(data_size)
 }
 
 pub(in crate::library::tpm2) fn add_index(
@@ -281,14 +271,7 @@ pub(in crate::library::tpm2) fn add_index(
         runtime
             .live
             .index_orderly_ram
-            .entries
-            .push(OwnedOrderlyRamEntry {
-                declared_size: 0,
-                handle: public.nv_index,
-                attributes: public.attributes,
-                data: vec![0u8; public.data_size as usize],
-            });
-        recompute_ram_usage(&mut runtime.live.index_orderly_ram);
+            .add(public.nv_index, public.attributes, public.data_size)?;
         sync_orderly_ram(runtime)?;
     }
     Ok(())
@@ -316,12 +299,8 @@ pub(in crate::library::tpm2) fn delete_index(
     state.user_nvram.entries.remove(resolved.entry);
     state.user_nvram.max_count = max_count;
 
-    if let Some(position) = resolved.ram {
-        if position >= runtime.live.index_orderly_ram.entries.len() {
-            return Err(TPM_RC_FAILURE);
-        }
-        runtime.live.index_orderly_ram.entries.remove(position);
-        recompute_ram_usage(&mut runtime.live.index_orderly_ram);
+    if let Some(entry) = resolved.ram {
+        runtime.live.index_orderly_ram.delete(entry.handle)?;
         sync_orderly_ram(runtime)?;
     }
     Ok(())
@@ -342,14 +321,11 @@ pub(in crate::library::tpm2) fn write_index_attributes(
     attributes: u32,
 ) -> Result<(), TpmResult> {
     match resolved.ram {
-        Some(position) => {
-            let entry = runtime
+        Some(entry) => {
+            runtime
                 .live
                 .index_orderly_ram
-                .entries
-                .get_mut(position)
-                .ok_or(TPM_RC_FAILURE)?;
-            entry.attributes = attributes;
+                .set_attributes(entry, attributes);
             Ok(())
         }
         None => {
@@ -423,27 +399,14 @@ pub(in crate::library::tpm2) fn write_index_data(
 
     let mut clear_orderly = false;
     match resolved.ram {
-        Some(position) => {
+        Some(entry) => {
+            let ram = &mut runtime.live.index_orderly_ram;
             if first_write && is_ordinary_index(attributes) {
-                let entry = runtime
-                    .live
-                    .index_orderly_ram
-                    .entries
-                    .get_mut(position)
+                ram.write(entry, 0, &vec![0u8; data_size])
                     .ok_or(TPM_RC_FAILURE)?;
-                entry.data.iter_mut().for_each(|byte| *byte = 0);
             }
-            let entry = runtime
-                .live
-                .index_orderly_ram
-                .entries
-                .get_mut(position)
+            ram.write(entry, write.offset, &write.data)
                 .ok_or(TPM_RC_FAILURE)?;
-            let slot = entry
-                .data
-                .get_mut(write.offset..end)
-                .ok_or(TPM_RC_FAILURE)?;
-            slot.copy_from_slice(&write.data);
             clear_orderly = true;
             if first_write && is_counter_index(attributes) {
                 sync_orderly_ram(runtime)?;
@@ -483,9 +446,9 @@ pub(in crate::library::tpm2) struct NvSnapshot {
     entries: Vec<OwnedUserNvramEntry>,
     required_capacity: u64,
     max_count: u64,
-    nv_orderly_ram: OwnedIndexOrderlyRam,
+    nv_orderly_ram: OrderlyRamImage,
     orderly_state: u16,
-    live_orderly_ram: OwnedIndexOrderlyRam,
+    live_orderly_ram: OrderlyRamImage,
     max_nv_counter: u64,
 }
 
@@ -546,6 +509,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::orderly_ram::RAM_INDEX_SPACE;
     use super::*;
     use crate::library::tpm2::algorithm::TPM_ALG_SHA256;
     use crate::library::tpm2::manufacture::manufacture_state;
@@ -624,15 +588,15 @@ mod tests {
         .expect("the index is defined");
 
         let resolved = resolve_index(&runtime, 0x0100_0002).expect("resolves");
-        assert_eq!(resolved.ram, Some(0));
-        assert_eq!(runtime.live.index_orderly_ram.entries.len(), 1);
-        assert_eq!(runtime.live.index_orderly_ram.entries[0].data, vec![0u8; 8]);
+        assert_eq!(resolved.ram.map(|entry| entry.offset), Some(0));
+        assert_eq!(runtime.live.index_orderly_ram.views().len(), 1);
+        assert_eq!(runtime.live.index_orderly_ram.views()[0].data, vec![0u8; 8]);
         assert_eq!(
-            runtime.live.index_orderly_ram.used_bytes,
+            runtime.live.index_orderly_ram.used_bytes(),
             NV_RAM_HEADER_SIZE + 8
         );
         assert_eq!(
-            runtime.state().index_orderly_ram.entries.len(),
+            runtime.state().index_orderly_ram.views().len(),
             1,
             "adding an orderly index writes the RAM image back to NV"
         );
@@ -685,8 +649,8 @@ mod tests {
         transact(&mut runtime, |runtime| delete_index(runtime, &resolved)).unwrap();
 
         assert!(resolve_index(&runtime, 0x0100_0002).is_none());
-        assert!(runtime.live.index_orderly_ram.entries.is_empty());
-        assert_eq!(runtime.live.index_orderly_ram.used_bytes, 0);
+        assert!(runtime.live.index_orderly_ram.views().is_empty());
+        assert_eq!(runtime.live.index_orderly_ram.used_bytes(), 0);
         assert!(
             resolve_index(&runtime, 0x0100_0001).is_some(),
             "unrelated indexes survive"
@@ -881,8 +845,8 @@ mod tests {
         assert_eq!(after.max_nv_counter, before.max_nv_counter);
         assert_eq!(runtime.nv_memory, before_image);
         assert!(!runtime.nv_update_pending);
-        assert!(runtime.live.index_orderly_ram.entries.is_empty());
-        assert!(runtime.state().index_orderly_ram.entries.is_empty());
+        assert!(runtime.live.index_orderly_ram.views().is_empty());
+        assert!(runtime.state().index_orderly_ram.views().is_empty());
         assert!(resolve_index(&runtime, 0x0100_0002).is_none());
     }
 
@@ -910,8 +874,8 @@ mod tests {
             assert!(applied, "the failure occurs while committing the mutation");
             assert_eq!(error, TPM_RC_FAILURE);
             assert!(resolve_index(&runtime, orderly.nv_index).is_none());
-            assert!(runtime.live.index_orderly_ram.entries.is_empty());
-            assert_eq!(runtime.live.index_orderly_ram.used_bytes, 0);
+            assert!(runtime.live.index_orderly_ram.views().is_empty());
+            assert_eq!(runtime.live.index_orderly_ram.used_bytes(), 0);
             assert_eq!(
                 runtime.state().user_nvram.required_capacity,
                 before_capacity

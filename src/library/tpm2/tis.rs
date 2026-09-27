@@ -354,7 +354,9 @@ mod tests {
                 .live
                 .pcrs
                 .iter()
-                .all(|pcr| pcr.banks.iter().all(|bank| bank.is_none()))
+                .all(|pcr| pcr.banks.iter().all(|bank| bank
+                    .as_deref()
+                    .is_some_and(|digest| digest.iter().all(|&byte| byte == 0))))
         );
     }
 

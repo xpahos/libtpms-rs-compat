@@ -2,11 +2,10 @@ use crate::library::constants::TPM_FAIL;
 use crate::types::TpmResult;
 
 use super::crypto::{DRBG_MAGIC, Drbg, EntropySource};
-use super::nv::RAM_INDEX_SPACE;
+use super::nv::OrderlyRamImage;
 use super::persistent::{
-    OwnedCommandBitmap, OwnedDrbgState, OwnedIndexOrderlyRam, OwnedOrderlyData, OwnedPcrAllocation,
-    OwnedPcrPolicyEntry, OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState, OwnedSecret,
-    OwnedUserNvram,
+    OwnedCommandBitmap, OwnedDrbgState, OwnedOrderlyData, OwnedPcrAllocation, OwnedPcrPolicyEntry,
+    OwnedPcrSelection, OwnedPersistentData, OwnedPersistentState, OwnedSecret, OwnedUserNvram,
 };
 use super::profile::{ATTRIBUTE_DRBG_CONTINUOUS_TEST, ValidatedProfile, command_enabled};
 
@@ -161,12 +160,7 @@ pub(super) fn manufacture_state(
         orderly,
         state_reset: None,
         state_clear: None,
-        index_orderly_ram: OwnedIndexOrderlyRam {
-            sourceside_size: RAM_INDEX_SPACE as u32,
-            entries: Vec::new(),
-            terminated: true,
-            used_bytes: 0,
-        },
+        index_orderly_ram: OrderlyRamImage::zeroed(),
         user_nvram: OwnedUserNvram {
             entries: Vec::new(),
             max_count: 0,
@@ -174,6 +168,7 @@ pub(super) fn manufacture_state(
         },
         envelope_version,
         read_su_state: false,
+        loaded_null_seed_compat_level: 0,
     })
 }
 

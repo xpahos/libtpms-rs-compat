@@ -73,6 +73,7 @@ pub(super) use crypto::{EntropySource, os_entropy};
 #[cfg(test)]
 pub(in crate::library) use pp_list::require_physical_presence;
 pub(super) use process::{PlatformInputs, process};
+pub(super) use runtime::FailureDiagnostics;
 pub use runtime::Tpm2Runtime;
 pub(super) use tis::{
     established_reset as tis_established_reset, hash_data as tis_hash_data,
@@ -137,6 +138,11 @@ pub(super) struct Tpm2InitContext<'a> {
     pub(super) configured_profile: Option<Vec<u8>>,
     pub(super) entropy: EntropySource,
     pub(super) clock: &'a dyn HostClock,
+    pub(super) failure_diagnostics: FailureDiagnostics,
+}
+
+pub(super) fn failure_diagnostics(runtime: &Tpm2Runtime) -> FailureDiagnostics {
+    runtime.failure_diagnostics
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -182,39 +188,94 @@ fn resolve_volatile_state(
     }
 }
 
+enum VolatileRestore {
+    Absent,
+    Restored,
+    Rejected,
+}
+
 fn volatile_phase(
     storage: &dyn Storage,
     preloaded_volatile: PreloadedBlob,
     clock: &dyn HostClock,
     runtime: &mut Tpm2Runtime,
-) -> Result<(), TpmResult> {
-    let blob = match resolve_volatile_state(storage, preloaded_volatile) {
-        VolatileResolution::NotPresent => return Ok(()),
-        VolatileResolution::Nonempty(blob) => blob,
-    };
-    attach_volatile_blob(runtime, &blob, clock, VolatileDecodeBoundary::Restore)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VolatileDecodeBoundary {
-    Restore,
-    Validate,
-}
-
-impl VolatileDecodeBoundary {
-    fn map_parse(self, error: PersistentAllError) -> TpmResult {
-        self.map_result(error.tpm_result())
+) -> VolatileRestore {
+    match resolve_volatile_state(storage, preloaded_volatile) {
+        VolatileResolution::Nonempty(blob) => load_volatile_blob(runtime, &blob, clock),
+        VolatileResolution::NotPresent => VolatileRestore::Absent,
     }
+}
 
-    fn map_result(self, code: TpmResult) -> TpmResult {
-        match self {
-            Self::Restore => TPM_RC_FAILURE,
-            Self::Validate => code,
+fn load_volatile_blob(
+    runtime: &mut Tpm2Runtime,
+    blob: &[u8],
+    clock: &dyn HostClock,
+) -> VolatileRestore {
+    if blob.len() < volatile::SHA1_DIGEST_SIZE {
+        return VolatileRestore::Absent;
+    }
+    match unmarshal_for_restore(runtime, blob, clock) {
+        Ok(LoadedVolatile::Verified(state)) => {
+            runtime::merge_volatile_state(runtime, state);
+            runtime::nv_shadow_restore(runtime);
+            VolatileRestore::Restored
+        }
+        Ok(LoadedVolatile::Unverified(state)) => {
+            runtime::merge_volatile_state(runtime, state);
+            runtime.failure_mode = true;
+            VolatileRestore::Restored
+        }
+        Err(_) => {
+            clock::time_power_on(runtime, clock);
+            restore_until_defect(runtime, blob, clock);
+            runtime.failure_mode = true;
+            VolatileRestore::Rejected
         }
     }
+}
 
-    fn rejects_restored_failure_mode(self) -> bool {
-        self == Self::Restore
+fn restore_until_defect(runtime: &mut Tpm2Runtime, blob: &[u8], clock: &dyn HostClock) {
+    let Ok(context) = volatile_validation_context(runtime) else {
+        return;
+    };
+    let shadow: Vec<PcrSelection<'_>> = context
+        .shadow_pcr_allocated
+        .iter()
+        .map(|selection| PcrSelection {
+            hash_alg: selection.hash_alg,
+            select: &selection.select,
+        })
+        .collect();
+    volatile::restore_until_defect(
+        runtime,
+        blob,
+        volatile::RestoreContext {
+            shadow: &shadow,
+            seeds: context.seed_tie(),
+            state_format: context.state_format,
+        },
+        clock,
+    );
+}
+
+enum LoadedVolatile {
+    Verified(volatile::OwnedVolatileState),
+    Unverified(volatile::OwnedVolatileState),
+}
+
+fn unmarshal_for_restore(
+    runtime: &Tpm2Runtime,
+    blob: &[u8],
+    clock: &dyn HostClock,
+) -> Result<LoadedVolatile, TpmResult> {
+    let context = volatile_validation_context(runtime)?;
+    match unmarshal_volatile_blob(&context, blob, clock)? {
+        volatile::UnmarshalledBlob::Verified(decoded) => {
+            materialize_volatile(&context, &decoded).map(LoadedVolatile::Verified)
+        }
+        volatile::UnmarshalledBlob::Unverified(decoded, _) => {
+            materialize_volatile(&context, &decoded).map(LoadedVolatile::Unverified)
+        }
     }
 }
 
@@ -237,6 +298,14 @@ impl VolatileValidationContext {
             shadow_pcr_allocated: Vec::new(),
             object_version: volatile::CURRENT_OBJECT_VERSION,
             state_format: StateFormatLimit::NONE,
+        }
+    }
+
+    fn seed_tie(&self) -> volatile::SeedTie<'_> {
+        volatile::SeedTie {
+            ep_seed: self.ep_seed.as_bytes(),
+            sp_seed: self.sp_seed.as_bytes(),
+            pp_seed: self.pp_seed.as_bytes(),
         }
     }
 }
@@ -262,12 +331,11 @@ fn volatile_validation_context(
     })
 }
 
-fn decode_volatile_blob(
+fn unmarshal_volatile_blob<'a>(
     context: &VolatileValidationContext,
-    blob: &[u8],
+    blob: &'a [u8],
     clock: &dyn HostClock,
-    boundary: VolatileDecodeBoundary,
-) -> Result<volatile::OwnedVolatileState, TpmResult> {
+) -> Result<volatile::UnmarshalledBlob<'a>, TpmResult> {
     let shadow_views: Vec<PcrSelection<'_>> = context
         .shadow_pcr_allocated
         .iter()
@@ -276,21 +344,32 @@ fn decode_volatile_blob(
             select: &selection.select,
         })
         .collect();
-    let seed_tie = volatile::SeedTie {
-        ep_seed: context.ep_seed.as_bytes(),
-        sp_seed: context.sp_seed.as_bytes(),
-        pp_seed: context.pp_seed.as_bytes(),
-    };
-    let decoded = volatile::parse_volatile_state_blob(
+    volatile::unmarshal_volatile_state_blob(
         blob,
         &shadow_views,
-        seed_tie,
+        context.seed_tie(),
         clock,
         context.state_format,
     )
-    .map_err(|error| boundary.map_parse(error))?;
-    volatile::materialize_volatile_state(&decoded, seed_tie, context.object_version)
-        .map_err(|code| boundary.map_result(code))
+    .map_err(PersistentAllError::tpm_result)
+}
+
+fn materialize_volatile(
+    context: &VolatileValidationContext,
+    decoded: &volatile::DecodedVolatileState<'_>,
+) -> Result<volatile::OwnedVolatileState, TpmResult> {
+    volatile::materialize_volatile_state(decoded, context.seed_tie(), context.object_version)
+}
+
+fn decode_volatile_blob(
+    context: &VolatileValidationContext,
+    blob: &[u8],
+    clock: &dyn HostClock,
+) -> Result<volatile::OwnedVolatileState, TpmResult> {
+    match unmarshal_volatile_blob(context, blob, clock)? {
+        volatile::UnmarshalledBlob::Verified(decoded) => materialize_volatile(context, &decoded),
+        volatile::UnmarshalledBlob::Unverified(_, error) => Err(error.tpm_result()),
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +382,7 @@ pub(super) fn attach_volatile_blob_for_test(
     runtime: &mut Tpm2Runtime,
     blob: &[u8],
 ) -> Result<(), TpmResult> {
-    attach_volatile_blob(runtime, blob, &OsClock, VolatileDecodeBoundary::Restore)
+    attach_volatile_blob(runtime, blob, &OsClock)
 }
 
 #[cfg(test)]
@@ -312,22 +391,23 @@ pub(super) fn attach_volatile_blob_for_replay(
     blob: &[u8],
     clock: &dyn HostClock,
 ) -> Result<(), TpmResult> {
-    attach_volatile_blob(runtime, blob, clock, VolatileDecodeBoundary::Restore)
+    attach_volatile_blob(runtime, blob, clock)
 }
 
-fn attach_volatile_blob(
+#[cfg(test)]
+pub(super) fn attach_volatile_blob(
     runtime: &mut Tpm2Runtime,
     blob: &[u8],
     clock: &dyn HostClock,
-    boundary: VolatileDecodeBoundary,
 ) -> Result<(), TpmResult> {
-    let context = volatile_validation_context(runtime)?;
-    let owned = decode_volatile_blob(&context, blob, clock, boundary)?;
-
-    runtime::merge_volatile_state(runtime, owned);
+    let LoadedVolatile::Verified(state) =
+        unmarshal_for_restore(runtime, blob, clock).map_err(|_| TPM_RC_FAILURE)?
+    else {
+        return Err(TPM_RC_FAILURE);
+    };
+    runtime::merge_volatile_state(runtime, state);
     runtime::nv_shadow_restore(runtime);
-
-    if boundary.rejects_restored_failure_mode() && runtime.failure_mode {
+    if runtime.failure_mode {
         return Err(TPM_RC_FAILURE);
     }
     Ok(())
@@ -353,32 +433,89 @@ fn nv_commit(storage: &dyn Storage, runtime: &Tpm2Runtime) {
     let _ = host_nv_commit(storage, runtime);
 }
 
-pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Tpm2Runtime, TpmResult> {
+#[derive(Debug)]
+pub(super) enum InitFailure {
+    Callback(TpmResult),
+    FailureMode {
+        runtime: Box<Tpm2Runtime>,
+        volatile_loaded: bool,
+    },
+    NoRuntime(TpmResult),
+}
+
+impl InitFailure {
+    pub(super) fn code(&self) -> TpmResult {
+        match self {
+            Self::Callback(code) | Self::NoRuntime(code) => *code,
+            Self::FailureMode { .. } => TPM_RC_FAILURE,
+        }
+    }
+}
+
+impl From<TpmResult> for InitFailure {
+    fn from(code: TpmResult) -> Self {
+        Self::NoRuntime(code)
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<TpmResult> for InitFailure {
+    fn eq(&self, code: &TpmResult) -> bool {
+        self.code() == *code
+    }
+}
+
+pub(super) fn main_init_prologue(running: &mut Tpm2Runtime) {
+    running.failure_mode = false;
+    running.reported_failure = false;
+    running.was_manufactured = false;
+}
+
+fn permanent_state_failure(was_manufactured: bool, entropy: EntropySource) -> InitFailure {
+    let mut runtime = runtime::empty_state_runtime();
+    runtime.manufactured = was_manufactured;
+    runtime.was_manufactured = was_manufactured;
+    runtime.entropy = entropy;
+    failure_mode::enter_failure_mode(&mut runtime, failure_mode::FailureLocation::NvPowerOn);
+    InitFailure::FailureMode {
+        runtime: Box::new(runtime),
+        volatile_loaded: false,
+    }
+}
+
+pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Tpm2Runtime, InitFailure> {
     let entropy = context.entropy;
     let storage = context.storage;
 
-    context.platform.initialize()?;
-
-    storage.initialize()?;
+    context
+        .platform
+        .initialize()
+        .map_err(InitFailure::Callback)?;
+    storage.initialize().map_err(InitFailure::Callback)?;
 
     let probe = storage.probe_permanent();
     let load_supported = probe != StorageProbe::Unsupported;
 
-    let mut runtime = match select_permanent_state_source(context.preloaded_permanent, probe) {
+    let source = select_permanent_state_source(context.preloaded_permanent, probe);
+    let staged = matches!(
+        source,
+        PermanentStateSource::PreloadedEmpty | PermanentStateSource::PreloadedData(_)
+    );
+    let mut runtime = match source {
         PermanentStateSource::Manufacture => {
             // TODO: Implement the legacy NVChip fallback after TPMLIB_Process
             // and the command-time NVRAM mutation/commit path are complete.
             if !load_supported {
-                return Err(TPM_FAIL);
+                return Err(TPM_FAIL.into());
             }
             match storage.load(StateBlobKind::Permanent)? {
                 StorageLoad::Missing => {
                     if !storage.supports_store() {
-                        return Err(TPM_FAIL);
+                        return Err(TPM_FAIL.into());
                     }
                 }
                 StorageLoad::Unsupported | StorageLoad::Data(_) | StorageLoad::Empty => {
-                    return Err(TPM_FAIL);
+                    return Err(TPM_FAIL.into());
                 }
             }
             let profile = profile::validate_user_profile(context.configured_profile.as_deref())
@@ -386,76 +523,58 @@ pub(super) fn main_init(context: Tpm2InitContext<'_>) -> Result<Tpm2Runtime, Tpm
             let candidate = manufacture::manufacture_state(profile, context.entropy)?;
             let manufactured = runtime::commit_manufactured_state(candidate)?;
             nv_commit(storage, &manufactured);
-            let mut runtime = match storage
-                .load(StateBlobKind::Permanent)
-                .map_err(|_| TPM_RC_FAILURE)?
-            {
-                StorageLoad::Data(blob) => {
+            match storage.load(StateBlobKind::Permanent) {
+                Ok(StorageLoad::Data(blob)) => {
                     drop(manufactured);
                     initialize_from_permanent_blob(&blob, PermanentCommit::FirstBootReload)
-                        .map_err(|_| TPM_RC_FAILURE)?
+                        .map_err(|_| permanent_state_failure(true, entropy))?
                 }
-                StorageLoad::Missing => {
+                Ok(StorageLoad::Missing) => {
                     if !storage.supports_store() {
-                        return Err(TPM_FAIL);
+                        return Err(TPM_FAIL.into());
                     }
                     runtime::manufactured_zeroed_nv_runtime(&manufactured)
                 }
-                StorageLoad::Empty | StorageLoad::Unsupported => {
-                    return Err(TPM_FAIL);
+                Ok(StorageLoad::Empty | StorageLoad::Unsupported) => {
+                    return Err(TPM_FAIL.into());
                 }
-            };
-            volatile_phase(
-                storage,
-                context.preloaded_volatile,
-                context.clock,
-                &mut runtime,
-            )?;
-            Ok(runtime)
-        }
-        PermanentStateSource::PreloadedEmpty => {
-            let mut runtime = runtime::empty_state_runtime();
-            volatile_phase(
-                storage,
-                context.preloaded_volatile,
-                context.clock,
-                &mut runtime,
-            )?;
-            nv_commit(storage, &runtime);
-            Ok(runtime)
-        }
-        PermanentStateSource::PreloadedData(blob) => {
-            let mut runtime = initialize_from_permanent_blob(&blob, PermanentCommit::Restore)?;
-            volatile_phase(
-                storage,
-                context.preloaded_volatile,
-                context.clock,
-                &mut runtime,
-            )?;
-            nv_commit(storage, &runtime);
-            Ok(runtime)
-        }
-        PermanentStateSource::Backend => match storage
-            .load(StateBlobKind::Permanent)
-            .map_err(|_| TPM_RC_FAILURE)?
-        {
-            StorageLoad::Data(blob) => {
-                let mut runtime = initialize_from_permanent_blob(&blob, PermanentCommit::Restore)?;
-                volatile_phase(
-                    storage,
-                    context.preloaded_volatile,
-                    context.clock,
-                    &mut runtime,
-                )?;
-                Ok(runtime)
+                Err(_) => return Err(permanent_state_failure(true, entropy)),
             }
-            StorageLoad::Unsupported | StorageLoad::Missing | StorageLoad::Empty => Err(TPM_FAIL),
+        }
+        PermanentStateSource::PreloadedEmpty => runtime::empty_state_runtime(),
+        PermanentStateSource::PreloadedData(blob) => {
+            initialize_from_permanent_blob(&blob, PermanentCommit::Restore)?
+        }
+        PermanentStateSource::Backend => match storage.load(StateBlobKind::Permanent) {
+            Ok(StorageLoad::Data(blob)) => {
+                initialize_from_permanent_blob(&blob, PermanentCommit::Restore)
+                    .map_err(|_| permanent_state_failure(false, entropy))?
+            }
+            Ok(StorageLoad::Unsupported | StorageLoad::Missing | StorageLoad::Empty) => {
+                return Err(TPM_FAIL.into());
+            }
+            Err(_) => return Err(permanent_state_failure(false, entropy)),
         },
-    }?;
-    if runtime.restored_volatile.is_none() {
+    };
+    runtime.failure_diagnostics = context.failure_diagnostics;
+    if let VolatileRestore::Absent = volatile_phase(
+        storage,
+        context.preloaded_volatile,
+        context.clock,
+        &mut runtime,
+    ) {
         clock::time_power_on(&mut runtime, context.clock);
     }
     runtime.entropy = entropy;
+    if runtime.failure_mode {
+        return Err(InitFailure::FailureMode {
+            runtime: Box::new(runtime),
+            volatile_loaded: true,
+        });
+    }
+    if staged {
+        nv_commit(storage, &runtime);
+    }
     Ok(runtime)
 }
 
@@ -492,12 +611,7 @@ pub(super) fn validate_volatile_in_context(
     context: &VolatileValidationContext,
     volatile: &[u8],
 ) -> TpmResult {
-    match decode_volatile_blob(
-        context,
-        volatile,
-        &OsClock,
-        VolatileDecodeBoundary::Validate,
-    ) {
+    match decode_volatile_blob(context, volatile, &OsClock) {
         Ok(_) => TPM_SUCCESS,
         Err(code) => code,
     }
@@ -847,6 +961,22 @@ pub(in crate::library) fn failure_mode_volatile_state_fixture() -> Vec<u8> {
 }
 
 #[cfg(test)]
+pub(in crate::library) fn diagnosed_failure_mode_volatile_state_fixture() -> Vec<u8> {
+    let diagnostics = failure_mode::FailureLocation::NvCommit.diagnostics();
+    volatile::VolatileFixture {
+        in_failure_mode: 1,
+        fail_function: diagnostics.function,
+        fail_line: diagnostics.line,
+        fail_code: diagnostics.code,
+        ep_seed: Vec::new(),
+        sp_seed: Vec::new(),
+        pp_seed: Vec::new(),
+        ..volatile::VolatileFixture::default()
+    }
+    .bytes()
+}
+
+#[cfg(test)]
 pub(in crate::library) fn bad_tag_volatile_state_fixture() -> Vec<u8> {
     volatile::VolatileFixture {
         trailing_magic: 0,
@@ -1178,6 +1308,7 @@ mod tests {
             configured_profile: configured_profile.map(<[u8]>::to_vec),
             entropy: deterministic_entropy,
             clock: &TEST_HOST_CLOCK,
+            failure_diagnostics: FailureDiagnostics::default(),
         }
     }
 
@@ -1201,6 +1332,22 @@ mod tests {
     fn recording_clock() -> clock::RecordingClock {
         clock::RecordingClock::new(TEST_REALTIME_MS, TEST_MONOTONIC_MS)
     }
+
+    #[track_caller]
+    fn failure_mode_runtime(outcome: Result<Tpm2Runtime, InitFailure>) -> (Tpm2Runtime, bool) {
+        match outcome {
+            Err(InitFailure::FailureMode {
+                runtime,
+                volatile_loaded,
+            }) => {
+                assert!(runtime.failure_mode, "the published TPM is in failure mode");
+                (*runtime, volatile_loaded)
+            }
+            other => panic!("expected a TPM in failure mode, got {other:?}"),
+        }
+    }
+
+    const NV_POWER_ON: failure_mode::FailureLocation = failure_mode::FailureLocation::NvPowerOn;
 
     fn probe(exists: bool, load_supported: bool) -> StorageProbe {
         match (exists, load_supported) {
@@ -1434,7 +1581,10 @@ mod tests {
              each hit the callback, with TPM number 0 and the exact \
              upstream state names"
         );
-        assert!(runtime.manufactured, "restored state was manufactured");
+        assert!(
+            !runtime.manufactured,
+            "neither a manufacture nor a volatile state set it"
+        );
         assert!(!runtime.was_manufactured, "no manufacture ran this init");
         assert!(!runtime.startup_received, "TPM2_Startup is still pending");
         assert!(!runtime.failure_mode);
@@ -1467,16 +1617,22 @@ mod tests {
     }
 
     #[test]
-    fn backend_load_error_restore_failure_code() {
+    fn backend_load_error_nv_power_on_failure_mode() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let error = main_init(context(
+        let outcome = main_init(context(
             load_permanent_outcome(|| Err(77)).arc(),
             PreloadedBlob::Missing,
-        ))
-        .unwrap_err();
-        assert_eq!(error, TPM_RC_FAILURE);
+        ));
+        assert_eq!(outcome.as_ref().unwrap_err(), &TPM_RC_FAILURE);
+        let (runtime, volatile_loaded) = failure_mode_runtime(outcome);
+        assert!(
+            !volatile_loaded,
+            "NvPowerOn failed, so _TPM_Init never reached VolatileLoad"
+        );
+        assert_eq!(runtime.failure_diagnostics, NV_POWER_ON.diagnostics());
+        assert!(!runtime.was_manufactured);
     }
 
     #[test]
@@ -1559,16 +1715,28 @@ mod tests {
     }
 
     #[test]
-    fn malformed_backend_header_upstream_code() {
+    fn malformed_backend_header_nv_power_on_failure_mode() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let error = main_init(context(
+        EVENTS.lock().unwrap().clear();
+        let outcome = main_init(context(
             load_permanent_truncated().arc(),
             PreloadedBlob::Missing,
-        ))
-        .unwrap_err();
-        assert_eq!(error, TPM_RC_INSUFFICIENT);
+        ));
+        assert_eq!(
+            outcome.as_ref().unwrap_err(),
+            &TPM_RC_FAILURE,
+            "PERSISTENT_ALL_Unmarshal's own code stays inside NvPowerOn"
+        );
+        let (runtime, volatile_loaded) = failure_mode_runtime(outcome);
+        assert!(!volatile_loaded);
+        assert_eq!(runtime.failure_diagnostics, NV_POWER_ON.diagnostics());
+        assert_eq!(
+            events(),
+            ["load-truncated:Permanent", "load-truncated:Permanent"],
+            "no volatile load after NvPowerOn failed"
+        );
     }
 
     #[test]
@@ -1590,7 +1758,8 @@ mod tests {
             PreloadedBlob::Data(envelope_with_payload(&payload)),
         ))
         .expect("the upstream fixture section restores");
-        assert!(runtime.manufactured);
+        assert!(runtime.state.is_some());
+        assert!(!runtime.manufactured);
     }
 
     #[test]
@@ -1752,7 +1921,7 @@ mod tests {
                 load_retry().arc(),
                 PreloadedBlob::Data(envelope_with_payload(&payload_with_pcr_policies(block))),
             ))
-            .unwrap_or_else(|error| panic!("alg {hash_alg:#06x}: {error:#x}"));
+            .unwrap_or_else(|error| panic!("alg {hash_alg:#06x}: {:#x}", error.code()));
             assert_eq!(
                 events(),
                 ["load-retry:Permanent", "load-retry:Volatile"],
@@ -1921,7 +2090,7 @@ mod tests {
     fn version_4_blob_compressed_pp_list_path() {
         use crate::library::constants::TPM_RC_SIZE;
 
-        let results: Vec<Result<Tpm2Runtime, TpmResult>> = [4u16, 5]
+        let results: Vec<Result<Tpm2Runtime, InitFailure>> = [4u16, 5]
             .into_iter()
             .map(|version| {
                 let mut payload = compile_constants::marshalled_section(3);
@@ -2327,7 +2496,9 @@ mod tests {
                 no_storage(),
                 PreloadedBlob::Data(envelope_with_payload(&payload)),
             ))
-            .unwrap_or_else(|error| panic!("orderlyState {orderly_state:#06x}: {error:#x}"));
+            .unwrap_or_else(|error| {
+                panic!("orderlyState {orderly_state:#06x}: {:#x}", error.code())
+            });
             assert!(
                 runtime.state().state_reset.is_some() && runtime.state().state_clear.is_some(),
                 "orderlyState {orderly_state:#06x}: both sections restored"
@@ -2343,7 +2514,9 @@ mod tests {
                 no_storage(),
                 PreloadedBlob::Data(envelope_with_payload(&payload)),
             ))
-            .unwrap_or_else(|error| panic!("orderlyState {orderly_state:#06x}: {error:#x}"));
+            .unwrap_or_else(|error| {
+                panic!("orderlyState {orderly_state:#06x}: {:#x}", error.code())
+            });
             assert!(
                 runtime.state().state_reset.is_none() && runtime.state().state_clear.is_none(),
                 "orderlyState {orderly_state:#06x}: no startup sections"
@@ -2524,7 +2697,11 @@ mod tests {
                 PreloadedBlob::Data(envelope_v4_with_profile(profile, &valid_payload())),
             ))
             .unwrap_or_else(|error| {
-                panic!("profile {:?}: {error:#x}", String::from_utf8_lossy(profile))
+                panic!(
+                    "profile {:?}: {:#x}",
+                    String::from_utf8_lossy(profile),
+                    error.code()
+                )
             });
             assert_eq!(runtime.state().profile.state_format_level, level);
         }
@@ -2628,8 +2805,8 @@ mod tests {
                 load_retry().arc(),
                 PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             ))
-            .unwrap_or_else(|error| panic!("attempt {attempt}: {error:#x}"));
-            assert!(runtime.manufactured, "attempt {attempt}");
+            .unwrap_or_else(|error| panic!("attempt {attempt}: {:#x}", error.code()));
+            assert!(!runtime.manufactured, "attempt {attempt}");
             assert_eq!(
                 events(),
                 ["load-retry:Permanent", "load-retry:Volatile"],
@@ -2935,53 +3112,82 @@ mod tests {
     }
 
     #[test]
-    fn undecodable_preloaded_volatile_blob_failure_mode_result() {
+    fn short_preloaded_volatile_blob_ignored() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         EVENTS.lock().unwrap().clear();
         STORED_BLOBS.lock().unwrap().clear();
-        let error = main_init(context_with_volatile(
+        let runtime = main_init(context_with_volatile(
             recording_store(load_retry()).arc(),
             PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             PreloadedBlob::Data(vec![0xd0, 0x0d]),
         ))
-        .unwrap_err();
+        .expect("VolatileState_Load refuses a blob without room for its trailer untouched");
+        assert!(!runtime.failure_mode);
+        assert!(runtime.restored_volatile.is_none());
         assert_eq!(
-            error, TPM_RC_FAILURE,
-            "an undecodable volatile blob fails the restore"
+            events(),
+            ["load-retry:Permanent", "store:Permanent"],
+            "preloaded volatile data needs no backend load, and the \
+             preloaded-state commit follows the successful power-on"
+        );
+    }
+
+    #[test]
+    fn undecodable_preloaded_volatile_blob_failure_mode() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        EVENTS.lock().unwrap().clear();
+        STORED_BLOBS.lock().unwrap().clear();
+        let outcome = main_init(context_with_volatile(
+            recording_store(load_retry()).arc(),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+            PreloadedBlob::Data(vec![0xd0; 64]),
+        ));
+        assert_eq!(outcome.as_ref().unwrap_err(), &TPM_RC_FAILURE);
+        let (runtime, volatile_loaded) = failure_mode_runtime(outcome);
+        assert!(volatile_loaded);
+        assert_eq!(
+            runtime.failure_diagnostics,
+            runtime::FailureDiagnostics::default(),
+            "the header already failed, before any diagnostics"
+        );
+        assert!(
+            runtime.state.is_some(),
+            "the permanent state stays restored"
         );
         assert_eq!(
             events(),
             ["load-retry:Permanent"],
-            "preloaded volatile data needs no backend load, and the failed \
-             volatile phase suppresses the preloaded-state commit"
+            "no preloaded-state commit for a TPM in failure mode"
         );
         assert!(STORED_BLOBS.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn undecodable_backend_volatile_blob_failure_mode_result() {
+    fn short_backend_volatile_blob_ignored() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         EVENTS.lock().unwrap().clear();
-        let error = main_init(context(
+        let runtime = main_init(context(
             load_volatile_only(|| Ok(StorageLoad::Data(vec![0xd0, 0x0d]))).arc(),
             PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
         ))
-        .unwrap_err();
-        assert_eq!(error, TPM_RC_FAILURE);
+        .expect("a two-byte volatile blob is not restored");
+        assert!(!runtime.failure_mode);
         assert_eq!(events(), ["load:Permanent", "load:Volatile"]);
 
         EVENTS.lock().unwrap().clear();
-        let error = main_init(context(
+        let runtime = main_init(context(
             load_permanent_and_junk_volatile().arc(),
             PreloadedBlob::Missing,
         ))
-        .unwrap_err();
-        assert_eq!(error, TPM_RC_FAILURE);
+        .expect("the backend's two junk bytes are not restored either");
+        assert!(!runtime.failure_mode);
         assert_eq!(
             events(),
             [
@@ -2990,6 +3196,22 @@ mod tests {
                 "load-found:Volatile",
             ]
         );
+    }
+
+    #[test]
+    fn undecodable_backend_volatile_blob_failure_mode() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        EVENTS.lock().unwrap().clear();
+        let outcome = main_init(context(
+            load_volatile_only(|| Ok(StorageLoad::Data(vec![0xd0; 64]))).arc(),
+            PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+        ));
+        let (runtime, volatile_loaded) = failure_mode_runtime(outcome);
+        assert!(volatile_loaded);
+        assert!(runtime.restored_volatile.is_none());
+        assert_eq!(events(), ["load:Permanent", "load:Volatile"]);
     }
 
     #[test]
@@ -3185,6 +3407,7 @@ mod tests {
             configured_profile: None,
             entropy: deterministic_entropy,
             clock: &host,
+            failure_diagnostics: FailureDiagnostics::default(),
         })
         .expect("the v4 volatile fixture restores");
         assert_eq!(
@@ -3224,6 +3447,7 @@ mod tests {
             configured_profile: None,
             entropy: deterministic_entropy,
             clock: &host,
+            failure_diagnostics: FailureDiagnostics::default(),
         })
         .expect("the v3 volatile fixture restores");
         assert_eq!(
@@ -3265,96 +3489,199 @@ mod tests {
     }
 
     #[test]
-    fn failed_volatile_phase_no_partial_clock_state() {
+    fn short_volatile_blob_left_unrestored() {
         let storage = NoStorage;
-        let mut candidate = runtime::empty_state_runtime();
-        for attempt in 0..2 {
+        for length in [0, 2, volatile::SHA1_DIGEST_SIZE - 1] {
+            let mut candidate = runtime::empty_state_runtime();
             let host = recording_clock();
-            let result = volatile_phase(
+            volatile_phase(
                 &storage,
-                PreloadedBlob::Data(vec![0xd0, 0x0d]),
+                PreloadedBlob::Data(valid_volatile_state_fixture()[..length].to_vec()),
                 &host,
                 &mut candidate,
             );
-            assert_eq!(result.unwrap_err(), TPM_RC_FAILURE, "attempt {attempt}");
             assert!(
                 host.calls().is_empty(),
-                "attempt {attempt}: an invalid header reads no host clock"
+                "{length} bytes: VolatileState_Load stops before the unmarshal"
             );
-            assert_eq!(
-                candidate.clock,
-                clock::RuntimeClock::POWER_ON_RESET,
-                "attempt {attempt}: no partial clock state"
+            assert_eq!(candidate.clock, clock::RuntimeClock::POWER_ON_RESET);
+            assert!(candidate.restored_volatile.is_none(), "{length} bytes");
+            assert!(
+                !candidate.failure_mode,
+                "{length} bytes: _TPM_Init ignores the TPM_RC_INSUFFICIENT"
             );
-            assert!(candidate.restored_volatile.is_none(), "attempt {attempt}");
-            assert!(!candidate.failure_mode, "attempt {attempt}");
         }
     }
 
-    #[test]
-    fn tail_truncated_volatile_single_monotonic_read_no_publication() {
-        let payload = volatile::VolatileFixture {
+    fn diagnosed_volatile_fixture() -> volatile::VolatileFixture {
+        volatile::VolatileFixture {
+            tpm_established: 1,
+            fail_function: 0x0102_0304,
+            fail_line: 0x0506_0708,
+            fail_code: 0x090a_0b0c,
             ep_seed: Vec::new(),
             sp_seed: Vec::new(),
             pp_seed: Vec::new(),
             ..volatile::VolatileFixture::default()
         }
-        .payload();
+    }
+
+    const FIXTURE_DIAGNOSTICS: runtime::FailureDiagnostics = runtime::FailureDiagnostics {
+        function: 0x0102_0304,
+        line: 0x0506_0708,
+        code: 0x090a_0b0c,
+    };
+
+    #[test]
+    fn early_rejected_volatile_blob_keeps_only_the_fields_before_its_defect() {
+        let storage = NoStorage;
+        let blob = diagnosed_volatile_fixture().bytes();
+        for (length, ph_enable, drtm_handle) in [
+            (
+                volatile::SHA1_DIGEST_SIZE,
+                false,
+                hierarchy::TPM_RH_UNASSIGNED,
+            ),
+            (64, true, 0x4000_0007),
+        ] {
+            let mut candidate = runtime::empty_state_runtime();
+            let host = recording_clock();
+            volatile_phase(
+                &storage,
+                PreloadedBlob::Data(blob[..length].to_vec()),
+                &host,
+                &mut candidate,
+            );
+            assert!(candidate.failure_mode, "{length} bytes");
+            let carried = candidate
+                .restored_volatile
+                .as_ref()
+                .unwrap_or_else(|| panic!("{length} bytes: the leading fields are restored"));
+            assert_eq!(
+                carried.exclusive_audit_session, 0x0300_0000,
+                "{length} bytes"
+            );
+            assert_eq!(carried.drtm_handle, drtm_handle, "{length} bytes");
+            assert_eq!(candidate.timer.time_ms, 987_654, "{length} bytes");
+            assert_eq!(candidate.live.ph_enable, ph_enable, "{length} bytes");
+            assert_eq!(
+                candidate.failure_diagnostics,
+                runtime::FailureDiagnostics::default(),
+                "{length} bytes: the unmarshal never reached s_failFunction"
+            );
+            assert!(!candidate.tpm_established, "{length} bytes");
+            assert_eq!(
+                candidate.clock.last_system_time_ms, TEST_MONOTONIC_MS,
+                "{length} bytes: TimePowerOn ran before the load"
+            );
+            assert_eq!(
+                candidate.clock.host_monotonic_adjust_ms, 0,
+                "{length} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn tail_truncated_volatile_failure_mode_with_unmarshalled_fields() {
+        let payload = diagnosed_volatile_fixture().payload();
         let cut = payload.len() - 4 - 3 - 32 + 8;
         let storage = NoStorage;
-        let mut candidate = runtime::empty_state_runtime();
         for attempt in 0..2 {
+            let mut candidate = runtime::empty_state_runtime();
             let host = recording_clock();
-            let result = volatile_phase(
+            volatile_phase(
                 &storage,
                 PreloadedBlob::Data(payload[..cut].to_vec()),
                 &host,
                 &mut candidate,
             );
-            assert_eq!(result.unwrap_err(), TPM_RC_FAILURE, "attempt {attempt}");
             assert_eq!(
                 host.calls(),
-                [clock::ClockCall::Monotonic],
-                "attempt {attempt}: exactly the one tail monotonic read"
+                [
+                    clock::ClockCall::Monotonic,
+                    clock::ClockCall::Monotonic,
+                    clock::ClockCall::Monotonic
+                ],
+                "attempt {attempt}: the decoder's tail sample, TimePowerOn, then the restore's"
+            );
+            assert!(candidate.failure_mode, "attempt {attempt}");
+            assert_eq!(
+                candidate.failure_diagnostics, FIXTURE_DIAGNOSTICS,
+                "attempt {attempt}: the diagnostics precede the tail"
+            );
+            assert!(candidate.tpm_established, "attempt {attempt}");
+            assert_eq!(
+                (
+                    candidate.timer.real_time_previous,
+                    candidate.timer.tpm_time,
+                    candidate.timer.adjust_rate,
+                    candidate.timer.timer_reset,
+                    candidate.timer.timer_stopped,
+                ),
+                (111_222, 111_000, 30_000, false, false),
+                "attempt {attempt}: the timer block precedes the tail"
             );
             assert_eq!(
                 candidate.clock,
-                clock::RuntimeClock::POWER_ON_RESET,
-                "attempt {attempt}: no partial clock state"
+                clock::RuntimeClock {
+                    host_monotonic_adjust_ms: 5_000_000 - TEST_MONOTONIC_MS as i64,
+                    suspended_elapsed_ms: 0,
+                    last_system_time_ms: TEST_MONOTONIC_MS,
+                    last_reported_time_ms: 0,
+                },
+                "attempt {attempt}: only the tail's first sample was restored"
             );
-            assert!(candidate.restored_volatile.is_none(), "attempt {attempt}");
-            assert!(!candidate.failure_mode, "attempt {attempt}");
+            let carried = candidate
+                .restored_volatile
+                .as_ref()
+                .unwrap_or_else(|| panic!("attempt {attempt}: the leading fields are restored"));
+            assert_eq!(carried.tail_v4, None, "attempt {attempt}");
         }
     }
 
     #[test]
-    fn bad_volatile_digest_no_partial_clock_state() {
-        let mut blob = valid_volatile_state_fixture();
+    fn bad_volatile_digest_full_unmarshal_failure_mode() {
+        let mut blob = diagnosed_volatile_fixture().bytes();
         let last = blob.len() - 1;
         blob[last] ^= 0xff;
         let storage = NoStorage;
-        let mut candidate = runtime::empty_state_runtime();
+        let reference = {
+            let mut runtime = runtime::empty_state_runtime();
+            let valid = diagnosed_volatile_fixture().bytes();
+            volatile_phase(
+                &storage,
+                PreloadedBlob::Data(valid),
+                &recording_clock(),
+                &mut runtime,
+            );
+            runtime
+        };
         for attempt in 0..2 {
+            let mut candidate = runtime::empty_state_runtime();
+            candidate.shadow_pcr_pending = true;
             let host = recording_clock();
-            let result = volatile_phase(
+            volatile_phase(
                 &storage,
                 PreloadedBlob::Data(blob.clone()),
                 &host,
                 &mut candidate,
             );
-            assert_eq!(result.unwrap_err(), TPM_RC_FAILURE, "attempt {attempt}");
             assert_eq!(
                 host.calls(),
                 [clock::ClockCall::Monotonic, clock::ClockCall::Realtime],
                 "attempt {attempt}: the v4 unmarshal reads run before the digest check"
             );
-            assert_eq!(
-                candidate.clock,
-                clock::RuntimeClock::POWER_ON_RESET,
-                "attempt {attempt}: no partial clock state"
+            assert!(candidate.failure_mode, "attempt {attempt}");
+            assert_eq!(candidate.failure_diagnostics, FIXTURE_DIAGNOSTICS);
+            assert!(
+                candidate.restored_volatile.is_some(),
+                "attempt {attempt}: every field was unmarshalled before the check"
             );
-            assert!(candidate.restored_volatile.is_none(), "attempt {attempt}");
-            assert!(!candidate.failure_mode, "attempt {attempt}");
+            assert_eq!(candidate.clock, reference.clock, "attempt {attempt}");
+            assert!(
+                candidate.shadow_pcr_pending,
+                "attempt {attempt}: no NVShadowRestore for a failed load"
+            );
         }
     }
 
@@ -3372,6 +3699,7 @@ mod tests {
                 configured_profile: None,
                 entropy: deterministic_entropy,
                 clock: host,
+                failure_diagnostics: FailureDiagnostics::default(),
             })
             .expect("the restore succeeds")
         };
@@ -3493,7 +3821,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_failure_mode_failure_boundary() {
+    fn restored_failure_mode_retained_runtime() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3501,24 +3829,43 @@ mod tests {
         STORED_BLOBS.lock().unwrap().clear();
         let blob = volatile::VolatileFixture {
             in_failure_mode: 1,
+            fail_function: 0x6365_7845,
+            fail_line: 318,
+            fail_code: 3,
             ep_seed: Vec::new(),
             sp_seed: Vec::new(),
             pp_seed: Vec::new(),
             ..volatile::VolatileFixture::default()
         }
         .bytes();
-        let error = main_init(context_with_volatile(
+        let outcome = main_init(context_with_volatile(
             recording_store(TestStorage::new()).arc(),
             PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
             PreloadedBlob::Data(blob),
-        ))
-        .unwrap_err();
-        assert_eq!(error, TPM_RC_FAILURE);
-        assert!(STORED_BLOBS.lock().unwrap().is_empty());
+        ));
+        assert_eq!(outcome.as_ref().unwrap_err(), &TPM_RC_FAILURE);
+        let (runtime, volatile_loaded) = failure_mode_runtime(outcome);
+        assert!(volatile_loaded);
+        assert_eq!(
+            runtime.failure_diagnostics,
+            failure_mode::FailureLocation::NvCommit.diagnostics(),
+            "the restored diagnostics, not a fresh runtime's"
+        );
+        let restored = runtime
+            .restored_volatile
+            .as_ref()
+            .expect("the whole volatile state was restored");
+        assert_eq!(restored.time, 987_654);
+        assert!(runtime.startup_received, "g_initialized from the blob");
+        assert!(!runtime.shadow_pcr_pending, "NVShadowRestore ran");
+        assert!(
+            STORED_BLOBS.lock().unwrap().is_empty(),
+            "no preloaded-state commit for a TPM in failure mode"
+        );
     }
 
     #[test]
-    fn corrupt_volatile_blob_no_publication_no_store() {
+    fn corrupt_volatile_blob_failure_mode_no_store() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3540,13 +3887,17 @@ mod tests {
         for blob in [bad_magic, bad_digest, truncated] {
             EVENTS.lock().unwrap().clear();
             STORED_BLOBS.lock().unwrap().clear();
-            let error = main_init(context_with_volatile(
-                recording_store(TestStorage::new()).arc(),
-                PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
-                PreloadedBlob::Data(blob),
-            ))
-            .unwrap_err();
-            assert_eq!(error, TPM_RC_FAILURE);
+            let (runtime, volatile_loaded) =
+                failure_mode_runtime(main_init(context_with_volatile(
+                    recording_store(TestStorage::new()).arc(),
+                    PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
+                    PreloadedBlob::Data(blob),
+                )));
+            assert!(volatile_loaded);
+            assert!(
+                runtime.shadow_pcr_pending,
+                "a failed VolatileState_Load skips NVShadowRestore"
+            );
             assert!(STORED_BLOBS.lock().unwrap().is_empty());
         }
     }
@@ -3607,17 +3958,35 @@ mod tests {
     }
 
     #[test]
-    fn seed_tie_foreign_volatile_blob_rejection() {
+    fn seed_tie_foreign_volatile_blob_failure_mode() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let error = main_init(context_with_volatile(
+        let blob = volatile::VolatileFixture {
+            fail_function: 0x0102_0304,
+            ..volatile::VolatileFixture::default()
+        }
+        .bytes();
+        let (runtime, _) = failure_mode_runtime(main_init(context_with_volatile(
             no_storage(),
             PreloadedBlob::Data(VALID_ENVELOPE.to_vec()),
-            PreloadedBlob::Data(volatile::VolatileFixture::default().bytes()),
-        ))
-        .unwrap_err();
-        assert_eq!(error, TPM_RC_FAILURE);
+            PreloadedBlob::Data(blob),
+        )));
+        assert_eq!(
+            runtime.failure_diagnostics.function, 0x0102_0304,
+            "the seeds follow the diagnostics, which stay in effect"
+        );
+        assert!(runtime.tpm_established, "and so does tpmEstablished");
+        assert_eq!(
+            (runtime.timer.real_time_previous, runtime.timer.tpm_time),
+            (111_222, 111_000),
+            "the timer block precedes the seeds"
+        );
+        let carried = runtime
+            .restored_volatile
+            .as_ref()
+            .expect("the fields before the seeds are restored");
+        assert_eq!(carried.tail_v4, None, "the tail after the seeds is not");
     }
 
     static BACKEND_PERMALL: Mutex<Option<Vec<u8>>> = Mutex::new(None);
@@ -3847,8 +4216,8 @@ mod tests {
         assert!(state.state_reset.is_none() && state.state_clear.is_none());
         assert!(!state.read_su_state);
 
-        assert!(state.index_orderly_ram.entries.is_empty());
-        assert_eq!(state.index_orderly_ram.used_bytes, 0);
+        assert!(state.index_orderly_ram.views().is_empty());
+        assert_eq!(state.index_orderly_ram.used_bytes(), 0);
         assert!(state.user_nvram.entries.is_empty());
         assert_eq!(state.user_nvram.max_count, 0);
         assert_eq!(state.user_nvram.required_capacity, 12);
@@ -3975,6 +4344,7 @@ mod tests {
                 configured_profile: None,
                 entropy: failing_entropy,
                 clock: &TEST_HOST_CLOCK,
+                failure_diagnostics: FailureDiagnostics::default(),
             })
             .unwrap_err();
             assert_eq!(error, TPM_FAIL, "attempt {attempt}");
@@ -4001,7 +4371,8 @@ mod tests {
 
         let restored = main_init(context(no_storage(), PreloadedBlob::Data(blob.clone())))
             .expect("the stored blob restores");
-        assert!(restored.manufactured);
+        assert!(manufactured.manufactured);
+        assert!(!restored.manufactured);
         assert!(
             !restored.was_manufactured,
             "a restore never reports TPMLIB_WasManufactured"
@@ -4062,20 +4433,28 @@ mod tests {
     }
 
     #[test]
-    fn nonempty_volatile_state_manufacture_publication_prevention() {
+    fn stale_volatile_state_after_manufacture_failure_mode() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_manufacture_backend();
-        let error = main_init(context_with_platform(
+        let outcome = main_init(context_with_platform(
             manufacture_platform(),
             manufacture_storage(),
             PreloadedBlob::Missing,
-            PreloadedBlob::Data(vec![0xd0, 0x0d]),
+            PreloadedBlob::Data(volatile::VolatileFixture::default().bytes()),
             None,
-        ))
-        .unwrap_err();
-        assert_eq!(error, TPM_RC_FAILURE);
+        ));
+        let (runtime, volatile_loaded) = failure_mode_runtime(outcome);
+        assert!(volatile_loaded);
+        assert!(
+            runtime.was_manufactured,
+            "g_wasManufactured is set before the power-on that fails"
+        );
+        assert!(
+            runtime.state.is_some(),
+            "the manufactured state stays loaded"
+        );
         assert_eq!(
             events(),
             &FIRST_BOOT_EVENTS[..6],

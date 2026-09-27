@@ -539,6 +539,7 @@ pub(super) fn marshal_public_area(public: &OwnedTpmtPublic) -> Result<Vec<u8>, T
         .write_tpm2b(&public.auth_policy)
         .map_err(|_| TPM_RC_SIZE)?;
     match &public.parameters {
+        PublicParms::Unselected => {}
         PublicParms::KeyedHash(scheme) => marshal_scheme(&mut writer, scheme),
         PublicParms::SymCipher(sym) => marshal_sym_def_object(&mut writer, sym),
         PublicParms::Rsa {
@@ -565,6 +566,7 @@ pub(super) fn marshal_public_area(public: &OwnedTpmtPublic) -> Result<Vec<u8>, T
         }
     }
     match &public.unique {
+        OwnedPublicId::Unselected => {}
         OwnedPublicId::KeyedHash(bytes) | OwnedPublicId::Sym(bytes) | OwnedPublicId::Rsa(bytes) => {
             writer.write_tpm2b(bytes).map_err(|_| TPM_RC_SIZE)?;
         }
@@ -626,6 +628,7 @@ pub(super) fn parent_public_info(
             scheme.hash_alg.unwrap_or(0),
             scheme.kdf.unwrap_or(0),
         ],
+        PublicParms::Unselected => [0; 3],
     };
     ParentPublicInfo {
         attributes: public.object_attributes,
@@ -742,6 +745,7 @@ pub(super) fn scheme_checks(
 ) -> Result<(), TpmResult> {
     let attributes = public.object_attributes;
     let symmetric = match &public.parameters {
+        PublicParms::Unselected => return Err(TPM_RC_TYPE),
         PublicParms::SymCipher(sym) => {
             if has(attributes, TPMA_OBJECT_DECRYPT)
                 && !matches!(

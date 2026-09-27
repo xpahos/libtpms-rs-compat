@@ -152,10 +152,11 @@ mod tests {
         HMAC_SESSION_FIRST, POLICY_SESSION_FIRST, TPM_RS_PW,
     };
     use crate::library::tpm2::manufacture::manufacture_state;
+    use crate::library::tpm2::nv::OrderlyRamImage;
     use crate::library::tpm2::parse_persistent_all_payload;
     use crate::library::tpm2::persistent::{
-        OwnedIndexOrderlyRam, OwnedOrderlyRamEntry, OwnedPersistentState, PersistentAllEnvelope,
-        materialize_persistent_state, persistent_all_store,
+        OwnedPersistentState, PersistentAllEnvelope, materialize_persistent_state,
+        persistent_all_store,
     };
     use crate::library::tpm2::profile::validate_user_profile;
     use crate::library::tpm2::runtime::{commit_manufactured_state, commit_restored_state};
@@ -272,7 +273,7 @@ mod tests {
         nv_orderly_counter: u64,
         nv_reset_summary: Option<(u32, u32)>,
         nv_clear_present: bool,
-        nv_ram_entries: Vec<(u32, u32, Vec<u8>)>,
+        nv_ram: OrderlyRamImage,
         nv_memory: Box<[u8]>,
         live_da_used: bool,
         live_reset_present: bool,
@@ -292,12 +293,7 @@ mod tests {
                 .as_ref()
                 .map(|reset| (reset.clear_count, reset.restart_count)),
             nv_clear_present: state.state_clear.is_some(),
-            nv_ram_entries: state
-                .index_orderly_ram
-                .entries
-                .iter()
-                .map(|entry| (entry.handle, entry.attributes, entry.data.clone()))
-                .collect(),
+            nv_ram: state.index_orderly_ram.clone(),
             nv_memory: runtime.nv_memory.clone(),
             live_da_used: runtime.live.da_used,
             live_reset_present: runtime.live.state_reset.is_some(),
@@ -332,15 +328,7 @@ mod tests {
             before.nv_reset_summary
         );
         assert_eq!(state.state_clear.is_some(), before.nv_clear_present);
-        assert_eq!(
-            state
-                .index_orderly_ram
-                .entries
-                .iter()
-                .map(|entry| (entry.handle, entry.attributes, entry.data.clone()))
-                .collect::<Vec<_>>(),
-            before.nv_ram_entries
-        );
+        assert_eq!(state.index_orderly_ram, before.nv_ram);
         assert_eq!(runtime.nv_memory, before.nv_memory);
         assert_eq!(runtime.live.da_used, before.live_da_used);
         assert_eq!(
@@ -742,22 +730,23 @@ mod tests {
         assert_eq!(state(&runtime).persistent.orderly_state, TPM_SU_CLEAR);
     }
 
+    fn live_ram_with(handle: u32, data: &[u8]) -> OrderlyRamImage {
+        let mut ram = OrderlyRamImage::zeroed();
+        ram.add(handle, TPMA_NV_ORDERLY | TPMA_NV_WRITTEN, data.len() as u16)
+            .unwrap();
+        let entry = ram.find(handle).unwrap();
+        ram.write(entry, 0, data).unwrap();
+        ram
+    }
+
     #[test]
     fn orderly_ram_nv_state_copy() {
         let mut runtime = started_runtime();
-        let entry = OwnedOrderlyRamEntry {
-            declared_size: 20,
-            handle: 0x0100_0005,
-            attributes: TPMA_NV_ORDERLY | TPMA_NV_WRITTEN,
-            data: vec![0xaa; 8],
-        };
-        runtime.live.index_orderly_ram = OwnedIndexOrderlyRam {
-            sourceside_size: 512,
-            entries: vec![entry.clone()],
-            terminated: true,
-            used_bytes: 20,
-        };
-        assert!(state(&runtime).index_orderly_ram.entries.is_empty());
+        let mut bytes = live_ram_with(0x0100_0005, &[0xaa; 8]).as_bytes().to_vec();
+        bytes[300] = 0x5a;
+        let live = OrderlyRamImage::from_bytes(&bytes).unwrap();
+        runtime.live.index_orderly_ram = live.clone();
+        assert!(state(&runtime).index_orderly_ram.views().is_empty());
 
         assert_eq!(
             dispatch_bytes(&mut runtime, &shutdown_command(TPM_SU_CLEAR)),
@@ -765,17 +754,45 @@ mod tests {
         );
 
         let state = state(&runtime);
-        assert_eq!(state.index_orderly_ram.entries, vec![entry.clone()]);
+        assert_eq!(state.index_orderly_ram, live, "the NV copy is the raw RAM");
         assert_eq!(runtime.nv_memory, build_nv_image(state).unwrap());
 
         let reloaded = reload(state);
-        assert_eq!(reloaded.index_orderly_ram.entries.len(), 1);
-        assert_eq!(reloaded.index_orderly_ram.entries[0].handle, entry.handle);
         assert_eq!(
-            reloaded.index_orderly_ram.entries[0].attributes,
-            entry.attributes
+            reloaded.index_orderly_ram,
+            live_ram_with(0x0100_0005, &[0xaa; 8]),
+            "a reload rebuilds the entries and nothing past them"
         );
-        assert_eq!(reloaded.index_orderly_ram.entries[0].data, entry.data);
+    }
+
+    #[test]
+    fn a_malformed_orderly_ram_entry_is_persisted_as_written() {
+        let mut runtime = started_runtime();
+        let mut bytes = live_ram_with(0x0100_0005, &[0xaa; 8]).as_bytes().to_vec();
+        bytes[..8].copy_from_slice(&[4, 0, 0, 0, 0, 0, 0, 0]);
+        let live = OrderlyRamImage::from_bytes(&bytes).unwrap();
+        runtime.live.index_orderly_ram = live.clone();
+
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &shutdown_command(TPM_SU_STATE)),
+            response_bytes(SUCCESS)
+        );
+
+        let state = state(&runtime);
+        assert_eq!(state.index_orderly_ram, live);
+        let stored = persistent_all_store(state).unwrap();
+        let mut section = vec![
+            0x00, 0x02, 0x53, 0x46, 0xfe, 0xab, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00,
+        ];
+        section.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0]);
+        section.extend_from_slice(&(TPMA_NV_ORDERLY | TPMA_NV_WRITTEN).to_be_bytes());
+        section.extend_from_slice(&[0x01, 0x00, 0x00]);
+        assert!(
+            stored
+                .windows(section.len())
+                .any(|window| window == section.as_slice()),
+            "the size, handle and attributes are written before the walk stops"
+        );
     }
 
     #[test]
