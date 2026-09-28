@@ -66,29 +66,29 @@ impl OrderlyRamImage {
         Some(image)
     }
 
+    fn portable_entry_size(&self, at: usize) -> Option<usize> {
+        let size = usize::try_from(self.u32_at(at)).ok()?;
+        (HEADER..=SPACE.checked_sub(at)?)
+            .contains(&size)
+            .then_some(size)
+    }
+
     pub(in crate::library::tpm2) fn portable_entries(&self) -> Vec<u8> {
         let mut out = Vec::new();
         let mut at = 0usize;
-        loop {
-            let size = self.u32_at(at);
-            out.extend_from_slice(&size.to_be_bytes());
-            if size == 0 {
-                break;
-            }
+        while let Some(size) = self.portable_entry_size(at) {
+            out.extend_from_slice(&self.u32_at(at).to_be_bytes());
             out.extend_from_slice(&self.u32_at(at + HANDLE).to_be_bytes());
             out.extend_from_slice(&self.u32_at(at + ATTRIBUTES).to_be_bytes());
-            let size = size as usize;
-            if size < HEADER || at.saturating_add(size) > SPACE {
-                break;
-            }
             let data_size = (size - HEADER) as u16;
             out.extend_from_slice(&data_size.to_be_bytes());
             out.extend_from_slice(&self.0[at + HEADER..at + size]);
             at += size;
             if at + HEADER > SPACE {
-                break;
+                return out;
             }
         }
+        out.extend_from_slice(&0u32.to_be_bytes());
         out
     }
 
@@ -364,39 +364,165 @@ mod tests {
         assert_eq!(portable(&image), expected);
     }
 
-    #[test]
-    fn the_portable_form_stops_after_a_malformed_header() {
-        let mut image = OrderlyRamImage::zeroed();
+    fn portable_entry(handle: u32, attributes: u32, data: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(HEADER + data.len()).unwrap();
+        let mut out = words(&[size, handle, attributes]);
+        out.extend_from_slice(&u16::try_from(data.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(data);
+        out
+    }
+
+    const FIRST_DATA: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+    const SECOND_DATA: [u8; 3] = [9, 10, 11];
+    const SECOND_AT: usize = HEADER + FIRST_DATA.len();
+    const THIRD_AT: usize = SECOND_AT + HEADER + SECOND_DATA.len();
+
+    fn two_entries() -> OrderlyRamImage {
+        let mut image = OrderlyRamImage::from_bytes(&[0xee; 512]).unwrap();
+        image.put_u32(0, 0);
         image
             .add(0x0100_0001, ORDERLY | TPMA_NV_WRITTEN, 8)
             .unwrap();
-        image.put_u32(0, 4);
-        image.put_u32(HANDLE, 0);
-        assert_eq!(
-            portable(&image),
-            words(&[4, 0, ORDERLY | TPMA_NV_WRITTEN]),
-            "a size below the header is written with its handle and attributes, then the walk ends"
+        let first = image.find(0x0100_0001).unwrap();
+        image.write(first, 0, &FIRST_DATA).unwrap();
+        image.add(0x0100_0002, ORDERLY, 3).unwrap();
+        let second = image.find(0x0100_0002).unwrap();
+        image.write(second, 0, &SECOND_DATA).unwrap();
+        image
+    }
+
+    fn first_entry() -> Vec<u8> {
+        portable_entry(0x0100_0001, ORDERLY | TPMA_NV_WRITTEN, &FIRST_DATA)
+    }
+
+    fn second_entry() -> Vec<u8> {
+        portable_entry(0x0100_0002, ORDERLY, &SECOND_DATA)
+    }
+
+    const TERMINATOR_WORD: [u8; 4] = [0; 4];
+
+    #[track_caller]
+    fn assert_portable(image: &OrderlyRamImage, expected: &[u8]) {
+        let source = image.clone();
+        assert_eq!(portable(image), expected);
+        assert_eq!(image, &source, "the source image is never rewritten");
+    }
+
+    #[test]
+    fn a_zero_size_ends_the_portable_form_with_its_terminator() {
+        assert_portable(&OrderlyRamImage::zeroed(), &TERMINATOR_WORD);
+        let image = two_entries();
+        assert_eq!(image.u32_at(THIRD_AT), 0);
+        assert_portable(
+            &image,
+            &[first_entry(), second_entry(), TERMINATOR_WORD.to_vec()].concat(),
         );
-        image.put_u32(0, 1024);
-        image.put_u32(HANDLE, 0x0100_0001);
-        assert_eq!(
-            portable(&image),
-            words(&[1024, 0x0100_0001, ORDERLY | TPMA_NV_WRITTEN]),
-            "a size past the image ends the walk the same way"
-        );
-        image.put_u32(0, 508);
-        assert_eq!(
-            portable(&image)[..14],
-            [
-                words(&[508, 0x0100_0001, ORDERLY | TPMA_NV_WRITTEN]),
-                vec![0x01, 0xf0]
+    }
+
+    #[test]
+    fn an_undersized_first_entry_becomes_the_terminator() {
+        for size in [4, 1, 11] {
+            let mut image = two_entries();
+            image.put_u32(0, size);
+            assert_portable(&image, &TERMINATOR_WORD);
+        }
+    }
+
+    #[test]
+    fn an_oversized_first_entry_becomes_the_terminator() {
+        for size in [1024, 513, u32::MAX] {
+            let mut image = two_entries();
+            image.put_u32(0, size);
+            assert_portable(&image, &TERMINATOR_WORD);
+        }
+    }
+
+    #[test]
+    fn a_wrapping_size_after_a_valid_entry_keeps_that_entry_and_ends_there() {
+        for size in [u32::MAX, u32::MAX - 3, u32::MAX - 19, 0x8000_0000] {
+            let mut image = two_entries();
+            image.put_u32(SECOND_AT, size);
+            assert_portable(&image, &[first_entry(), TERMINATOR_WORD.to_vec()].concat());
+        }
+    }
+
+    #[test]
+    fn an_invalid_entry_after_valid_entries_keeps_every_earlier_entry() {
+        for size in [4, HEADER as u32 - 1, (SPACE - THIRD_AT) as u32 + 1, 1024] {
+            let mut image = two_entries();
+            image.put_u32(THIRD_AT, size);
+            image.put_u32(THIRD_AT + HANDLE, 0x0100_0003);
+            image.put_u32(THIRD_AT + ATTRIBUTES, ORDERLY);
+            assert_portable(
+                &image,
+                &[first_entry(), second_entry(), TERMINATOR_WORD.to_vec()].concat(),
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_entry_sizes_are_written_whole() {
+        let mut image = OrderlyRamImage::zeroed();
+        image.add(0x0100_0001, ORDERLY, 0).unwrap();
+        assert_portable(
+            &image,
+            &[
+                portable_entry(0x0100_0001, ORDERLY, &[]),
+                TERMINATOR_WORD.to_vec(),
             ]
-            .concat()
+            .concat(),
         );
+
+        let mut image = OrderlyRamImage::from_bytes(&[0x5a; 512]).unwrap();
+        image.put_u32(0, 512);
+        image.put_u32(HANDLE, 0x0100_0001);
+        image.put_u32(ATTRIBUTES, ORDERLY);
+        assert_portable(&image, &portable_entry(0x0100_0001, ORDERLY, &[0x5a; 500]));
+
+        let mut image = two_entries();
+        image.put_u32(SECOND_AT, (SPACE - SECOND_AT) as u32);
+        let rest = &image.as_bytes()[SECOND_AT + HEADER..];
+        assert_portable(
+            &image,
+            &[first_entry(), portable_entry(0x0100_0002, ORDERLY, rest)].concat(),
+        );
+
+        let mut image = two_entries();
+        image.put_u32(SECOND_AT, (SPACE - SECOND_AT - HEADER + 1) as u32);
+        let short_of_a_header = &image.as_bytes()[SECOND_AT + HEADER..SPACE - HEADER + 1];
+        assert_portable(
+            &image,
+            &[
+                first_entry(),
+                portable_entry(0x0100_0002, ORDERLY, short_of_a_header),
+            ]
+            .concat(),
+        );
+    }
+
+    #[test]
+    fn a_malformed_image_reloads_as_its_valid_prefix() {
+        use crate::library::tpm2::nv::{IndexOrderlyRamFixture, parse_index_orderly_ram};
+
+        let mut image = two_entries();
+        image.put_u32(SECOND_AT, u32::MAX - 3);
+        let mut section = IndexOrderlyRamFixture {
+            entries: Vec::new(),
+            terminator: false,
+            ..IndexOrderlyRamFixture::default()
+        }
+        .bytes();
+        let entries_at = section.len() - 3;
+        section.splice(entries_at..entries_at, portable(&image));
+        let parsed = parse_index_orderly_ram(&section).expect("the section reloads");
+        let reloaded = OrderlyRamImage::from_portable(&parsed).unwrap();
         assert_eq!(
-            portable(&image).len(),
-            14 + 496,
-            "no terminator fits after an entry that leaves less than a header"
+            reloaded.views(),
+            vec![RamEntryView {
+                handle: 0x0100_0001,
+                attributes: ORDERLY | TPMA_NV_WRITTEN,
+                data: FIRST_DATA.to_vec(),
+            }]
         );
     }
 

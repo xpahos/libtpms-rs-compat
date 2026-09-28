@@ -746,10 +746,13 @@ mod tests {
     use super::*;
     use crate::library::tpm2::clock::{RecordingClock, time_power_on};
     use crate::library::tpm2::golden_responses::get_test_result::vector;
-    use crate::library::tpm2::object::ATTR_OCCUPIED;
-    use crate::library::tpm2::object::fixtures::any_rsa_object;
-    use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedObjectBody, OwnedPublicId};
-    use crate::library::tpm2::public::{PublicParms, TPM_ALG_ECC, TPM_ALG_RSA};
+    use crate::library::tpm2::hierarchy::TPM_RH_OWNER;
+    use crate::library::tpm2::object::fixtures::{
+        SEQ_HASH, SEQ_HMAC, any_rsa_object, any_sequence_object,
+    };
+    use crate::library::tpm2::object::{ANY_HASH_STATE_MAGIC, ATTR_OCCUPIED, BN_PRIME_T_MAGIC};
+    use crate::library::tpm2::persistent::{OwnedAnyObject, OwnedAnyObjectBody, OwnedObjectBody};
+    use crate::library::tpm2::public::TPM_ALG_RSA;
     use crate::library::tpm2::runtime::empty_state_runtime;
     use crate::library::tpm2::state::StateResetFixture;
     use crate::library::tpm2::volatile::attach::resumable_sequence;
@@ -909,24 +912,97 @@ mod tests {
         }
     }
 
+    const SEQUENCES_HMAC_HASH_STATE: usize = 4177;
+    const SEQUENCES_EMPTY_HASH_STATE: usize = 4585;
+
+    fn resealed(mut blob: Vec<u8>) -> Vec<u8> {
+        let payload = blob.len() - SHA1_DIGEST_SIZE;
+        let digest = <sha1::Sha1 as sha1::Digest>::digest(&blob[..payload]);
+        blob[payload..].copy_from_slice(&digest);
+        blob
+    }
+
+    fn sequences_with(at: usize, bytes: &[u8]) -> Vec<u8> {
+        let mut blob = vector("VOLATILE_SEQUENCES").to_vec();
+        blob[at..at + bytes.len()].copy_from_slice(bytes);
+        resealed(blob)
+    }
+
+    #[track_caller]
+    fn assert_empty_slot(runtime: &Tpm2Runtime, slot: usize) {
+        let object = &runtime.live.objects[slot];
+        assert_eq!(object.attributes, 0, "slot {slot} attributes");
+        assert!(
+            matches!(object.body, OwnedAnyObjectBody::Unoccupied),
+            "slot {slot} keeps a {object:?}"
+        );
+    }
+
+    #[track_caller]
+    fn assert_occupied_slot(runtime: &Tpm2Runtime, slot: usize) {
+        let object = &runtime.live.objects[slot];
+        assert_ne!(
+            object.attributes & ATTR_OCCUPIED,
+            0,
+            "slot {slot} attributes"
+        );
+        assert!(
+            !matches!(object.body, OwnedAnyObjectBody::Unoccupied),
+            "slot {slot} lost its body"
+        );
+    }
+
     #[test]
-    fn a_newer_hash_state_header_only_stops_the_walk_without_a_sha_state() {
+    fn a_hash_state_header_defect_stops_the_walk_and_empties_its_sequence_slot() {
         let clock = host();
         let base = restore_permanent_blob_for_test(vector("PERMALL_SEQUENCES")).unwrap();
         let boundary = Boundary::of(&base);
-        for (min_version, walks) in [(4183, true), (4591, false)] {
-            let mut blob = vector("VOLATILE_SEQUENCES").to_vec();
-            blob[min_version..min_version + 2].copy_from_slice(&3u16.to_be_bytes());
-            let payload = blob.len() - SHA1_DIGEST_SIZE;
-            let digest = <sha1::Sha1 as sha1::Digest>::digest(&blob[..payload]);
-            blob[payload..].copy_from_slice(&digest);
+        let hmac = SEQUENCES_HMAC_HASH_STATE;
+        let empty = SEQUENCES_EMPTY_HASH_STATE;
+        let mut flipped_magic = ANY_HASH_STATE_MAGIC.to_be_bytes();
+        flipped_magic[0] ^= 0xff;
+        let complete = vector("VOLATILE_SEQUENCES");
+        for (label, blob, failed_slot) in [
+            (
+                "unsupported minimum version in the HMAC sequence",
+                sequences_with(hmac + 6, &3u16.to_be_bytes()),
+                1,
+            ),
+            (
+                "unsupported minimum version in an empty hash sequence state",
+                sequences_with(empty + 6, &3u16.to_be_bytes()),
+                2,
+            ),
+            (
+                "invalid magic in the HMAC sequence",
+                sequences_with(hmac + 2, &flipped_magic),
+                1,
+            ),
+            (
+                "invalid magic in an empty hash sequence state",
+                sequences_with(empty + 2, &flipped_magic),
+                2,
+            ),
+            (
+                "header cut in the HMAC sequence",
+                complete[..hmac + 4].to_vec(),
+                1,
+            ),
+            (
+                "header cut in an empty hash sequence state",
+                complete[..empty + 7].to_vec(),
+                2,
+            ),
+        ] {
             let mut runtime = empty_state_runtime();
-            assert_eq!(
-                boundary.walk(&mut runtime, &blob, &clock),
-                walks,
-                "{min_version}"
-            );
-            assert_eq!(boundary.decodes(&blob, &clock), walks, "{min_version}");
+            assert!(!boundary.walk(&mut runtime, &blob, &clock), "{label}");
+            assert!(!boundary.decodes(&blob, &clock), "{label}");
+            for slot in 0..failed_slot {
+                assert_occupied_slot(&runtime, slot);
+            }
+            for slot in failed_slot..MAX_LOADED_OBJECTS {
+                assert_empty_slot(&runtime, slot);
+            }
         }
     }
 
@@ -1035,8 +1111,9 @@ mod tests {
             .windows(object.len())
             .position(|window| window == object.as_slice())
             .expect("the payload carries the object");
+        let end = cut(object, at).min(payload.len());
         let mut runtime = empty_state_runtime();
-        assert!(!Boundary::fixture().walk(&mut runtime, &payload[..cut(object, at)], &host()));
+        assert!(!Boundary::fixture().walk(&mut runtime, &payload[..end], &host()));
         runtime
     }
 
@@ -1053,122 +1130,24 @@ mod tests {
 
     const OBJECT_START: usize = 8 + 4 + 8;
     const RSA_PUBLIC_LEN: usize = 282;
+    const WHOLE_PAYLOAD: fn(&[u8], usize) -> usize = |_, _| usize::MAX;
 
-    #[test]
-    fn a_loaded_object_cut_short_keeps_the_fields_it_wrote() {
-        let runtime = walk_objects(
-            vec![any_rsa_object(4), unoccupied(), unoccupied()],
-            |_, at| at + OBJECT_START + RSA_PUBLIC_LEN + 2 + 2 + 1,
-        );
-        assert_eq!(runtime.live.max_nv_counter, 42, "the NV block precedes it");
-        assert_eq!(runtime.live.objects[0].attributes, ATTR_OCCUPIED);
-        let body = object_in(&runtime, 0);
-        assert_eq!(body.public.object_type, TPM_ALG_RSA);
-        assert!(matches!(
-            body.public.parameters,
-            PublicParms::Rsa {
-                key_bits: 2048,
-                exponent: 65537,
-                ..
-            }
-        ));
-        assert_eq!(body.public.unique, OwnedPublicId::Rsa(vec![0xab; 256]));
-        assert_eq!(body.sensitive.sensitive_type, TPM_ALG_RSA);
-        assert_eq!(
-            body.sensitive.auth_value.expose(),
-            &[0u8; 4][..],
-            "the size is stored before the bytes it announces"
-        );
-        assert!(body.sensitive.seed_value.expose().is_empty());
-        assert_eq!(
-            body.sensitive
-                .sensitive
-                .as_ref()
-                .map(|key| key.expose().len()),
-            Some(0)
-        );
-        assert!(body.private_exponent.is_none());
-        assert!(body.qualified_name.is_empty() && body.name.is_empty());
-        assert_eq!(body.seed_compat_level, SEED_COMPAT_LEVEL_ORIGINAL);
-        assert_eq!(
-            body.hierarchy, None,
-            "the hierarchy defaults to the attributes"
-        );
-        assert_eq!(runtime.live.objects[1].attributes, 0);
-    }
+    type Cut = Box<dyn Fn(&[u8], usize) -> usize>;
 
-    #[test]
-    fn an_object_cut_after_its_attributes_is_occupied_with_defaults() {
-        let runtime = walk_objects(
-            vec![any_rsa_object(4), unoccupied(), unoccupied()],
-            |_, at| at + 8 + 4,
-        );
-        assert_eq!(runtime.live.objects[0].attributes, ATTR_OCCUPIED);
-        let body = object_in(&runtime, 0);
-        assert_eq!(body.public.object_type, 0);
-        assert_eq!(body.public.parameters, PublicParms::Unselected);
-        assert_eq!(body.public.unique, OwnedPublicId::Unselected);
-        assert_eq!(body.seed_compat_level, SEED_COMPAT_LEVEL_ORIGINAL);
-        assert_eq!(body.hierarchy, None);
-    }
-
-    #[test]
-    fn an_object_seed_compat_level_is_stored_before_it_is_checked() {
-        let runtime = walk_objects(
-            vec![any_rsa_object(4), unoccupied(), unoccupied()],
-            |object, at| at + object.len() - 3 - 4 - 3 - 1,
-        );
-        let body = object_in(&runtime, 0);
-        assert_eq!(body.name, vec![0x52; 34]);
-        assert_eq!(body.seed_compat_level, SEED_COMPAT_LEVEL_ORIGINAL);
-
+    fn rsa_object_with_seed_compat_level(level: u8) -> Vec<u8> {
         let mut object = any_rsa_object(4);
-        let level = object.len() - 3 - 4 - 3 - 1;
-        object[level] = 7;
-        let fixture = VolatileFixture {
-            objects: vec![object, unoccupied(), unoccupied()],
-            ..VolatileFixture::default()
-        };
-        let mut runtime = empty_state_runtime();
-        assert!(!Boundary::fixture().walk(&mut runtime, &fixture.payload(), &host()));
-        let body = object_in(&runtime, 0);
-        assert_eq!(body.seed_compat_level, 7);
-        assert_eq!(body.hierarchy, None);
+        let at = object.len() - 3 - 4 - 3 - 1;
+        object[at] = level;
+        object
     }
 
-    #[test]
-    fn an_ecc_parameter_defect_restores_every_ecc_parameter() {
-        use crate::library::tpm2::object::fixtures::any_public_only_object;
-        use crate::library::tpm2::public::fixtures::ecc_public;
-
-        let mut public = ecc_public();
-        let curve = 2 + 2 + 4 + 2 + 2 + 4;
-        public[curve..curve + 2].copy_from_slice(&0x00fcu16.to_be_bytes());
-        let fixture = VolatileFixture {
-            objects: vec![any_public_only_object(&public), unoccupied(), unoccupied()],
-            ..VolatileFixture::default()
-        };
-        let mut runtime = empty_state_runtime();
-        assert!(!Boundary::fixture().walk(&mut runtime, &fixture.payload(), &host()));
-        let body = object_in(&runtime, 0);
-        assert_eq!(body.public.object_type, TPM_ALG_ECC);
-        assert_eq!(
-            body.public.parameters,
-            PublicParms::selected_by(TPM_ALG_ECC)
-        );
-    }
-
-    #[test]
-    fn a_prime_cut_between_words_repeats_the_last_word_read() {
-        use crate::library::tpm2::object::{BN_PRIME_T_MAGIC, BN_PRIME_T_VERSION};
-
+    fn rsa_object_with_marked_prime_words() -> (Vec<u8>, usize) {
         let mut object = any_rsa_object(4);
         let prime = object
             .windows(4)
             .position(|window| window == BN_PRIME_T_MAGIC.to_be_bytes())
             .expect("the object carries a prime")
             - 2;
-        assert_eq!(object[prime..prime + 2], BN_PRIME_T_VERSION.to_be_bytes());
         let words = prime + 8 + 2;
         for (index, word) in [0x1111_1111u32, 0x2222_2222, 0x3333_3333]
             .iter()
@@ -1176,27 +1155,177 @@ mod tests {
         {
             object[words + 4 * index..words + 4 * index + 4].copy_from_slice(&word.to_be_bytes());
         }
-        let cut = words + 12;
-        let runtime = walk_objects(vec![object, unoccupied(), unoccupied()], move |_, at| {
-            at + cut
-        });
+        (object, words + 12)
+    }
+
+    fn ecc_object_with_curve(curve: u16) -> Vec<u8> {
+        use crate::library::tpm2::object::fixtures::any_public_only_object;
+        use crate::library::tpm2::public::fixtures::ecc_public;
+
+        let mut public = ecc_public();
+        let at = 2 + 2 + 4 + 2 + 2 + 4;
+        public[at..at + 2].copy_from_slice(&curve.to_be_bytes());
+        any_public_only_object(&public)
+    }
+
+    fn sequence_with_newer_hash_state_header(sequence: u32) -> Vec<u8> {
+        let mut object = any_sequence_object(sequence);
+        let header = object
+            .windows(4)
+            .position(|window| window == ANY_HASH_STATE_MAGIC.to_be_bytes())
+            .expect("the sequence carries an ANY_HASH_STATE header")
+            - 2;
+        object[header + 6..header + 8].copy_from_slice(&3u16.to_be_bytes());
+        object
+    }
+
+    #[test]
+    fn every_object_body_defect_empties_its_slot() {
+        let (marked_prime, between_prime_words) = rsa_object_with_marked_prime_words();
+        let hmac_key_end = any_sequence_object(SEQ_HMAC).len() - 3 - 3;
+        let cases: [(&str, Vec<u8>, Cut); 10] = [
+            (
+                "cut after the attributes",
+                any_rsa_object(4),
+                Box::new(|_, at| at + 8 + 4),
+            ),
+            (
+                "cut in the OBJECT header",
+                any_rsa_object(4),
+                Box::new(|_, at| at + 8 + 4 + 5),
+            ),
+            (
+                "cut in the sensitive area",
+                any_rsa_object(4),
+                Box::new(|_, at| at + OBJECT_START + RSA_PUBLIC_LEN + 2 + 2 + 1),
+            ),
+            (
+                "cut between prime words",
+                marked_prime,
+                Box::new(move |_, at| at + between_prime_words),
+            ),
+            (
+                "cut before the seed compat level",
+                any_rsa_object(4),
+                Box::new(|object, at| at + object.len() - 3 - 4 - 3 - 1),
+            ),
+            (
+                "seed compat level too new",
+                rsa_object_with_seed_compat_level(7),
+                Box::new(WHOLE_PAYLOAD),
+            ),
+            (
+                "invalid ECC curve",
+                ecc_object_with_curve(0x00fc),
+                Box::new(WHOLE_PAYLOAD),
+            ),
+            (
+                "newer hash sequence state header",
+                sequence_with_newer_hash_state_header(SEQ_HASH),
+                Box::new(WHOLE_PAYLOAD),
+            ),
+            (
+                "newer HMAC sequence state header",
+                sequence_with_newer_hash_state_header(SEQ_HMAC),
+                Box::new(WHOLE_PAYLOAD),
+            ),
+            (
+                "cut in the HMAC sequence key",
+                any_sequence_object(SEQ_HMAC),
+                Box::new(move |_, at| at + hmac_key_end - 10),
+            ),
+        ];
+        for (label, object, cut) in cases {
+            let runtime = walk_objects(vec![object, any_rsa_object(4), unoccupied()], cut);
+            assert_eq!(
+                runtime.live.max_nv_counter, 42,
+                "{label}: the NV block before the objects stays restored"
+            );
+            for slot in 0..MAX_LOADED_OBJECTS {
+                assert_empty_slot(&runtime, slot);
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_defect_keeps_every_slot_restored_before_it() {
+        let fixture = VolatileFixture {
+            objects: vec![
+                any_rsa_object(4),
+                ecc_object_with_curve(0x00fc),
+                any_rsa_object(3),
+            ],
+            ..VolatileFixture::default()
+        };
+        let mut runtime = empty_state_runtime();
+        assert!(!Boundary::fixture().walk(&mut runtime, &fixture.payload(), &host()));
+        assert_eq!(runtime.live.objects[0].attributes, ATTR_OCCUPIED);
         let body = object_in(&runtime, 0);
-        let q = &body
-            .private_exponent
-            .as_ref()
-            .expect("the block was entered")
-            .primes[0];
-        assert_eq!(q.numbytes, 96);
-        assert_eq!(q.data.expose().len(), 96);
-        let data: Vec<u64> = q
-            .data
-            .expose()
-            .chunks(8)
-            .map(|word| u64::from_be_bytes(word.try_into().unwrap()))
-            .collect();
-        assert_eq!(data[0], 0x1111_1111_2222_2222);
-        assert_eq!(data[1], 0x3333_3333_3333_3333);
-        assert!(data[2..].iter().all(|&word| word == 0));
+        assert_eq!(body.public.object_type, TPM_ALG_RSA);
+        assert_eq!(body.name, vec![0x52; 34]);
+        assert_eq!(body.hierarchy, Some(TPM_RH_OWNER));
+        assert_empty_slot(&runtime, 1);
+        assert_empty_slot(&runtime, 2);
+    }
+
+    fn restored_slot(object: &[u8]) -> OwnedAnyObject {
+        let mut slot = OwnedAnyObject {
+            attributes: 0,
+            body: OwnedAnyObjectBody::Unoccupied,
+        };
+        object::any_object_into(
+            &mut BlobReader::new(object),
+            &mut slot,
+            StateFormatLimit::CURRENT,
+        )
+        .unwrap_or_else(|_| panic!("the object restores"));
+        slot
+    }
+
+    fn restore_over(slot: &mut OwnedAnyObject, bytes: &[u8]) -> bool {
+        object::any_object_into(&mut BlobReader::new(bytes), slot, StateFormatLimit::CURRENT)
+            .is_ok()
+    }
+
+    fn slot_body(slot: &OwnedAnyObject) -> &OwnedObjectBody {
+        match &slot.body {
+            OwnedAnyObjectBody::Object(body) => body,
+            _ => panic!("the slot holds no object body"),
+        }
+    }
+
+    #[test]
+    fn the_any_object_header_and_trailing_block_stay_outside_the_cleanup() {
+        let restored = any_rsa_object(4);
+        let mut bad_magic = any_rsa_object(3);
+        bad_magic[2] ^= 0xff;
+        for (label, bytes) in [
+            ("an invalid ANY_OBJECT magic", bad_magic),
+            (
+                "a cut before the attributes",
+                any_rsa_object(3)[..8 + 2].to_vec(),
+            ),
+        ] {
+            let mut slot = restored_slot(&restored);
+            assert!(!restore_over(&mut slot, &bytes), "{label}");
+            assert_eq!(slot.attributes, ATTR_OCCUPIED, "{label}");
+            assert_eq!(slot_body(&slot).section_version, 4, "{label}");
+            assert_eq!(slot_body(&slot).hierarchy, Some(TPM_RH_OWNER), "{label}");
+        }
+
+        let version_3 = any_rsa_object(3);
+        let mut slot = restored_slot(&restored);
+        assert!(!restore_over(&mut slot, &version_3[..version_3.len() - 1]));
+        assert_eq!(slot.attributes, ATTR_OCCUPIED);
+        let body = slot_body(&slot);
+        assert_eq!(body.section_version, 3);
+        assert_eq!(body.hierarchy, None);
+        assert_eq!(body.name, vec![0x52; 34]);
+
+        let mut slot = restored_slot(&restored);
+        assert!(!restore_over(&mut slot, &version_3[..8 + 4 + 8 + 2]));
+        assert_eq!(slot.attributes, 0);
+        assert!(matches!(slot.body, OwnedAnyObjectBody::Unoccupied));
     }
 
     #[test]

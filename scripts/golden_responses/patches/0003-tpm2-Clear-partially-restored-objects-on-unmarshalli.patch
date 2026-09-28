@@ -1,0 +1,27 @@
+From c5449222056dafccc070d627439a158cc2e9def8 Mon Sep 17 00:00:00 2001
+From: Alexander Gryanko <xpahos@gmail.com>
+Date: Mon, 28 Sep 2026 00:24:57 +0300
+Subject: [PATCH 3/4] tpm2: Clear partially restored objects on unmarshalling
+ failure
+
+Prevent subsequent state export from serializing invalid occupied slots.
+
+Signed-off-by: Alexander Gryanko <xpahos@gmail.com>
+---
+ src/tpm2/NVMarshal.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/tpm2/NVMarshal.c b/src/tpm2/NVMarshal.c
+index 6f29fb18..909124ee 100644
+--- a/src/tpm2/NVMarshal.c
++++ b/src/tpm2/NVMarshal.c
+@@ -2664,6 +2664,9 @@ ANY_OBJECT_Unmarshal(OBJECT *data, BYTE **buffer, INT32 *size, BOOL verbose)
+             rc = HASH_OBJECT_Unmarshal((HASH_OBJECT *)data, buffer, size);
+         else
+             rc = OBJECT_Unmarshal(data, buffer, size);
++
++        if (rc != TPM_RC_SUCCESS)
++            memset(data, 0, sizeof(*data));
+     }
+ 
+     /* version 2 starts having indicator for next versions that we can skip;

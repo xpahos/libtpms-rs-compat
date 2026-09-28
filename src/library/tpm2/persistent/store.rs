@@ -524,13 +524,12 @@ mod tests {
         assert_eq!(persistent_all_store(&state).unwrap(), blob);
     }
 
-    #[test]
-    fn su_state_store_round_trip_null_seed_level_drop() {
+    fn su_state_blob(null_seed_compat_level: u8) -> Vec<u8> {
         let sections = {
             let mut out = super::super::orderly::OrderlyFixture::default().bytes();
             out.extend_from_slice(
                 &StateResetFixture {
-                    null_seed_compat_level: 1,
+                    null_seed_compat_level,
                     ..StateResetFixture::default()
                 }
                 .bytes(),
@@ -577,36 +576,34 @@ mod tests {
         let mut blob = vec![0x00, 0x03, 0xab, 0x36, 0x47, 0x23, 0x00, 0x01];
         blob.extend_from_slice(&payload);
         blob.extend_from_slice(&[0xab, 0x36, 0x47, 0x23]);
+        blob
+    }
 
-        let mut state = materialize(&blob);
-        assert_eq!(
-            state.state_reset.as_ref().unwrap().null_seed_compat_level,
-            0,
-            "the NV image keeps its default"
-        );
-        assert_eq!(
-            state.loaded_null_seed_compat_level, 1,
-            "the decoded value goes to the live global"
-        );
+    fn null_seed_compat_level(state: &OwnedPersistentState) -> u8 {
+        state
+            .state_reset
+            .as_ref()
+            .expect("the SU sections are present")
+            .null_seed_compat_level
+    }
 
-        let stored = persistent_all_store(&state).unwrap();
-        let state2 = materialize(&stored);
-        let reset = state2.state_reset.as_ref().expect("SU sections survive");
-        assert_eq!(reset.null_seed_compat_level, 0);
-        assert_eq!(state2.loaded_null_seed_compat_level, 0);
-        assert_eq!(
-            reset.null_proof.expose(),
-            state.state_reset.as_ref().unwrap().null_proof.expose()
-        );
-        assert!(state2.state_clear.is_some());
-        assert_eq!(persistent_all_store(&state2).unwrap(), stored);
+    #[test]
+    fn su_state_store_round_trip_keeps_the_null_seed_compat_level() {
+        for level in [0, 1] {
+            let blob = su_state_blob(level);
+            let state = materialize(&blob);
+            assert_eq!(null_seed_compat_level(&state), level, "the loaded NV copy");
 
-        state.state_reset.as_mut().unwrap().null_seed_compat_level = 1;
-        let saved = materialize(&persistent_all_store(&state).unwrap());
-        assert_eq!(
-            saved.loaded_null_seed_compat_level, 1,
-            "a Shutdown(STATE) copy of gr keeps its level in the NV image"
-        );
+            let stored = persistent_all_store(&state).unwrap();
+            let reloaded = materialize(&stored);
+            assert_eq!(null_seed_compat_level(&reloaded), level, "a reload");
+            assert!(reloaded.state_clear.is_some());
+            assert_eq!(
+                persistent_all_store(&reloaded).unwrap(),
+                stored,
+                "level {level} survives every further export"
+            );
+        }
     }
 
     #[test]

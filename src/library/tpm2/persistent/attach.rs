@@ -742,7 +742,6 @@ pub(in crate::library::tpm2) struct OwnedPersistentState {
     pub(in crate::library::tpm2) user_nvram: OwnedUserNvram,
     pub(in crate::library::tpm2) envelope_version: u16,
     pub(in crate::library::tpm2) read_su_state: bool,
-    pub(in crate::library::tpm2) loaded_null_seed_compat_level: u8,
 }
 
 pub(in crate::library::tpm2) fn materialize_persistent_state(
@@ -750,7 +749,7 @@ pub(in crate::library::tpm2) fn materialize_persistent_state(
 ) -> Result<OwnedPersistentState, TpmResult> {
     let profile = decoded.profile;
 
-    let (mut state_reset, state_clear) = match (
+    let (state_reset, state_clear) = match (
         decoded.read_su_state,
         &decoded.state_reset_data,
         &decoded.state_clear_data,
@@ -761,15 +760,6 @@ pub(in crate::library::tpm2) fn materialize_persistent_state(
         (false, None, None) => (None, None),
         _ => return Err(TPM_FAIL),
     };
-    let loaded_null_seed_compat_level =
-        state_reset
-            .as_mut()
-            .map_or(super::compat_tail::SEED_COMPAT_LEVEL_ORIGINAL, |reset| {
-                core::mem::replace(
-                    &mut reset.null_seed_compat_level,
-                    super::compat_tail::SEED_COMPAT_LEVEL_ORIGINAL,
-                )
-            });
 
     let persistent = own_persistent_data(&decoded.persistent_data);
 
@@ -789,7 +779,6 @@ pub(in crate::library::tpm2) fn materialize_persistent_state(
         user_nvram,
         envelope_version: decoded.envelope_version,
         read_su_state: decoded.read_su_state,
-        loaded_null_seed_compat_level,
     })
 }
 

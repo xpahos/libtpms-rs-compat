@@ -2848,6 +2848,40 @@ mod tests {
         assert_eq!(runtime.live.context_slot_mask, 0xffff);
         assert_eq!(runtime.live.null_seed_compat_level, 0);
 
+        let mut sections = persistent::OrderlyFixture::default().bytes();
+        sections.extend_from_slice(
+            &state::StateResetFixture {
+                null_seed_compat_level: 1,
+                context_slot_mask: 0x00ff,
+                ..state::StateResetFixture::default()
+            }
+            .bytes(),
+        );
+        sections.extend_from_slice(&state::StateClearFixture::default().bytes());
+        sections.extend_from_slice(&nv::IndexOrderlyRamFixture::default().bytes());
+        sections.extend_from_slice(&nv::UserNvramFixture::default().bytes());
+        sections.extend_from_slice(&[0x01, 0x00, 0x00]);
+        let payload = payload_with_orderly_state(0x0001, sections);
+        let runtime = main_init(context(
+            no_storage(),
+            PreloadedBlob::Data(envelope_with_payload(&payload)),
+        ))
+        .expect("the SU-state blob restores");
+        assert_eq!(runtime.live.context_slot_mask, 0x00ff);
+        assert_eq!(
+            runtime.live.null_seed_compat_level, 0,
+            "loading permanent state leaves the live level at its power-on value"
+        );
+        assert_eq!(
+            runtime
+                .state()
+                .state_reset
+                .as_ref()
+                .map(|reset| reset.null_seed_compat_level),
+            Some(1),
+            "the NV copy keeps the saved level"
+        );
+
         let payload = payload_with_orderly_state(0, remaining_sections());
         let runtime = main_init(context(
             no_storage(),

@@ -27,7 +27,7 @@ use crate::library::tpm2::object::{
     HASH_STATE_SHA256_MAGIC, HASH_STATE_SHA384_MAGIC, HASH_STATE_SHA512_MAGIC, HASH_STATE_SMAC,
     HASH_STATE_VERSION, OBJECT_MAGIC, OBJECT_VERSION, PRIVATE_EXPONENT_T_MAGIC,
     PRIVATE_EXPONENT_T_VERSION, SEED_COMPAT_LEVEL_LAST, SEED_COMPAT_LEVEL_ORIGINAL,
-    event_state_is_usable, hash_state_is_usable, peek_u16,
+    event_state_is_usable, hash_state_is_usable,
 };
 use crate::library::tpm2::persistent::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedBnPrime, OwnedHashObjectBody, OwnedHashPayload,
@@ -155,6 +155,24 @@ fn resumable(slot: &OwnedAnyObject) -> bool {
         .is_none_or(|(state, _)| state.state_type != HASH_STATE_SMAC)
 }
 
+fn body_into(
+    reader: &mut BlobReader<'_>,
+    slot: &mut OwnedAnyObject,
+    state_format: StateFormatLimit,
+) -> Step {
+    if is_sequence(slot.attributes) {
+        let mut body = take_sequence(slot);
+        let outcome = hash_object_into(reader, slot.attributes, &mut body);
+        slot.body = OwnedAnyObjectBody::Sequence(body);
+        outcome
+    } else {
+        let mut body = take_object(slot);
+        let outcome = object_into(reader, &mut body, state_format);
+        slot.body = OwnedAnyObjectBody::Object(body);
+        outcome
+    }
+}
+
 pub(super) fn any_object_into(
     reader: &mut BlobReader<'_>,
     slot: &mut OwnedAnyObject,
@@ -167,18 +185,12 @@ pub(super) fn any_object_into(
         ANY_OBJECT_VERSION,
     )?;
     slot.attributes = u32_from(reader)?;
-    if slot.attributes & ATTR_OCCUPIED != 0 {
-        if is_sequence(slot.attributes) {
-            let mut body = take_sequence(slot);
-            let outcome = hash_object_into(reader, slot.attributes, &mut body);
-            slot.body = OwnedAnyObjectBody::Sequence(body);
-            outcome?;
-        } else {
-            let mut body = take_object(slot);
-            let outcome = object_into(reader, &mut body, state_format);
-            slot.body = OwnedAnyObjectBody::Object(body);
-            outcome?;
-        }
+    if slot.attributes & ATTR_OCCUPIED != 0 && body_into(reader, slot, state_format).is_err() {
+        *slot = OwnedAnyObject {
+            attributes: 0,
+            body: OwnedAnyObjectBody::Unoccupied,
+        };
+        return Err(Defect);
     }
     if version >= OBJECT_BLOCKS_SINCE_VERSION {
         block(reader, false)?;
@@ -637,20 +649,16 @@ fn hash_state_into(reader: &mut BlobReader<'_>, state: &mut OwnedHashState) -> S
     let hash_alg = u16_from(reader)?;
     state.hash_alg = hash_alg;
     state.payload = payload_selected_by(hash_alg);
-    let any_version = peek_u16(reader);
-    let any_header = header(
+    let any_version = header(
         reader,
         StateSection::HashState,
         ANY_HASH_STATE_MAGIC,
         ANY_HASH_STATE_VERSION,
-    );
-    match state.payload.as_mut() {
-        Some(payload) => payload_into(reader, payload, hash_alg)?,
-        None => {
-            any_header?;
-        }
+    )?;
+    if let Some(payload) = state.payload.as_mut() {
+        payload_into(reader, payload, hash_alg)?;
     }
-    if any_version.is_some_and(|version| version >= OBJECT_BLOCKS_SINCE_VERSION) {
+    if any_version >= OBJECT_BLOCKS_SINCE_VERSION {
         block(reader, false)?;
     }
     if version >= OBJECT_BLOCKS_SINCE_VERSION {

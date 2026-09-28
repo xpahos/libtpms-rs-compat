@@ -330,32 +330,21 @@ fn check_event_states(
     Ok(())
 }
 
-pub(super) fn peek_u16(reader: &BlobReader<'_>) -> Option<u16> {
-    reader
-        .remaining()
-        .get(..2)
-        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
 fn parse_hash_state<'a>(reader: &mut BlobReader<'a>) -> Result<HashState<'a>, PersistentAllError> {
     const S: StateSection = SECTION_HASH_STATE;
     let header = parse_nv_header(reader, S, HASH_STATE_MAGIC, HASH_STATE_VERSION)?;
     let state_type = reader.read_u8().map_err(|_| truncated(S))?;
     let hash_alg = reader.read_u16().map_err(|_| truncated(S))?;
 
-    let any_version = peek_u16(reader);
-    let any_header = parse_nv_header(reader, S, ANY_HASH_STATE_MAGIC, ANY_HASH_STATE_VERSION);
+    let any_header = parse_nv_header(reader, S, ANY_HASH_STATE_MAGIC, ANY_HASH_STATE_VERSION)?;
     let payload = match hash_alg {
         TPM_ALG_SHA1 => Some(parse_sha1_state(reader)?),
         TPM_ALG_SHA256 => Some(parse_sha256_state(reader)?),
         TPM_ALG_SHA384 => Some(parse_sha512_state(reader, HASH_STATE_SHA384_MAGIC)?),
         TPM_ALG_SHA512 => Some(parse_sha512_state(reader, HASH_STATE_SHA512_MAGIC)?),
-        _ => {
-            any_header?;
-            None
-        }
+        _ => None,
     };
-    if any_version.is_some_and(|version| version >= BLOCK_SKIP_SINCE_VERSION) {
+    if any_header.version >= BLOCK_SKIP_SINCE_VERSION {
         read_block(reader, S, false)?;
     }
     if header.version >= BLOCK_SKIP_SINCE_VERSION {
@@ -1213,41 +1202,91 @@ mod tests {
             - 2
     }
 
-    #[test]
-    fn a_sha_state_replaces_an_error_in_its_any_hash_state_header() {
-        let mut state = typed_hash_state(HASH_STATE_HASH, TPM_ALG_SHA256);
-        let at = any_hash_state_header(&state);
-        state[at + 6..at + 8].copy_from_slice(&3u16.to_be_bytes());
-        let mut reader = BlobReader::new(&state);
-        let parsed =
-            parse_hash_state(&mut reader).expect("the SHA-256 result replaces the header's");
-        assert!(parsed.payload.is_some());
-        assert!(reader.remaining().is_empty());
+    const HASH_STATE_KINDS: [(u8, u16); 5] = [
+        (HASH_STATE_HASH, TPM_ALG_SHA1),
+        (HASH_STATE_HASH, TPM_ALG_SHA256),
+        (HASH_STATE_HASH, TPM_ALG_SHA384),
+        (HASH_STATE_HASH, TPM_ALG_SHA512),
+        (HASH_STATE_EMPTY, 0),
+    ];
+
+    #[track_caller]
+    fn assert_header_error_before_the_payload(
+        state: &[u8],
+        header_end: usize,
+        expected: PersistentAllError,
+    ) {
+        let mut reader = BlobReader::new(state);
+        assert_eq!(parse_hash_state(&mut reader).err(), Some(expected));
+        assert_eq!(
+            reader.remaining(),
+            &state[header_end..],
+            "nothing after the ANY_HASH_STATE header is read"
+        );
     }
 
     #[test]
-    fn an_any_hash_state_header_error_stands_without_a_sha_state() {
-        let mut state = typed_hash_state(HASH_STATE_EMPTY, 0);
-        let at = any_hash_state_header(&state);
-        state[at + 6..at + 8].copy_from_slice(&3u16.to_be_bytes());
-        assert!(matches!(
-            parse_hash_state(&mut BlobReader::new(&state)),
-            Err(PersistentAllError::MinimumVersionTooNew { .. })
-        ));
+    fn an_unsupported_any_hash_state_minimum_version_stops_before_the_payload() {
+        for (state_type, hash_alg) in HASH_STATE_KINDS {
+            let mut state = typed_hash_state(state_type, hash_alg);
+            let at = any_hash_state_header(&state);
+            state[at + 6..at + 8].copy_from_slice(&3u16.to_be_bytes());
+            assert_header_error_before_the_payload(
+                &state,
+                at + 8,
+                PersistentAllError::MinimumVersionTooNew {
+                    section: SECTION_HASH_STATE,
+                    minimum: 3,
+                    supported: ANY_HASH_STATE_VERSION,
+                },
+            );
+        }
     }
 
     #[test]
-    fn a_bad_any_hash_state_magic_leaves_the_sha_state_misaligned() {
-        let mut state = typed_hash_state(HASH_STATE_HASH, TPM_ALG_SHA256);
-        let at = any_hash_state_header(&state);
-        state[at + 2] ^= 0xff;
-        assert!(matches!(
-            parse_hash_state(&mut BlobReader::new(&state)),
-            Err(PersistentAllError::InvalidHeaderMagic {
-                actual: 0x0002_6ea0,
-                ..
-            })
-        ));
+    fn an_invalid_any_hash_state_magic_stops_before_the_payload() {
+        for (state_type, hash_alg) in HASH_STATE_KINDS {
+            let mut state = typed_hash_state(state_type, hash_alg);
+            let at = any_hash_state_header(&state);
+            state[at + 2] ^= 0xff;
+            assert_header_error_before_the_payload(
+                &state,
+                at + 6,
+                PersistentAllError::InvalidHeaderMagic {
+                    section: SECTION_HASH_STATE,
+                    actual: ANY_HASH_STATE_MAGIC ^ 0xff00_0000,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_any_hash_state_header_stops_before_the_payload() {
+        for (state_type, hash_alg) in HASH_STATE_KINDS {
+            let state = typed_hash_state(state_type, hash_alg);
+            let at = any_hash_state_header(&state);
+            for end in at..at + 8 {
+                assert_eq!(
+                    parse_hash_state(&mut BlobReader::new(&state[..end])).err(),
+                    Some(PersistentAllError::Truncated {
+                        section: SECTION_HASH_STATE,
+                    }),
+                    "{hash_alg:#06x} cut at {end}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_valid_any_hash_state_header_restores_its_payload() {
+        for (state_type, hash_alg) in HASH_STATE_KINDS {
+            let state = typed_hash_state(state_type, hash_alg);
+            let mut reader = BlobReader::new(&state);
+            let parsed = parse_hash_state(&mut reader).expect("a valid hash state");
+            assert_eq!(parsed.hash_alg, hash_alg);
+            assert_eq!(parsed.payload.is_some(), state_type == HASH_STATE_HASH);
+            assert!(reader.remaining().is_empty());
+        }
     }
 
     fn event_banks() -> [(u8, u16); HASH_STATE_COUNT] {

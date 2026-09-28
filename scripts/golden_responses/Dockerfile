@@ -29,8 +29,12 @@ RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY libtpms/ /build/libtpms/
+COPY scripts/golden_responses/patches/ /build/libtpms-patches/
 
 RUN cd /build/libtpms \
+    && for patch in /build/libtpms-patches/*.patch; do \
+        patch -p1 --forward --fuzz=0 --no-backup-if-mismatch < "$patch" || exit 1; \
+    done \
     && NOCONFIGURE=1 ./autogen.sh \
     && mkdir /build/libtpms-build \
     && cd /build/libtpms-build \

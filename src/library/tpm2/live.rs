@@ -176,7 +176,6 @@ impl LiveState {
         let mut live = Self::power_on();
         if let Some(reset) = state.state_reset.as_ref() {
             live.context_slot_mask = reset.context_slot_mask;
-            live.null_seed_compat_level = state.loaded_null_seed_compat_level;
         }
         live
     }

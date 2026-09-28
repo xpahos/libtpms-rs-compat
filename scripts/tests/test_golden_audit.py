@@ -172,6 +172,7 @@ def structured_violations(manifest, facts):
         golden.validate_manifest_shape(manifest)
         + golden.validate_manifest_paths(manifest)
         + golden.validate_capture_environment(manifest, facts)
+        + golden.validate_reference_patches(manifest, facts)
         + golden.validate_submodules(manifest, facts)
         + golden.validate_scenarios(manifest, facts)
         + golden.validate_readers(manifest, facts)
@@ -2964,6 +2965,90 @@ class GoldenSubmoduleScopeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             paths = golden.build_context(directory)
         self.assertFalse([path for path in paths if path.startswith("swtpm/")])
+
+
+class GoldenReferencePatchTest(unittest.TestCase):
+    PATCH = golden.PATCH_DIR + "0001-tpm2-fix.patch"
+
+    def facts(self, **overrides):
+        facts = baseline_facts()
+        facts.update(
+            {
+                "reference_patches": [(self.PATCH, "a" * 40)],
+                "untracked_patches": [],
+                "docker_applies_patches": True,
+            }
+        )
+        facts.update(overrides)
+        return facts
+
+    def violations(self, facts):
+        return rendered(golden.validate_reference_patches(baseline_manifest(), facts))
+
+    def tracked(self):
+        return set(golden.git_output(["ls-files", "--", golden.CONTEXT_SCRIPT_TREE]).split())
+
+    def test_attributed_patches_applied_by_the_dockerfile_are_clean(self):
+        self.assertEqual(self.violations(self.facts()), [])
+
+    def test_no_patches_need_no_dockerfile_step(self):
+        facts = self.facts(reference_patches=[], docker_applies_patches=False)
+        self.assertEqual(self.violations(facts), [])
+
+    def test_a_patch_without_its_upstream_commit_is_rejected(self):
+        violations = self.violations(self.facts(reference_patches=[(self.PATCH, None)]))
+        self.assertTrue(any("upstream commit" in violation for violation in violations), violations)
+
+    def test_a_file_that_is_not_a_patch_is_rejected(self):
+        notes = golden.PATCH_DIR + "notes.txt"
+        violations = self.violations(self.facts(reference_patches=[(notes, None)]))
+        self.assertTrue(any("not a .patch file" in violation for violation in violations), violations)
+
+    def test_an_untracked_patch_is_rejected(self):
+        stray = golden.PATCH_DIR + "0005-local.patch"
+        violations = self.violations(self.facts(untracked_patches=[stray]))
+        self.assertTrue(any("untracked" in violation for violation in violations), violations)
+
+    def test_patches_need_the_dockerfile_step(self):
+        violations = self.violations(self.facts(docker_applies_patches=False))
+        self.assertTrue(any("does not apply" in violation for violation in violations), violations)
+
+    def test_the_committed_dockerfile_applies_the_patch_directory(self):
+        facts = golden.parse_dockerfile(golden.DOCKERFILE.read_text("utf-8"))
+        self.assertTrue(facts["docker_applies_patches"])
+
+    def test_every_committed_patch_names_its_upstream_commit(self):
+        patches = golden.reference_patches(self.tracked())
+        self.assertTrue(patches)
+        for path, commit in patches:
+            self.assertTrue(path.endswith(".patch"), path)
+            self.assertRegex(commit or "", r"^[0-9a-f]{40}$", path)
+
+    def test_the_committed_patches_enter_the_capture_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = golden.build_context(directory)
+        for path, _ in golden.reference_patches(self.tracked()):
+            self.assertIn(path, paths)
+
+    def test_a_stray_patch_file_is_reported_as_untracked(self):
+        stray = golden.ROOT / golden.PATCH_DIR / "9999-stray.patch"
+        self.assertFalse(stray.exists())
+        stray.write_text("From " + "b" * 40 + " Mon Sep 17 00:00:00 2001\n")
+        try:
+            tracked = self.tracked()
+            untracked = golden.untracked_patches(tracked)
+            patches = golden.reference_patches(tracked)
+        finally:
+            stray.unlink()
+        self.assertIn(golden.PATCH_DIR + "9999-stray.patch", untracked)
+        self.assertNotIn(golden.PATCH_DIR + "9999-stray.patch", [path for path, _ in patches])
+
+    def test_the_audit_reports_the_applied_upstream_commits(self):
+        facts = self.facts()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            golden.run_audit(manifest=baseline_manifest(), facts=facts)
+        self.assertIn("reference patches: 1 upstream commit(s) " + "a" * 12, out.getvalue())
 
 
 class GoldenPathContainmentTest(unittest.TestCase):

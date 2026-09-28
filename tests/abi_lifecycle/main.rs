@@ -111,11 +111,13 @@ abi_cases! {
     volatile_state_cut_in_a_hash_sequence_digest,
     volatile_state_cut_in_an_hmac_sequence_key,
     orderly_nv_ram_keeps_bytes_outside_its_entries,
-    volatile_state_with_a_newer_hash_state_header_restores_every_sequence,
+    volatile_state_with_a_newer_hash_state_header_is_rejected,
     volatile_state_cut_after_a_newer_hash_state_header,
     volatile_state_with_a_newer_empty_hash_state_header_stops_there,
     orderly_nv_ram_with_a_short_entry_header_survives_shutdown,
     orderly_nv_ram_with_an_oversized_entry_survives_shutdown,
+    orderly_nv_ram_with_a_wrapping_entry_size_keeps_the_entries_before_it,
+    null_primary_survives_two_state_resumes,
 }
 
 const RECORDING_OPS: &[&str] = &[

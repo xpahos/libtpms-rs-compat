@@ -188,7 +188,6 @@ pub(super) fn manufacture_state(
         },
         envelope_version,
         read_su_state: false,
-        loaded_null_seed_compat_level: 0,
     })
 }
 

@@ -171,7 +171,11 @@ mod tests {
 
     use crate::library::tpm2::nv::OrderlyRamImage;
 
-    use crate::library::tpm2::persistent::{OwnedPersistentState, persistent_all_store};
+    use crate::library::tpm2::persistent::{
+        OwnedPersistentState, SEED_COMPAT_LEVEL_LAST, SEED_COMPAT_LEVEL_ORIGINAL,
+        persistent_all_store,
+    };
+    use crate::library::tpm2::test_support::hex;
 
     use crate::library::tpm2::runtime::commit_restored_state;
 
@@ -740,33 +744,149 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_orderly_ram_entry_is_persisted_as_written() {
-        let mut runtime = started_runtime();
-        let mut bytes = live_ram_with(0x0100_0005, &[0xaa; 8]).as_bytes().to_vec();
-        bytes[..8].copy_from_slice(&[4, 0, 0, 0, 0, 0, 0, 0]);
-        let live = OrderlyRamImage::from_bytes(&bytes).unwrap();
-        runtime.live.index_orderly_ram = live.clone();
+    fn a_malformed_orderly_ram_entry_is_persisted_as_a_terminator() {
+        let attributes = (TPMA_NV_ORDERLY | TPMA_NV_WRITTEN).to_be_bytes();
+        let valid = live_ram_with(0x0100_0005, &[0xaa; 8]);
+        let mut short = valid.as_bytes().to_vec();
+        short[..8].copy_from_slice(&[4, 0, 0, 0, 0, 0, 0, 0]);
+        let mut wrapping = valid.as_bytes().to_vec();
+        wrapping[20..24].copy_from_slice(&(u32::MAX - 19).to_le_bytes());
+        let mut kept_entry = vec![0, 0, 0, 20, 0x01, 0x00, 0x00, 0x05];
+        kept_entry.extend_from_slice(&attributes);
+        kept_entry.extend_from_slice(&[0, 8]);
+        kept_entry.extend_from_slice(&[0xaa; 8]);
+        for (bytes, entries, kept) in [
+            (short, Vec::new(), OrderlyRamImage::zeroed()),
+            (wrapping, kept_entry, valid.clone()),
+        ] {
+            let mut runtime = started_runtime();
+            let live = OrderlyRamImage::from_bytes(&bytes).unwrap();
+            runtime.live.index_orderly_ram = live.clone();
 
+            assert_eq!(
+                dispatch_bytes(&mut runtime, &shutdown_command(TPM_SU_STATE)),
+                response_bytes(SUCCESS)
+            );
+
+            let state = state(&runtime);
+            assert_eq!(state.index_orderly_ram, live, "the NV copy is the raw RAM");
+            let mut section = vec![
+                0x00, 0x02, 0x53, 0x46, 0xfe, 0xab, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00,
+            ];
+            section.extend_from_slice(&entries);
+            section.extend_from_slice(&[0, 0, 0, 0, 0x01, 0x00, 0x00]);
+            let stored = persistent_all_store(state).unwrap();
+            assert!(
+                stored
+                    .windows(section.len())
+                    .any(|window| window == section.as_slice()),
+                "the valid entries are followed by a terminator"
+            );
+            assert_eq!(
+                reload(state).index_orderly_ram,
+                kept,
+                "a reload keeps the entries before the malformed one"
+            );
+        }
+    }
+
+    const NULL_RSA_2048_PRIMARY: &str = "800200000043000001314000000700000009\
+        400000090000000000000400000000001a0001000b0003007200000006008000430010\
+        0800000000000000000000000000";
+
+    #[track_caller]
+    fn create_null_rsa_primary(runtime: &mut Tpm2Runtime) -> Vec<u8> {
+        let response = dispatch_bytes(runtime, &hex(NULL_RSA_2048_PRIMARY));
+        assert_eq!(response[6..10], [0; 4], "TPM2_CreatePrimary succeeds");
+        response
+    }
+
+    fn saved_null_seed_compat_level(state: &OwnedPersistentState) -> u8 {
+        state
+            .state_reset
+            .as_ref()
+            .expect("Shutdown(STATE) saves the reset data")
+            .null_seed_compat_level
+    }
+
+    #[track_caller]
+    fn shutdown_state_and_resume(runtime: &mut Tpm2Runtime, level: u8) {
+        assert_eq!(
+            dispatch_bytes(runtime, &shutdown_command(TPM_SU_STATE)),
+            response_bytes(SUCCESS)
+        );
+        assert_eq!(
+            saved_null_seed_compat_level(&reload(state(runtime))),
+            level,
+            "the exported permanent state"
+        );
+        *runtime = rebooted_runtime(runtime);
+        assert_eq!(
+            saved_null_seed_compat_level(state(runtime)),
+            level,
+            "the reloaded NV copy"
+        );
+        assert_eq!(
+            dispatch_bytes(runtime, &startup_command(TPM_SU_STATE)),
+            response_bytes(SUCCESS)
+        );
+        assert_eq!(
+            runtime.live.null_seed_compat_level, level,
+            "the resumed TPM"
+        );
+    }
+
+    #[test]
+    fn a_null_rsa_primary_survives_state_resumes() {
+        let mut runtime = started_runtime();
+        assert_eq!(runtime.live.null_seed_compat_level, SEED_COMPAT_LEVEL_LAST);
+        let created = create_null_rsa_primary(&mut runtime);
+        for resume in 1..=2 {
+            shutdown_state_and_resume(&mut runtime, SEED_COMPAT_LEVEL_LAST);
+            assert_eq!(
+                create_null_rsa_primary(&mut runtime),
+                created,
+                "resume {resume}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_saved_original_null_seed_compat_level_survives_state_resumes() {
+        let mut runtime = started_runtime();
+        let current_level_primary = create_null_rsa_primary(&mut runtime);
         assert_eq!(
             dispatch_bytes(&mut runtime, &shutdown_command(TPM_SU_STATE)),
             response_bytes(SUCCESS)
         );
-
-        let state = state(&runtime);
-        assert_eq!(state.index_orderly_ram, live);
-        let stored = persistent_all_store(state).unwrap();
-        let mut section = vec![
-            0x00, 0x02, 0x53, 0x46, 0xfe, 0xab, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00,
-        ];
-        section.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0]);
-        section.extend_from_slice(&(TPMA_NV_ORDERLY | TPMA_NV_WRITTEN).to_be_bytes());
-        section.extend_from_slice(&[0x01, 0x00, 0x00]);
-        assert!(
-            stored
-                .windows(section.len())
-                .any(|window| window == section.as_slice()),
-            "the size, handle and attributes are written before the walk stops"
+        runtime
+            .state
+            .as_mut()
+            .and_then(|state| state.state_reset.as_mut())
+            .expect("Shutdown(STATE) saves the reset data")
+            .null_seed_compat_level = SEED_COMPAT_LEVEL_ORIGINAL;
+        runtime = rebooted_runtime(&runtime);
+        assert_eq!(
+            dispatch_bytes(&mut runtime, &startup_command(TPM_SU_STATE)),
+            response_bytes(SUCCESS)
         );
+        assert_eq!(
+            runtime.live.null_seed_compat_level,
+            SEED_COMPAT_LEVEL_ORIGINAL
+        );
+        let created = create_null_rsa_primary(&mut runtime);
+        assert_ne!(
+            created, current_level_primary,
+            "the level selects the RSA key derivation"
+        );
+        for resume in 1..=2 {
+            shutdown_state_and_resume(&mut runtime, SEED_COMPAT_LEVEL_ORIGINAL);
+            assert_eq!(
+                create_null_rsa_primary(&mut runtime),
+                created,
+                "resume {resume}"
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,9 @@ For each test family, we run a scenario against a pinned reference build of
 libtpms and save the results in a binary fixture. The Rust test then runs the
 same commands and compares its results with that fixture.
 
+The reference build is the `libtpms` submodule revision with the patch series
+in `patches/` applied (see [The reference build](#the-reference-build)).
+
 ```text
 scenario -> reference libtpms -> fixture -> Rust test
 ```
@@ -65,7 +68,8 @@ Commit the scenario and its fixture together.
 
 ### You changed libtpms or the reference container
 
-This can affect every fixture:
+This includes adding, removing or editing a file in `patches/`. It can affect
+every fixture:
 
 ```sh
 make update-golden-all
@@ -105,6 +109,8 @@ The files have separate jobs:
 - `golden.py` audits, captures, compares, and updates fixtures.
 - `Dockerfile` and `entropy_shim.c` define the reproducible reference
   environment.
+- `patches/*.patch` are the upstream libtpms fixes applied to the submodule
+  before the reference is built.
 
 Generated fixtures live in:
 
@@ -233,9 +239,12 @@ port samples physical presence for every command it executes, libtpms only
 when a command needs it.
 
 A cut or flipped volatile blob leaves libtpms holding every field it wrote
-before the defect. Export such a state only when libtpms can marshal it: a cut
-that leaves a union selector unset, for example inside an object's public area
-or before a session's symmetric algorithm, makes libtpms assert outside a
+before the defect, with one exception: a defect inside an `OBJECT` or
+`HASH_OBJECT` body clears the whole object slot, occupied flag included. The
+outer `ANY_OBJECT` header and its trailing block are outside that cleanup, so
+a defect there leaves the slot as it was. Export such a state only when
+libtpms can marshal it: a cut that leaves a union selector unset, for example
+before a session's symmetric algorithm, makes libtpms assert outside a
 command. Observe those states through `GetCapability`, `FlushContext` and an
 export after the flush instead.
 
@@ -262,6 +271,35 @@ change what the test loads and keeps:
 
 A C libtpms built from the `libtpms` submodule passes the same test, which
 keeps the replay honest about what it compares.
+
+## The reference build
+
+The capture image copies the committed `libtpms` submodule revision and applies
+every `patches/*.patch` file to it in name order before it runs `autogen.sh`.
+The patches use `git format-patch` output, so the first line of each file is
+the upstream commit it was exported from. `make golden-audit` prints those
+commits next to the submodule revision:
+
+```text
+reference:         libtpms v0.10.2 @ 03ff2481e133540be3b3ffe3daa1483d2a73d967 (platform linux/arm64)
+reference patches: 4 upstream commit(s) 43c97ddf1765 043ebbc16d47 c5449222056d ab9803822ab8
+```
+
+The current series backports four `NVMarshal.c` fixes that were submitted
+upstream on top of libtpms master (`a5fc3ae7`); each applies to v0.10.2
+without fuzz:
+
+| Patch | Upstream commit | Effect on the reference |
+| --- | --- | --- |
+| `0001` | `43c97ddf` | Loading permanent state keeps the saved `nullSeedCompatLevel`, so a `TPM_RH_NULL` RSA primary is the same after `TPM2_Startup(TPM_SU_STATE)`. |
+| `0002` | `043ebbc1` | An `ANY_HASH_STATE` header error is returned instead of being replaced by the result of the hash payload. |
+| `0003` | `c5449222` | A failed `OBJECT` or `HASH_OBJECT` body clears the whole object slot. |
+| `0004` | `ab980382` | An orderly RAM entry whose size is below the header or past the array is written as the zero-size terminator. |
+
+The audit rejects an untracked file in `patches/` (it would silently stay out
+of the build), a patch that does not start with its upstream commit, and a
+Dockerfile that does not apply the directory. The submodule itself must stay
+clean: patches are applied only inside the image.
 
 ## Keeping scenario sections independent
 
@@ -310,8 +348,8 @@ those sources of variation:
 - `entropy_shim.c` supplies deterministic OpenSSL randomness and monotonic
   clocks;
 - libfaketime freezes wall-clock time;
-- the Debian snapshot, packages, compiler flags, libtpms commit, platform,
-  entropy seed, and clock settings are pinned.
+- the Debian snapshot, packages, compiler flags, libtpms commit, reference
+  patches, platform, entropy seed, and clock settings are pinned.
 
 The deterministic random stream exists only in the capture container. It is not
 used by the Rust library in production and must not be treated as secure.
@@ -320,9 +358,10 @@ Before a fixture is captured, `golden.py` checks the image and its pinned
 inputs. It also runs a reproducibility probe in two fresh containers and
 requires identical output.
 
-The image is built from tracked capture files and the committed libtpms
-submodule revision. It is cached by content and platform, so build artifacts and
-untracked files cannot silently change the reference.
+The image is built from tracked capture files, the committed libtpms
+submodule revision and the tracked patch series. It is cached by content and
+platform, so build artifacts and untracked files cannot silently change the
+reference.
 
 The reference platform is declared in `manifest.toml`. It is part of the
 compatibility definition, so a host on another architecture may run the image
@@ -339,6 +378,8 @@ Among other things, it checks that:
 - readers open the fixture and magic value declared for their family;
 - fixture paths, magic values, and command ownership do not overlap;
 - the upstream command table, Rust registry, and manifest agree;
+- every reference patch is tracked, names its upstream commit, and is applied
+  by the Dockerfile;
 - scenarios exercise the commands they claim to cover;
 - inputs used to build the reference image have not drifted.
 

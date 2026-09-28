@@ -54,6 +54,8 @@ ENTROPY_ALGORITHMS = {
 CONTEXT_SUBMODULES = ("libtpms",)
 CONTEXT_SUBMODULE = "libtpms"
 CONTEXT_SCRIPT_TREE = "scripts/golden_responses"
+PATCH_DIR = "scripts/golden_responses/patches/"
+PATCH_UPSTREAM_COMMIT = re.compile(r"From ([0-9a-f]{40}) ")
 CONTEXT_EXCLUDED_SCRIPTS = ("scripts/golden_responses/manifest.toml",)
 IMAGE_SHIM_PATH = "/usr/local/lib/entropy_shim.so"
 ENTROPY_REQUEST_SIZES = (16, 5, 3, 8, 1)
@@ -190,6 +192,7 @@ EMPTY_SUMMARY = {
     "families": {},
     "records": 0,
     "libtpms_commit": None,
+    "reference_patches": [],
 }
 
 
@@ -338,6 +341,7 @@ def parse_dockerfile(text):
     match = DOCKER_SEED.search(text)
     facts["docker_entropy_seed"] = match.group(1) if match else None
     facts["docker_shim_referenced"] = "entropy_shim" in text
+    facts["docker_applies_patches"] = PATCH_DIR in text and "patch -p1" in text
     match = DOCKER_LD_PRELOAD.search(text)
     facts["docker_ld_preload"] = match.group(1).split(":") if match else []
     return facts
@@ -358,6 +362,28 @@ def parse_shim_source(text):
         if constant in text.lower()
     }
     return facts
+
+
+def reference_patches(tracked):
+    patches = []
+    for path in sorted(path for path in tracked if path.startswith(PATCH_DIR)):
+        text = (ROOT / path).read_text("utf-8", errors="replace")
+        match = PATCH_UPSTREAM_COMMIT.match(text)
+        patches.append((path, match.group(1) if match else None))
+    return patches
+
+
+def untracked_patches(tracked):
+    directory = ROOT / PATCH_DIR
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path
+        for path in (
+            str(entry.relative_to(ROOT)) for entry in directory.rglob("*") if entry.is_file()
+        )
+        if path not in tracked
+    )
 
 
 def git_output(arguments):
@@ -628,6 +654,7 @@ def collect_facts(manifest):
             "docker_faketime": None,
             "docker_entropy_seed": None,
             "docker_shim_referenced": False,
+            "docker_applies_patches": False,
             "docker_ld_preload": [],
         }
     shim_path = HERE / "entropy_shim.c"
@@ -644,6 +671,8 @@ def collect_facts(manifest):
     facts["tracked_files"] = set(
         git_output(["ls-files", "--", "scripts/golden_responses"]).split()
     )
+    facts["reference_patches"] = reference_patches(facts["tracked_files"])
+    facts["untracked_patches"] = untracked_patches(facts["tracked_files"])
     candidates = set()
     for entry in well_formed_families(manifest).values():
         candidates.add(entry.get("scenario"))
@@ -1131,6 +1160,27 @@ def validate_entropy_behavior(manifest, facts):
     if facts.get("entropy_invalid_seed") is not None:
         violations.append(
             Violation("image", "entropy contract: the compiled shim accepted a non-hex GOLDEN_ENTROPY_SEED")
+        )
+    return violations
+
+
+def validate_reference_patches(manifest, facts):
+    violations = []
+    patches = facts.get("reference_patches", [])
+    for path, commit in patches:
+        if not path.endswith(".patch"):
+            violations.append(Violation("patches", f"{path} is not a .patch file"))
+        elif commit is None:
+            violations.append(
+                Violation("patches", f"{path} does not start with the upstream commit it applies")
+            )
+    for path in facts.get("untracked_patches", []):
+        violations.append(
+            Violation("patches", f"{path} is untracked and would not enter the capture build")
+        )
+    if patches and not facts.get("docker_applies_patches"):
+        violations.append(
+            Violation("patches", f"the Dockerfile does not apply the patches in {PATCH_DIR}")
         )
     return violations
 
@@ -1937,6 +1987,7 @@ def collect_violations(manifest, facts=None, packer=None):
     if facts is None:
         facts = collect_facts(manifest)
     violations.extend(validate_capture_environment(manifest, facts))
+    violations.extend(validate_reference_patches(manifest, facts))
     violations.extend(validate_submodules(manifest, facts))
     violations.extend(validate_scenarios(manifest, facts))
     violations.extend(validate_readers(manifest, facts))
@@ -1947,6 +1998,7 @@ def collect_violations(manifest, facts=None, packer=None):
         "families": families,
         "records": sum(record_counts.values()),
         "libtpms_commit": facts.get("libtpms_commit"),
+        "reference_patches": facts.get("reference_patches", []),
     }
     return violations, summary
 
@@ -1973,6 +2025,10 @@ def run_audit(manifest=None, facts=None, quiet=False):
     print(f"implemented:       {statuses.count('implemented')} ({covered} fixture-covered, {module_pinned} module-pinned)")
     print(f"families:          {len(families)} ({summary['records']} records)")
     print(f"reference:         libtpms {expected} @ {summary['libtpms_commit']} (platform {reference.get('docker_platform')})")
+    patches = summary["reference_patches"]
+    if patches:
+        commits = " ".join((commit or "unknown")[:12] for _, commit in patches)
+        print(f"reference patches: {len(patches)} upstream commit(s) {commits}")
     print(f"waived:            {statuses.count('waived')} (profile-disabled upstream commands)")
     print(f"roadmap todo: {statuses.count('todo')}")
     if violations:

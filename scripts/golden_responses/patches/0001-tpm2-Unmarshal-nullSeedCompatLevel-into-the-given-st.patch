@@ -1,0 +1,29 @@
+From 43c97ddf1765643598c74efbfbaa7303ab857c05 Mon Sep 17 00:00:00 2001
+From: Alexander Gryanko <xpahos@gmail.com>
+Date: Sun, 27 Sep 2026 23:26:14 +0300
+Subject: [PATCH 1/4] tpm2: Unmarshal nullSeedCompatLevel into the given state
+
+STATE_RESET_DATA_Unmarshal() writes the level into the global 'gr' instead
+of the caller's structure, so the local one in PERSISTENT_ALL_Unmarshal()
+keeps SEED_COMPAT_LEVEL_ORIGINAL, overwrites NV_STATE_RESET_DATA and gets
+restored by TPM2_Startup(TPM_SU_STATE). TPM2_CreatePrimary on TPM_RH_NULL
+then returns a different RSA key than before TPM2_Shutdown(TPM_SU_STATE).
+
+Signed-off-by: Alexander Gryanko <xpahos@gmail.com>
+---
+ src/tpm2/NVMarshal.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/tpm2/NVMarshal.c b/src/tpm2/NVMarshal.c
+index 8f0c86d5..8da249c0 100644
+--- a/src/tpm2/NVMarshal.c
++++ b/src/tpm2/NVMarshal.c
+@@ -1431,7 +1431,7 @@ skip_alg_ecc:
+         BLOCK_SKIP_READ(skip_future_versions, hdr.version >= 3, buffer, size,
+                         "STATE_RESET_DATA", "version 3 or later");
+         if (rc == TPM_RC_SUCCESS) {
+-            rc = SEED_COMPAT_LEVEL_Unmarshal(&gr.nullSeedCompatLevel,
++            rc = SEED_COMPAT_LEVEL_Unmarshal(&data->nullSeedCompatLevel,
+                                              buffer, size, "nullSeed");
+         }
+ 
