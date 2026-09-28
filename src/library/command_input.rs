@@ -1,3 +1,15 @@
+// Part of the Rust port of libtpms.
+//
+// Upstream behavior references for this Rust implementation:
+// - libtpms/src/tpm2/RunCommand.c
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust implementation:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use super::constants::TPM_BUFFER_MAX;
 
 const TAG_AND_SIZE_LEN: usize = 6;

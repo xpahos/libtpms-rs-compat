@@ -1,3 +1,11 @@
+// Part of the Rust port of libtpms.
+//
+// Project licensing and upstream notices: LICENSE and LICENSES/README.md.
+//
+// Rust implementation:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::tpm2::nv::any_object_image;
 use crate::library::tpm2::object_load::replay::{plain, push_tpm2b, sessioned};
 use crate::library::tpm2::persistent::OwnedAnyObject;

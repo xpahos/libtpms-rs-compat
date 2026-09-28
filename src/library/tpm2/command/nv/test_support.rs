@@ -1,3 +1,11 @@
+// Part of the Rust port of libtpms.
+//
+// Project licensing and upstream notices: LICENSE and LICENSES/README.md.
+//
+// Rust implementation:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::tpm2::command::core::test_support::{
     RC_SUCCESS, TPM_ALG_SHA256, command, dispatch_bytes, divergence, response_code,
 };

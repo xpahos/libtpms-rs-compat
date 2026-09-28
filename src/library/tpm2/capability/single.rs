@@ -1,3 +1,23 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/AlgorithmCap.c
+// - libtpms/src/tpm2/CommandCodeAttributes.c
+// - libtpms/src/tpm2/PCR.c
+// - libtpms/src/tpm2/PropertyCap.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2023
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use super::super::command::find_command;
 use super::super::hierarchy::IMPLEMENTED_PERMANENT_HANDLES;
 use super::super::marshal::BlobWriter;

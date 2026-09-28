@@ -1,3 +1,17 @@
+// Part of the Rust port of libtpms.
+//
+// Upstream behavior references for this Rust implementation:
+// - libtpms/src/tpm2/ACTCommands.c
+// - libtpms/src/tpm2/CapabilityCommands.c
+// - libtpms/src/tpm2/ManagementCommands.c
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust implementation:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 pub(super) mod algorithm_set;
 pub(super) mod clock;
 pub(super) mod pcr_auth_value;

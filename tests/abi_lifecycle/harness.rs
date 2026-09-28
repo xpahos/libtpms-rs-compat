@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+//
+// License text: LICENSE.
+// Upstream notices: LICENSES/libtpms-notices.txt.
+
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_uchar, c_void};
 use std::fmt::Write as _;

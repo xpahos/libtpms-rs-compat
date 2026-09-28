@@ -1,3 +1,24 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/CryptUtil.c
+// - libtpms/src/tpm2/crypto/openssl/CryptEccCrypt.c
+// - libtpms/src/tpm2/crypto/openssl/CryptRsa.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2023
+// (c) Copyright IBM Corp. and others, 2022 - 2023
+// (c) Copyright IBM Corp. and others, 2016 - 2024
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_BINDING, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_INSUFFICIENT,
     TPM_RC_KEY, TPM_RC_NO_RESULT, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,

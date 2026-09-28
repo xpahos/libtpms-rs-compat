@@ -370,6 +370,35 @@ class OutputTests(GeneratorTestCase):
         self.assertEqual(code, 1)
         self.assertIn("header not found", stderr)
 
+    def test_main_uses_bsd_wrapper_header(self):
+        notice = (
+            "/* Written by Original Author */\n"
+            "/* Copyright (c) 2010 IBM Corporation. */\n"
+        )
+        expected_header = (
+            "// SPDX-License-Identifier: BSD-3-Clause\n"
+            "//\n"
+            "// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>\n"
+            "// Copyright (c) 2026 Yandex\n"
+            "//\n"
+            "// License text: LICENSE.\n"
+            "// Upstream notices: LICENSES/libtpms-notices.txt.\n\n"
+        )
+        for prefix in ("", notice):
+            with self.subTest(has_upstream_notice=bool(prefix)):
+                header = self.write_header(prefix + self.SOURCE)
+                out = self.tmpdir / "abi.rs"
+                code, _, stderr = self.run_main(
+                    ["--header", str(header), "--output", str(out)]
+                )
+                self.assertEqual((code, stderr), (0, ""))
+                rust = out.read_text(encoding="utf-8")
+                self.assertTrue(rust.startswith(expected_header))
+                self.assertIn("// Source: " + str(header), rust)
+                self.assertIn('extern "C" fn Foo', rust)
+                self.assertNotIn("Original Author", rust)
+                self.assertNotIn("IBM", rust)
+
     def test_main_unsupported_type_fails(self):
         header = self.write_header("double Bad(double x);\n")
         out = self.tmpdir / "out.rs"

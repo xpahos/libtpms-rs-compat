@@ -1,3 +1,22 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/AlgorithmCap.c
+// - libtpms/src/tpm2/TpmAlgorithmDefines.h
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2023
+// (c) Copyright IBM Corp. and others, 2019 - 2024
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use super::super::algorithm::{
     TPM_ALG_AES, TPM_ALG_CAMELLIA, TPM_ALG_CBC, TPM_ALG_CFB, TPM_ALG_CMAC, TPM_ALG_CTR,
     TPM_ALG_ECB, TPM_ALG_ECC, TPM_ALG_ECDAA, TPM_ALG_ECDH, TPM_ALG_ECDSA, TPM_ALG_ECMQV,

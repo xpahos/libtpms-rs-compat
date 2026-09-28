@@ -1,3 +1,22 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/Context_spt.c
+// - libtpms/src/tpm2/Object.c
+// - libtpms/src/tpm2/Object_spt.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2023
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::constants::{
     TPM_RC_BINDING, TPM_RC_CURVE, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_KEY,
     TPM_RC_KEY_SIZE, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_TYPE, TPM_RC_VALUE,

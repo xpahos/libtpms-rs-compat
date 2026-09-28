@@ -1,3 +1,16 @@
+// Part of the Rust port of libtpms.
+//
+// Upstream behavior references for this Rust implementation:
+// - libtpms/src/tpm2/BnConvert.c
+// - libtpms/src/tpm2/BnMath.c
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust implementation:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 const LIMB_BITS: usize = 64;
 const LIMB_BYTES: usize = LIMB_BITS / 8;
 

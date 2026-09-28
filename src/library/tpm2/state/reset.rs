@@ -1,3 +1,23 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/Global.h
+// - libtpms/src/tpm2/NVMarshal.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2024
+// Written by Stefan Berger
+// (c) Copyright IBM Corporation 2017,2018.
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::tpm2::marshal::{
     BlobReader, BlockDisposition, BlockSkipError, Tpm2bError, skip_optional_block,
 };

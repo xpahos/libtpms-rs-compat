@@ -1,3 +1,26 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/include/libtpms/tpm_error.h
+// - libtpms/src/tpm12/tpm_constants.h
+// - libtpms/src/tpm2/TpmTypes.h
+// - libtpms/src/tpm_library_intern.h
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corporation 2006, 2010.
+// (c) Copyright IBM Corp. and others, 2016 - 2024
+// Written by Stefan Berger
+// (c) Copyright IBM Corporation 2011.
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::types::TpmResult;
 
 pub const TPM_SUCCESS: TpmResult = 0;

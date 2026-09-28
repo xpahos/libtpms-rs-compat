@@ -1,3 +1,21 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/TpmASN1.h
+// - libtpms/src/tpm2/TpmAsn1.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2019 - 2023
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 pub(super) const TAG_INTEGER: u8 = 0x02;
 pub(super) const TAG_BIT_STRING: u8 = 0x03;
 pub(super) const TAG_OCTET_STRING: u8 = 0x04;

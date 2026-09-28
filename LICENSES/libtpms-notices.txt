@@ -1,0 +1,3319 @@
+Original libtpms source notices
+==============================
+
+Upstream: https://github.com/stefanberger/libtpms/tree/03ff2481e133540be3b3ffe3daa1483d2a73d967
+Revision: 03ff2481e133540be3b3ffe3daa1483d2a73d967 (v0.10.2)
+
+This collection retains the author, copyright, license conditions and
+disclaimers from every tracked C/header file under upstream src/ and include/.
+Identical author-and-notice texts are grouped; comment decoration and outer
+whitespace are removed without changing the notice wording. All source paths
+for each notice are listed. This is a conservative superset: inclusion does
+not assert that every upstream file has been translated into this project.
+The unchanged upstream umbrella license is also distributed as libtpms-LICENSE.txt.
+
+NOTICE 0abbda48cd3da43b
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/NV_ReadPublic2_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2012-2023
+
+NOTICE 0e152bfc56642ef8
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/CryptEccCrypt_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2020 - 2022
+
+NOTICE 0f437812effae6fe
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/Attest_spt.c
+  libtpms/src/tpm2/Bits.c
+  libtpms/src/tpm2/Bits_fp.h
+  libtpms/src/tpm2/EccTestData.h
+  libtpms/src/tpm2/IoBuffers.c
+  libtpms/src/tpm2/IoBuffers_fp.h
+  libtpms/src/tpm2/KdfTestData.h
+  libtpms/src/tpm2/RandomCommands.c
+  libtpms/src/tpm2/Response.c
+  libtpms/src/tpm2/ResponseCodeProcessing.c
+  libtpms/src/tpm2/RsaTestData.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2018
+
+NOTICE 189bf1f5a7d2159e
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/openssl/ExpDCache.c
+  libtpms/src/tpm2/crypto/openssl/ExpDCache_fp.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp., 2021
+
+NOTICE 1b56728b6274ac6b
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/X509_spt.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG rants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019 - 2024
+
+NOTICE 21e7d8939fcb782b
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/CryptSym.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2017 - 2023
+
+NOTICE 2597e0710272464a
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/AlgorithmTests.c
+  libtpms/src/tpm2/AlgorithmTests_fp.h
+  libtpms/src/tpm2/AsymmetricCommands.c
+  libtpms/src/tpm2/AuditCommands.c
+  libtpms/src/tpm2/ClockCommands.c
+  libtpms/src/tpm2/CryptSelfTest.c
+  libtpms/src/tpm2/Entity.c
+  libtpms/src/tpm2/Global.c
+  libtpms/src/tpm2/Global.h
+  libtpms/src/tpm2/GpMacros.h
+  libtpms/src/tpm2/NVCommands.c
+  libtpms/src/tpm2/NVMem.c
+  libtpms/src/tpm2/ObjectCommands.c
+  libtpms/src/tpm2/TpmTypes.h
+  libtpms/src/tpm2/crypto/openssl/CryptEccMain.c
+  libtpms/src/tpm2/crypto/openssl/CryptEccSignature.c
+  libtpms/src/tpm2/crypto/openssl/CryptHash.c
+  libtpms/src/tpm2/crypto/openssl/CryptPrimeSieve.c
+  libtpms/src/tpm2/crypto/openssl/CryptRsa.c
+  libtpms/src/tpm2/crypto/openssl/CryptSym.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2024
+
+NOTICE 274d5c46990cb358
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/AttestationCommands.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source CoDe must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2021
+
+NOTICE 2a47bf4e3e5f0521
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/compiler.h
+  libtpms/src/tpm2/LibtpmsCallbacks.c
+  libtpms/src/tpm2/LibtpmsCallbacks.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2018.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE 2dcbbfe6d2c76200
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/include/libtpms/tpm_tis.h
+  libtpms/src/tpm_tpm12_tis.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2006, 2011.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE 383f4d2e0ec09040
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/BackwardsCompatibilityBitArray.c
+  libtpms/src/tpm2/BackwardsCompatibilityBitArray.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2023.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE 3848768e3108ecf0
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/openssl/ConsttimeUtils.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2020
+
+NOTICE 392533ef63453cec
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/RuntimeAlgorithm.c
+  libtpms/src/tpm2/RuntimeAlgorithm_fp.h
+  libtpms/src/tpm2/RuntimeAttributes_fp.h
+  libtpms/src/tpm2/RuntimeCommands.c
+  libtpms/src/tpm2/RuntimeCommands_fp.h
+  libtpms/src/tpm2/RuntimeProfile.c
+  libtpms/src/tpm2/RuntimeProfile_fp.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+(c) Copyright IBM Corporation, 2022
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE 3b2863ce52060c7c
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/Handle_fp.h
+  libtpms/src/tpm2/NV_spt.c
+  libtpms/src/tpm2/crypto/CryptEccSignature_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 -2023
+
+NOTICE 4340bd75750059e6
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/VendorInfo.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2023-2024
+
+NOTICE 44d61630d2b405b8
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/PlatformData.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2019.
+
+NOTICE 4b121f614d360343
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/Attest_spt_fp.h
+  libtpms/src/tpm2/BnMemory.c
+  libtpms/src/tpm2/CommandDispatcher_fp.h
+  libtpms/src/tpm2/CryptSelfTest_fp.h
+  libtpms/src/tpm2/EncryptDecrypt_spt_fp.h
+  libtpms/src/tpm2/Entity_fp.h
+  libtpms/src/tpm2/ExecCommand_fp.h
+  libtpms/src/tpm2/Locality_fp.h
+  libtpms/src/tpm2/PP_Commands_fp.h
+  libtpms/src/tpm2/Policy_spt_fp.h
+  libtpms/src/tpm2/ResponseCodeProcessing_fp.h
+  libtpms/src/tpm2/Response_fp.h
+  libtpms/src/tpm2/Vendor_TCG_Test.c
+  libtpms/src/tpm2/_TPM_Hash_Data_fp.h
+  libtpms/src/tpm2/_TPM_Hash_End_fp.h
+  libtpms/src/tpm2/_TPM_Hash_Start_fp.h
+  libtpms/src/tpm2/_TPM_Init_fp.h
+  libtpms/src/tpm2/crypto/CryptDes_fp.h
+  libtpms/src/tpm2/crypto/CryptSelfTest_fp.h
+  libtpms/src/tpm2/crypto/CryptSym_fp.h
+  libtpms/src/tpm2/crypto/openssl/TpmToOsslDesSupport_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016
+
+NOTICE 4f5041a70308bcbd
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm12/tpm_counter.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+//* (c) Copyright IBM Corporation 2006, 2010.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE 55d5d8aa86d19575
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/PlatformACT.h
+  libtpms/src/tpm2/X509_spt_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019.
+
+NOTICE 56e136ff199e9b48
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/TpmAlgorithmDefines.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019 - 2024
+
+NOTICE 5ee38186f3eaf203
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/CryptSmac_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2018
+
+NOTICE 67fdc6b69a5e6ec1
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/ACT_spt.c
+  libtpms/src/tpm2/AlgorithmCap.c
+  libtpms/src/tpm2/AlgorithmCap_fp.h
+  libtpms/src/tpm2/BnConvert.c
+  libtpms/src/tpm2/BnMath.c
+  libtpms/src/tpm2/CapabilityCommands.c
+  libtpms/src/tpm2/Clock.c
+  libtpms/src/tpm2/CommandAttributeData.h
+  libtpms/src/tpm2/CommandAudit.c
+  libtpms/src/tpm2/CommandAudit_fp.h
+  libtpms/src/tpm2/CommandCodeAttributes.c
+  libtpms/src/tpm2/CommandCodeAttributes_fp.h
+  libtpms/src/tpm2/CommandDispatchData.h
+  libtpms/src/tpm2/ContextCommands.c
+  libtpms/src/tpm2/Context_spt.c
+  libtpms/src/tpm2/Context_spt_fp.h
+  libtpms/src/tpm2/CryptUtil.c
+  libtpms/src/tpm2/EACommands.c
+  libtpms/src/tpm2/EphemeralCommands.c
+  libtpms/src/tpm2/ExecCommand.c
+  libtpms/src/tpm2/Handle.c
+  libtpms/src/tpm2/Hierarchy.c
+  libtpms/src/tpm2/HierarchyCommands.c
+  libtpms/src/tpm2/Hierarchy_fp.h
+  libtpms/src/tpm2/Manufacture.c
+  libtpms/src/tpm2/Manufacture_fp.h
+  libtpms/src/tpm2/Marshal.c
+  libtpms/src/tpm2/Marshal_fp.h
+  libtpms/src/tpm2/MathOnByteBuffers.c
+  libtpms/src/tpm2/MathOnByteBuffers_fp.h
+  libtpms/src/tpm2/NVDynamic.c
+  libtpms/src/tpm2/NVDynamic_fp.h
+  libtpms/src/tpm2/NVReserved.c
+  libtpms/src/tpm2/NV_spt_fp.h
+  libtpms/src/tpm2/Object.c
+  libtpms/src/tpm2/Object_fp.h
+  libtpms/src/tpm2/Object_spt.c
+  libtpms/src/tpm2/Object_spt_fp.h
+  libtpms/src/tpm2/PCR.c
+  libtpms/src/tpm2/PCR_fp.h
+  libtpms/src/tpm2/PP.c
+  libtpms/src/tpm2/PP_fp.h
+  libtpms/src/tpm2/Platform_fp.h
+  libtpms/src/tpm2/PrimeData.c
+  libtpms/src/tpm2/PropertyCap.c
+  libtpms/src/tpm2/PropertyCap_fp.h
+  libtpms/src/tpm2/SelfTest.h
+  libtpms/src/tpm2/Session.c
+  libtpms/src/tpm2/SessionProcess.c
+  libtpms/src/tpm2/SessionProcess_fp.h
+  libtpms/src/tpm2/Session_fp.h
+  libtpms/src/tpm2/SigningCommands.c
+  libtpms/src/tpm2/Simulator_fp.h
+  libtpms/src/tpm2/StartupCommands.c
+  libtpms/src/tpm2/SymmetricTestData.h
+  libtpms/src/tpm2/TPMB.h
+  libtpms/src/tpm2/TPMCmdp.c
+  libtpms/src/tpm2/Ticket.c
+  libtpms/src/tpm2/Time.c
+  libtpms/src/tpm2/Time_fp.h
+  libtpms/src/tpm2/Tpm.h
+  libtpms/src/tpm2/TpmBuildSwitches.h
+  libtpms/src/tpm2/TpmFail.c
+  libtpms/src/tpm2/TpmFail_fp.h
+  libtpms/src/tpm2/Unique.c
+  libtpms/src/tpm2/crypto/CryptEcc.h
+  libtpms/src/tpm2/crypto/CryptEccKeyExchange_fp.h
+  libtpms/src/tpm2/crypto/CryptEccMain_fp.h
+  libtpms/src/tpm2/crypto/CryptHash_fp.h
+  libtpms/src/tpm2/crypto/CryptPrimeSieve_fp.h
+  libtpms/src/tpm2/crypto/CryptPrime_fp.h
+  libtpms/src/tpm2/crypto/CryptRand.h
+  libtpms/src/tpm2/crypto/CryptRsa.h
+  libtpms/src/tpm2/crypto/CryptRsa_fp.h
+  libtpms/src/tpm2/crypto/CryptTest.h
+  libtpms/src/tpm2/crypto/CryptUtil_fp.h
+  libtpms/src/tpm2/crypto/openssl/BnConvert_fp.h
+  libtpms/src/tpm2/crypto/openssl/BnMath_fp.h
+  libtpms/src/tpm2/crypto/openssl/BnMemory_fp.h
+  libtpms/src/tpm2/crypto/openssl/BnValues.h
+  libtpms/src/tpm2/crypto/openssl/CryptDes.c
+  libtpms/src/tpm2/crypto/openssl/CryptEccKeyExchange.c
+  libtpms/src/tpm2/crypto/openssl/CryptPrime.c
+  libtpms/src/tpm2/crypto/openssl/CryptRand.c
+  libtpms/src/tpm2/crypto/openssl/LibSupport.h
+  libtpms/src/tpm2/crypto/openssl/TpmToOsslSupport.c
+  libtpms/src/tpm2/crypto/openssl/TpmToOsslSupport_fp.h
+  libtpms/src/tpm2/crypto/openssl/TpmToOsslSym.h
+  libtpms/src/tpm2/endian_swap.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2023
+
+NOTICE 68e67b71a827fa26
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/openssl/CryptSmac.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2018 - 2021
+
+NOTICE 6cd630de916e76d6
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/BnEccConstants.c
+  libtpms/src/tpm2/BnSupport_Interface.h
+  libtpms/src/tpm2/BnUtil_fp.h
+  libtpms/src/tpm2/CompilerDependencies.h
+  libtpms/src/tpm2/CompilerDependencies_gcc.h
+  libtpms/src/tpm2/CompilerDependencies_msvc.h
+  libtpms/src/tpm2/ExtraData.c
+  libtpms/src/tpm2/Marshal.h
+  libtpms/src/tpm2/MathLibraryInterface.h
+  libtpms/src/tpm2/MathLibraryInterfaceTypes.h
+  libtpms/src/tpm2/NV_DefineSpace2_fp.h
+  libtpms/src/tpm2/PlatformPCR.c
+  libtpms/src/tpm2/PolicyCapability_fp.h
+  libtpms/src/tpm2/PolicyParameters_fp.h
+  libtpms/src/tpm2/SetCapability_fp.h
+  libtpms/src/tpm2/SymmetricTest.h
+  libtpms/src/tpm2/Ticket_fp.h
+  libtpms/src/tpm2/TpmBigNum.h
+  libtpms/src/tpm2/TpmBigNumThunks.c
+  libtpms/src/tpm2/TpmCalculatedAttributes.h
+  libtpms/src/tpm2/TpmEcc_Signature_ECDAA.c
+  libtpms/src/tpm2/TpmEcc_Signature_ECDAA_fp.h
+  libtpms/src/tpm2/TpmEcc_Signature_ECDSA.c
+  libtpms/src/tpm2/TpmEcc_Signature_ECDSA_fp.h
+  libtpms/src/tpm2/TpmEcc_Signature_SM2.c
+  libtpms/src/tpm2/TpmEcc_Signature_SM2_fp.h
+  libtpms/src/tpm2/TpmEcc_Signature_Schnorr.c
+  libtpms/src/tpm2/TpmEcc_Signature_Schnorr_fp.h
+  libtpms/src/tpm2/TpmEcc_Signature_Util.c
+  libtpms/src/tpm2/TpmEcc_Signature_Util_fp.h
+  libtpms/src/tpm2/TpmEcc_Util.c
+  libtpms/src/tpm2/TpmEcc_Util_fp.h
+  libtpms/src/tpm2/TpmMath_Debug.c
+  libtpms/src/tpm2/TpmMath_Debug_fp.h
+  libtpms/src/tpm2/TpmMath_Util.c
+  libtpms/src/tpm2/TpmMath_Util_fp.h
+  libtpms/src/tpm2/TpmProfile_CommandList.h
+  libtpms/src/tpm2/TpmProfile_Common.h
+  libtpms/src/tpm2/TpmProfile_ErrorCodes.h
+  libtpms/src/tpm2/TpmProfile_Misc.h
+  libtpms/src/tpm2/VendorInfo.c
+  libtpms/src/tpm2/VerifyConfiguration.h
+  libtpms/src/tpm2/crypto/openssl/BnOssl.h
+  libtpms/src/tpm2/crypto/openssl/BnToOsslMath.c
+  libtpms/src/tpm2/crypto/openssl/BnToOsslMath.h
+  libtpms/src/tpm2/crypto/openssl/BnToOsslMath_fp.h
+  libtpms/src/tpm2/crypto/openssl/TpmToOsslHash.h
+  libtpms/src/tpm2/crypto/openssl/TpmToTpmBigNumMath.h
+  libtpms/src/tpm2/crypto/openssl/tpm_radix.h
+  libtpms/src/tpm2/pcrstruct.h
+  libtpms/src/tpm2/platform_pcr_fp.h
+  libtpms/src/tpm2/platform_public_interface.h
+  libtpms/src/tpm2/platform_to_tpm_interface.h
+  libtpms/src/tpm2/simulatorPrivate.h
+  libtpms/src/tpm2/simulator_sysheaders.h
+  libtpms/src/tpm2/tpm_public.h
+  libtpms/src/tpm2/tpm_to_platform_interface.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2023
+
+NOTICE 776706055061b378
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/ACT_spt_fp.h
+  libtpms/src/tpm2/MinMax.h
+  libtpms/src/tpm2/Platform.h
+  libtpms/src/tpm2/TpmASN1.h
+  libtpms/src/tpm2/TpmASN1_fp.h
+  libtpms/src/tpm2/TpmAsn1.c
+  libtpms/src/tpm2/TpmProfile.h
+  libtpms/src/tpm2/X509_ECC.c
+  libtpms/src/tpm2/X509_RSA.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019 - 2023
+
+NOTICE 80fa8c3806d22630
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/CryptEccData.c
+  libtpms/src/tpm2/crypto/CryptCmac_fp.h
+  libtpms/src/tpm2/crypto/openssl/CryptCmac.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2018 - 2023
+
+NOTICE 81505e6c36da98f2
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/OIDs.h
+  libtpms/src/tpm2/PlatformACT.c
+  libtpms/src/tpm2/PlatformClock.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019 - 2020
+
+NOTICE 83be0d3de84aeca1
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm12/tpm_openssl_helpers.c
+  libtpms/src/tpm12/tpm_openssl_helpers.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2020.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE 8ba18182734ae01e
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm12/tpm_libtpms_io.c
+
+Written by Ken Goldman, Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2006, 2010.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE 9528ddf27423b176
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/EncryptDecrypt2_fp.h
+  libtpms/src/tpm2/PolicyAuthorizeNV_fp.h
+  libtpms/src/tpm2/PolicyTemplate_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2012-2015, 2016
+
+NOTICE a53b8ecb41559976
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm_library_intern.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2011.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE ac5b9d3358a7ba8a
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/MAC_Start_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2017
+
+NOTICE ac8d22b16981277b
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/include/libtpms/tpm_library.h
+  libtpms/include/libtpms/tpm_library.h.in
+  libtpms/src/tpm_library.c
+  libtpms/src/tpm_library_conf.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2010.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE adaba2bfd6bdf356
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/MAC_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2012-2018
+
+NOTICE bdf67d0e1c50e7f5
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/openssl/CryptEccCrypt.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2022 - 2023
+
+NOTICE c58f7967d264c0fd
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/Unmarshal.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2015 - 2024
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE c9af2e11ca20aebf
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/CommandAttributes.h
+  libtpms/src/tpm2/InternalRoutines.h
+  libtpms/src/tpm2/Policy_spt.c
+  libtpms/src/tpm2/TpmSizeChecks.c
+  libtpms/src/tpm2/Vendor_TCG_Test_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2020
+
+NOTICE ce0a6d7e26c4706a
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/GetTestResult_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2012-2016
+
+NOTICE d44f4c924916b660
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/ECC_Decrypt_fp.h
+  libtpms/src/tpm2/crypto/ECC_Encrypt_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2022
+
+NOTICE d6dd27b74fb002e6
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/CommandDispatcher.c
+  libtpms/src/tpm2/DictionaryCommands.c
+  libtpms/src/tpm2/DuplicationCommands.c
+  libtpms/src/tpm2/EncryptDecrypt_spt.c
+  libtpms/src/tpm2/HashCommands.c
+  libtpms/src/tpm2/HashTestData.h
+  libtpms/src/tpm2/IntegrityCommands.c
+  libtpms/src/tpm2/ManagementCommands.c
+  libtpms/src/tpm2/Memory.c
+  libtpms/src/tpm2/SymmetricCommands.c
+  libtpms/src/tpm2/TcpServerPosix_fp.h
+  libtpms/src/tpm2/TestingCommands.c
+  libtpms/src/tpm2/TpmTcpProtocol.h
+  libtpms/src/tpm2/crypto/CryptHash.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2021
+
+NOTICE d84c248ec607e342
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/BaseTypes.h
+  libtpms/src/tpm2/Cancel.c
+  libtpms/src/tpm2/Capabilities.h
+  libtpms/src/tpm2/DA.c
+  libtpms/src/tpm2/DA_fp.h
+  libtpms/src/tpm2/Entropy.c
+  libtpms/src/tpm2/LocalityPlat.c
+  libtpms/src/tpm2/Memory_fp.h
+  libtpms/src/tpm2/NV.h
+  libtpms/src/tpm2/NVReserved_fp.h
+  libtpms/src/tpm2/PPPlat.c
+  libtpms/src/tpm2/PRNG_TestVectors.h
+  libtpms/src/tpm2/PlatformData.c
+  libtpms/src/tpm2/Power.c
+  libtpms/src/tpm2/PowerPlat.c
+  libtpms/src/tpm2/Power_fp.h
+  libtpms/src/tpm2/RunCommand.c
+  libtpms/src/tpm2/SessionCommands.c
+  libtpms/src/tpm2/TpmSizeChecks_fp.h
+  libtpms/src/tpm2/crypto/CryptRand_fp.h
+  libtpms/src/tpm2/crypto/openssl/TpmToOsslDesSupport.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016 - 2019
+
+NOTICE d92dc8a65ff0ee4c
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/ACTCommands.c
+  libtpms/src/tpm2/DebugHelpers.c
+  libtpms/src/tpm2/DebugHelpers_fp.h
+  libtpms/src/tpm2/X509.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019 - 2021
+
+NOTICE dd8fd13049f3e48d
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm_tpm12_interface.c
+  libtpms/src/tpm_tpm2_interface.c
+  libtpms/src/tpm_tpm2_tis.c
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2015.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE f4e77625d09b21c2
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/RuntimeAttributes.c
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+(c) Copyright IBM Corporation, 2023
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE f5737a939014a739
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/Locality.c
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2016, 2017
+
+NOTICE f5bc4d15596e4719
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/ActivateCredential_fp.h
+  libtpms/src/tpm2/CertifyCreation_fp.h
+  libtpms/src/tpm2/Certify_fp.h
+  libtpms/src/tpm2/ChangeEPS_fp.h
+  libtpms/src/tpm2/ChangePPS_fp.h
+  libtpms/src/tpm2/ClearControl_fp.h
+  libtpms/src/tpm2/Clear_fp.h
+  libtpms/src/tpm2/ClockRateAdjust_fp.h
+  libtpms/src/tpm2/ClockSet_fp.h
+  libtpms/src/tpm2/Commit_fp.h
+  libtpms/src/tpm2/ContextLoad_fp.h
+  libtpms/src/tpm2/ContextSave_fp.h
+  libtpms/src/tpm2/CreateLoaded_fp.h
+  libtpms/src/tpm2/CreatePrimary_fp.h
+  libtpms/src/tpm2/Create_fp.h
+  libtpms/src/tpm2/DictionaryAttackLockReset_fp.h
+  libtpms/src/tpm2/DictionaryAttackParameters_fp.h
+  libtpms/src/tpm2/Duplicate_fp.h
+  libtpms/src/tpm2/ECC_Parameters_fp.h
+  libtpms/src/tpm2/ECDH_KeyGen_fp.h
+  libtpms/src/tpm2/ECDH_ZGen_fp.h
+  libtpms/src/tpm2/EC_Ephemeral_fp.h
+  libtpms/src/tpm2/EncryptDecrypt_fp.h
+  libtpms/src/tpm2/EventSequenceComplete_fp.h
+  libtpms/src/tpm2/EvictControl_fp.h
+  libtpms/src/tpm2/FlushContext_fp.h
+  libtpms/src/tpm2/GetCapability_fp.h
+  libtpms/src/tpm2/GetCommandAuditDigest_fp.h
+  libtpms/src/tpm2/GetRandom_fp.h
+  libtpms/src/tpm2/GetSessionAuditDigest_fp.h
+  libtpms/src/tpm2/GetTime_fp.h
+  libtpms/src/tpm2/HMAC_Start_fp.h
+  libtpms/src/tpm2/HMAC_fp.h
+  libtpms/src/tpm2/HashSequenceStart_fp.h
+  libtpms/src/tpm2/Hash_fp.h
+  libtpms/src/tpm2/HierarchyChangeAuth_fp.h
+  libtpms/src/tpm2/HierarchyControl_fp.h
+  libtpms/src/tpm2/Import_fp.h
+  libtpms/src/tpm2/IncrementalSelfTest_fp.h
+  libtpms/src/tpm2/LoadExternal_fp.h
+  libtpms/src/tpm2/Load_fp.h
+  libtpms/src/tpm2/MakeCredential_fp.h
+  libtpms/src/tpm2/NV_Certify_fp.h
+  libtpms/src/tpm2/NV_ChangeAuth_fp.h
+  libtpms/src/tpm2/NV_DefineSpace_fp.h
+  libtpms/src/tpm2/NV_Extend_fp.h
+  libtpms/src/tpm2/NV_GlobalWriteLock_fp.h
+  libtpms/src/tpm2/NV_Increment_fp.h
+  libtpms/src/tpm2/NV_ReadLock_fp.h
+  libtpms/src/tpm2/NV_ReadPublic_fp.h
+  libtpms/src/tpm2/NV_Read_fp.h
+  libtpms/src/tpm2/NV_SetBits_fp.h
+  libtpms/src/tpm2/NV_UndefineSpaceSpecial_fp.h
+  libtpms/src/tpm2/NV_UndefineSpace_fp.h
+  libtpms/src/tpm2/NV_WriteLock_fp.h
+  libtpms/src/tpm2/NV_Write_fp.h
+  libtpms/src/tpm2/ObjectChangeAuth_fp.h
+  libtpms/src/tpm2/PCR_Allocate_fp.h
+  libtpms/src/tpm2/PCR_Event_fp.h
+  libtpms/src/tpm2/PCR_Extend_fp.h
+  libtpms/src/tpm2/PCR_Read_fp.h
+  libtpms/src/tpm2/PCR_Reset_fp.h
+  libtpms/src/tpm2/PCR_SetAuthPolicy_fp.h
+  libtpms/src/tpm2/PCR_SetAuthValue_fp.h
+  libtpms/src/tpm2/PolicyAuthValue_fp.h
+  libtpms/src/tpm2/PolicyAuthorize_fp.h
+  libtpms/src/tpm2/PolicyCommandCode_fp.h
+  libtpms/src/tpm2/PolicyCounterTimer_fp.h
+  libtpms/src/tpm2/PolicyCpHash_fp.h
+  libtpms/src/tpm2/PolicyDuplicationSelect_fp.h
+  libtpms/src/tpm2/PolicyGetDigest_fp.h
+  libtpms/src/tpm2/PolicyLocality_fp.h
+  libtpms/src/tpm2/PolicyNV_fp.h
+  libtpms/src/tpm2/PolicyNameHash_fp.h
+  libtpms/src/tpm2/PolicyNvWritten_fp.h
+  libtpms/src/tpm2/PolicyOR_fp.h
+  libtpms/src/tpm2/PolicyPCR_fp.h
+  libtpms/src/tpm2/PolicyPassword_fp.h
+  libtpms/src/tpm2/PolicyPhysicalPresence_fp.h
+  libtpms/src/tpm2/PolicyRestart_fp.h
+  libtpms/src/tpm2/PolicySecret_fp.h
+  libtpms/src/tpm2/PolicySigned_fp.h
+  libtpms/src/tpm2/PolicyTicket_fp.h
+  libtpms/src/tpm2/Quote_fp.h
+  libtpms/src/tpm2/RSA_Decrypt_fp.h
+  libtpms/src/tpm2/RSA_Encrypt_fp.h
+  libtpms/src/tpm2/ReadClock_fp.h
+  libtpms/src/tpm2/ReadPublic_fp.h
+  libtpms/src/tpm2/Rewrap_fp.h
+  libtpms/src/tpm2/SelfTest_fp.h
+  libtpms/src/tpm2/SequenceComplete_fp.h
+  libtpms/src/tpm2/SequenceUpdate_fp.h
+  libtpms/src/tpm2/SetAlgorithmSet_fp.h
+  libtpms/src/tpm2/SetCommandCodeAuditStatus_fp.h
+  libtpms/src/tpm2/Shutdown_fp.h
+  libtpms/src/tpm2/Sign_fp.h
+  libtpms/src/tpm2/StartAuthSession_fp.h
+  libtpms/src/tpm2/Startup_fp.h
+  libtpms/src/tpm2/StirRandom_fp.h
+  libtpms/src/tpm2/TestParms_fp.h
+  libtpms/src/tpm2/Unseal_fp.h
+  libtpms/src/tpm2/VerifySignature_fp.h
+  libtpms/src/tpm2/ZGen_2Phase_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2012-2015
+
+NOTICE f5bd744083904e1f
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/BackwardsCompatibility.h
+  libtpms/src/tpm2/BackwardsCompatibilityObject.c
+  libtpms/src/tpm2/BackwardsCompatibilityObject.h
+  libtpms/src/tpm2/NVMarshal.c
+  libtpms/src/tpm2/NVMarshal.h
+  libtpms/src/tpm2/StateMarshal.c
+  libtpms/src/tpm2/StateMarshal.h
+  libtpms/src/tpm2/Utils.h
+  libtpms/src/tpm2/Volatile.c
+  libtpms/src/tpm2/Volatile.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2017,2018.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE fb4a810f8135d5e0
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/SetPrimaryPolicy_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2012 - 2019
+
+NOTICE fb4ebc95912783f0
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/ACT.h
+  libtpms/src/tpm2/ACT_SetTimeout_fp.h
+  libtpms/src/tpm2/CertifyX509_fp.h
+  libtpms/src/tpm2/PlatformACT_fp.h
+  libtpms/src/tpm2/X509_ECC_fp.h
+  libtpms/src/tpm2/X509_RSA_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019
+
+NOTICE fd5c9474cc15873f
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/include/libtpms/tpm_error.h
+  libtpms/include/libtpms/tpm_memory.h
+  libtpms/include/libtpms/tpm_nvfilename.h
+  libtpms/include/libtpms/tpm_types.h
+  libtpms/src/tpm12/tpm_admin.c
+  libtpms/src/tpm12/tpm_admin.h
+  libtpms/src/tpm12/tpm_audit.c
+  libtpms/src/tpm12/tpm_audit.h
+  libtpms/src/tpm12/tpm_auth.c
+  libtpms/src/tpm12/tpm_auth.h
+  libtpms/src/tpm12/tpm_commands.h
+  libtpms/src/tpm12/tpm_constants.h
+  libtpms/src/tpm12/tpm_counter.h
+  libtpms/src/tpm12/tpm_crypto.c
+  libtpms/src/tpm12/tpm_crypto.h
+  libtpms/src/tpm12/tpm_crypto_freebl.c
+  libtpms/src/tpm12/tpm_cryptoh.c
+  libtpms/src/tpm12/tpm_cryptoh.h
+  libtpms/src/tpm12/tpm_daa.c
+  libtpms/src/tpm12/tpm_daa.h
+  libtpms/src/tpm12/tpm_delegate.c
+  libtpms/src/tpm12/tpm_delegate.h
+  libtpms/src/tpm12/tpm_digest.c
+  libtpms/src/tpm12/tpm_digest.h
+  libtpms/src/tpm12/tpm_error.c
+  libtpms/src/tpm12/tpm_global.c
+  libtpms/src/tpm12/tpm_global.h
+  libtpms/src/tpm12/tpm_identity.c
+  libtpms/src/tpm12/tpm_identity.h
+  libtpms/src/tpm12/tpm_init.c
+  libtpms/src/tpm12/tpm_init.h
+  libtpms/src/tpm12/tpm_io.h
+  libtpms/src/tpm12/tpm_key.c
+  libtpms/src/tpm12/tpm_key.h
+  libtpms/src/tpm12/tpm_load.c
+  libtpms/src/tpm12/tpm_load.h
+  libtpms/src/tpm12/tpm_maint.c
+  libtpms/src/tpm12/tpm_maint.h
+  libtpms/src/tpm12/tpm_migration.c
+  libtpms/src/tpm12/tpm_migration.h
+  libtpms/src/tpm12/tpm_nonce.c
+  libtpms/src/tpm12/tpm_nonce.h
+  libtpms/src/tpm12/tpm_nvram.c
+  libtpms/src/tpm12/tpm_nvram.h
+  libtpms/src/tpm12/tpm_nvram_const.h
+  libtpms/src/tpm12/tpm_owner.c
+  libtpms/src/tpm12/tpm_owner.h
+  libtpms/src/tpm12/tpm_pcr.c
+  libtpms/src/tpm12/tpm_pcr.h
+  libtpms/src/tpm12/tpm_permanent.c
+  libtpms/src/tpm12/tpm_permanent.h
+  libtpms/src/tpm12/tpm_platform.c
+  libtpms/src/tpm12/tpm_platform.h
+  libtpms/src/tpm12/tpm_process.c
+  libtpms/src/tpm12/tpm_process.h
+  libtpms/src/tpm12/tpm_secret.c
+  libtpms/src/tpm12/tpm_secret.h
+  libtpms/src/tpm12/tpm_session.c
+  libtpms/src/tpm12/tpm_session.h
+  libtpms/src/tpm12/tpm_sizedbuffer.c
+  libtpms/src/tpm12/tpm_sizedbuffer.h
+  libtpms/src/tpm12/tpm_startup.c
+  libtpms/src/tpm12/tpm_startup.h
+  libtpms/src/tpm12/tpm_storage.c
+  libtpms/src/tpm12/tpm_storage.h
+  libtpms/src/tpm12/tpm_store.c
+  libtpms/src/tpm12/tpm_store.h
+  libtpms/src/tpm12/tpm_structures.h
+  libtpms/src/tpm12/tpm_svnrevision.h
+  libtpms/src/tpm12/tpm_ticks.c
+  libtpms/src/tpm12/tpm_ticks.h
+  libtpms/src/tpm12/tpm_time.c
+  libtpms/src/tpm12/tpm_time.h
+  libtpms/src/tpm12/tpm_transport.c
+  libtpms/src/tpm12/tpm_transport.h
+  libtpms/src/tpm12/tpm_ver.c
+  libtpms/src/tpm12/tpm_ver.h
+  libtpms/src/tpm_debug.c
+  libtpms/src/tpm_debug.h
+  libtpms/src/tpm_memory.c
+  libtpms/src/tpm_nvfile.c
+  libtpms/src/tpm_nvfile.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+(c) Copyright IBM Corporation 2006, 2010.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+Neither the names of the IBM Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE feb0f71eb2839ab4
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/Unmarshal_fp.h
+
+Written by Ken Goldman
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2012 - 2023
+
+NOTICE ff2d046fac1d2c96
+------------------------------------------------------------------------
+Upstream sources:
+  libtpms/src/tpm2/crypto/openssl/Helpers.c
+  libtpms/src/tpm2/crypto/openssl/Helpers_fp.h
+
+Written by Stefan Berger
+IBM Thomas J. Watson Research Center
+
+Licenses and Notices
+
+1. Copyright Licenses:
+
+- Trusted Computing Group (TCG) grants to the user of the source code in
+this specification (the "Source Code") a worldwide, irrevocable,
+nonexclusive, royalty free, copyright license to reproduce, create
+derivative works, distribute, display and perform the Source Code and
+derivative works thereof, and to grant others the rights granted herein.
+
+- The TCG grants to the user of the other parts of the specification
+(other than the Source Code) the rights to reproduce, distribute,
+display, and perform the specification solely for the purpose of
+developing products based on such documents.
+
+2. Source Code Distribution Conditions:
+
+- Redistributions of Source Code must retain the above copyright licenses,
+this list of conditions and the following disclaimers.
+
+- Redistributions in binary form must reproduce the above copyright
+licenses, this list of conditions	and the following disclaimers in the
+documentation and/or other materials provided with the distribution.
+
+3. Disclaimers:
+
+- THE COPYRIGHT LICENSES SET FORTH ABOVE DO NOT REPRESENT ANY FORM OF
+LICENSE OR WAIVER, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, WITH
+RESPECT TO PATENT RIGHTS HELD BY TCG MEMBERS (OR OTHER THIRD PARTIES)
+THAT MAY BE NECESSARY TO IMPLEMENT THIS SPECIFICATION OR OTHERWISE.
+Contact TCG Administration (admin@trustedcomputinggroup.org) for
+information on specification licensing rights available through TCG
+membership agreements.
+
+- THIS SPECIFICATION IS PROVIDED "AS IS" WITH NO EXPRESS OR IMPLIED
+WARRANTIES WHATSOEVER, INCLUDING ANY WARRANTY OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, COMPLETENESS, OR
+NONINFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS, OR ANY WARRANTY
+OTHERWISE ARISING OUT OF ANY PROPOSAL, SPECIFICATION OR SAMPLE.
+
+- Without limitation, TCG and its members and licensors disclaim all
+liability, including liability for infringement of any proprietary
+rights, relating to use of information in this specification and to the
+implementation of this specification, and TCG disclaims all liability for
+cost of procurement of substitute goods or services, lost profits, loss
+of use, loss of data or any incidental, consequential, direct, indirect,
+or special damages, whether under contract, tort, warranty or otherwise,
+arising in any way out of use or reliance upon this specification or any
+information herein.
+
+(c) Copyright IBM Corp. and others, 2019
+
+Files without their own leading notice
+------------------------------------------------------------------------
+libtpms/src/disabled_interface.c
+libtpms/src/tpm12/tpm_svnrevision.c
+libtpms/src/tpm2/crypto/CryptRsa.c
+
+These files have no leading copyright/license block in this upstream revision.
+The upstream umbrella license is retained in libtpms-LICENSE.txt; no per-file notice
+or author has been invented for them.

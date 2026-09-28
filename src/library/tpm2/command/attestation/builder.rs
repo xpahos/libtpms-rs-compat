@@ -1,3 +1,23 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/Attest_spt.c
+// - libtpms/src/tpm2/Marshal.c
+// - libtpms/src/tpm2/SigningCommands.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2018
+// (c) Copyright IBM Corp. and others, 2016 - 2023
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_SIZE};
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::command::crypto::signing_state::{

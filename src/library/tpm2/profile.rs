@@ -1,3 +1,24 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/RuntimeAlgorithm.c
+// - libtpms/src/tpm2/RuntimeAttributes.c
+// - libtpms/src/tpm2/RuntimeCommands.c
+// - libtpms/src/tpm2/RuntimeProfile.c
+//
+// Original upstream authors and copyright notices:
+// Written by Stefan Berger
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corporation, 2022
+// (c) Copyright IBM Corporation, 2023
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::constants::TPM_FAIL;
 use crate::types::TpmResult;
 

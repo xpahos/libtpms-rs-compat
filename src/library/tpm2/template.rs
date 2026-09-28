@@ -1,3 +1,24 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/Object_spt.c
+// - libtpms/src/tpm2/TpmTypes.h
+// - libtpms/src/tpm2/Unmarshal.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2023
+// (c) Copyright IBM Corp. and others, 2016 - 2024
+// (c) Copyright IBM Corporation 2015 - 2024
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::constants::{
     TPM_RC_ATTRIBUTES, TPM_RC_CURVE, TPM_RC_HASH, TPM_RC_INSUFFICIENT, TPM_RC_KDF, TPM_RC_MODE,
     TPM_RC_RESERVED_BITS, TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_SYMMETRIC, TPM_RC_TYPE, TPM_RC_VALUE,

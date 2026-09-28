@@ -1,3 +1,21 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/Hierarchy.c
+// - libtpms/src/tpm2/HierarchyCommands.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2016 - 2023
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use super::{
     PRIMARY_SEED_SIZE, PROOF_SIZE, commit_persistent_state, flush_loaded_hierarchy_objects,
     hierarchy_object_attribute, regenerate_hierarchy_secrets, remove_hierarchy_persistent_objects,

@@ -1,3 +1,16 @@
+// Part of the Rust port of libtpms.
+//
+// Upstream behavior references for this Rust implementation:
+// - libtpms/src/tpm2/HashCommands.c
+// - libtpms/src/tpm2/Ticket.c
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust implementation:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
 
 const FIXTURE: &[u8] = include_bytes!("testdata/hash_ticket_vectors.bin");

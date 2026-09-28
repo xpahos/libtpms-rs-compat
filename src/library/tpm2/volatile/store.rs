@@ -1,3 +1,21 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/NVMarshal.c
+// - libtpms/src/tpm2/Volatile.c
+//
+// Original upstream authors and copyright notices:
+// Written by Stefan Berger
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corporation 2017,2018.
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use sha1::{Digest, Sha1};
 
 use crate::library::constants::TPM_FAIL;

@@ -1,3 +1,17 @@
+// Part of the Rust port of libtpms.
+//
+// Upstream behavior references for this Rust implementation:
+// - libtpms/src/tpm2/Global.c
+// - libtpms/src/tpm2/Global.h
+// - libtpms/src/tpm2/Manufacture.c
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust implementation:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use super::clock::RuntimeClock;
 use super::hierarchy::TPM_RH_UNASSIGNED;
 use super::nv::OrderlyRamImage;

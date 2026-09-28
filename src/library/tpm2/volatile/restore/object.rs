@@ -1,3 +1,20 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/NVMarshal.c
+//
+// Original upstream authors and copyright notices:
+// Written by Stefan Berger
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corporation 2017,2018.
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use crate::library::tpm2::hierarchy::{
     TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
 };

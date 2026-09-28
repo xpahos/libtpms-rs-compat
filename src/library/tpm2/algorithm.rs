@@ -1,3 +1,25 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/RuntimeAlgorithm.c
+// - libtpms/src/tpm2/TpmAlgorithmDefines.h
+// - libtpms/src/tpm2/TpmTypes.h
+//
+// Original upstream authors and copyright notices:
+// Written by Stefan Berger
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corporation, 2022
+// Written by Ken Goldman
+// (c) Copyright IBM Corp. and others, 2019 - 2024
+// (c) Copyright IBM Corp. and others, 2016 - 2024
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 pub(super) const TPM_ALG_ERROR: u16 = 0x0000;
 pub(super) const TPM_ALG_RSA: u16 = 0x0001;
 pub(super) const TPM_ALG_TDES: u16 = 0x0003;

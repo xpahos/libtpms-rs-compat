@@ -1,3 +1,25 @@
+// Part of the Rust port of libtpms.
+//
+// Identified upstream implementation sources:
+// - libtpms/src/tpm2/OIDs.h
+// - libtpms/src/tpm2/X509_ECC.c
+// - libtpms/src/tpm2/X509_RSA.c
+// - libtpms/src/tpm2/X509_spt.c
+//
+// Original upstream authors and copyright notices:
+// Written by Ken Goldman
+// IBM Thomas J. Watson Research Center
+// (c) Copyright IBM Corp. and others, 2019 - 2020
+// (c) Copyright IBM Corp. and others, 2019 - 2023
+// (c) Copyright IBM Corp. and others, 2019 - 2024
+//
+// Full original notices, license conditions and disclaimers are retained
+// in LICENSES/libtpms-notices.txt and LICENSES/libtpms-LICENSE.txt.
+//
+// Rust translation and modifications:
+// Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
+// Copyright (c) 2026 Yandex
+
 use super::der::{
     DerWriter, TAG_APPLICATION_SPECIFIC, TAG_BIT_STRING, TAG_CONSTRUCTED_SEQUENCE,
     TAG_OBJECT_IDENTIFIER,
