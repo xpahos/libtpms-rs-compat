@@ -272,6 +272,13 @@ change what the test loads and keeps:
 A C libtpms built from the `libtpms` submodule passes the same test, which
 keeps the replay honest about what it compares.
 
+Any family may hold cases. `tests/abi_lifecycle/main.rs` lists the cases of
+each such family and fails when a scenario holds cases it does not list. The
+`policy-sessions` family uses them to replay NV policy authorization through
+the ABI from its `NV_GATE_READY` snapshot. `process` responses are compared byte
+for byte, so keep responses that depend on host time, such as an attestation
+clock or dictionary-attack recovery, out of cases.
+
 ## The reference build
 
 The capture image copies the committed `libtpms` submodule revision and applies

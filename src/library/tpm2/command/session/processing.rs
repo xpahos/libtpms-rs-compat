@@ -44,8 +44,9 @@ use crate::library::tpm2::hierarchy::{TPM_RH_NULL, TPM_RH_PLATFORM, TPM_RH_UNASS
 use crate::library::tpm2::live::RestoredVolatile;
 use crate::library::tpm2::marshal::{BlobReader, BlobWriter, Tpm2bError};
 use crate::library::tpm2::nv::{
-    IndexWrite, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_WRITTEN, is_nv_index_handle,
-    is_pin_fail_index, is_pin_index, is_pin_pass_index, read_uint64_data, resolve_index,
+    IndexWrite, TPMA_NV_AUTHREAD, TPMA_NV_AUTHWRITE, TPMA_NV_POLICYREAD, TPMA_NV_POLICYWRITE,
+    TPMA_NV_WRITTEN, is_nv_index_handle, is_pin_fail_index, is_pin_index, is_pin_pass_index,
+    read_uint64_data, resolve_index,
 };
 use crate::library::tpm2::object::ATTR_PUBLIC_ONLY;
 use crate::library::tpm2::object_create::{
@@ -380,7 +381,36 @@ fn auth_value_is_available(
     Ok(true)
 }
 
-fn auth_policy_is_available(runtime: &Tpm2Runtime, handle: u32) -> Result<bool, TpmResult> {
+fn nv_auth_policy_is_available(
+    runtime: &Tpm2Runtime,
+    descriptor: &CommandDescriptor,
+    index: usize,
+    handle: u32,
+) -> Result<bool, TpmResult> {
+    let resolved = resolve_index(runtime, handle).ok_or(TPM_RC_FAILURE)?;
+    if resolved.public.auth_policy.is_empty() {
+        return Ok(false);
+    }
+    if policy_session_is_required(runtime, descriptor, index, handle) {
+        return Ok(true);
+    }
+    let required = if descriptor.nv_access == NvAccess::Write {
+        TPMA_NV_POLICYWRITE
+    } else {
+        TPMA_NV_POLICYREAD
+    };
+    Ok(resolved.attributes() & required != 0)
+}
+
+fn auth_policy_is_available(
+    runtime: &Tpm2Runtime,
+    descriptor: &CommandDescriptor,
+    index: usize,
+    handle: u32,
+) -> Result<bool, TpmResult> {
+    if is_nv_index_handle(handle) {
+        return nv_auth_policy_is_available(runtime, descriptor, index, handle);
+    }
     if is_object_handle(handle) {
         let object = resolve_any_object(runtime, handle).ok_or(TPM_RC_FAILURE)?;
         return Ok(
@@ -866,7 +896,7 @@ fn check_auth_session(
             return Err(TPM_RC_AUTH_UNAVAILABLE);
         }
     } else {
-        if !auth_policy_is_available(runtime, associated)? {
+        if !auth_policy_is_available(runtime, descriptor, index, associated)? {
             return Err(TPM_RC_AUTH_UNAVAILABLE);
         }
         check_policy_session(runtime, descriptor, context, area, index)?;
@@ -3002,6 +3032,418 @@ mod tests {
                 0
             );
             assert_ne!(observable(&runtime), before);
+        }
+    }
+
+    mod nv_policy_gate {
+        use super::*;
+        use crate::library::tpm2::command::core::registry::{
+            TPM_CC_NV_CERTIFY, TPM_CC_NV_CHANGE_AUTH, TPM_CC_NV_DEFINE_SPACE, TPM_CC_NV_EXTEND,
+            TPM_CC_NV_INCREMENT, TPM_CC_NV_READ, TPM_CC_NV_READ_LOCK, TPM_CC_NV_SET_BITS,
+            TPM_CC_NV_UNDEFINE_SPACE_SPECIAL, TPM_CC_NV_WRITE, TPM_CC_NV_WRITE_LOCK,
+            TPM_CC_POLICY_AUTHORIZE_NV, TPM_CC_POLICY_NV, TPM_CC_POLICY_SECRET, find,
+        };
+        use crate::library::tpm2::command::core::test_support::{
+            RC_SUCCESS, auth_session, command, dispatch_bytes, framed, pw_session, response_code,
+            started_runtime, tpm2b,
+        };
+        use crate::library::tpm2::command::nv::test_support::nv_public;
+        use crate::library::tpm2::hierarchy::{
+            TPM_RH_ENDORSEMENT, TPM_RH_LOCKOUT, TPM_RH_OWNER, TPM_RH_PLATFORM,
+        };
+        use crate::library::tpm2::nv::{
+            TPMA_NV_OWNERREAD, TPMA_NV_OWNERWRITE, TPMA_NV_PLATFORMCREATE, TPMA_NV_POLICY_DELETE,
+            TPMA_NV_POLICYREAD, TPMA_NV_POLICYWRITE, TPMA_NV_PPREAD, TPMA_NV_PPWRITE,
+            marshal_sized_nv_public,
+        };
+
+        const RC_AUTH_UNAVAILABLE: u32 = 0x12f;
+        const RC_LOCKOUT: u32 = 0x921;
+        const RC_SESSION_1_AUTH_FAIL: u32 = 0x98e;
+        const POLICY_A: u32 = POLICY_SESSION_FIRST;
+        const POLICY_B: u32 = POLICY_SESSION_FIRST + 1;
+        const FIRST_INDEX: u32 = 0x0100_0200;
+        const OWNER_INDEX_ACCESS: u32 = TPMA_NV_OWNERREAD | TPMA_NV_OWNERWRITE;
+        const PLATFORM_INDEX_ACCESS: u32 =
+            TPMA_NV_PLATFORMCREATE | TPMA_NV_POLICY_DELETE | TPMA_NV_PPREAD | TPMA_NV_PPWRITE;
+
+        const POLICY_ACCESS_TABLE: [(u32, bool, bool); 4] = [
+            (0, false, false),
+            (TPMA_NV_POLICYREAD, false, true),
+            (TPMA_NV_POLICYWRITE, true, false),
+            (TPMA_NV_POLICYREAD | TPMA_NV_POLICYWRITE, true, true),
+        ];
+        const EMPTY_POLICY: &[u8] = &[];
+        const ALL_ZERO_POLICY: &[u8] = &[0x00; 32];
+        const OTHER_POLICY: &[u8] = &[0x5c; 32];
+        const POLICIES: [&[u8]; 3] = [EMPTY_POLICY, ALL_ZERO_POLICY, OTHER_POLICY];
+
+        #[derive(Clone, Copy)]
+        enum Gate {
+            Write,
+            ReadOrNeither,
+            MandatoryPolicy,
+        }
+
+        struct GatedCommand {
+            name: &'static str,
+            gate: Gate,
+            platform_index: bool,
+            build: fn(u32) -> Vec<u8>,
+        }
+
+        fn policy_session(handle: u32) -> Vec<u8> {
+            auth_session(handle, &[0x5a; 16], 0x01, &[])
+        }
+
+        fn authorized(
+            code: u32,
+            handles: &[u32],
+            sessions: &[Vec<u8>],
+            parameters: &[u8],
+        ) -> Vec<u8> {
+            let mut payload: Vec<u8> = handles
+                .iter()
+                .flat_map(|handle| handle.to_be_bytes())
+                .collect();
+            let area = sessions.concat();
+            payload.extend_from_slice(&(area.len() as u32).to_be_bytes());
+            payload.extend_from_slice(&area);
+            payload.extend_from_slice(parameters);
+            framed(code, &payload, true)
+        }
+
+        fn by_index(code: u32, index: u32, parameters: &[u8]) -> Vec<u8> {
+            authorized(
+                code,
+                &[index, index],
+                &[policy_session(POLICY_A)],
+                parameters,
+            )
+        }
+
+        fn with_target(code: u32, handles: &[u32], parameters: &[u8]) -> Vec<u8> {
+            authorized(code, handles, &[policy_session(POLICY_A)], parameters)
+        }
+
+        const GATED_COMMANDS: &[GatedCommand] = &[
+            GatedCommand {
+                name: "TPM2_NV_Write",
+                gate: Gate::Write,
+                platform_index: false,
+                build: |index| by_index(TPM_CC_NV_WRITE, index, &[0x00, 0x01, 0xab, 0x00, 0x00]),
+            },
+            GatedCommand {
+                name: "TPM2_NV_Increment",
+                gate: Gate::Write,
+                platform_index: false,
+                build: |index| by_index(TPM_CC_NV_INCREMENT, index, &[]),
+            },
+            GatedCommand {
+                name: "TPM2_NV_SetBits",
+                gate: Gate::Write,
+                platform_index: false,
+                build: |index| by_index(TPM_CC_NV_SET_BITS, index, &1u64.to_be_bytes()),
+            },
+            GatedCommand {
+                name: "TPM2_NV_Extend",
+                gate: Gate::Write,
+                platform_index: false,
+                build: |index| by_index(TPM_CC_NV_EXTEND, index, &[0x00, 0x01, 0xab]),
+            },
+            GatedCommand {
+                name: "TPM2_NV_WriteLock",
+                gate: Gate::Write,
+                platform_index: false,
+                build: |index| by_index(TPM_CC_NV_WRITE_LOCK, index, &[]),
+            },
+            GatedCommand {
+                name: "TPM2_NV_Read",
+                gate: Gate::ReadOrNeither,
+                platform_index: false,
+                build: |index| by_index(TPM_CC_NV_READ, index, &[0x00, 0x01, 0x00, 0x00]),
+            },
+            GatedCommand {
+                name: "TPM2_NV_ReadLock",
+                gate: Gate::ReadOrNeither,
+                platform_index: false,
+                build: |index| by_index(TPM_CC_NV_READ_LOCK, index, &[]),
+            },
+            GatedCommand {
+                name: "TPM2_NV_Certify",
+                gate: Gate::ReadOrNeither,
+                platform_index: false,
+                build: |index| {
+                    authorized(
+                        TPM_CC_NV_CERTIFY,
+                        &[TPM_RH_NULL, index, index],
+                        &[pw_session(&[]), policy_session(POLICY_A)],
+                        &[0x00, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00],
+                    )
+                },
+            },
+            GatedCommand {
+                name: "TPM2_PolicyNV",
+                gate: Gate::ReadOrNeither,
+                platform_index: false,
+                build: |index| {
+                    with_target(
+                        TPM_CC_POLICY_NV,
+                        &[index, index, POLICY_B],
+                        &[0x00, 0x01, 0xab, 0x00, 0x00, 0x00, 0x00],
+                    )
+                },
+            },
+            GatedCommand {
+                name: "TPM2_PolicySecret",
+                gate: Gate::ReadOrNeither,
+                platform_index: false,
+                build: |index| with_target(TPM_CC_POLICY_SECRET, &[index, POLICY_B], &[0x00; 10]),
+            },
+            GatedCommand {
+                name: "TPM2_PolicyAuthorizeNV",
+                gate: Gate::ReadOrNeither,
+                platform_index: false,
+                build: |index| {
+                    with_target(TPM_CC_POLICY_AUTHORIZE_NV, &[index, index, POLICY_B], &[])
+                },
+            },
+            GatedCommand {
+                name: "TPM2_NV_ChangeAuth",
+                gate: Gate::MandatoryPolicy,
+                platform_index: false,
+                build: |index| with_target(TPM_CC_NV_CHANGE_AUTH, &[index], &tpm2b(b"changed")),
+            },
+            GatedCommand {
+                name: "TPM2_NV_UndefineSpaceSpecial",
+                gate: Gate::MandatoryPolicy,
+                platform_index: true,
+                build: |index| {
+                    authorized(
+                        TPM_CC_NV_UNDEFINE_SPACE_SPECIAL,
+                        &[index, TPM_RH_PLATFORM],
+                        &[policy_session(POLICY_A), pw_session(&[])],
+                        &[],
+                    )
+                },
+            },
+        ];
+
+        #[track_caller]
+        fn define_index(
+            runtime: &mut Tpm2Runtime,
+            index: u32,
+            attributes: u32,
+            policy: &[u8],
+            platform: bool,
+        ) {
+            let mut public = nv_public(index, attributes, 8);
+            public.auth_policy = policy.to_vec();
+            let mut parameters = tpm2b(b"index-secret");
+            parameters.extend_from_slice(&marshal_sized_nv_public(&public));
+            let auth = if platform {
+                TPM_RH_PLATFORM
+            } else {
+                TPM_RH_OWNER
+            };
+            assert_eq!(
+                response_code(&dispatch_bytes(
+                    runtime,
+                    &command(TPM_CC_NV_DEFINE_SPACE, &[auth], &[&[]], &parameters),
+                )),
+                RC_SUCCESS,
+                "index {index:#010x} attributes {attributes:#010x} is defined"
+            );
+        }
+
+        fn index_for(row: usize, column: usize) -> u32 {
+            FIRST_INDEX + (row * POLICIES.len() + column) as u32
+        }
+
+        #[track_caller]
+        fn gate_runtime(platform: bool) -> Tpm2Runtime {
+            let mut runtime = started_runtime();
+            let access = if platform {
+                PLATFORM_INDEX_ACCESS
+            } else {
+                OWNER_INDEX_ACCESS
+            };
+            for (row, &(attributes, _, _)) in POLICY_ACCESS_TABLE.iter().enumerate() {
+                for (column, policy) in POLICIES.iter().enumerate() {
+                    define_index(
+                        &mut runtime,
+                        index_for(row, column),
+                        access | attributes,
+                        policy,
+                        platform,
+                    );
+                }
+            }
+            for expected in [POLICY_A, POLICY_B] {
+                let response = send(&mut runtime, &hex(POLICY_START));
+                assert_eq!(response_code_of(&response), 0, "a policy session starts");
+                assert_eq!(response[10..14], expected.to_be_bytes());
+            }
+            runtime
+        }
+
+        #[test]
+        fn policy_gate_decision_matrix() {
+            for gated in GATED_COMMANDS {
+                let mut runtime = gate_runtime(gated.platform_index);
+                for (row, &(attributes, write, read)) in POLICY_ACCESS_TABLE.iter().enumerate() {
+                    for (column, policy) in POLICIES.iter().enumerate() {
+                        let available = !policy.is_empty()
+                            && match gated.gate {
+                                Gate::Write => write,
+                                Gate::ReadOrNeither => read,
+                                Gate::MandatoryPolicy => true,
+                            };
+                        let response =
+                            dispatch_bytes(&mut runtime, &(gated.build)(index_for(row, column)));
+                        let code = response_code(&response);
+                        assert_eq!(
+                            code != RC_AUTH_UNAVAILABLE,
+                            available,
+                            "{} with attributes {attributes:#010x} and a {}-byte policy {:02x?} \
+                             answered {code:#x}",
+                            gated.name,
+                            policy.len(),
+                            policy.first()
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn mandatory_policy_exception_follows_the_authorized_handle() {
+            let mut runtime = started_runtime();
+            define_index(
+                &mut runtime,
+                FIRST_INDEX,
+                OWNER_INDEX_ACCESS,
+                ALL_ZERO_POLICY,
+                false,
+            );
+            let undefine_special =
+                find(TPM_CC_NV_UNDEFINE_SPACE_SPECIAL).expect("TPM2_NV_UndefineSpaceSpecial");
+            assert_eq!(
+                auth_policy_is_available(&runtime, undefine_special, 0, FIRST_INDEX),
+                Ok(true),
+                "the ADMIN handle always takes its mandatory policy"
+            );
+            assert_eq!(
+                auth_policy_is_available(&runtime, undefine_special, 1, FIRST_INDEX),
+                Ok(false),
+                "a USER handle of the same command still needs TPMA_NV_POLICYREAD"
+            );
+            let certify = find(TPM_CC_NV_CERTIFY).expect("TPM2_NV_Certify");
+            for index in 0..3 {
+                assert_eq!(
+                    auth_policy_is_available(&runtime, certify, index, FIRST_INDEX),
+                    Ok(false),
+                    "handle {index}"
+                );
+            }
+        }
+
+        #[test]
+        fn non_nv_policy_availability_is_unchanged() {
+            let mut runtime = restored("RSA_KEY");
+            let descriptors = [
+                find(TPM_CC_NV_WRITE).expect("TPM2_NV_Write"),
+                find(TPM_CC_NV_CHANGE_AUTH).expect("TPM2_NV_ChangeAuth"),
+                find(TPM_CC_POLICY_SECRET).expect("TPM2_PolicySecret"),
+            ];
+            let hierarchies = [
+                TPM_RH_OWNER,
+                TPM_RH_ENDORSEMENT,
+                TPM_RH_LOCKOUT,
+                TPM_RH_PLATFORM,
+            ];
+            let available = |runtime: &Tpm2Runtime, handle: u32| -> Vec<bool> {
+                descriptors
+                    .iter()
+                    .flat_map(|descriptor| {
+                        (0..2).map(move |index| {
+                            auth_policy_is_available(runtime, descriptor, index, handle)
+                                .expect("the entity resolves")
+                        })
+                    })
+                    .collect()
+            };
+            for handle in hierarchies {
+                assert!(
+                    available(&runtime, handle).iter().all(|&found| !found),
+                    "{handle:#010x} without a policy"
+                );
+            }
+            {
+                let persistent = &mut runtime.state.as_mut().expect("state").persistent;
+                persistent.owner_policy = vec![0x00; 32];
+                persistent.endorsement_policy = vec![0x5c; 32];
+                persistent.lockout_policy = vec![0x5c; 32];
+            }
+            runtime
+                .live
+                .state_clear
+                .as_mut()
+                .expect("state clear")
+                .platform_policy = vec![0x5c; 32];
+            for handle in hierarchies {
+                assert!(
+                    available(&runtime, handle).iter().all(|&found| found),
+                    "{handle:#010x} with a policy"
+                );
+            }
+            assert!(
+                available(&runtime, 0x8000_0000).iter().all(|&found| found),
+                "a loaded object always offers its policy"
+            );
+            assert!(
+                available(&runtime, 0).iter().all(|&found| !found),
+                "no PCR belongs to a policy group"
+            );
+        }
+
+        const DA_PARAMETERS: &str =
+            "8002000000270000013a4000000a0000000940000009000000000000000001000003e8000003e8";
+        const DA_DEFINE: &str = "8002000000560000012a400000010000000940000009000000000000096e762d736563726574002e0100010b000b000e000600208fcd2169ab92694e0c633f1ab772842b8241bbc20288981fc7ac1eddc1fddb0e0008";
+        const DA_WRONG_PASSWORD: &str =
+            "8002000000280000014e0100010b0100010b0000000e40000009000000000577726f6e6700080000";
+        const DA_POLICY_PASSWORD: &str = "80010000000e0000018c03000000";
+        const DA_LOCKOUT_BEFORE_GATE: &str = "800200000044000001370100010b0100010b000000220300000000105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a0100096e762d73656372657400085245504c414345440000";
+        const DA_GATE_WITHOUT_AUTH_VALUE: &str = "80020000003b000001370100010b0100010b000000190300000100105a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a01000000085245504c414345440000";
+
+        #[test]
+        fn dictionary_attack_lockout_precedes_the_policy_gate() {
+            let mut runtime = restored("NV_GATE_READY");
+            for setup in [DA_PARAMETERS, DA_DEFINE] {
+                assert_eq!(response_code_of(&send(&mut runtime, &hex(setup))), 0);
+            }
+            for (record, command, code) in [
+                (
+                    "NV_GATE_DA_WRONG_PASSWORD",
+                    DA_WRONG_PASSWORD,
+                    RC_SESSION_1_AUTH_FAIL,
+                ),
+                ("NV_GATE_DA_POLICY_PASSWORD", DA_POLICY_PASSWORD, RC_SUCCESS),
+                (
+                    "NV_GATE_DA_LOCKOUT_BEFORE_GATE",
+                    DA_LOCKOUT_BEFORE_GATE,
+                    RC_LOCKOUT,
+                ),
+                (
+                    "NV_GATE_DA_GATE_WITHOUT_AUTH_VALUE",
+                    DA_GATE_WITHOUT_AUTH_VALUE,
+                    RC_AUTH_UNAVAILABLE,
+                ),
+            ] {
+                let response = send(&mut runtime, &hex(command));
+                assert_eq!(response, vector(record), "{record}");
+                assert_eq!(response_code_of(&response), code, "{record}");
+            }
         }
     }
 
