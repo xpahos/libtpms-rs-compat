@@ -27,9 +27,10 @@ use crate::library::tpm2::command::core::dispatcher::{CommandFrame, handle_at};
 use crate::library::tpm2::command::core::output::CommandOutput;
 use crate::library::tpm2::command::core::response_code::{TPM_RC_1, TPM_RC_2, TPM_RC_3, TPM_RC_P};
 use crate::library::tpm2::commit::CommitState;
+use crate::library::tpm2::crypto::EccCurve;
 use crate::library::tpm2::ecc::{
     EccPoint, commit_compute, commit_point_from_s2, commit_value, ecc_curve_id, ecc_key_scheme,
-    ecc_private_scalar, parse_ecc_point, point_is_on_curve, point_multiply, write_ecc_point,
+    ecc_stored_private, parse_ecc_point, point_is_on_curve, point_multiply_by, write_ecc_point,
 };
 use crate::library::tpm2::marshal::BlobWriter;
 use crate::library::tpm2::public::{MAX_ECC_KEY_BYTES, MAX_SYM_DATA};
@@ -97,7 +98,7 @@ pub(in crate::library::tpm2::command) fn execute_commit(
 
     let mut commit = CommitState::load(runtime)?;
     self_test_algorithm(runtime, CONTEXT_INTEGRITY_HASH_ALG)?;
-    let r = commit_value(&commit, curve_id, &key.name, None).ok_or(TPM_RC_NO_RESULT)?;
+    let r = commit_value(&commit, curve_id, &key.name, None)?.ok_or(TPM_RC_NO_RESULT)?;
 
     let p2 = if request.s2.is_empty() {
         None
@@ -105,7 +106,7 @@ pub(in crate::library::tpm2::command) fn execute_commit(
         self_test_algorithm(runtime, key.public.name_alg)?;
         let p2 = commit_point_from_s2(curve_id, key.public.name_alg, &request.s2, &request.y2)
             .map_err(|_| crate::library::constants::TPM_RC_HASH + RC_KEY_HANDLE)?;
-        if !point_is_on_curve(curve_id, &p2) {
+        if !point_is_on_curve(curve_id, &p2)? {
             return Err(TPM_RC_ECC_POINT + RC_S2);
         }
         if object_is_public_only(runtime, sign_handle) {
@@ -115,7 +116,7 @@ pub(in crate::library::tpm2::command) fn execute_commit(
     };
 
     let p1 = if request.p1_size > EMPTY_POINT_SIZE {
-        if !point_is_on_curve(curve_id, &request.p1) {
+        if !point_is_on_curve(curve_id, &request.p1)? {
             return Err(TPM_RC_ECC_POINT + RC_P1);
         }
         Some(&request.p1)
@@ -123,7 +124,7 @@ pub(in crate::library::tpm2::command) fn execute_commit(
         None
     };
 
-    let private = ecc_private_scalar(&key).unwrap_or_default();
+    let private = ecc_stored_private(&key);
     self_test_algorithm(runtime, TPM_ALG_ECDH)?;
     let cancellation = frame.cancellation;
     let (k, l, e) = commit_compute(curve_id, p1, p2.as_ref(), private, &r, &|| {
@@ -154,11 +155,11 @@ pub(in crate::library::tpm2::command) fn execute_ephemeral(
     let mut commit = CommitState::load(runtime)?;
     self_test_algorithm(runtime, CONTEXT_INTEGRITY_HASH_ALG)?;
     let mut produced = None;
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_NO_RESULT)?;
     for _ in 0..EPHEMERAL_ATTEMPTS {
-        let r = commit_value(&commit, curve_id, &[], None).ok_or(TPM_RC_NO_RESULT)?;
-        let scalar = r.to_be_bytes(r.byte_len().max(1)).ok_or(TPM_RC_NO_RESULT)?;
+        let r = commit_value(&commit, curve_id, &[], None)?.ok_or(TPM_RC_NO_RESULT)?;
         self_test_algorithm(runtime, TPM_ALG_ECDH)?;
-        match point_multiply(curve_id, None, &scalar) {
+        match point_multiply_by(&curve, None, &r) {
             Ok(point) => {
                 produced = Some((point, commit.commit()));
                 break;
@@ -228,6 +229,7 @@ mod tests {
             let mut hasher = Hasher::new(SHA256).expect("SHA-256");
             hasher.update(&s2);
             let x = crate::library::tpm2::crypto::BigUint::from_be_bytes(&hasher.finalize())
+                .unwrap()
                 .rem(&curve.prime)
                 .expect("a reduced abscissa");
             let x_bytes = x.to_be_bytes(32).expect("32 bytes");
@@ -242,7 +244,7 @@ mod tests {
     fn square_root_of_curve_ordinate(x: &[u8]) -> Option<Vec<u8>> {
         use crate::library::tpm2::crypto::BigUint;
         let curve = curve_parameters(CURVE_P256).expect("NIST P256");
-        let x_value = BigUint::from_be_bytes(x);
+        let x_value = BigUint::from_be_bytes(x).unwrap();
         let cube = x_value
             .mod_mul(&x_value, &curve.prime)?
             .mod_mul(&x_value, &curve.prime)?;
@@ -250,7 +252,7 @@ mod tests {
         let rhs = cube
             .mod_add(&a_x, &curve.prime)?
             .mod_add(&curve_b(), &curve.prime)?;
-        let exponent = curve.prime.add_u64(1).shr(2);
+        let exponent = curve.prime.add_u64(1).unwrap().shr(2).unwrap();
         let root = rhs.mod_exp(&exponent, &curve.prime)?;
         if root.mod_mul(&root, &curve.prime)? == rhs {
             root.to_be_bytes(32)
@@ -265,6 +267,7 @@ mod tests {
             0x86, 0xbc, 0x65, 0x1d, 0x06, 0xb0, 0xcc, 0x53, 0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e,
             0x27, 0xd2, 0x60, 0x4b,
         ])
+        .unwrap()
     }
 
     fn bad_operand() -> Vec<u8> {
@@ -274,6 +277,7 @@ mod tests {
             hasher.update(&s2);
             let curve = curve_parameters(CURVE_P256).expect("NIST P256");
             let x = crate::library::tpm2::crypto::BigUint::from_be_bytes(&hasher.finalize())
+                .unwrap()
                 .rem(&curve.prime)
                 .expect("a reduced abscissa")
                 .to_be_bytes(32)
@@ -482,7 +486,9 @@ mod tests {
         let curve = curve_parameters(CURVE_P256).expect("NIST P256");
         let plus_prime = |coordinate: &[u8]| {
             BigUint::from_be_bytes(coordinate)
+                .unwrap()
                 .add(&curve.prime)
+                .unwrap()
                 .to_be_bytes(33)
                 .expect("a 33-byte alias")
         };
@@ -559,10 +565,10 @@ mod tests {
     fn derived_commit_point_curve_membership() {
         let (s2, y2) = commit_operand("commit-point-");
         let point = commit_point_from_s2(CURVE_P256, SHA256, &s2, &y2).expect("a point");
-        assert!(point_is_on_curve(CURVE_P256, &point));
+        assert_eq!(point_is_on_curve(CURVE_P256, &point), Ok(true));
         assert_eq!(point.x.len(), 32);
         assert_eq!(point.y, y2);
         let bad = commit_point_from_s2(CURVE_P256, SHA256, &bad_operand(), &y2).expect("a point");
-        assert!(!point_is_on_curve(CURVE_P256, &bad));
+        assert_eq!(point_is_on_curve(CURVE_P256, &bad), Ok(false));
     }
 }

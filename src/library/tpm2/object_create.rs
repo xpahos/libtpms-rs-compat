@@ -26,7 +26,7 @@ use crate::library::constants::{
 use crate::types::TpmResult;
 
 use super::crypto::{
-    BigUint, EccKeyError, Hasher, HmacState, RsaKeyError, SeededRand, generate_ecc_key,
+    CrtWords, EccKeyError, Hasher, HmacState, RsaKeyError, SeededRand, generate_ecc_key,
     generate_rsa_key, generate_tdes_key, validate_tdes_key,
 };
 use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM};
@@ -197,16 +197,8 @@ pub(super) fn hash_block_size(hash_alg: u16) -> Option<usize> {
     }
 }
 
-pub(super) fn owned_prime(value: &BigUint) -> OwnedBnPrime {
-    let mut data = Vec::with_capacity(value.limb_count() * 8);
-    for index in 0..value.limb_count() {
-        let limb = value.shr(index * 64).low_u64();
-        data.extend_from_slice(&limb.to_be_bytes());
-    }
-    OwnedBnPrime {
-        numbytes: (value.limb_count() * 8) as u16,
-        data: OwnedSecret::from_vec(data),
-    }
+pub(super) fn owned_prime(value: CrtWords) -> OwnedBnPrime {
+    OwnedBnPrime::computed(value)
 }
 
 fn rsa_error(error: RsaKeyError) -> TpmResult {
@@ -223,6 +215,7 @@ fn ecc_error(error: EccKeyError) -> TpmResult {
     match error {
         EccKeyError::Curve => TPM_RC_CURVE,
         EccKeyError::NoResult => TPM_RC_NO_RESULT,
+        EccKeyError::Failure => TPM_RC_FAILURE,
     }
 }
 
@@ -264,11 +257,12 @@ pub(super) fn create_object(
             public.unique = OwnedPublicId::Rsa(key.modulus);
             private_exponent = Some(OwnedPrivateExponent {
                 primes: [
-                    owned_prime(&key.q),
-                    owned_prime(&key.d_p),
-                    owned_prime(&key.d_q),
-                    owned_prime(&key.q_inv),
+                    owned_prime(key.q),
+                    owned_prime(key.d_p),
+                    owned_prime(key.d_q),
+                    owned_prime(key.q_inv),
                 ],
+                runtime: crate::library::tpm2::crypto::RsaRuntimeCache::default(),
             });
             key.prime
         }
@@ -959,20 +953,16 @@ mod tests {
     }
 
     #[test]
-    fn marshalled_private_exponent_limb_big_endian() {
-        let value = BigUint::from_be_bytes(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
-        let prime = owned_prime(&value);
-        assert_eq!(prime.numbytes, 8);
-        assert_eq!(
-            prime.data.as_bytes(),
-            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-        );
-        let wide = BigUint::from_be_bytes(&[0xaa; 9]);
-        let prime = owned_prime(&wide);
-        assert_eq!(prime.numbytes, 16);
-        assert_eq!(prime.data.as_bytes().len(), 16);
-        assert_eq!(&prime.data.as_bytes()[..8], &[0xaa; 8]);
-        assert_eq!(prime.data.as_bytes()[15], 0xaa);
+    fn owned_prime_normalised_serialization() {
+        let mut words = [0u64; crate::library::tpm2::crypto::CRT_WORDS];
+        words[0] = 0x0102_0304_0506_0708;
+        words[1] = 0x090a_0b0c_0d0e_0f10;
+        let prime = owned_prime(words);
+        assert_eq!(prime.words, words, "the value keeps its fixed capacity");
+        assert_eq!(prime.restored_size, None);
+        assert_eq!(prime.serialized_words(), &words[..2]);
+        let empty = owned_prime([0u64; crate::library::tpm2::crypto::CRT_WORDS]);
+        assert!(empty.serialized_words().is_empty());
     }
 
     #[test]

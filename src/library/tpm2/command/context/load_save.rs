@@ -117,11 +117,12 @@ fn ensure_private_exponent(runtime: &mut Tpm2Runtime, slot: usize) -> Result<(),
         recover_rsa_private_exponent(modulus, prime, *exponent).ok_or(TPM_RC_FAILURE)?;
     let private_exponent = OwnedPrivateExponent {
         primes: [
-            owned_prime(&recovered.q),
-            owned_prime(&recovered.d_p),
-            owned_prime(&recovered.d_q),
-            owned_prime(&recovered.q_inv),
+            owned_prime(recovered.q),
+            owned_prime(recovered.d_p),
+            owned_prime(recovered.d_q),
+            owned_prime(recovered.q_inv),
         ],
+        runtime: crate::library::tpm2::crypto::RsaRuntimeCache::default(),
     };
     let entry = runtime.live.objects.get_mut(slot).ok_or(TPM_RC_FAILURE)?;
     if let OwnedAnyObjectBody::Object(body) = &mut entry.body {

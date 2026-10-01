@@ -18,10 +18,10 @@
 use crate::library::constants::{TPM_RC_FAILURE, TPM_RC_NO_RESULT};
 use crate::types::TpmResult;
 
-use super::bignum::BigUint;
 use super::drbg::{Drbg, ReseedError};
 use super::entropy::EntropySource;
 use super::hmac::HmacState;
+use super::ossl::BigUint;
 
 pub(in crate::library::tpm2) const SEED_COMPAT_LEVEL_ORIGINAL: u8 = 0;
 pub(in crate::library::tpm2) const SEED_COMPAT_LEVEL_RSA_PRIME_ADJUST_FIX: u8 = 1;
@@ -268,8 +268,9 @@ impl SeededRand {
         bits: usize,
     ) -> Result<BigUint, TpmResult> {
         let bytes = self.random_bytes(bits.div_ceil(8))?;
-        let mut value = BigUint::from_be_bytes(&bytes);
-        value.mask_bits(bits);
+        let failure = crate::library::constants::TPM_RC_FAILURE;
+        let mut value = BigUint::from_be_bytes(&bytes).ok_or(failure)?;
+        value.mask_bits(bits).ok_or(failure)?;
         Ok(value)
     }
 
@@ -362,8 +363,8 @@ mod tests {
         let mut byte_wise = rand();
         let value = counted.random_integer(521).unwrap();
         let bytes = byte_wise.random_bytes(66).unwrap();
-        let mut expected = BigUint::from_be_bytes(&bytes);
-        expected.mask_bits(521);
+        let mut expected = BigUint::from_be_bytes(&bytes).unwrap();
+        expected.mask_bits(521).unwrap();
         assert_eq!(value, expected);
     }
 
@@ -395,7 +396,7 @@ mod tests {
     #[test]
     fn value_in_range_nonzero_below_limit() {
         let mut generator = rand();
-        let limit = BigUint::from_u64(0x1_0000_0001);
+        let limit = BigUint::from_u64(0x1_0000_0001).unwrap();
         for _ in 0..32 {
             let value = generator.random_in_range(&limit).unwrap().unwrap();
             assert!(!value.is_zero());
@@ -408,19 +409,19 @@ mod tests {
         let mut generator = rand();
         assert!(
             generator
-                .random_in_range(&BigUint::zero())
+                .random_in_range(&BigUint::zero().unwrap())
                 .unwrap()
                 .is_none()
         );
         assert!(
             generator
-                .random_in_range(&BigUint::from_u64(1))
+                .random_in_range(&BigUint::from_u64(1).unwrap())
                 .unwrap()
                 .is_none()
         );
         assert!(
             generator
-                .random_in_range(&BigUint::from_u64(2))
+                .random_in_range(&BigUint::from_u64(2).unwrap())
                 .unwrap()
                 .is_some()
         );

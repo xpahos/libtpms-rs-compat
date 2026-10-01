@@ -15,6 +15,7 @@
 // Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
 // Copyright (c) 2026 Yandex
 
+use crate::library::tpm2::crypto::CRT_WORDS;
 use crate::library::tpm2::hierarchy::{
     TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM,
 };
@@ -119,8 +120,8 @@ fn unset_hash_state() -> OwnedHashState {
 
 fn unset_prime() -> OwnedBnPrime {
     OwnedBnPrime {
-        numbytes: 0,
-        data: empty_secret(),
+        words: [0u64; CRT_WORDS],
+        restored_size: Some(0),
     }
 }
 
@@ -245,6 +246,7 @@ fn object_fields_into(
             .private_exponent
             .get_or_insert_with(|| OwnedPrivateExponent {
                 primes: core::array::from_fn(|_| unset_prime()),
+                runtime: crate::library::tpm2::crypto::RsaRuntimeCache::default(),
             });
         private_exponent_into(reader, exponent)?;
     }
@@ -469,25 +471,6 @@ fn private_exponent_into(reader: &mut BlobReader<'_>, exponent: &mut OwnedPrivat
     Ok(())
 }
 
-fn words_of(prime: &OwnedBnPrime, count: usize) -> Vec<u64> {
-    let mut words: Vec<u64> = prime
-        .data
-        .as_bytes()
-        .chunks(CRYPT_UWORD_BYTES)
-        .map(|chunk| {
-            let mut word = [0u8; CRYPT_UWORD_BYTES];
-            word[..chunk.len()].copy_from_slice(chunk);
-            u64::from_be_bytes(word)
-        })
-        .collect();
-    words.resize(count, 0);
-    words
-}
-
-fn store_words(prime: &mut OwnedBnPrime, words: &[u64]) {
-    prime.data = OwnedSecret::from_vec(words.iter().flat_map(|word| word.to_be_bytes()).collect());
-}
-
 fn prime_into(reader: &mut BlobReader<'_>, prime: &mut OwnedBnPrime) -> Step {
     let version = header(
         reader,
@@ -501,9 +484,8 @@ fn prime_into(reader: &mut BlobReader<'_>, prime: &mut OwnedBnPrime) -> Step {
         *prime = unset_prime();
         return Err(Defect);
     }
-    let mut words = words_of(prime, size);
-    prime.numbytes = numbytes;
-    store_words(prime, &words);
+    prime.words[size..].fill(0);
+    prime.restored_size = Some(size as u8);
     let halves = usize::from(numbytes).div_ceil(4);
     let mut word = 0u32;
     for index in 0..halves {
@@ -511,16 +493,14 @@ fn prime_into(reader: &mut BlobReader<'_>, prime: &mut OwnedBnPrime) -> Step {
         if let Ok(value) = read {
             word = value;
         }
-        words[index / 2] = (words[index / 2] << 32) | u64::from(word);
+        prime.words[index / 2] = (prime.words[index / 2] << 32) | u64::from(word);
         if read.is_err() {
-            store_words(prime, &words);
             return Err(Defect);
         }
     }
     if halves % 2 == 1 {
-        words[halves / 2] <<= 32;
+        prime.words[halves / 2] <<= 32;
     }
-    store_words(prime, &words);
     if version >= OBJECT_BLOCKS_SINCE_VERSION {
         block(reader, false)?;
     }
@@ -756,4 +736,280 @@ fn payload_into(
         block(reader, false)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::tpm2::object::fixtures::{bn_prime, empty_future_block, nv_header};
+
+    fn prime_image(words: &[u64]) -> Vec<u8> {
+        let mut out = nv_header(BN_PRIME_T_VERSION, BN_PRIME_T_MAGIC, 1);
+        out.extend_from_slice(&((words.len() * CRYPT_UWORD_BYTES) as u16).to_be_bytes());
+        for word in words {
+            out.extend_from_slice(&word.to_be_bytes());
+        }
+        out.extend_from_slice(&empty_future_block());
+        out
+    }
+
+    #[test]
+    fn restored_prime_keeps_upstream_word_order_and_size() {
+        let mut prime = OwnedBnPrime::computed([0x1111_2222_3333_4444; CRT_WORDS]);
+        let image = bn_prime(12);
+        assert!(prime_into(&mut BlobReader::new(&image), &mut prime).is_ok());
+        assert_eq!(prime.restored_size, Some(2));
+        assert_eq!(prime.words[0], 0x4242_4242_4242_4242);
+        assert_eq!(
+            prime.words[1], 0x4242_4242_0000_0000,
+            "an odd number of 32-bit halves shifts the last word up, as ci_prime_t_Unmarshal does"
+        );
+        assert!(
+            prime.words[2..].iter().all(|&word| word == 0),
+            "no stale words stay in the value"
+        );
+        assert_eq!(prime.serialized_words().len(), 2);
+    }
+
+    #[test]
+    fn restored_ecc_sensitive_keeps_encoding_in_fixed_width_storage() {
+        let value = [0x5au8; 24];
+        let mut storages = Vec::new();
+        for (width, seed) in [(24usize, 8usize), (32, 0), (MAX_ECC_KEY_BYTES, 0)] {
+            let mut encoded = vec![0u8; width - value.len()];
+            encoded.extend_from_slice(&value);
+            let mut image = TPM_ALG_ECC.to_be_bytes().to_vec();
+            for field in [&[][..], &vec![0x44; seed], &encoded] {
+                image.extend_from_slice(&(field.len() as u16).to_be_bytes());
+                image.extend_from_slice(field);
+            }
+            let mut sensitive = unset_object().sensitive;
+            assert!(sensitive_into(&mut BlobReader::new(&image), &mut sensitive).is_ok());
+            let stored = sensitive.sensitive.as_ref().expect("a private scalar");
+            assert_eq!(
+                stored.as_bytes(),
+                encoded.as_slice(),
+                "the walker keeps the encoding"
+            );
+            assert_eq!(sensitive.seed_value.as_bytes(), vec![0x44; seed].as_slice());
+            storages.push(
+                *stored
+                    .fixed_width()
+                    .expect("the scalar fits the fixed width"),
+            );
+        }
+        assert!(
+            storages.iter().all(|storage| *storage == storages[0]),
+            "every encoding restores to the same fixed-width storage"
+        );
+    }
+
+    #[test]
+    fn oversized_restored_prime_rejection() {
+        let mut prime = unset_prime();
+        let image = bn_prime(201);
+        assert!(prime_into(&mut BlobReader::new(&image), &mut prime).is_err());
+        assert_eq!(prime.restored_size, Some(0));
+        let image = bn_prime(200);
+        assert!(
+            prime_into(&mut BlobReader::new(&image), &mut prime).is_ok(),
+            "25 words fit ci_prime_t"
+        );
+        assert_eq!(prime.restored_size, Some(CRT_WORDS as u8));
+    }
+
+    #[test]
+    fn restored_factors_with_the_key_sum_are_rejected_and_crt_faults_recover() {
+        use crate::library::tpm2::crypto::{
+            BigUint, RsaCrtKey, RsaRuntimeCache, prepared_key_count, recover_rsa_private_exponent,
+            review_keys, rsa_private_key_op, rsa_public_key_op,
+        };
+        let (modulus, prime, _) = review_keys::uneven_key(512);
+        let recovered = recover_rsa_private_exponent(&modulus, &prime, 0).expect("recovers");
+        let restore = |words: [[u64; CRT_WORDS]; 4]| {
+            let mut image = nv_header(PRIVATE_EXPONENT_T_VERSION, PRIVATE_EXPONENT_T_MAGIC, 1);
+            for words in words {
+                image.extend_from_slice(&prime_image(
+                    OwnedBnPrime::computed(words).serialized_words(),
+                ));
+            }
+            image.extend_from_slice(&empty_future_block());
+            let mut exponent = OwnedPrivateExponent {
+                primes: core::array::from_fn(|_| unset_prime()),
+                runtime: RsaRuntimeCache::default(),
+            };
+            assert!(private_exponent_into(&mut BlobReader::new(&image), &mut exponent).is_ok());
+            exponent
+        };
+        let to_words = |value: &BigUint| {
+            let bytes = value.to_be_bytes(CRT_WORDS * 8).unwrap();
+            let mut words = [0u64; CRT_WORDS];
+            for (index, word) in words.iter_mut().enumerate() {
+                let end = bytes.len() - index * 8;
+                *word = u64::from_be_bytes(bytes[end - 8..end].try_into().unwrap());
+            }
+            words
+        };
+        let p = BigUint::from_be_bytes(&prime).unwrap();
+        let q = BigUint::from_be_bytes(&modulus)
+            .unwrap()
+            .div_rem(&p)
+            .unwrap()
+            .0;
+        let shifted_prime = p.add_u64(2).unwrap().to_be_bytes(prime.len()).unwrap();
+        let message = BigUint::from_u64(0x0600_0006)
+            .unwrap()
+            .to_be_bytes(modulus.len())
+            .unwrap();
+        let ciphertext = rsa_public_key_op(&modulus, 65537, &message).expect("encrypts");
+
+        let inconsistent = restore([
+            to_words(&q.sub_u64(2).unwrap()),
+            recovered.d_p,
+            recovered.d_q,
+            recovered.q_inv,
+        ]);
+        let mut wrong_d_q = recovered.d_q;
+        wrong_d_q[0] ^= 4;
+        let faulty = restore([recovered.q, recovered.d_p, wrong_d_q, recovered.q_inv]);
+        let key = |exponent: &OwnedPrivateExponent, prime: &[u8]| -> Option<Vec<u8>> {
+            rsa_private_key_op(
+                &RsaCrtKey {
+                    cache: Some(&exponent.runtime),
+                    modulus: &modulus,
+                    exponent: 0,
+                    prime,
+                    q: &exponent.primes[0].words,
+                    d_p: &exponent.primes[1].words,
+                    d_q: &exponent.primes[2].words,
+                    q_inv: &exponent.primes[3].words,
+                },
+                &ciphertext,
+            )
+        };
+        let before = prepared_key_count();
+        for _ in 0..3 {
+            assert_eq!(key(&inconsistent, &shifted_prime), None);
+            assert_eq!(key(&faulty, &prime).as_deref(), Some(message.as_slice()));
+        }
+        assert_eq!(
+            prepared_key_count() - before,
+            2,
+            "each restored object prepares once; the rejection stays cached"
+        );
+        let reloaded = restore([
+            to_words(&q.sub_u64(2).unwrap()),
+            recovered.d_p,
+            recovered.d_q,
+            recovered.q_inv,
+        ]);
+        assert_eq!(
+            key(&reloaded, &shifted_prime),
+            None,
+            "a second restore rejects it again"
+        );
+    }
+
+    #[test]
+    fn restored_invalid_factor_sets_stay_unusable() {
+        use crate::library::tpm2::crypto::{
+            BigUint, RsaCrtKey, RsaRuntimeCache, prepared_key_count, rsa_private_key_op,
+            rsa_public_key_op,
+        };
+        for (stored, other) in [(1093u64, 1093u64), (9, 763), (763, 9), (3, 341)] {
+            let mut q = [0u64; CRT_WORDS];
+            q[0] = other;
+            let mut image = nv_header(PRIVATE_EXPONENT_T_VERSION, PRIVATE_EXPONENT_T_MAGIC, 1);
+            for words in [q, q, q, q] {
+                image.extend_from_slice(&prime_image(
+                    OwnedBnPrime::computed(words).serialized_words(),
+                ));
+            }
+            image.extend_from_slice(&empty_future_block());
+            let modulus = (stored * other).to_be_bytes().to_vec();
+            let prime = stored.to_be_bytes().to_vec();
+            let ciphertext = rsa_public_key_op(
+                &modulus,
+                65537,
+                &BigUint::from_u64(5).unwrap().to_be_bytes(8).unwrap(),
+            )
+            .unwrap();
+            let before = prepared_key_count();
+            for _ in 0..2 {
+                let mut exponent = OwnedPrivateExponent {
+                    primes: core::array::from_fn(|_| unset_prime()),
+                    runtime: RsaRuntimeCache::default(),
+                };
+                assert!(private_exponent_into(&mut BlobReader::new(&image), &mut exponent).is_ok());
+                for _ in 0..3 {
+                    let key = RsaCrtKey {
+                        cache: Some(&exponent.runtime),
+                        modulus: &modulus,
+                        exponent: 0,
+                        prime: &prime,
+                        q: &exponent.primes[0].words,
+                        d_p: &exponent.primes[1].words,
+                        d_q: &exponent.primes[2].words,
+                        q_inv: &exponent.primes[3].words,
+                    };
+                    assert_eq!(
+                        rsa_private_key_op(&key, &ciphertext),
+                        None,
+                        "{stored} x {other}"
+                    );
+                }
+            }
+            assert_eq!(
+                prepared_key_count() - before,
+                2,
+                "{stored} x {other}: each restored instance rejects once and stays rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn restored_private_exponent_drives_the_private_operation() {
+        use crate::library::tpm2::crypto::{
+            BigUint, RsaCrtKey, recover_rsa_private_exponent, review_keys, rsa_private_key_op,
+            rsa_public_key_op,
+        };
+        let (uneven_modulus, uneven_prime, _) = review_keys::uneven_key(512);
+        for (modulus, prime) in [
+            review_keys::component_length_key(review_keys::SHORT_Q_INV),
+            (uneven_modulus, uneven_prime),
+        ] {
+            let recovered = recover_rsa_private_exponent(&modulus, &prime, 0).expect("recovers");
+            let mut image = nv_header(PRIVATE_EXPONENT_T_VERSION, PRIVATE_EXPONENT_T_MAGIC, 1);
+            for words in [recovered.q, recovered.d_p, recovered.d_q, recovered.q_inv] {
+                image.extend_from_slice(&prime_image(
+                    OwnedBnPrime::computed(words).serialized_words(),
+                ));
+            }
+            image.extend_from_slice(&empty_future_block());
+            let mut exponent = OwnedPrivateExponent {
+                primes: core::array::from_fn(|_| unset_prime()),
+                runtime: crate::library::tpm2::crypto::RsaRuntimeCache::default(),
+            };
+            assert!(private_exponent_into(&mut BlobReader::new(&image), &mut exponent).is_ok());
+            let key = RsaCrtKey {
+                cache: None,
+                modulus: &modulus,
+                exponent: 0,
+                prime: &prime,
+                q: &exponent.primes[0].words,
+                d_p: &exponent.primes[1].words,
+                d_q: &exponent.primes[2].words,
+                q_inv: &exponent.primes[3].words,
+            };
+            let message = BigUint::from_u64(0x0533_3333)
+                .unwrap()
+                .to_be_bytes(modulus.len())
+                .unwrap();
+            let ciphertext = rsa_public_key_op(&modulus, 65537, &message).expect("encrypts");
+            assert_eq!(
+                rsa_private_key_op(&key, &ciphertext).as_deref(),
+                Some(message.as_slice())
+            );
+        }
+    }
 }

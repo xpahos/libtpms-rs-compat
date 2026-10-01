@@ -29,11 +29,11 @@ use crate::library::tpm2::command::core::response_code::{
     TPM_RC_1, TPM_RC_2, TPM_RC_3, TPM_RC_4, TPM_RC_P,
 };
 use crate::library::tpm2::commit::CommitState;
-use crate::library::tpm2::crypto::{EccKeyError, generate_ecc_key};
+use crate::library::tpm2::crypto::{EccCurve, EccKeyError, generate_ecc_ephemeral};
 use crate::library::tpm2::ecc::{
-    EccPoint, TwoPhaseOutcome, commit_value, ecc_curve_id, ecc_key_scheme, ecc_private_scalar,
-    ecc_public_point, parse_ecc_point, point_is_on_curve, point_multiply, two_phase_key_exchange,
-    write_ecc_point,
+    EccPoint, TwoPhaseOutcome, commit_value, ecc_curve_id, ecc_key_scheme, ecc_public_point,
+    ecc_stored_private, parse_ecc_point, point_is_on_curve, point_multiply_by,
+    private_point_multiply, two_phase_key_exchange, write_ecc_point,
 };
 use crate::library::tpm2::failure_mode::{FailureLocation, enter_failure_mode};
 use crate::library::tpm2::marshal::BlobWriter;
@@ -89,9 +89,9 @@ pub(in crate::library::tpm2::command) fn execute_zgen(
         return Err(TPM_RC_SCHEME + RC_KEY_HANDLE);
     }
     let curve_id = ecc_curve_id(&key).ok_or(TPM_RC_FAILURE)?;
-    let private = ecc_private_scalar(&key).unwrap_or_default();
+    let private = ecc_stored_private(&key);
     self_test_algorithm(runtime, TPM_ALG_ECDH)?;
-    let out_point = point_multiply(curve_id, Some(&in_point), private)
+    let out_point = private_point_multiply(curve_id, Some(&in_point), private)
         .map_err(|code| safe_add_to_result(code, RC_IN_POINT))?;
     point_output(&[&out_point])
 }
@@ -113,19 +113,26 @@ pub(in crate::library::tpm2::command) fn execute_key_gen(
     let mut rand = take_live_rand(runtime)?;
     let mut outcome = Err(TPM_RC_NO_RESULT);
     for _ in 0..KEY_GEN_ATTEMPTS {
-        let ephemeral = match generate_ecc_key(curve_id, &mut rand) {
+        let ephemeral = match generate_ecc_ephemeral(curve_id, &mut rand) {
             Ok(ephemeral) => ephemeral,
             Err(EccKeyError::Curve) => {
                 outcome = Err(crate::library::constants::TPM_RC_CURVE);
                 break;
             }
             Err(EccKeyError::NoResult) => continue,
+            Err(EccKeyError::Failure) => {
+                outcome = Err(crate::library::constants::TPM_RC_FAILURE);
+                break;
+            }
         };
         let pub_point = EccPoint {
             x: ephemeral.x,
             y: ephemeral.y,
         };
-        match point_multiply(curve_id, Some(&public), &ephemeral.private) {
+        let product = EccCurve::lookup(curve_id)
+            .ok_or(TPM_RC_VALUE)
+            .and_then(|curve| point_multiply_by(&curve, Some(&public), &ephemeral.scalar));
+        match product {
             Ok(z_point) => {
                 outcome = Ok((z_point, pub_point));
                 break;
@@ -134,7 +141,11 @@ pub(in crate::library::tpm2::command) fn execute_key_gen(
                 outcome = Err(TPM_RC_KEY + RC_KEY_HANDLE);
                 break;
             }
-            Err(_) => continue,
+            Err(TPM_RC_NO_RESULT) => continue,
+            Err(other) => {
+                outcome = Err(other);
+                break;
+            }
         }
     }
     finish_live_rand(runtime, rand)?;
@@ -209,22 +220,22 @@ pub(in crate::library::tpm2::command) fn execute_two_phase(
     };
 
     let curve_id = ecc_curve_id(&key).ok_or(TPM_RC_FAILURE)?;
-    if !point_is_on_curve(curve_id, &request.in_qs_b) {
+    if !point_is_on_curve(curve_id, &request.in_qs_b)? {
         return Err(TPM_RC_ECC_POINT + RC_IN_QS_B);
     }
-    if !point_is_on_curve(curve_id, &request.in_qe_b) {
+    if !point_is_on_curve(curve_id, &request.in_qe_b)? {
         return Err(TPM_RC_ECC_POINT + RC_IN_QE_B);
     }
 
     let mut commit = CommitState::load(runtime)?;
     self_test_algorithm(runtime, CONTEXT_INTEGRITY_HASH_ALG)?;
-    let r = commit_value(&commit, curve_id, &[], Some(request.counter))
+    let r = commit_value(&commit, curve_id, &[], Some(request.counter))?
         .ok_or(TPM_RC_VALUE + RC_COUNTER)?;
 
     if scheme != TPM_ALG_SM2 {
         self_test_algorithm(runtime, TPM_ALG_ECDH)?;
     }
-    let private = ecc_private_scalar(&key).unwrap_or_default();
+    let private = ecc_stored_private(&key);
     let result = two_phase_key_exchange(
         curve_id,
         scheme,
@@ -261,7 +272,7 @@ mod tests {
         load_external, off_curve_point, point2b, public_point, pw, raw_point2b, ready_with,
         restored, sign_key,
     };
-    use crate::library::tpm2::ecc::point_is_on_curve;
+    use crate::library::tpm2::ecc::{point_is_on_curve, point_multiply};
     use crate::library::tpm2::golden_responses::ecc_commands::vector;
 
     const TPM_RH_OWNER: u32 = 0x4000_0001;
@@ -303,7 +314,7 @@ mod tests {
             let expected =
                 point_multiply(CURVE_P256, Some(&peer), &PRIVATE_SCALAR).expect("the shared point");
             assert_eq!(parameters, point2b(&expected), "{record} is [d]peer");
-            assert!(point_is_on_curve(CURVE_P256, &expected));
+            assert_eq!(point_is_on_curve(CURVE_P256, &expected), Ok(true));
         }
     }
 
@@ -314,6 +325,7 @@ mod tests {
         let response = expect(&mut runtime, "ZGEN_G3", &zgen(KEY_AUTH, &point2b(&peer)));
         let curve = crate::library::tpm2::crypto::curve_parameters(CURVE_P256).expect("P256");
         let peer_scalar = crate::library::tpm2::crypto::BigUint::from_u64(3)
+            .unwrap()
             .to_be_bytes(curve.order.byte_len())
             .expect("a scalar");
         let mirrored = point_multiply(CURVE_P256, Some(&public_point()), &peer_scalar)
@@ -324,7 +336,9 @@ mod tests {
     fn plus_prime(coordinate: &[u8]) -> Vec<u8> {
         let curve = crate::library::tpm2::crypto::curve_parameters(CURVE_P256).expect("P256");
         crate::library::tpm2::crypto::BigUint::from_be_bytes(coordinate)
+            .unwrap()
             .add(&curve.prime)
+            .unwrap()
             .to_be_bytes(33)
             .expect("a 33-byte alias")
     }
@@ -608,6 +622,45 @@ mod tests {
             let z = &parameters[4..4 + 32];
             let public = &parameters[70 + 4..70 + 4 + 32];
             assert_ne!(z, public, "the shared point differs from the public point");
+        }
+    }
+
+    #[test]
+    fn backend_failures_end_key_generation_without_extra_drbg_draws() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
+        let get_random = framed(0x8001, 0x0000_017b, &[0x00, 0x20]);
+        let mut reference = ready_with(&[decrypt_key(&[])]);
+        let succeeded = dispatch_bytes(&mut reference, &cmd(CC_ECDH_KEYGEN, &[H0], None, &[]));
+        assert_eq!(&succeeded[6..10], &[0, 0, 0, 0]);
+        let after_success = dispatch_bytes(&mut reference, &get_random);
+        let mut fresh = ready_with(&[decrypt_key(&[])]);
+        let untouched = dispatch_bytes(&mut fresh, &get_random);
+        assert_ne!(
+            after_success, untouched,
+            "a successful KeyGen consumes the DRBG"
+        );
+        let mut skipped = 0;
+        loop {
+            let mut runtime = ready_with(&[decrypt_key(&[])]);
+            let before = faults_fired();
+            arm_fault(FaultBoundary::PointOperation, skipped);
+            let failed = dispatch_bytes(&mut runtime, &cmd(CC_ECDH_KEYGEN, &[H0], None, &[]));
+            disarm_fault();
+            if faults_fired() == before {
+                assert!(skipped >= 3, "self test, C1 generation and Z all reached");
+                break;
+            }
+            assert_eq!(
+                u32::from_be_bytes(failed[6..10].try_into().unwrap()),
+                crate::library::constants::TPM_RC_FAILURE,
+                "hit {skipped}: a backend failure is not retried (a retry would succeed)"
+            );
+            let random = dispatch_bytes(&mut runtime, &get_random);
+            assert!(
+                random == untouched || random == after_success,
+                "hit {skipped}: no DRBG draw beyond the single ephemeral draw of a successful KeyGen"
+            );
+            skipped += 1;
         }
     }
 

@@ -15,13 +15,13 @@
 // Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
 // Copyright (c) 2026 Yandex
 
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+use subtle::{ConditionallySelectable, ConstantTimeEq};
 
 use crate::library::cancel::CancellationToken;
 use crate::types::TpmResult;
 
 use super::super::self_test::LazySelfTest;
-use super::bignum::BigUint;
+use super::ossl::{BigUint, CrtCandidate, CrtWords};
 use super::prime::{PrimeSelection, is_prime_int, prime_select_with_sieve};
 use super::rand_state::{SEED_COMPAT_LEVEL_ORIGINAL, SeededRand};
 
@@ -29,6 +29,7 @@ pub(in crate::library::tpm2) const RSA_DEFAULT_PUBLIC_EXPONENT: u32 = 0x0001_000
 pub(in crate::library::tpm2) const MAX_RSA_KEY_BITS: u32 = 3072;
 
 const MAX_GENERATION_ATTEMPTS: u32 = 100;
+const MIN_PRIME_DISTANCE_BITS: u32 = 101;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2) enum RsaKeyError {
@@ -42,48 +43,42 @@ pub(in crate::library::tpm2) enum RsaKeyError {
 pub(in crate::library::tpm2) struct RsaKeyMaterial {
     pub(in crate::library::tpm2) modulus: Vec<u8>,
     pub(in crate::library::tpm2) prime: Vec<u8>,
-    pub(in crate::library::tpm2) q: BigUint,
-    pub(in crate::library::tpm2) d_p: BigUint,
-    pub(in crate::library::tpm2) d_q: BigUint,
-    pub(in crate::library::tpm2) q_inv: BigUint,
+    pub(in crate::library::tpm2) q: CrtWords,
+    pub(in crate::library::tpm2) d_p: CrtWords,
+    pub(in crate::library::tpm2) d_q: CrtWords,
+    pub(in crate::library::tpm2) q_inv: CrtWords,
 }
 
-fn adjust_prime_candidate_pre_rev155(prime: &mut BigUint) {
+fn adjust_prime_candidate_pre_rev155(prime: &mut BigUint) -> Option<()> {
     let top = prime.high_u32();
     let mut high = (top >> 16) as u16;
     high = ((u32::from(high) * 0x4afb) >> 16) as u16;
     high = high.wrapping_add(0xb505);
-    prime.replace_high_u32((u32::from(high) << 16) | (top & 0xffff));
-    prime.set_low_bit();
+    prime.replace_high_u32((u32::from(high) << 16) | (top & 0xffff))?;
+    prime.set_low_bit()
 }
 
-fn adjust_prime_candidate_new(prime: &mut BigUint) {
+fn adjust_prime_candidate_new(prime: &mut BigUint) -> Option<()> {
     let top = prime.high_u32();
     let mut adjusted = (top >> 16).wrapping_mul(0x4afb);
     adjusted = adjusted.wrapping_add(((top & 0xffff).wrapping_mul(0x4afb)) >> 16);
     adjusted = adjusted.wrapping_add(0xb505_0000);
-    prime.replace_high_u32(adjusted);
-    prime.set_low_bit();
+    prime.replace_high_u32(adjusted)?;
+    prime.set_low_bit()
 }
 
 fn random_prime_candidate(bits: usize, rand: &mut SeededRand) -> Result<BigUint, TpmResult> {
+    let failure = crate::library::constants::TPM_RC_FAILURE;
     if rand.seed_compat_level() == SEED_COMPAT_LEVEL_ORIGINAL {
-        let bytes = rand.random_bytes(bits / 8)?;
-        let mut limbs = Vec::with_capacity(bytes.len() / 8);
-        for chunk in bytes.chunks(8) {
-            let mut word = [0u8; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            limbs.push(u64::from_le_bytes(word));
-        }
-        let mut value = BigUint::zero();
-        for (index, limb) in limbs.into_iter().enumerate() {
-            value = value.add(&BigUint::from_u64(limb).shl(index * 64));
-        }
-        adjust_prime_candidate_pre_rev155(&mut value);
+        let mut bytes = rand.random_bytes(bits / 8)?;
+        bytes.reverse();
+        let mut value = BigUint::from_be_bytes(&bytes).ok_or(failure)?;
+        bytes.fill(0);
+        adjust_prime_candidate_pre_rev155(&mut value).ok_or(failure)?;
         Ok(value)
     } else {
         let mut value = rand.random_integer(bits)?;
-        adjust_prime_candidate_new(&mut value);
+        adjust_prime_candidate_new(&mut value).ok_or(failure)?;
         Ok(value)
     }
 }
@@ -99,121 +94,6 @@ fn generate_prime_for_rsa(
             return Ok(candidate);
         }
     }
-}
-
-struct PrivateExponent {
-    p: BigUint,
-    q: BigUint,
-    d_p: BigUint,
-    d_q: BigUint,
-    q_inv: BigUint,
-}
-
-impl PrivateExponent {
-    fn make_p_greater_than_q(&mut self) {
-        if self.p < self.q {
-            core::mem::swap(&mut self.p, &mut self.q);
-        }
-    }
-
-    fn compute(&mut self, exponent: &BigUint) -> bool {
-        self.make_p_greater_than_q();
-
-        let mut p_ok = false;
-        if let Some(p_minus_one) = self.p.sub_u64(1)
-            && let Some(d_p) = exponent.mod_inverse(&p_minus_one)
-        {
-            self.d_p = d_p;
-            p_ok = true;
-        }
-        let mut q_ok = false;
-        if let Some(q_minus_one) = self.q.sub_u64(1)
-            && let Some(d_q) = exponent.mod_inverse(&q_minus_one)
-        {
-            self.d_q = d_q;
-            q_ok = true;
-        }
-        if p_ok && q_ok {
-            match self.q.mod_inverse(&self.p) {
-                Some(q_inv) => self.q_inv = q_inv,
-                None => {
-                    p_ok = false;
-                    q_ok = false;
-                }
-            }
-        }
-        if !p_ok {
-            self.p = BigUint::zero();
-        }
-        if !q_ok {
-            self.q = BigUint::zero();
-        }
-        p_ok && q_ok
-    }
-
-    fn private_key_op(&self, value: &BigUint) -> Option<BigUint> {
-        rsa_private_key_op(&self.p, &self.q, &self.d_p, &self.d_q, &self.q_inv, value)
-    }
-}
-
-pub(in crate::library::tpm2) fn rsa_private_key_op(
-    p: &BigUint,
-    q: &BigUint,
-    d_p: &BigUint,
-    d_q: &BigUint,
-    q_inv: &BigUint,
-    value: &BigUint,
-) -> Option<BigUint> {
-    let (p, q) = if p < q { (q, p) } else { (p, q) };
-    let m1 = value.mod_exp(d_p, p)?;
-    let m2 = value.mod_exp(d_q, q)?;
-    let h = p.sub(&m2)?.add(&m1).mod_mul(q_inv, p)?;
-    Some(m2.add(&h.mul(q)))
-}
-
-pub(in crate::library::tpm2) struct RecoveredExponent {
-    pub(in crate::library::tpm2) q: BigUint,
-    pub(in crate::library::tpm2) d_p: BigUint,
-    pub(in crate::library::tpm2) d_q: BigUint,
-    pub(in crate::library::tpm2) q_inv: BigUint,
-}
-
-pub(in crate::library::tpm2) fn recover_rsa_private_exponent(
-    modulus: &[u8],
-    prime: &[u8],
-    exponent: u32,
-) -> Option<RecoveredExponent> {
-    let public_exponent = BigUint::from_u64(u64::from(if exponent == 0 {
-        RSA_DEFAULT_PUBLIC_EXPONENT
-    } else {
-        exponent
-    }));
-    let n = BigUint::from_be_bytes(modulus);
-    let p = BigUint::from_be_bytes(prime);
-    if p.is_zero() {
-        return None;
-    }
-    let (q, remainder) = n.div_rem(&p)?;
-    if !remainder.is_zero() {
-        return None;
-    }
-    let stored_q = q.clone();
-    let mut z = PrivateExponent {
-        p,
-        q,
-        d_p: BigUint::zero(),
-        d_q: BigUint::zero(),
-        q_inv: BigUint::zero(),
-    };
-    if !z.compute(&public_exponent) {
-        return None;
-    }
-    Some(RecoveredExponent {
-        q: stored_q,
-        d_p: z.d_p,
-        d_q: z.d_q,
-        q_inv: z.q_inv,
-    })
 }
 
 fn hash_length(hash_alg: u16) -> Option<usize> {
@@ -276,47 +156,9 @@ pub(in crate::library::tpm2) fn oaep_decode(
     if padded.len() < 2 * hash_len + 2 {
         return Ok(None);
     }
-    if padded[0] == 0 {
-        gate.algorithm(hash_alg)?;
-    }
+    gate.algorithm(hash_alg)?;
 
-    let Some(decoded) = decode_padding(hash_alg, label, padded, hash_len) else {
-        return Ok(None);
-    };
-    Ok(Some(decoded))
-}
-
-fn decode_padding(hash_alg: u16, label: &[u8], padded: &[u8], hash_len: usize) -> Option<Vec<u8>> {
-    let mut seed = super::kdf::mgf1(hash_alg, &padded[hash_len + 1..], hash_len)?;
-    for (index, byte) in seed.iter_mut().enumerate() {
-        *byte ^= padded[1 + index];
-    }
-
-    let mut db = super::kdf::mgf1(hash_alg, &seed, padded.len() - hash_len - 1)?;
-    for (index, byte) in db.iter_mut().enumerate() {
-        *byte ^= padded[hash_len + 1 + index];
-    }
-
-    let mut valid = padded[0].ct_eq(&0);
-    valid &= label_digest(hash_alg, label)?.ct_eq(&db[..hash_len]);
-
-    let mut delimiter_seen = Choice::from(0u8);
-    let mut padding_is_clean = Choice::from(1u8);
-    let mut message_start = 0u32;
-    for (index, &byte) in db[hash_len..].iter().enumerate() {
-        let is_delimiter = byte.ct_eq(&0x01);
-        let is_padding = byte.ct_eq(&0x00);
-        let first_delimiter = is_delimiter & !delimiter_seen;
-        padding_is_clean &= delimiter_seen | is_padding | is_delimiter;
-        message_start.conditional_assign(&(index as u32 + 1), first_delimiter);
-        delimiter_seen |= is_delimiter;
-    }
-    valid &= delimiter_seen & padding_is_clean;
-
-    if !bool::from(valid) {
-        return None;
-    }
-    Some(db[hash_len + message_start as usize..].to_vec())
+    Ok(super::ossl::oaep_unpad(hash_alg, label, padded))
 }
 
 pub(in crate::library::tpm2) const RSAES_OVERHEAD: usize = 11;
@@ -345,51 +187,27 @@ pub(in crate::library::tpm2) fn rsaes_encode(
     let mut encoded = vec![0u8; modulus_len];
     encoded[1] = 0x02;
     for (index, &byte) in padding.iter().enumerate() {
-        encoded[2 + index] = if byte == 0 {
-            RSAES_ZERO_REPLACEMENT
-        } else {
-            byte
-        };
+        encoded[2 + index] = u8::conditional_select(&byte, &RSAES_ZERO_REPLACEMENT, byte.ct_eq(&0));
     }
     encoded[modulus_len - message.len()..].copy_from_slice(message);
     Some(encoded)
 }
 
 pub(in crate::library::tpm2) fn rsaes_decode(coded: &[u8]) -> Option<Vec<u8>> {
-    let mut valid = Choice::from(u8::from(coded.len() >= RSAES_OVERHEAD));
-    valid &= coded.first().copied().unwrap_or(0xff).ct_eq(&0x00);
-    valid &= coded.get(1).copied().unwrap_or(0xff).ct_eq(&0x02);
-
-    let mut terminator_seen = Choice::from(0u8);
-    let mut message_start = 0u32;
-    for (index, &byte) in coded.iter().enumerate().skip(2) {
-        let is_terminator = byte.ct_eq(&0x00) & !terminator_seen;
-        message_start.conditional_assign(&(index as u32 + 1), is_terminator);
-        terminator_seen |= byte.ct_eq(&0x00);
-    }
-    valid &= terminator_seen;
-    valid &= Choice::from(u8::from(message_start >= 11));
-
-    if !bool::from(valid) {
-        return None;
-    }
-    Some(coded[message_start as usize..].to_vec())
+    super::ossl::pkcs1_type2_unpad(coded)
 }
 
 pub(in crate::library::tpm2) fn rsa_public_key_op(
-    modulus: &BigUint,
+    modulus: &[u8],
     exponent: u32,
-    value: &BigUint,
-) -> Option<BigUint> {
-    if modulus.is_zero() || value >= modulus {
-        return None;
-    }
+    value: &[u8],
+) -> Option<Vec<u8>> {
     let exponent = if exponent == 0 {
         RSA_DEFAULT_PUBLIC_EXPONENT
     } else {
         exponent
     };
-    value.mod_exp(&BigUint::from_u64(u64::from(exponent)), modulus)
+    super::ossl::rsa_public_key_op(modulus, exponent, value)
 }
 
 pub(in crate::library::tpm2) fn generate_rsa_key(
@@ -410,60 +228,48 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
             return Err(RsaKeyError::Range);
         }
     }
-    let public_exponent = BigUint::from_u64(u64::from(effective_exponent));
-
     let key_size_in_bits = u32::from(key_bits);
     if key_size_in_bits == 0 || key_size_in_bits % 1024 != 0 || key_size_in_bits > MAX_RSA_KEY_BITS
     {
         return Err(RsaKeyError::Value);
     }
     let modulus_bytes = (key_size_in_bits / 8) as usize;
+    let prime_bytes = modulus_bytes / 2;
     let prime_bits = (key_size_in_bits / 2) as usize;
 
-    let mut z = PrivateExponent {
-        p: BigUint::zero(),
-        q: BigUint::zero(),
-        d_p: BigUint::zero(),
-        d_q: BigUint::zero(),
-        q_inv: BigUint::zero(),
-    };
+    let mut z = CrtCandidate::new(prime_bytes).ok_or(RsaKeyError::Failure)?;
 
     for _ in 1..MAX_GENERATION_ATTEMPTS {
         #[cfg(test)]
         super::work::count_generation_attempt();
         cancellation.check().map_err(|_| RsaKeyError::Canceled)?;
-        z.p = generate_prime_for_rsa(prime_bits, effective_exponent, rand)
+        let prime = generate_prime_for_rsa(prime_bits, effective_exponent, rand)
             .map_err(|_| RsaKeyError::Failure)?;
-
-        if z.q.is_zero() {
-            z.q = z.p.clone();
-            continue;
-        }
-
-        let difference = if z.p < z.q {
-            z.q.sub(&z.p).ok_or(RsaKeyError::Failure)?
-        } else {
-            z.p.sub(&z.q).ok_or(RsaKeyError::Failure)?
-        };
-        if difference.bit_len() < 101 {
-            continue;
-        }
-
-        let modulus = z.p.mul(&z.q);
-        let modulus_bytes_out = modulus
-            .to_be_bytes(modulus_bytes)
+        z.set_p(&prime.to_be_bytes(prime_bytes).ok_or(RsaKeyError::Failure)?)
             .ok_or(RsaKeyError::Failure)?;
-        if modulus_bytes_out[0] & 0x80 == 0 {
+
+        if z.q_is_zero() {
+            z.copy_p_into_q().ok_or(RsaKeyError::Failure)?;
+            continue;
+        }
+
+        if !z
+            .primes_differ_by_at_least(MIN_PRIME_DISTANCE_BITS)
+            .ok_or(RsaKeyError::Failure)?
+        {
+            continue;
+        }
+
+        let modulus_bytes_out = z.modulus().ok_or(RsaKeyError::Failure)?;
+        if modulus_bytes_out.len() != modulus_bytes || modulus_bytes_out[0] & 0x80 == 0 {
             return Err(RsaKeyError::Failure);
         }
-        let prime_bytes_out =
-            z.p.to_be_bytes(modulus_bytes / 2)
-                .ok_or(RsaKeyError::Failure)?;
-        let stored_q = z.q.clone();
+        let prime_bytes_out = z.p_bytes().ok_or(RsaKeyError::Failure)?;
+        let stored_q = z.q_words().ok_or(RsaKeyError::Failure)?;
 
-        if !z.compute(&public_exponent) {
-            if z.q.is_zero() {
-                z.q = z.p.clone();
+        if !z.compute(effective_exponent).ok_or(RsaKeyError::Failure)? {
+            if z.q_is_zero() {
+                z.copy_p_into_q().ok_or(RsaKeyError::Failure)?;
             }
             continue;
         }
@@ -472,27 +278,31 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
         }
 
         if is_signing_key {
+            let limit = BigUint::from_be_bytes(&modulus_bytes_out).ok_or(RsaKeyError::Failure)?;
             let plain = rand
-                .random_in_range(&modulus)
+                .random_in_range(&limit)
                 .map_err(|_| RsaKeyError::Failure)?
+                .and_then(|value| value.to_be_bytes(modulus_bytes))
                 .ok_or(RsaKeyError::Failure)?;
-            let encrypted = plain
-                .mod_exp(&public_exponent, &modulus)
+            let encrypted = rsa_public_key_op(&modulus_bytes_out, effective_exponent, &plain)
                 .ok_or(RsaKeyError::Failure)?;
-            let decrypted = z.private_key_op(&encrypted).ok_or(RsaKeyError::Failure)?;
-            if decrypted != plain {
-                z.q = BigUint::zero();
+            let decrypted = z
+                .trial(&modulus_bytes_out, effective_exponent, &encrypted)
+                .ok_or(RsaKeyError::Failure)?;
+            if !decrypted.is_some_and(|decrypted| bool::from(decrypted.ct_eq(&plain))) {
+                z.clear_q().ok_or(RsaKeyError::Failure)?;
                 continue;
             }
         }
 
+        let (d_p, d_q, q_inv) = z.exponent_words().ok_or(RsaKeyError::Failure)?;
         return Ok(RsaKeyMaterial {
             modulus: modulus_bytes_out,
             prime: prime_bytes_out,
             q: stored_q,
-            d_p: z.d_p,
-            d_q: z.d_q,
-            q_inv: z.q_inv,
+            d_p,
+            d_q,
+            q_inv,
         });
     }
     Err(RsaKeyError::NoResult)
@@ -717,12 +527,9 @@ mod oaep_tests {
     }
 
     #[test]
-    fn early_check_rejection_no_hash_test() {
+    fn size_rejection_no_hash_test() {
         let padded = encoded(b"salt");
-        let mut leading = padded.clone();
-        leading[0] = 0x01;
         for (what, candidate) in [
-            ("a nonzero leading byte", leading),
             ("a block shorter than two digests", padded[..65].to_vec()),
             ("an empty block", Vec::new()),
         ] {
@@ -730,6 +537,37 @@ mod oaep_tests {
             assert_eq!(decoded, Ok(None), "{what}");
             assert!(calls.is_empty(), "{what}");
         }
+    }
+
+    #[test]
+    fn leading_byte_leaves_hash_test_schedule_unchanged() {
+        let padded = encoded(b"salt");
+        let db = strip(&padded);
+        let mut bad_label = db.clone();
+        bad_label[0] ^= 0x01;
+        for (what, candidate) in [
+            ("a nonzero leading byte", reencode(0x01, &db)),
+            ("a leading byte of 0xff", reencode(0xff, &db)),
+            (
+                "a zero leading byte and a wrong label",
+                reencode(0x00, &bad_label),
+            ),
+            (
+                "a nonzero leading byte and a wrong label",
+                reencode(0x01, &bad_label),
+            ),
+        ] {
+            let (decoded, calls) = recorded_decode(HASH, &candidate, false);
+            assert_eq!(decoded, Ok(None), "{what}");
+            assert_eq!(
+                calls,
+                [HASH],
+                "{what}: CVE-2026-6727 removed the early exit on the leading byte"
+            );
+        }
+        let (decoded, calls) = recorded_decode(HASH, &reencode(0x01, &db), true);
+        assert_eq!(decoded, Err(crate::library::constants::TPM_RC_FAILURE));
+        assert_eq!(calls, [HASH], "a failing hash test still aborts the decode");
     }
 
     #[test]
@@ -909,11 +747,62 @@ mod rsaes_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::tpm2::crypto::ossl::{CRT_WORDS, RsaCrtKey, rsa_private_key_op};
     use crate::library::tpm2::crypto::work;
 
     fn rand(label: &[u8]) -> SeededRand {
         SeededRand::instantiate(&[0x21; 64], b"RSA", label, &[], 1, false)
             .expect("a non-empty derivation input")
+    }
+
+    fn original_rand(label: &[u8]) -> SeededRand {
+        SeededRand::instantiate(&[0x21; 64], b"RSA", label, &[], 0, false)
+            .expect("a non-empty derivation input")
+    }
+
+    fn value(words: &CrtWords) -> BigUint {
+        words
+            .iter()
+            .rev()
+            .fold(BigUint::zero().unwrap(), |value, &word| {
+                value.shl(64).unwrap().add_u64(word).unwrap()
+            })
+    }
+
+    fn int(value: u64) -> BigUint {
+        BigUint::from_u64(value).unwrap()
+    }
+
+    fn big(bytes: &[u8]) -> BigUint {
+        BigUint::from_be_bytes(bytes).unwrap()
+    }
+
+    fn image(words: &CrtWords) -> CrtWords {
+        *words
+    }
+
+    fn crt_key(key: &RsaKeyMaterial) -> RsaCrtKey<'_> {
+        RsaCrtKey {
+            cache: None,
+            modulus: &key.modulus,
+            exponent: 0,
+            prime: &key.prime,
+            q: &key.q,
+            d_p: &key.d_p,
+            d_q: &key.d_q,
+            q_inv: &key.q_inv,
+        }
+    }
+
+    fn generate(key_bits: u16, label: &[u8], signing: bool) -> RsaKeyMaterial {
+        generate_rsa_key(
+            key_bits,
+            0,
+            signing,
+            &mut rand(label),
+            CancellationToken::disabled(),
+        )
+        .expect("a key")
     }
 
     #[test]
@@ -958,11 +847,6 @@ mod tests {
         );
     }
 
-    fn original_rand(label: &[u8]) -> SeededRand {
-        SeededRand::instantiate(&[0x21; 64], b"RSA", label, &[], 0, false)
-            .expect("a non-empty derivation input")
-    }
-
     #[test]
     fn exponent_default_upstream_match() {
         assert_eq!(RSA_DEFAULT_PUBLIC_EXPONENT, 65537);
@@ -971,21 +855,11 @@ mod tests {
 
     #[test]
     fn public_op_private_op_inversion() {
-        let key = generate_rsa_key(
-            1024,
-            0,
-            true,
-            &mut rand(b"public-op"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
-        let modulus = BigUint::from_be_bytes(&key.modulus);
-        let prime = BigUint::from_be_bytes(&key.prime);
-        let message = BigUint::from_u64(0x0123_4567_89ab_cdef);
-        let signed = rsa_private_key_op(&prime, &key.q, &key.d_p, &key.d_q, &key.q_inv, &message)
-            .expect("a private operation");
+        let key = generate(1024, b"public-op", true);
+        let message = int(0x0123_4567_89ab_cdef).to_be_bytes(128).unwrap();
+        let signed = rsa_private_key_op(&crt_key(&key), &message).expect("a signature");
         assert_eq!(
-            rsa_public_key_op(&modulus, 0, &signed),
+            rsa_public_key_op(&key.modulus, 0, &signed),
             Some(message),
             "a zero exponent selects the default public exponent"
         );
@@ -993,48 +867,59 @@ mod tests {
 
     #[test]
     fn private_op_accepts_either_stored_prime_order() {
-        let larger = BigUint::from_u64(61);
-        let smaller = BigUint::from_u64(53);
-        let d_p = BigUint::from_u64(53);
-        let d_q = BigUint::from_u64(49);
-        let q_inv = BigUint::from_u64(38);
-        let encrypted = BigUint::from_u64(2790);
-        for (p, q) in [(&larger, &smaller), (&smaller, &larger)] {
+        let word = |value: u64| {
+            let mut words = [0u64; CRT_WORDS];
+            words[0] = value;
+            words
+        };
+        let (d_p, d_q, q_inv) = (word(53), word(49), word(38));
+        for (p, q) in [(61u8, 53u64), (53, 61)] {
+            let q = word(q);
+            let key = RsaCrtKey {
+                cache: None,
+                modulus: &[0x0c, 0xa1],
+                exponent: 17,
+                prime: &[p],
+                q: &q,
+                d_p: &d_p,
+                d_q: &d_q,
+                q_inv: &q_inv,
+            };
             assert_eq!(
-                rsa_private_key_op(p, q, &d_p, &d_q, &q_inv, &encrypted),
-                Some(BigUint::from_u64(65)),
-                "stored p {p:?}, q {q:?}"
+                rsa_private_key_op(&key, &[0x0a, 0xe6]),
+                Some(vec![0x00, 0x41]),
+                "stored p {p}"
             );
         }
     }
 
     #[test]
     fn public_op_declared_exponent() {
-        let modulus = BigUint::from_u64(3233);
-        let message = BigUint::from_u64(65);
-        assert_eq!(
-            rsa_public_key_op(&modulus, 17, &message),
-            message.mod_exp(&BigUint::from_u64(17), &modulus)
-        );
-        assert_eq!(
-            rsa_public_key_op(&modulus, 0, &message),
-            message.mod_exp(&BigUint::from_u64(65537), &modulus)
-        );
+        let modulus = [0x0c, 0xa1];
+        let message = [0x00, 0x41];
+        let expect = |exponent: u64| {
+            int(65)
+                .mod_exp(&int(exponent), &int(3233))
+                .unwrap()
+                .to_be_bytes(2)
+        };
+        assert_eq!(rsa_public_key_op(&modulus, 17, &message), expect(17));
+        assert_eq!(rsa_public_key_op(&modulus, 0, &message), expect(65537));
     }
 
     #[test]
     fn above_modulus_public_op_rejection() {
-        let modulus = BigUint::from_u64(3233);
+        let modulus = [0x0c, 0xa1];
         assert!(rsa_public_key_op(&modulus, 17, &modulus).is_none());
-        assert!(rsa_public_key_op(&modulus, 17, &BigUint::from_u64(3234)).is_none());
-        assert!(rsa_public_key_op(&BigUint::zero(), 17, &BigUint::from_u64(1)).is_none());
+        assert!(rsa_public_key_op(&modulus, 17, &[0x0c, 0xa2]).is_none());
+        assert!(rsa_public_key_op(&[0x00], 17, &[0x01]).is_none());
     }
 
     #[test]
     fn new_adjustment_sqrt2_lower_bound() {
         for top in [0u32, 1, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff] {
-            let mut value = BigUint::from_u64(u64::from(top) << 32).add_u64(0x1234_5678);
-            adjust_prime_candidate_new(&mut value);
+            let mut value = int(u64::from(top) << 32).add_u64(0x1234_5678).unwrap();
+            adjust_prime_candidate_new(&mut value).unwrap();
             assert!(value.high_u32() >= 0xb505_0000, "top {top:#010x}");
             assert!(value.is_odd(), "top {top:#010x}");
             assert_eq!(value.low_u32(), 0x1234_5679, "the low words are kept");
@@ -1043,26 +928,26 @@ mod tests {
 
     #[test]
     fn new_adjustment_upper_saturation() {
-        let mut value = BigUint::from_u64(0xffff_ffff_0000_0000);
-        adjust_prime_candidate_new(&mut value);
+        let mut value = int(0xffff_ffff_0000_0000);
+        adjust_prime_candidate_new(&mut value).unwrap();
         assert_eq!(value.high_u32(), 0xffff_ffff);
     }
 
     #[test]
     fn pre_rev155_adjustment_top16_bits_only() {
-        let mut value = BigUint::from_u64(0x1234_5678_9abc_def0);
-        adjust_prime_candidate_pre_rev155(&mut value);
+        let mut value = int(0x1234_5678_9abc_def0);
+        adjust_prime_candidate_pre_rev155(&mut value).unwrap();
         assert_eq!(value.high_u32() & 0xffff, 0x5678, "the next word is kept");
         assert_eq!(value.low_u32(), 0x9abc_def1);
     }
 
     #[test]
     fn adjustment_variant_distinction() {
-        let base = BigUint::from_u64(0x1234_5678_9abc_def0);
+        let base = int(0x1234_5678_9abc_def0);
         let mut old = base.clone();
         let mut new = base;
-        adjust_prime_candidate_pre_rev155(&mut old);
-        adjust_prime_candidate_new(&mut new);
+        adjust_prime_candidate_pre_rev155(&mut old).unwrap();
+        adjust_prime_candidate_new(&mut new).unwrap();
         assert_ne!(old.high_u32(), new.high_u32());
     }
 
@@ -1126,124 +1011,89 @@ mod tests {
         assert_ne!(key.modulus[0] & 0x80, 0, "the modulus is full length");
         assert_ne!(key.prime[0] & 0x80, 0, "the prime is full length");
 
-        let modulus = BigUint::from_be_bytes(&key.modulus);
-        let p = BigUint::from_be_bytes(&key.prime);
-        let product = p.mul(&key.q);
-        assert_eq!(product, modulus, "the modulus is the product of the primes");
+        let modulus = big(&key.modulus);
+        let p = big(&key.prime);
+        let q = value(&key.q);
+        assert_eq!(
+            p.mul(&q).unwrap(),
+            modulus,
+            "the modulus is the product of the primes"
+        );
 
-        let public = BigUint::from_u64(u64::from(exponent));
-        let (larger, smaller) = if p > key.q {
-            (p.clone(), key.q.clone())
+        let public = int(u64::from(exponent));
+        let (larger, smaller) = if p > q {
+            (p.clone(), q.clone())
         } else {
-            (key.q.clone(), p.clone())
+            (q.clone(), p.clone())
         };
         assert_eq!(
             public
-                .mod_mul(&key.d_p, &larger.sub_u64(1).unwrap())
+                .mod_mul(&value(&key.d_p), &larger.sub_u64(1).unwrap())
                 .unwrap(),
-            BigUint::from_u64(1)
+            int(1)
         );
         assert_eq!(
             public
-                .mod_mul(&key.d_q, &smaller.sub_u64(1).unwrap())
+                .mod_mul(&value(&key.d_q), &smaller.sub_u64(1).unwrap())
                 .unwrap(),
-            BigUint::from_u64(1)
+            int(1)
         );
         assert_eq!(
-            smaller.mod_mul(&key.q_inv, &larger).unwrap(),
-            BigUint::from_u64(1)
+            smaller.mod_mul(&value(&key.q_inv), &larger).unwrap(),
+            int(1)
         );
 
-        let message = BigUint::from_u64(0x0123_4567_89ab_cdef);
+        let message = int(0x0123_4567_89ab_cdef);
         let encrypted = message.mod_exp(&public, &modulus).unwrap();
-        let phi = larger.sub_u64(1).unwrap().mul(&smaller.sub_u64(1).unwrap());
+        let phi = larger
+            .sub_u64(1)
+            .unwrap()
+            .mul(&smaller.sub_u64(1).unwrap())
+            .unwrap();
         let d = public.mod_inverse(&phi).unwrap();
         assert_eq!(encrypted.mod_exp(&d, &modulus).unwrap(), message);
+        let mut crt = crt_key(key);
+        crt.exponent = exponent;
+        let decrypted =
+            rsa_private_key_op(&crt, &encrypted.to_be_bytes(key.modulus.len()).unwrap())
+                .expect("the CRT operation succeeds");
+        assert_eq!(big(&decrypted), message);
     }
 
     #[test]
     fn rsa2048_key_consistency() {
-        let key = generate_rsa_key(
-            2048,
-            0,
-            false,
-            &mut rand(b"rsa2048"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let key = generate(2048, b"rsa2048", false);
         assert_key_is_consistent(&key, 2048, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
     fn signing_key_trial_decryption_success() {
-        let key = generate_rsa_key(
-            1024,
-            0,
-            true,
-            &mut rand(b"sign"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let key = generate(1024, b"sign", true);
         assert_key_is_consistent(&key, 1024, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
     fn key_generation_determinism() {
-        let first = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"same"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
-        let second = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"same"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let first = generate(1024, b"same", false);
+        let second = generate(1024, b"same", false);
         assert_eq!(first.modulus, second.modulus);
         assert_eq!(first.prime, second.prime);
-        assert_eq!(first.q, second.q);
-        assert_eq!(first.d_p, second.d_p);
-        assert_eq!(first.d_q, second.d_q);
-        assert_eq!(first.q_inv, second.q_inv);
+        assert_eq!(image(&first.q), image(&second.q));
+        assert_eq!(image(&first.d_p), image(&second.d_p));
+        assert_eq!(image(&first.d_q), image(&second.d_q));
+        assert_eq!(image(&first.q_inv), image(&second.q_inv));
     }
 
     #[test]
     fn generator_state_key_distinction() {
-        let first = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"one"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
-        let second = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"two"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let first = generate(1024, b"one", false);
+        let second = generate(1024, b"two", false);
         assert_ne!(first.modulus, second.modulus);
     }
 
     #[test]
     fn seed_compat_level_key_distinction() {
-        let new = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"level"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let new = generate(1024, b"level", false);
         let old = generate_rsa_key(
             1024,
             0,
@@ -1258,22 +1108,8 @@ mod tests {
 
     #[test]
     fn signing_key_extra_generator_consumption() {
-        let signing = generate_rsa_key(
-            1024,
-            0,
-            true,
-            &mut rand(b"drain"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
-        let decryption = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"drain"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let signing = generate(1024, b"drain", true);
+        let decryption = generate(1024, b"drain", false);
         assert_eq!(
             signing.modulus, decryption.modulus,
             "the trial decryption happens after both primes are chosen"
@@ -1305,14 +1141,7 @@ mod tests {
 
     #[test]
     fn explicit_default_exponent_match() {
-        let implicit = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"exp"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let implicit = generate(1024, b"exp", false);
         let explicit = generate_rsa_key(
             1024,
             65537,
@@ -1342,47 +1171,27 @@ mod tests {
 
     #[test]
     fn rsa3072_key_consistency() {
-        let key = generate_rsa_key(
-            3072,
-            0,
-            false,
-            &mut rand(b"ek3072"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let key = generate(3072, b"ek3072", false);
         assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
     fn rsa3072_signing_key_trial_decryption_success() {
-        let key = generate_rsa_key(
-            3072,
-            0,
-            true,
-            &mut rand(b"sign3072"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
+        let key = generate(3072, b"sign3072", true);
         assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
     }
 
     #[test]
     fn rsa3072_per_seed_key_consistency() {
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
-            let key = generate_rsa_key(
-                3072,
-                0,
-                false,
-                &mut rand(label),
-                CancellationToken::disabled(),
-            )
-            .expect("a key");
+            let key = generate(3072, label, false);
             assert_key_is_consistent(&key, 3072, RSA_DEFAULT_PUBLIC_EXPONENT);
-            let p = BigUint::from_be_bytes(&key.prime);
-            let difference = if p > key.q {
-                p.sub(&key.q).unwrap()
+            let p = big(&key.prime);
+            let q = value(&key.q);
+            let difference = if p > q {
+                p.sub(&q).unwrap()
             } else {
-                key.q.sub(&p).unwrap()
+                q.sub(&p).unwrap()
             };
             assert!(
                 difference.bit_len() >= 101,
@@ -1424,33 +1233,15 @@ mod tests {
     #[test]
     fn rsa3072_key_generation_determinism() {
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
-            let (first, left) = work::measure(|| {
-                generate_rsa_key(
-                    3072,
-                    0,
-                    false,
-                    &mut rand(label),
-                    CancellationToken::disabled(),
-                )
-                .expect("a key")
-            });
-            let (second, right) = work::measure(|| {
-                generate_rsa_key(
-                    3072,
-                    0,
-                    false,
-                    &mut rand(label),
-                    CancellationToken::disabled(),
-                )
-                .expect("a key")
-            });
+            let (first, left) = work::measure(|| generate(3072, label, false));
+            let (second, right) = work::measure(|| generate(3072, label, false));
             let name = core::str::from_utf8(label).unwrap();
             assert_eq!(first.modulus, second.modulus, "{name} modulus");
             assert_eq!(first.prime, second.prime, "{name} prime");
-            assert_eq!(first.q, second.q, "{name} q");
-            assert_eq!(first.d_p, second.d_p, "{name} dP");
-            assert_eq!(first.d_q, second.d_q, "{name} dQ");
-            assert_eq!(first.q_inv, second.q_inv, "{name} qInv");
+            assert_eq!(image(&first.q), image(&second.q), "{name} q");
+            assert_eq!(image(&first.d_p), image(&second.d_p), "{name} dP");
+            assert_eq!(image(&first.d_q), image(&second.d_q), "{name} dQ");
+            assert_eq!(image(&first.q_inv), image(&second.q_inv), "{name} qInv");
             assert_eq!(left, right, "{name} work");
         }
     }
@@ -1459,17 +1250,7 @@ mod tests {
     fn rsa3072_different_seed_key_distinction() {
         let mut moduli = Vec::new();
         for label in THREE_THOUSAND_SEVENTY_TWO_BIT_SEEDS {
-            moduli.push(
-                generate_rsa_key(
-                    3072,
-                    0,
-                    false,
-                    &mut rand(label),
-                    CancellationToken::disabled(),
-                )
-                .expect("a key")
-                .modulus,
-            );
+            moduli.push(generate(3072, label, false).modulus);
         }
         moduli.sort_unstable();
         moduli.dedup();
@@ -1479,55 +1260,33 @@ mod tests {
     #[test]
     fn rsa3072_search_pinned_work() {
         let expected = [
-            (b"ek3072".as_slice(), 46433u64, 19u64, 5184u64),
-            (b"spk3072", 210178, 107, 25152),
-            (b"sign3072", 42775, 17, 5952),
-            (b"seed-a", 152548, 76, 16704),
-            (b"seed-b", 295526, 153, 32640),
+            (b"ek3072".as_slice(), 19u64, 5184u64),
+            (b"spk3072", 107, 25152),
+            (b"sign3072", 17, 5952),
+            (b"seed-a", 76, 16704),
+            (b"seed-b", 153, 32640),
         ];
-        for (label, multiplications, candidates, generator_bytes) in expected {
-            let (key, counters) = work::measure(|| {
-                generate_rsa_key(
-                    3072,
-                    0,
-                    false,
-                    &mut rand(label),
-                    CancellationToken::disabled(),
-                )
-            });
-            key.expect("a key");
+        for (label, candidates, generator_bytes) in expected {
+            let (key, counters) = work::measure(|| generate(3072, label, false));
             let name = core::str::from_utf8(label).unwrap();
             assert_eq!(counters.sieved_candidates, candidates, "{name} candidates");
             assert_eq!(counters.primality_tests, candidates, "{name} rounds");
             assert_eq!(counters.sieve_passes, 2, "{name} sieve passes");
             assert_eq!(counters.generation_attempts, 2, "{name} attempts");
             assert_eq!(counters.generator_bytes, generator_bytes, "{name} entropy");
-            assert_eq!(
-                counters.modular_multiplications, multiplications,
-                "{name} modular multiplications"
-            );
+            drop(key);
         }
     }
 
     #[test]
     fn rsa2048_search_pinned_work() {
-        let (key, counters) = work::measure(|| {
-            generate_rsa_key(
-                2048,
-                0,
-                false,
-                &mut rand(b"rsa2048"),
-                CancellationToken::disabled(),
-            )
-        });
-        let key = key.expect("a key");
+        let (key, counters) = work::measure(|| generate(2048, b"rsa2048", false));
         assert_key_is_consistent(&key, 2048, RSA_DEFAULT_PUBLIC_EXPONENT);
         assert_eq!(counters.sieved_candidates, 61);
         assert_eq!(counters.primality_tests, 61);
         assert_eq!(counters.sieve_passes, 2);
         assert_eq!(counters.generation_attempts, 2);
         assert_eq!(counters.generator_bytes, 10368);
-        assert_eq!(counters.modular_multiplications, 88014);
     }
 
     #[test]
@@ -1575,26 +1334,15 @@ mod tests {
 
     #[test]
     fn private_op_public_op_inversion() {
-        let key = generate_rsa_key(
-            1024,
-            0,
-            false,
-            &mut rand(b"crt"),
-            CancellationToken::disabled(),
-        )
-        .expect("a key");
-        let modulus = BigUint::from_be_bytes(&key.modulus);
-        let z = PrivateExponent {
-            p: BigUint::from_be_bytes(&key.prime),
-            q: key.q.clone(),
-            d_p: key.d_p.clone(),
-            d_q: key.d_q.clone(),
-            q_inv: key.q_inv.clone(),
-        };
-        let message = BigUint::from_u64(0xdead_beef_cafe_babe);
+        let key = generate(1024, b"crt", false);
+        let modulus = big(&key.modulus);
+        let message = int(0xdead_beef_cafe_babe);
         let encrypted = message
-            .mod_exp(&BigUint::from_u64(65537), &modulus)
+            .mod_exp(&int(65537), &modulus)
+            .unwrap()
+            .to_be_bytes(128)
             .unwrap();
-        assert_eq!(z.private_key_op(&encrypted).unwrap(), message);
+        let decrypted = rsa_private_key_op(&crt_key(&key), &encrypted).unwrap();
+        assert_eq!(big(&decrypted), message);
     }
 }

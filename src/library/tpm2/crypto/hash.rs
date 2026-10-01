@@ -56,6 +56,8 @@ impl Hasher {
     }
 
     pub(in crate::library::tpm2) fn update(&mut self, data: &[u8]) {
+        #[cfg(test)]
+        super::work::count_hash_update(data.len());
         match self {
             Self::Sha1(context) => context.update(data),
             Self::Sha256(context) => context.update(data),
@@ -65,6 +67,8 @@ impl Hasher {
     }
 
     pub(in crate::library::tpm2) fn finalize(self) -> Vec<u8> {
+        #[cfg(test)]
+        super::work::count_hash_finalization();
         match self {
             Self::Sha1(context) => context.finalize().to_vec(),
             Self::Sha256(context) => context.finalize().to_vec(),

@@ -275,7 +275,19 @@ keeps the replay honest about what it compares.
 Any family may hold cases. `tests/abi_lifecycle/main.rs` lists the cases of
 each such family and fails when a scenario holds cases it does not list. The
 `policy-sessions` family uses them to replay NV policy authorization through
-the ABI from its `NV_GATE_READY` snapshot. `process` responses are compared byte
+the ABI from its `NV_GATE_READY` snapshot. The `ecc-commands` and
+`rsa-encryption` families use them for the constant-time arithmetic sections
+(`CTM_*`, `CTZ_*`, `CTE_*`, `CTR_*`, `CTO_*`): every curve and RSA size, keys
+restored from states the reference produced, RSA keys whose CRT values
+normalise to fewer words or whose second prime is one bit longer (loaded,
+imported, saved, reloaded and restored), ECC shared points with a zero `x`
+coordinate, ECC private scalars stored in minimal, order-width and 80-byte
+encodings (loaded, used, saved and restored), OAEP decoding while the hash
+self-test is pending, and signatures cross-verified in both directions; see
+`docs/constant-time/`. Requests that embed a reference
+response (ContextLoad blobs, imported private areas, salted-session nonces)
+are generated from `scripts/constant_time/contexts-reference.txt` and
+`sessions-reference.txt`. `process` responses are compared byte
 for byte, so keep responses that depend on host time, such as an attestation
 clock or dictionary-attack recovery, out of cases.
 
@@ -289,12 +301,14 @@ commits next to the submodule revision:
 
 ```text
 reference:         libtpms v0.10.2 @ 03ff2481e133540be3b3ffe3daa1483d2a73d967 (platform linux/arm64)
-reference patches: 4 upstream commit(s) 43c97ddf1765 043ebbc16d47 c5449222056d ab9803822ab8
+reference patches: 5 upstream commit(s) 43c97ddf1765 043ebbc16d47 c5449222056d ab9803822ab8 fd5b41746220
 ```
 
 The current series backports four `NVMarshal.c` fixes that were submitted
-upstream on top of libtpms master (`a5fc3ae7`); each applies to v0.10.2
-without fuzz:
+upstream on top of libtpms master (`a5fc3ae7`) and the upstream `OaepDecode`
+security fix for CVE-2026-6727 (stable-0.10 commit
+`fd5b4174622032e131b70389b40ec6add4da3237`); each applies to v0.10.2 without
+fuzz:
 
 | Patch | Upstream commit | Effect on the reference |
 | --- | --- | --- |
@@ -302,6 +316,7 @@ without fuzz:
 | `0002` | `043ebbc1` | An `ANY_HASH_STATE` header error is returned instead of being replaced by the result of the hash payload. |
 | `0003` | `c5449222` | A failed `OBJECT` or `HASH_OBJECT` body clears the whole object slot. |
 | `0004` | `ab980382` | An orderly RAM entry whose size is below the header or past the array is written as the zero-size terminator. |
+| `0005` | `fd5b4174` | `OaepDecode` no longer returns early on a nonzero leading byte, so the hash self-test that its mask generation triggers no longer depends on the decrypted block. |
 
 The audit rejects an untracked file in `patches/` (it would silently stay out
 of the build), a patch that does not start with its upstream commit, and a

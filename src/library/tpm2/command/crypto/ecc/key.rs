@@ -259,6 +259,7 @@ pub(super) mod test_support {
     pub(in crate::library::tpm2::command) fn generator_multiple(scalar: u64) -> EccPoint {
         let curve = curve_parameters(CURVE_P256).expect("NIST P256");
         let value = crate::library::tpm2::crypto::BigUint::from_u64(scalar)
+            .unwrap()
             .to_be_bytes(curve.order.byte_len())
             .expect("a scalar");
         point_multiply(CURVE_P256, None, &value).expect("a generator multiple")
@@ -789,12 +790,14 @@ mod tests {
             0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7, 0xb3, 0xeb, 0xbd, 0x55, 0x76, 0x98,
             0x86, 0xbc, 0x65, 0x1d, 0x06, 0xb0, 0xcc, 0x53, 0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e,
             0x27, 0xd2, 0x60, 0x4b,
-        ]);
+        ])
+        .unwrap();
         for index in 0..100_000u32 {
             let s2 = format!("commit-point-{index}").into_bytes();
             let mut hasher = Hasher::new(SHA256).expect("SHA-256");
             hasher.update(&s2);
             let x = BigUint::from_be_bytes(&hasher.finalize())
+                .unwrap()
                 .rem(&curve.prime)
                 .expect("a reduced abscissa");
             let rhs = x
@@ -809,7 +812,10 @@ mod tests {
                 .and_then(|value| value.mod_add(&b, &curve.prime))
                 .expect("the curve ordinate");
             let root = rhs
-                .mod_exp(&curve.prime.add_u64(1).shr(2), &curve.prime)
+                .mod_exp(
+                    &curve.prime.add_u64(1).unwrap().shr(2).unwrap(),
+                    &curve.prime,
+                )
                 .expect("a candidate root");
             if root.mod_mul(&root, &curve.prime).expect("a square") == rhs {
                 return (s2, root.to_be_bytes(32).expect("32 bytes"));

@@ -29,6 +29,8 @@ mod data;
 mod orderly;
 mod store;
 
+#[cfg(test)]
+pub(super) use attach::SECRET_STORAGE_BYTES;
 pub(super) use attach::{
     OwnedAnyObject, OwnedAnyObjectBody, OwnedBnPrime, OwnedCommandBitmap, OwnedDrbgState,
     OwnedHashObjectBody, OwnedHashPayload, OwnedHashState, OwnedNvIndex, OwnedObjectBody,

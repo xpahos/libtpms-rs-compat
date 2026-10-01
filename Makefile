@@ -341,6 +341,7 @@ DOCKER_PLATFORM_FLAG              := $(if $(DOCKER_PLATFORM),--platform "$(DOCKE
 test-swtpm-docker:
 	$(DOCKER) build $(DOCKER_PLATFORM_FLAG) \
 		--file "$(SWTPM_DOCKER_DOCKERFILE)" \
+		--target swtpm \
 		--tag "$(SWTPM_DOCKER_IMAGE)" \
 		"$(CURDIR)"
 	@set -eu; \

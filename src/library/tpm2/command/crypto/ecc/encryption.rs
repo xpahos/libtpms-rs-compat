@@ -28,7 +28,7 @@ use crate::library::tpm2::command::core::response_code::{
 use crate::library::tpm2::command::object::load::algorithm_policy;
 use crate::library::tpm2::ecc::{
     EccPoint, EccSelfTest, MAX_ECC_MESSAGE, crypt_ecc_decrypt, crypt_ecc_encrypt, ecc_curve_id,
-    ecc_key_kdf, ecc_private_scalar, ecc_public_point, parse_ecc_point, select_kdf_scheme,
+    ecc_key_kdf, ecc_public_point, ecc_stored_private, parse_ecc_point, select_kdf_scheme,
     write_ecc_point,
 };
 use crate::library::tpm2::marshal::BlobWriter;
@@ -143,7 +143,7 @@ pub(in crate::library::tpm2::command) fn execute_decrypt(
     let scheme =
         select_kdf_scheme(key_kdf, request.scheme).ok_or(TPM_RC_SCHEME + RC_DECRYPT_SCHEME)?;
     let curve_id = ecc_curve_id(&key).ok_or(TPM_RC_FAILURE)?;
-    let private = ecc_private_scalar(&key).unwrap_or_default();
+    let private = ecc_stored_private(&key);
 
     let plain_text = crypt_ecc_decrypt(
         curve_id,
@@ -321,7 +321,9 @@ mod tests {
         let mut runtime = restored("ENC_AFTER");
         let mut cipher = ciphertext(&EPHEMERAL_ONE, &message(32), SHA256);
         cipher.c1.x = BigUint::from_be_bytes(&cipher.c1.x)
+            .unwrap()
             .add(&curve.prime)
+            .unwrap()
             .to_be_bytes(33)
             .expect("a 33-byte alias");
         let response = expect(

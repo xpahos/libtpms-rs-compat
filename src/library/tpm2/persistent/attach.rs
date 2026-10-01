@@ -17,13 +17,15 @@ use crate::types::TpmResult;
 use super::data::PersistentDataPrefix;
 use super::orderly::{DrbgState, OrderlyData};
 use crate::library::tpm2::DecodedPersistentAll;
-use crate::library::tpm2::crypto::CmacState;
+use crate::library::tpm2::crypto::{
+    CRT_WORDS, CmacState, CrtWords, PRIVATE_SCALAR_BYTES, RsaRuntimeCache, normalized_word_count,
+};
 use crate::library::tpm2::nv::{
     NvIndex, OrderlyRamImage, USER_NVRAM_CAPACITY, UserNvram, UserNvramEntry,
 };
 use crate::library::tpm2::object::{
-    AnyObject, AnyObjectBody, BnPrime, HASH_STATE_COUNT, HashObjectBody, HashPayload, HashState,
-    ObjectBody, PrivateExponent,
+    AnyObject, AnyObjectBody, BnPrime, CRYPT_UWORD_BYTES, HASH_STATE_COUNT, HashObjectBody,
+    HashPayload, HashState, ObjectBody, PrivateExponent,
 };
 use crate::library::tpm2::pcr::{
     NUM_POLICY_PCR_GROUP, PcrAllocation, PcrPolicyEntry, PcrSelection,
@@ -35,32 +37,54 @@ use crate::library::tpm2::state::{
     StateClearData, StateResetData,
 };
 
+pub(in crate::library::tpm2) const SECRET_STORAGE_BYTES: usize = PRIVATE_SCALAR_BYTES;
+
 #[allow(dead_code)]
 #[derive(Clone)]
-pub(in crate::library::tpm2) struct OwnedSecret(Vec<u8>);
+pub(in crate::library::tpm2) struct OwnedSecret {
+    storage: Box<[u8]>,
+    length: usize,
+}
 
 impl OwnedSecret {
     pub(in crate::library::tpm2) fn copy_of(bytes: &[u8]) -> Self {
-        Self(bytes.to_vec())
+        let mut storage = vec![0u8; bytes.len().max(SECRET_STORAGE_BYTES)].into_boxed_slice();
+        let start = storage.len() - bytes.len();
+        storage[start..].copy_from_slice(bytes);
+        Self {
+            storage,
+            length: bytes.len(),
+        }
     }
 
     pub(in crate::library::tpm2) fn from_vec(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        if bytes.len() < SECRET_STORAGE_BYTES {
+            return Self::copy_of(&bytes);
+        }
+        let length = bytes.len();
+        Self {
+            storage: bytes.into_boxed_slice(),
+            length,
+        }
     }
 
     pub(in crate::library::tpm2) fn as_bytes(&self) -> &[u8] {
-        &self.0
+        &self.storage[self.storage.len() - self.length..]
+    }
+
+    pub(in crate::library::tpm2) fn fixed_width(&self) -> Option<&[u8; SECRET_STORAGE_BYTES]> {
+        (&*self.storage).try_into().ok()
     }
 
     #[cfg(test)]
     pub(in crate::library::tpm2) fn expose(&self) -> &[u8] {
-        &self.0
+        self.as_bytes()
     }
 }
 
 impl core::fmt::Debug for OwnedSecret {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "OwnedSecret {{ len: {} }}", self.0.len())
+        write!(f, "OwnedSecret {{ len: {} }}", self.length)
     }
 }
 
@@ -377,16 +401,46 @@ pub(in crate::library::tpm2) struct OwnedHashState {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedBnPrime {
-    pub(in crate::library::tpm2) numbytes: u16,
-    pub(in crate::library::tpm2) data: OwnedSecret,
+    pub(in crate::library::tpm2) words: CrtWords,
+    pub(in crate::library::tpm2) restored_size: Option<u8>,
+}
+
+impl OwnedBnPrime {
+    pub(in crate::library::tpm2) fn computed(words: CrtWords) -> Self {
+        Self {
+            words,
+            restored_size: None,
+        }
+    }
+
+    pub(in crate::library::tpm2) fn from_image(numbytes: u16, data: &[u8]) -> Self {
+        let mut words = [0u64; CRT_WORDS];
+        for (word, chunk) in words.iter_mut().zip(data.chunks(CRYPT_UWORD_BYTES)) {
+            let mut bytes = [0u8; CRYPT_UWORD_BYTES];
+            bytes[..chunk.len()].copy_from_slice(chunk);
+            *word = u64::from_be_bytes(bytes);
+        }
+        Self {
+            words,
+            restored_size: Some(usize::from(numbytes).div_ceil(CRYPT_UWORD_BYTES) as u8),
+        }
+    }
+
+    pub(in crate::library::tpm2) fn serialized_words(&self) -> &[u64] {
+        let size = match self.restored_size {
+            Some(size) => usize::from(size),
+            None => normalized_word_count(&self.words),
+        };
+        &self.words[..size]
+    }
 }
 
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(in crate::library::tpm2) struct OwnedPrivateExponent {
     pub(in crate::library::tpm2) primes: [OwnedBnPrime; 4],
+    pub(in crate::library::tpm2) runtime: RsaRuntimeCache,
 }
 
 #[derive(Clone, Debug)]
@@ -558,11 +612,9 @@ fn own_private_exponent(exponent: &PrivateExponent<'_>) -> OwnedPrivateExponent 
     OwnedPrivateExponent {
         primes: core::array::from_fn(|index| {
             let prime: &BnPrime<'_> = &exponent.primes[index];
-            OwnedBnPrime {
-                numbytes: prime.numbytes,
-                data: OwnedSecret::copy_of(prime.data),
-            }
+            OwnedBnPrime::from_image(prime.numbytes, prime.data)
         }),
+        runtime: RsaRuntimeCache::default(),
     }
 }
 
@@ -797,6 +849,133 @@ mod tests {
         DecodedPersistentAll, audit, compile_constants, lockout, object,
         parse_persistent_all_payload, pp_list, valid_permanent_state_fixture,
     };
+
+    #[test]
+    fn secret_storage_right_aligns_short_secrets_in_fixed_width() {
+        for length in [0usize, 1, 24, 32, 66, 80, SECRET_STORAGE_BYTES] {
+            let bytes: Vec<u8> = (1..=length).map(|index| index as u8).collect();
+            for secret in [
+                OwnedSecret::copy_of(&bytes),
+                OwnedSecret::from_vec(bytes.clone()),
+            ] {
+                assert_eq!(
+                    secret.as_bytes(),
+                    bytes,
+                    "{length} bytes keep their serialization"
+                );
+                let fixed = secret
+                    .fixed_width()
+                    .expect("a short secret has fixed width");
+                assert!(
+                    fixed[..SECRET_STORAGE_BYTES - length]
+                        .iter()
+                        .all(|&byte| byte == 0)
+                );
+                assert_eq!(&fixed[SECRET_STORAGE_BYTES - length..], bytes.as_slice());
+            }
+        }
+        for length in [SECRET_STORAGE_BYTES + 1, 128, 960] {
+            let bytes = vec![0x5a; length];
+            for secret in [
+                OwnedSecret::copy_of(&bytes),
+                OwnedSecret::from_vec(bytes.clone()),
+            ] {
+                assert_eq!(secret.as_bytes(), bytes);
+                assert!(
+                    secret.fixed_width().is_none(),
+                    "{length} bytes exceed the fixed width"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn secret_copies_do_not_depend_on_short_lengths() {
+        for length in [0usize, 8, 24, 32, 80, SECRET_STORAGE_BYTES] {
+            let secret = OwnedSecret::copy_of(&vec![0x44; length]);
+            let copy = secret.clone();
+            assert_eq!(copy.as_bytes(), secret.as_bytes());
+            assert_eq!(
+                copy.storage.len(),
+                SECRET_STORAGE_BYTES,
+                "a copy of a {length}-byte secret keeps the fixed-width storage"
+            );
+        }
+    }
+
+    #[test]
+    fn restored_ecc_scalar_keeps_encoding_and_fixed_width() {
+        let value = [0x5au8; 24];
+        let mut storages = Vec::new();
+        for width in [24usize, 32, 80] {
+            let mut encoded = vec![0u8; width - value.len()];
+            encoded.extend_from_slice(&value);
+            let sensitive = own_tpmt_sensitive(&TpmtSensitive {
+                sensitive_type: crate::library::tpm2::public::TPM_ALG_ECC,
+                auth_value: &[],
+                seed_value: &[0x44; 8],
+                sensitive: Some(&encoded),
+            });
+            let stored = sensitive.sensitive.expect("a private scalar");
+            assert_eq!(stored.as_bytes(), encoded.as_slice());
+            storages.push(*stored.fixed_width().expect("fixed width"));
+        }
+        assert!(storages.iter().all(|storage| *storage == storages[0]));
+    }
+
+    #[test]
+    fn rsa_component_storage_round_trip_private_operation() {
+        use crate::library::tpm2::crypto::{
+            BigUint, RsaCrtKey, recover_rsa_private_exponent, review_keys, rsa_private_key_op,
+            rsa_public_key_op,
+        };
+        let (uneven_modulus, uneven_prime, _) = review_keys::uneven_key(512);
+        for (modulus, prime) in [
+            review_keys::component_length_key(review_keys::SHORT_Q_INV),
+            review_keys::component_length_key(review_keys::FULL_Q_INV),
+            (uneven_modulus, uneven_prime),
+        ] {
+            let recovered = recover_rsa_private_exponent(&modulus, &prime, 0).expect("recovers");
+            let stored = [recovered.q, recovered.d_p, recovered.d_q, recovered.q_inv]
+                .map(OwnedBnPrime::computed);
+            let copies = stored.clone();
+            let images: Vec<(u16, Vec<u8>)> = copies
+                .iter()
+                .map(|prime| {
+                    let words = prime.serialized_words();
+                    (
+                        (words.len() * CRYPT_UWORD_BYTES) as u16,
+                        words.iter().flat_map(|word| word.to_be_bytes()).collect(),
+                    )
+                })
+                .collect();
+            let restored: Vec<OwnedBnPrime> = images
+                .iter()
+                .map(|(numbytes, data)| OwnedBnPrime::from_image(*numbytes, data))
+                .collect();
+            let message = BigUint::from_u64(0x1a5a_5a5a_5a5a)
+                .unwrap()
+                .to_be_bytes(modulus.len())
+                .unwrap();
+            let ciphertext = rsa_public_key_op(&modulus, 65537, &message).expect("encrypts");
+            for primes in [&copies[..], &restored[..]] {
+                let key = RsaCrtKey {
+                    cache: None,
+                    modulus: &modulus,
+                    exponent: 0,
+                    prime: &prime,
+                    q: &primes[0].words,
+                    d_p: &primes[1].words,
+                    d_q: &primes[2].words,
+                    q_inv: &primes[3].words,
+                };
+                assert_eq!(
+                    rsa_private_key_op(&key, &ciphertext).as_deref(),
+                    Some(message.as_slice())
+                );
+            }
+        }
+    }
 
     fn simple_payload(orderly_state: u16, sections: Vec<u8>) -> Vec<u8> {
         let mut payload = compile_constants::marshalled_section(3);

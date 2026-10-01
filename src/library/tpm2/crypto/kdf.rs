@@ -72,6 +72,7 @@ pub(in crate::library::tpm2) fn kdfa_from(
     Some(out)
 }
 
+#[cfg(test)]
 pub(in crate::library::tpm2) fn kdfe(
     hash_alg: u16,
     z: &[u8],

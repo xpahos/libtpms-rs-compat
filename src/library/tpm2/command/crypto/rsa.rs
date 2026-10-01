@@ -853,6 +853,37 @@ mod tests {
     }
 
     #[test]
+    fn repeated_decryption_reuses_the_prepared_key() {
+        use crate::library::tpm2::crypto::prepared_key_count;
+        let mut runtime = restored("PERSISTENT");
+        let decrypt = decrypt_command(
+            PERSISTENT,
+            &rsa_output_of("ENC_PERSISTENT_OAEP"),
+            &oaep_scheme(TPM_ALG_SHA256),
+            b"",
+            KEY_AUTH,
+        );
+        check(&mut runtime, "DEC_PERSISTENT_OAEP", &decrypt);
+        let before = prepared_key_count();
+        for _ in 0..3 {
+            check(&mut runtime, "DEC_PERSISTENT_OAEP", &decrypt);
+        }
+        assert_eq!(
+            prepared_key_count(),
+            before,
+            "later RSA_Decrypt commands reuse the prepared native key"
+        );
+        let mut reloaded = restored("PERSISTENT");
+        check(&mut reloaded, "DEC_PERSISTENT_OAEP", &decrypt);
+        check(&mut reloaded, "DEC_PERSISTENT_OAEP", &decrypt);
+        assert_eq!(
+            prepared_key_count() - before,
+            1,
+            "a restored state prepares its own key once"
+        );
+    }
+
+    #[test]
     fn profile_unpadded_encryption_gate() {
         let mut runtime = restored("NO_UNPADDED");
         check(
@@ -1735,5 +1766,70 @@ mod tests {
                 KEY_AUTH,
             ),
         );
+    }
+
+    fn raw_ciphertext(runtime: &mut Tpm2Runtime, message: &[u8]) -> Vec<u8> {
+        let response = dispatch_bytes(
+            runtime,
+            &encrypt_command(KEY_NULL, message, &null_scheme(), b""),
+        );
+        assert_eq!(response_code(&response), RC_SUCCESS);
+        let body = response_parameters(&response);
+        let size = usize::from(u16::from_be_bytes([body[0], body[1]]));
+        body[2..2 + size].to_vec()
+    }
+
+    #[test]
+    fn oaep_hash_self_test_independent_of_the_decrypted_leading_byte() {
+        use crate::library::tpm2::self_test::PrimitiveTest;
+        const TPM_RC_VALUE_FOR_DECODE: u32 = 0x084;
+        let mut nonzero_leading = payload(256);
+        nonzero_leading[0] = 0x01;
+        let mut zero_leading = payload(256);
+        zero_leading[0] = 0x00;
+        for (what, message) in [
+            ("a nonzero leading byte", nonzero_leading.clone()),
+            ("a zero leading byte and no OAEP structure", zero_leading),
+        ] {
+            let mut runtime = restored("KEYS");
+            let ciphertext = raw_ciphertext(&mut runtime, &message);
+            assert!(
+                runtime.self_test.pending.contains(PrimitiveTest::Sha384),
+                "{what}: SHA-384 is untested before the decryption"
+            );
+            let decrypt = decrypt_command(
+                KEY_NULL,
+                &ciphertext,
+                &oaep_scheme(TPM_ALG_SHA384),
+                b"",
+                KEY_AUTH,
+            );
+            assert_eq!(
+                response_code(&dispatch_bytes(&mut runtime, &decrypt)),
+                TPM_RC_VALUE_FOR_DECODE,
+                "{what}"
+            );
+            assert!(
+                !runtime.self_test.pending.contains(PrimitiveTest::Sha384),
+                "{what}: the mask generation ran the SHA-384 test (CVE-2026-6727)"
+            );
+            let pending = runtime.self_test.pending;
+            let again = decrypt_command(
+                KEY_NULL,
+                &raw_ciphertext(&mut runtime, &nonzero_leading),
+                &oaep_scheme(TPM_ALG_SHA384),
+                b"",
+                KEY_AUTH,
+            );
+            assert_eq!(
+                response_code(&dispatch_bytes(&mut runtime, &again)),
+                TPM_RC_VALUE_FOR_DECODE,
+                "{what}: a later decryption"
+            );
+            assert_eq!(
+                runtime.self_test.pending, pending,
+                "{what}: nothing is left to test for the later decryption"
+            );
+        }
     }
 }

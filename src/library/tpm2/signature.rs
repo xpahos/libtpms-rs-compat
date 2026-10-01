@@ -33,9 +33,11 @@ use super::algorithm::{
 };
 use super::commit::CommitState;
 use super::crypto::{
-    BigUint, CurveParameters, HmacState, SeededRand, curve_parameters, kdfa, mgf1,
-    rsa_private_key_op, rsa_public_key_op,
+    EccBackendError, EccCurve, EccPublicScalar, EccScalar, EcdsaAttempt, HmacState, PublicCheck,
+    RsaCrtKey, RsaSignaturePadding, SecretBytes, SeededRand, SharedPointError, kdfa, mgf1,
+    rsa_private_key_op, rsa_public_key_op, rsa_verify_signature, rsassa_sign, wipe,
 };
+use super::ecc::{PrivateScalar, ecc_stored_private, fit_be, upstream_mask_kept_bits};
 use super::marshal::BlobWriter;
 use super::persistent::{OwnedObjectBody, OwnedPublicId, OwnedSecret};
 use super::profile::ValidatedProfile;
@@ -43,6 +45,8 @@ use super::public::{MAX_ECC_KEY_BYTES, MAX_RSA_KEY_BYTES, PublicParms, Scheme, S
 use super::template::{AlgorithmPolicy, TemplateReader, digest_size};
 
 const SIGN_ATTEMPTS: u32 = 64;
+const RANGE_ATTEMPTS: u32 = 1 << 16;
+const SM2_NONCE_REDRAWS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SigScheme {
@@ -310,7 +314,7 @@ fn der_tag(hash_alg: u16) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn rsassa_encode(modulus_size: usize, hash_alg: u16, digest: &[u8]) -> Result<Vec<u8>, TpmResult> {
+fn rsassa_check(modulus_size: usize, hash_alg: u16, digest: &[u8]) -> Result<usize, TpmResult> {
     let der = der_tag(hash_alg).ok_or(TPM_RC_SCHEME)?;
     if digest_size(hash_alg) != Some(digest.len()) {
         return Err(TPM_RC_VALUE);
@@ -321,6 +325,12 @@ fn rsassa_encode(modulus_size: usize, hash_alg: u16, digest: &[u8]) -> Result<Ve
     if fill < 8 {
         return Err(TPM_RC_SIZE);
     }
+    Ok(fill)
+}
+
+fn rsassa_encode(modulus_size: usize, hash_alg: u16, digest: &[u8]) -> Result<Vec<u8>, TpmResult> {
+    let fill = rsassa_check(modulus_size, hash_alg, digest)?;
+    let der = der_tag(hash_alg).ok_or(TPM_RC_SCHEME)?;
     let mut out = Vec::with_capacity(modulus_size);
     out.push(0x00);
     out.push(0x01);
@@ -373,26 +383,31 @@ fn pss_encode(
     Ok(out)
 }
 
-pub(super) fn rsa_key_parts(
-    body: &OwnedObjectBody,
-) -> Option<(BigUint, BigUint, BigUint, BigUint, BigUint)> {
+pub(super) fn rsa_crt_key(body: &OwnedObjectBody) -> Option<RsaCrtKey<'_>> {
     let prime = body.sensitive.sensitive.as_ref()?;
     let exponent = body.private_exponent.as_ref()?;
-    let p = BigUint::from_be_bytes(prime.as_bytes());
-    let q = limbs_to_big(exponent.primes[0].data.as_bytes());
-    let d_p = limbs_to_big(exponent.primes[1].data.as_bytes());
-    let d_q = limbs_to_big(exponent.primes[2].data.as_bytes());
-    let q_inv = limbs_to_big(exponent.primes[3].data.as_bytes());
-    Some((p, q, d_p, d_q, q_inv))
+    Some(RsaCrtKey {
+        cache: Some(&exponent.runtime),
+        modulus: rsa_modulus(body)?,
+        exponent: rsa_exponent(body)?,
+        prime: prime.as_bytes(),
+        q: &exponent.primes[0].words,
+        d_p: &exponent.primes[1].words,
+        d_q: &exponent.primes[2].words,
+        q_inv: &exponent.primes[3].words,
+    })
 }
 
-fn limbs_to_big(data: &[u8]) -> BigUint {
-    let mut value = BigUint::zero();
-    for (index, chunk) in data.chunks_exact(8).enumerate() {
-        let limb = u64::from_be_bytes(chunk.try_into().expect("eight bytes"));
-        value = value.add(&BigUint::from_u64(limb).shl(index * 64));
-    }
-    value
+pub(super) fn public_value_below(value: &[u8], bound: &[u8]) -> bool {
+    let trim = |bytes: &[u8]| -> usize {
+        bytes
+            .iter()
+            .position(|&byte| byte != 0)
+            .unwrap_or(bytes.len())
+    };
+    let value = &value[trim(value)..];
+    let bound = &bound[trim(bound)..];
+    value.len() < bound.len() || (value.len() == bound.len() && value < bound)
 }
 
 pub(super) fn rsa_modulus(body: &OwnedObjectBody) -> Option<&[u8]> {
@@ -411,7 +426,16 @@ fn rsa_sign(
     let modulus_bytes = rsa_modulus(body).ok_or(TPM_RC_FAILURE)?.to_vec();
     let modulus_size = modulus_bytes.len();
     let encoded = match scheme.scheme {
-        TPM_ALG_RSASSA => rsassa_encode(modulus_size, scheme.hash_alg, digest)?,
+        TPM_ALG_RSASSA => {
+            rsassa_check(modulus_size, scheme.hash_alg, digest)?;
+            let key = rsa_crt_key(body).ok_or(TPM_RC_FAILURE)?;
+            let signature = rsassa_sign(&key, scheme.hash_alg, digest).ok_or(TPM_RC_FAILURE)?;
+            return Ok(Signature::Rsa {
+                scheme: scheme.scheme,
+                hash_alg: scheme.hash_alg,
+                signature,
+            });
+        }
         TPM_ALG_RSAPSS => {
             let hash_len = digest_size(scheme.hash_alg).ok_or(TPM_RC_SCHEME)?;
             let mut salt = vec![0u8; pss_salt_size(hash_len, modulus_size)];
@@ -425,10 +449,8 @@ fn rsa_sign(
         _ => return Err(TPM_RC_SCHEME),
     };
 
-    let (p, q, d_p, d_q, q_inv) = rsa_key_parts(body).ok_or(TPM_RC_FAILURE)?;
-    let value = BigUint::from_be_bytes(&encoded);
-    let signed = rsa_private_key_op(&p, &q, &d_p, &d_q, &q_inv, &value).ok_or(TPM_RC_FAILURE)?;
-    let signature = signed.to_be_bytes(modulus_size).ok_or(TPM_RC_FAILURE)?;
+    let key = rsa_crt_key(body).ok_or(TPM_RC_FAILURE)?;
+    let signature = rsa_private_key_op(&key, &encoded).ok_or(TPM_RC_FAILURE)?;
 
     Ok(Signature::Rsa {
         scheme: scheme.scheme,
@@ -451,84 +473,74 @@ fn ecc_sign(
     let PublicParms::Ecc { curve_id, .. } = body.public.parameters else {
         return Err(TPM_RC_FAILURE);
     };
-    let curve = curve_parameters(curve_id).ok_or(TPM_RC_VALUE)?;
-    let d = BigUint::from_be_bytes(
-        body.sensitive
-            .sensitive
-            .as_ref()
-            .ok_or(TPM_RC_FAILURE)?
-            .as_bytes(),
-    );
-    let order_bytes = curve.order.bit_len().div_ceil(8);
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_VALUE)?;
+    let PrivateScalar::Ready(d) = PrivateScalar::of(&curve, ecc_stored_private(body)) else {
+        return Err(TPM_RC_FAILURE);
+    };
+    let order_bytes = curve.order_bytes();
 
     if scheme.scheme == TPM_ALG_ECDAA {
         return ecdaa_sign(body, &curve, &d, digest, scheme, state);
     }
     let (r, s) = match scheme.scheme {
         TPM_ALG_ECDSA => ecdsa_sign(&curve, &d, digest, &mut state.rand)?,
-        TPM_ALG_ECSCHNORR => ecschnorr_sign(&curve, &d, digest, scheme.hash_alg, &mut state.rand)?,
-        TPM_ALG_SM2 => sm2_sign(&curve, &d, digest, &mut state.rand)?,
+        TPM_ALG_ECSCHNORR => {
+            let (r, s) = ecschnorr_sign(&curve, &d, digest, scheme.hash_alg, &mut state.rand)?;
+            (r, s.to_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?)
+        }
+        TPM_ALG_SM2 => {
+            let (r, s): (EccPublicScalar, EccPublicScalar) =
+                sm2_sign(&curve, &d, digest, &mut state.rand)?;
+            (
+                r.to_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?,
+                s.to_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?,
+            )
+        }
         _ => return Err(TPM_RC_SCHEME),
     };
     Ok(Signature::Ecc {
         scheme: scheme.scheme,
         hash_alg: scheme.hash_alg,
-        r: r.to_be_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?,
-        s: s.to_be_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?,
+        r,
+        s,
     })
 }
 
 fn ecdsa_sign(
-    curve: &CurveParameters,
-    d: &BigUint,
+    curve: &EccCurve,
+    d: &EccScalar,
     digest: &[u8],
     rand: &mut SeededRand,
-) -> Result<(BigUint, BigUint), TpmResult> {
-    let z = ecdsa_digest(digest, curve.order.bit_len());
+) -> Result<(Vec<u8>, Vec<u8>), TpmResult> {
     for _ in 0..SIGN_ATTEMPTS {
-        let k = random_in_order(rand, &curve.order)?;
-        let Some((x, _)) = curve.multiply_generator(&k) else {
-            continue;
-        };
-        let Some(r) = x.rem(&curve.order) else {
-            continue;
-        };
-        if r.is_zero() {
-            continue;
+        let k = random_in_order(rand, curve)?;
+        match curve.ecdsa_sign(d, &k, digest).ok_or(TPM_RC_FAILURE)? {
+            EcdsaAttempt::Retry => continue,
+            EcdsaAttempt::Signed { r, s } => return Ok((r, s)),
         }
-        let Some(k_inv) = k.mod_inverse(&curve.order) else {
-            continue;
-        };
-        let Some(s) = r
-            .mod_mul(d, &curve.order)
-            .and_then(|rd| z.mod_add(&rd, &curve.order))
-            .and_then(|sum| k_inv.mod_mul(&sum, &curve.order))
-        else {
-            continue;
-        };
-        if s.is_zero() {
-            continue;
-        }
-        return Ok((r, s));
     }
     Err(TPM_RC_NO_RESULT)
 }
 
 fn ecschnorr_sign(
-    curve: &CurveParameters,
-    d: &BigUint,
+    curve: &EccCurve,
+    d: &EccScalar,
     digest: &[u8],
     hash_alg: u16,
     rand: &mut SeededRand,
-) -> Result<(BigUint, BigUint), TpmResult> {
+) -> Result<(Vec<u8>, EccPublicScalar), TpmResult> {
     let digest_len = digest_size(hash_alg).ok_or(TPM_RC_SCHEME)?;
-    let order_bytes = curve.order.bit_len().div_ceil(8);
+    let order_bytes = curve.order_bytes();
     for _ in 0..SIGN_ATTEMPTS {
-        let k = random_in_order(rand, &curve.order)?;
-        let Some((x, _)) = curve.multiply_generator(&k) else {
-            continue;
+        let k = random_in_order(rand, curve)?;
+        let point = match curve.mul_generator_checked(&k) {
+            Ok(point) => point,
+            Err(SharedPointError::Infinity) => continue,
+            Err(SharedPointError::OffCurve | SharedPointError::Backend) => {
+                return Err(TPM_RC_FAILURE);
+            }
         };
-        let Some(e) = x.to_be_bytes(order_bytes) else {
+        let Some(e) = fit_be(&point.x, order_bytes) else {
             continue;
         };
         let mut hasher = super::crypto::Hasher::new(hash_alg).ok_or(TPM_RC_SCHEME)?;
@@ -536,8 +548,8 @@ fn ecschnorr_sign(
         hasher.update(digest);
         let mut hash = hasher.finalize();
         hash.truncate(digest_len.min(order_bytes));
-        let r = BigUint::from_be_bytes(&hash);
-        if let Some(s) = schnorr_s(&r, &k, d, &curve.order) {
+        if let Some(s) = schnorr_s(curve, &hash, &k, d)? {
+            let r = fit_be(&hash, order_bytes).ok_or(TPM_RC_FAILURE)?;
             return Ok((r, s));
         }
     }
@@ -545,35 +557,46 @@ fn ecschnorr_sign(
 }
 
 fn sm2_sign(
-    curve: &CurveParameters,
-    d: &BigUint,
+    curve: &EccCurve,
+    d: &EccScalar,
     digest: &[u8],
     rand: &mut SeededRand,
-) -> Result<(BigUint, BigUint), TpmResult> {
-    let e = BigUint::from_be_bytes(digest);
-    let inverse = d
-        .add_u64(1)
-        .mod_inverse(&curve.order)
-        .ok_or(TPM_RC_NO_RESULT)?;
+) -> Result<(EccPublicScalar, EccPublicScalar), TpmResult> {
+    let public = |bytes: &[u8]| {
+        curve
+            .public_scalar_checked(bytes)
+            .map_err(|EccBackendError| TPM_RC_FAILURE)
+    };
+    let e = public(digest)?.ok_or(TPM_RC_NO_RESULT)?;
+    let one = public(&[1])?.ok_or(TPM_RC_FAILURE)?;
+    let successor = d.add_public(&one).ok_or(TPM_RC_FAILURE)?;
+    if successor
+        .checked_is_zero()
+        .map_err(|EccBackendError| TPM_RC_FAILURE)?
+    {
+        return Err(TPM_RC_NO_RESULT);
+    }
+    let inverse = successor.invert().ok_or(TPM_RC_FAILURE)?;
     for _ in 0..SIGN_ATTEMPTS {
-        let k = random_below(rand, &curve.order)?;
-        let Some((x, _)) = curve.multiply_generator(&k) else {
-            continue;
+        let k = sm2_nonce(rand, curve)?;
+        let point = match curve.mul_generator_checked(&k) {
+            Ok(point) => point,
+            Err(SharedPointError::Infinity) => continue,
+            Err(SharedPointError::OffCurve | SharedPointError::Backend) => {
+                return Err(TPM_RC_FAILURE);
+            }
         };
-        let Some(r) = e.mod_add(&x, &curve.order) else {
-            continue;
-        };
+        let x = public(&point.x)?.ok_or(TPM_RC_FAILURE)?;
+        let r = e.add(&x).ok_or(TPM_RC_FAILURE)?;
         if r.is_zero() {
             continue;
         }
-        let Some(s) = r
-            .mod_mul(d, &curve.order)
-            .and_then(|rd| curve.order.mod_sub(&rd, &curve.order))
-            .and_then(|negated| k.mod_add(&negated, &curve.order))
-            .and_then(|sum| sum.mod_mul(&inverse, &curve.order))
-        else {
-            continue;
-        };
+        let s = d
+            .mul_public(&r)
+            .and_then(|product| k.sub(&product))
+            .and_then(|difference| difference.mul(&inverse))
+            .and_then(|s| s.reveal())
+            .ok_or(TPM_RC_FAILURE)?;
         if s.is_zero() {
             continue;
         }
@@ -584,55 +607,72 @@ fn sm2_sign(
 
 fn ecdaa_sign(
     body: &OwnedObjectBody,
-    curve: &CurveParameters,
-    d: &BigUint,
+    curve: &EccCurve,
+    d: &EccScalar,
     digest: &[u8],
     scheme: &SigScheme,
     state: &mut SigningState,
 ) -> Result<Signature, TpmResult> {
-    let order_bytes = curve.order.byte_len();
+    let order_bytes = curve.order_bytes();
     let commit = state
         .commit
         .generate_r(curve, &body.name, Some(scheme.count))
+        .map_err(|EccBackendError| TPM_RC_FAILURE)?
         .ok_or(TPM_RC_VALUE)?;
     for _ in 0..SIGN_ATTEMPTS {
-        let nonce = random_in_order(&mut state.rand, &curve.order)?;
-        let nonce_bytes = nonce.to_be_bytes(nonce.byte_len()).ok_or(TPM_RC_FAILURE)?;
+        let nonce = random_in_order(&mut state.rand, curve)?;
+        let nonce_bytes = nonce.reveal().ok_or(TPM_RC_FAILURE)?.to_minimal_bytes();
         let mut hasher = super::crypto::Hasher::new(scheme.hash_alg).ok_or(TPM_RC_SCHEME)?;
         hasher.update(&nonce_bytes);
         hasher.update(digest);
-        let t = BigUint::from_be_bytes(&hasher.finalize());
-        if let Some(s) = schnorr_s(&t, &commit, d, &curve.order) {
+        let t = hasher.finalize();
+        if let Some(s) = schnorr_s(curve, &t, &commit, d)? {
             state.commit.end_commit(scheme.count);
             return Ok(Signature::Ecc {
                 scheme: TPM_ALG_ECDAA,
                 hash_alg: scheme.hash_alg,
                 r: nonce_bytes,
-                s: s.to_be_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?,
+                s: s.to_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?,
             });
         }
     }
     Err(TPM_RC_NO_RESULT)
 }
 
-fn schnorr_s(value: &BigUint, k: &BigUint, d: &BigUint, order: &BigUint) -> Option<BigUint> {
-    let reduced = value.rem(order)?;
+fn schnorr_s(
+    curve: &EccCurve,
+    value: &[u8],
+    k: &EccScalar,
+    d: &EccScalar,
+) -> Result<Option<EccPublicScalar>, TpmResult> {
+    let reduced = curve.public_scalar(value).ok_or(TPM_RC_FAILURE)?;
     if reduced.is_zero() {
-        return None;
+        return Ok(None);
     }
-    let s = reduced.mul(d).add(k).rem(order)?;
-    if s.is_zero() { None } else { Some(s) }
+    let s = d
+        .mul_public(&reduced)
+        .and_then(|product| product.add(k))
+        .and_then(|s| s.reveal())
+        .ok_or(TPM_RC_FAILURE)?;
+    Ok((!s.is_zero()).then_some(s))
 }
 
-fn ecdsa_digest(digest: &[u8], order_bits: usize) -> BigUint {
+#[cfg(test)]
+fn ecdsa_digest(digest: &[u8], order_bits: usize) -> Vec<u8> {
     let bytes = truncate_digest(digest, order_bits);
-    let mut value = BigUint::from_be_bytes(&bytes);
-    if bytes.len() * 8 > order_bits {
-        value = value.shr(8 - (order_bits & 7));
+    if bytes.len() * 8 <= order_bits {
+        return bytes;
     }
-    value
+    let shift = 8 - (order_bits & 7);
+    let mut shifted = vec![0u8; bytes.len()];
+    for index in 0..bytes.len() {
+        let high = if index == 0 { 0 } else { bytes[index - 1] };
+        shifted[index] = (bytes[index] >> shift) | (high << (8 - shift));
+    }
+    shifted
 }
 
+#[cfg(test)]
 fn truncate_digest(digest: &[u8], order_bits: usize) -> Vec<u8> {
     let order_bytes = order_bits.div_ceil(8);
     if digest.len() <= order_bytes {
@@ -642,31 +682,58 @@ fn truncate_digest(digest: &[u8], order_bits: usize) -> Vec<u8> {
     }
 }
 
-fn random_in_order(rand: &mut SeededRand, order: &BigUint) -> Result<BigUint, TpmResult> {
-    let order_bytes = order.bit_len().div_ceil(8);
-    let mut bytes = vec![0u8; order_bytes + 8];
-    rand.generate(&mut bytes)?;
-    let extra = BigUint::from_be_bytes(&bytes);
-    let order_minus_one = order.sub_u64(1).ok_or(TPM_RC_FAILURE)?;
-    let reduced = extra.rem(&order_minus_one).ok_or(TPM_RC_FAILURE)?;
-    Ok(reduced.add_u64(1))
+fn random_in_order(rand: &mut SeededRand, curve: &EccCurve) -> Result<EccScalar, TpmResult> {
+    let mut bytes = SecretBytes(vec![0u8; curve.order_bytes() + 8]);
+    rand.generate(&mut bytes.0)?;
+    curve.scalar_from_extra_bits(&bytes.0).ok_or(TPM_RC_FAILURE)
 }
 
-fn random_below(rand: &mut SeededRand, limit: &BigUint) -> Result<BigUint, TpmResult> {
-    let bits = limit.bit_len();
+struct NonceDraw {
+    scalar: EccScalar,
+    short: subtle::Choice,
+}
+
+fn random_below(rand: &mut SeededRand, curve: &EccCurve) -> Result<NonceDraw, TpmResult> {
+    let bits = curve.order_bits();
     if bits < 2 {
         return Err(TPM_RC_NO_RESULT);
     }
-    for _ in 0..SIGN_ATTEMPTS {
-        let mut bytes = vec![0u8; bits.div_ceil(8)];
+    let length = bits.div_ceil(8);
+    let kept = upstream_mask_kept_bits(bits).max(bits);
+    for _ in 0..RANGE_ATTEMPTS {
+        let mut bytes = vec![0u8; length];
         rand.generate(&mut bytes)?;
-        let mut value = BigUint::from_be_bytes(&bytes);
-        value.mask_bits(bits);
-        if !value.is_zero() && value < *limit {
-            return Ok(value);
+        if kept < 8 * length {
+            bytes[0] &= (1u8 << (kept % 8)) - 1;
+        }
+        let zero = bytes.iter().fold(0u8, |acc, &byte| acc | byte).ct_eq(&0);
+        let short = bytes[0].ct_eq(&0) | bytes[length.saturating_sub(8)].ct_eq(&0);
+        let draw = curve
+            .scalar_below_order(&bytes)
+            .map_err(|EccBackendError| TPM_RC_FAILURE);
+        wipe(&mut bytes);
+        let draw = draw?;
+        if let Some(scalar) = draw
+            && !bool::from(zero)
+        {
+            return Ok(NonceDraw { scalar, short });
         }
     }
     Err(TPM_RC_NO_RESULT)
+}
+
+fn sm2_nonce(rand: &mut SeededRand, curve: &EccCurve) -> Result<EccScalar, TpmResult> {
+    if !curve.order_bits().is_multiple_of(8) {
+        return random_below(rand, curve).map(|draw| draw.scalar);
+    }
+    let mut redraws = 0;
+    loop {
+        let draw = random_below(rand, curve)?;
+        if redraws == SM2_NONCE_REDRAWS || !bool::from(draw.short) {
+            return Ok(draw.scalar);
+        }
+        redraws += 1;
+    }
 }
 
 fn hmac_sign(
@@ -813,17 +880,35 @@ fn rsa_decode_signature(
     if signature.len() != modulus_bytes.len() {
         return Err(TPM_RC_SIGNATURE);
     }
-    let modulus = BigUint::from_be_bytes(modulus_bytes);
     let exponent = rsa_exponent(body).ok_or(TPM_RC_FAILURE)?;
-    let recovered = rsa_public_key_op(&modulus, exponent, &BigUint::from_be_bytes(signature))
-        .ok_or(TPM_RC_VALUE)?;
-    let encoded = recovered
-        .to_be_bytes(modulus_bytes.len())
-        .ok_or(TPM_RC_VALUE)?;
-    match scheme {
-        TPM_ALG_RSASSA => rsassa_decode(hash_alg, digest, &encoded),
-        TPM_ALG_RSAPSS => pss_decode(hash_alg, digest, &encoded),
-        _ => Err(TPM_RC_SCHEME),
+    let padding = match scheme {
+        TPM_ALG_RSASSA => {
+            if digest_size(hash_alg) != Some(digest.len()) {
+                return Err(TPM_RC_SCHEME);
+            }
+            RsaSignaturePadding::Pkcs1
+        }
+        TPM_ALG_RSAPSS => RsaSignaturePadding::Pss,
+        _ => return Err(TPM_RC_SCHEME),
+    };
+    match rsa_verify_signature(
+        modulus_bytes,
+        exponent,
+        padding,
+        hash_alg,
+        digest,
+        signature,
+    ) {
+        PublicCheck::Verified => Ok(()),
+        PublicCheck::Rejected => Err(TPM_RC_VALUE),
+        PublicCheck::Unsupported => {
+            let encoded =
+                rsa_public_key_op(modulus_bytes, exponent, signature).ok_or(TPM_RC_VALUE)?;
+            match padding {
+                RsaSignaturePadding::Pkcs1 => rsassa_decode(hash_alg, digest, &encoded),
+                RsaSignaturePadding::Pss => pss_decode(hash_alg, digest, &encoded),
+            }
+        }
     }
 }
 
@@ -879,9 +964,9 @@ fn pss_decode(hash_alg: u16, digest: &[u8], encoded: &[u8]) -> Result<(), TpmRes
     }
 }
 
-fn ecc_public_point(body: &OwnedObjectBody) -> Option<(BigUint, BigUint)> {
+fn ecc_public_point(body: &OwnedObjectBody) -> Option<(&[u8], &[u8])> {
     match &body.public.unique {
-        OwnedPublicId::Ecc { x, y } => Some((BigUint::from_be_bytes(x), BigUint::from_be_bytes(y))),
+        OwnedPublicId::Ecc { x, y } => Some((x, y)),
         _ => None,
     }
 }
@@ -895,7 +980,7 @@ fn ecc_verify(
     let PublicParms::Ecc { curve_id, .. } = body.public.parameters else {
         return Err(TPM_RC_FAILURE);
     };
-    let curve = curve_parameters(curve_id).ok_or(TPM_RC_VALUE)?;
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_VALUE)?;
     let Signature::Ecc {
         scheme,
         hash_alg,
@@ -908,15 +993,16 @@ fn ecc_verify(
     if !matches!(*scheme, TPM_ALG_ECDSA | TPM_ALG_ECSCHNORR | TPM_ALG_SM2) {
         return Err(TPM_RC_SCHEME);
     }
-    let r = BigUint::from_be_bytes(r);
-    let s = BigUint::from_be_bytes(s);
-    if r.is_zero() || s.is_zero() || r >= curve.order || s >= curve.order {
+    if !curve.scalar_in_range(r) || !curve.scalar_in_range(s) {
         return Err(TPM_RC_SIGNATURE);
     }
-    let (x, y) = ecc_public_point(body).ok_or(TPM_RC_FAILURE)?;
-    let point = (&x, &y);
+    let point = ecc_public_point(body).ok_or(TPM_RC_FAILURE)?;
+    if *scheme == TPM_ALG_ECDSA {
+        return ecdsa_verify(&curve, point, r, s, digest, profile);
+    }
+    let r = curve.public_scalar(r).ok_or(TPM_RC_SIGNATURE)?;
+    let s = curve.public_scalar(s).ok_or(TPM_RC_SIGNATURE)?;
     match *scheme {
-        TPM_ALG_ECDSA => ecdsa_verify(&curve, point, &r, &s, digest, profile),
         TPM_ALG_ECSCHNORR => ecschnorr_verify(&curve, point, &r, &s, *hash_alg, digest, profile),
         _ => sm2_verify(&curve, point, &r, &s, digest, profile),
     }
@@ -927,25 +1013,17 @@ fn sha1_sized(digest: &[u8]) -> bool {
 }
 
 fn ecdsa_verify(
-    curve: &CurveParameters,
-    point: (&BigUint, &BigUint),
-    r: &BigUint,
-    s: &BigUint,
+    curve: &EccCurve,
+    point: (&[u8], &[u8]),
+    r: &[u8],
+    s: &[u8],
     digest: &[u8],
     profile: &ValidatedProfile,
 ) -> Result<(), TpmResult> {
     if sha1_sized(digest) && profile.forbids_sha1_verification() {
         return Err(TPM_RC_HASH);
     }
-    let e = ecdsa_digest(digest, curve.order.bit_len());
-    let w = s.mod_inverse(&curve.order).ok_or(TPM_RC_SIGNATURE)?;
-    let u1 = e.mod_mul(&w, &curve.order).ok_or(TPM_RC_SIGNATURE)?;
-    let u2 = r.mod_mul(&w, &curve.order).ok_or(TPM_RC_SIGNATURE)?;
-    let (x, _) = curve
-        .multiply_sum(&u1, point, &u2)
-        .ok_or(TPM_RC_SIGNATURE)?;
-    let v = x.rem(&curve.order).ok_or(TPM_RC_SIGNATURE)?;
-    if v == *r {
+    if curve.ecdsa_verify(point, r, s, digest) {
         Ok(())
     } else {
         Err(TPM_RC_SIGNATURE)
@@ -953,10 +1031,10 @@ fn ecdsa_verify(
 }
 
 fn ecschnorr_verify(
-    curve: &CurveParameters,
-    point: (&BigUint, &BigUint),
-    r: &BigUint,
-    s: &BigUint,
+    curve: &EccCurve,
+    point: (&[u8], &[u8]),
+    r: &EccPublicScalar,
+    s: &EccPublicScalar,
     hash_alg: u16,
     digest: &[u8],
     profile: &ValidatedProfile,
@@ -965,18 +1043,18 @@ fn ecschnorr_verify(
         return Err(TPM_RC_HASH);
     }
     let digest_len = digest_size(hash_alg).ok_or(TPM_RC_SCHEME)?;
-    let order_bytes = curve.order.bit_len().div_ceil(8);
-    let negated = curve.order.sub(r).ok_or(TPM_RC_SIGNATURE)?;
-    let (x, _) = curve
-        .multiply_sum(s, point, &negated)
+    let order_bytes = curve.order_bytes();
+    let negated = r.neg().ok_or(TPM_RC_SIGNATURE)?;
+    let sum = curve
+        .mul_add(s, None, &negated, point)
         .ok_or(TPM_RC_SIGNATURE)?;
-    let e = x.to_be_bytes(order_bytes).ok_or(TPM_RC_SIGNATURE)?;
+    let e = fit_be(&sum.x, order_bytes).ok_or(TPM_RC_SIGNATURE)?;
     let mut hasher = super::crypto::Hasher::new(hash_alg).ok_or(TPM_RC_SCHEME)?;
     hasher.update(&e);
     hasher.update(digest);
     let mut hash = hasher.finalize();
     hash.truncate(digest_len.min(order_bytes));
-    if BigUint::from_be_bytes(&hash) == *r {
+    if r.equals_integer(&hash) {
         Ok(())
     } else {
         Err(TPM_RC_SIGNATURE)
@@ -984,25 +1062,36 @@ fn ecschnorr_verify(
 }
 
 fn sm2_verify(
-    curve: &CurveParameters,
-    point: (&BigUint, &BigUint),
-    r: &BigUint,
-    s: &BigUint,
+    curve: &EccCurve,
+    point: (&[u8], &[u8]),
+    r: &EccPublicScalar,
+    s: &EccPublicScalar,
     digest: &[u8],
     profile: &ValidatedProfile,
 ) -> Result<(), TpmResult> {
     if sha1_sized(digest) && profile.forbids_sha1_verification() {
         return Err(TPM_RC_HASH);
     }
-    let t = r.mod_add(s, &curve.order).ok_or(TPM_RC_SIGNATURE)?;
+    let order_bytes = curve.order_bytes();
+    let (Some(r_bytes), Some(s_bytes)) = (r.to_bytes(order_bytes), s.to_bytes(order_bytes)) else {
+        return Err(TPM_RC_SIGNATURE);
+    };
+    match curve.sm2_verify(point, &r_bytes, &s_bytes, digest) {
+        PublicCheck::Verified => return Ok(()),
+        PublicCheck::Rejected => return Err(TPM_RC_SIGNATURE),
+        PublicCheck::Unsupported => {}
+    }
+    let t = r.add(s).ok_or(TPM_RC_SIGNATURE)?;
     if t.is_zero() {
         return Err(TPM_RC_SIGNATURE);
     }
-    let (x, _) = curve.multiply_sum(s, point, &t).ok_or(TPM_RC_SIGNATURE)?;
-    let recovered = BigUint::from_be_bytes(digest)
-        .mod_add(&x, &curve.order)
+    let sum = curve.mul_add(s, None, &t, point).ok_or(TPM_RC_SIGNATURE)?;
+    let recovered = curve
+        .public_scalar(digest)
+        .ok_or(TPM_RC_SIGNATURE)?
+        .add(&curve.public_scalar(&sum.x).ok_or(TPM_RC_SIGNATURE)?)
         .ok_or(TPM_RC_SIGNATURE)?;
-    if recovered == *r {
+    if recovered.sub(r).ok_or(TPM_RC_SIGNATURE)?.is_zero() {
         Ok(())
     } else {
         Err(TPM_RC_SIGNATURE)
@@ -1313,15 +1402,38 @@ mod tests {
     }
 
     #[test]
-    fn limb_read_order_least_significant_first() {
+    fn crt_key_word_order_least_significant_first() {
+        use crate::library::tpm2::crypto::{BigUint, crt_words_be};
+        use crate::library::tpm2::persistent::OwnedBnPrime;
         let mut data = 1u64.to_be_bytes().to_vec();
         data.extend_from_slice(&2u64.to_be_bytes());
-        let value = limbs_to_big(&data);
+        let prime = OwnedBnPrime::from_image(16, &data);
         assert_eq!(
-            value,
-            BigUint::from_u64(1).add(&BigUint::from_u64(2).shl(64))
+            BigUint::from_be_bytes(&crt_words_be(&prime.words)).unwrap(),
+            BigUint::from_u64(1)
+                .unwrap()
+                .add(&BigUint::from_u64(2).unwrap().shl(64).unwrap())
+                .unwrap()
         );
-        assert!(limbs_to_big(&[]).is_zero());
+        assert_eq!(prime.serialized_words(), &[1, 2]);
+        let empty = OwnedBnPrime::from_image(0, &[]);
+        assert!(empty.serialized_words().is_empty());
+        assert!(
+            BigUint::from_be_bytes(&crt_words_be(&empty.words))
+                .unwrap()
+                .is_zero()
+        );
+    }
+
+    #[test]
+    fn public_value_below_numeric_order() {
+        assert!(public_value_below(&[0x00, 0x05], &[0x06]));
+        assert!(!public_value_below(&[0x06], &[0x00, 0x06]));
+        assert!(!public_value_below(&[0x07], &[0x06]));
+        assert!(public_value_below(&[], &[0x01]));
+        assert!(!public_value_below(&[0x01], &[]));
+        assert!(public_value_below(&[0x01, 0x00], &[0x01, 0x01]));
+        assert!(!public_value_below(&[0x01, 0x00, 0x00], &[0xff, 0xff]));
     }
 
     #[test]
@@ -1334,45 +1446,56 @@ mod tests {
 
     #[test]
     fn ecdsa_digest_truncation_order_shift() {
+        use crate::library::tpm2::crypto::BigUint;
+        let value = |digest: &[u8], bits: usize| {
+            BigUint::from_be_bytes(&ecdsa_digest(digest, bits)).unwrap()
+        };
         assert_eq!(
-            ecdsa_digest(&[0xaa; 64], 256),
-            BigUint::from_be_bytes(&[0xaa; 32]),
+            value(&[0xaa; 64], 256),
+            BigUint::from_be_bytes(&[0xaa; 32]).unwrap(),
             "a byte-aligned order truncates without shifting"
         );
         assert_eq!(
-            ecdsa_digest(&[0xaa; 20], 256),
-            BigUint::from_be_bytes(&[0xaa; 20]),
+            value(&[0xaa; 20], 256),
+            BigUint::from_be_bytes(&[0xaa; 20]).unwrap(),
             "a digest shorter than the order is used whole"
         );
         assert_eq!(
-            ecdsa_digest(&[0xaa; 64], 521),
-            BigUint::from_be_bytes(&[0xaa; 64]),
+            value(&[0xaa; 64], 521),
+            BigUint::from_be_bytes(&[0xaa; 64]).unwrap(),
             "a 512-bit digest still fits a 521-bit order"
         );
         assert_eq!(
-            ecdsa_digest(&[0xff; 4], 20),
-            BigUint::from_u64(0x000f_ffff),
+            value(&[0xff; 4], 20),
+            BigUint::from_u64(0x000f_ffff).unwrap(),
             "a digest wider than a non-aligned order loses its low bits"
+        );
+        assert_eq!(
+            value(&[0x12, 0x34, 0x56], 20),
+            BigUint::from_u64(0x0012_3456 >> 4).unwrap(),
+            "the shift carries bits across byte boundaries"
         );
     }
 
     #[test]
     fn schnorr_s_zero_result_rejection() {
-        let order = BigUint::from_u64(23);
-        let d = BigUint::from_u64(5);
+        let curve = nist_p256();
+        let order = curve.order();
+        let d = curve.scalar_from_u64(5).unwrap();
         assert_eq!(
-            schnorr_s(&BigUint::from_u64(3), &BigUint::from_u64(7), &d, &order),
-            Some(BigUint::from_u64(22)),
+            schnorr_s(&curve, &[3], &curve.scalar_from_u64(7).unwrap(), &d),
+            Ok(Some(curve.public_scalar_from_u64(22).unwrap())),
             "s is k + r * d reduced by the order"
         );
         assert_eq!(
-            schnorr_s(&BigUint::from_u64(23), &BigUint::from_u64(7), &d, &order),
-            None,
+            schnorr_s(&curve, &order, &curve.scalar_from_u64(7).unwrap(), &d),
+            Ok(None),
             "a value that reduces to zero has no signature"
         );
+        let k = curve.scalar_from_u64(5).unwrap().neg().unwrap();
         assert_eq!(
-            schnorr_s(&BigUint::from_u64(1), &BigUint::from_u64(18), &d, &order),
-            None,
+            schnorr_s(&curve, &[1], &k, &d),
+            Ok(None),
             "a zero s has no signature"
         );
     }
@@ -1700,6 +1823,192 @@ mod tests {
     }
 
     #[test]
+    fn pss_with_a_nonstandard_digest_length_uses_the_tpm_decoder() {
+        use crate::library::tpm2::crypto::{
+            PublicCheck, RsaSignaturePadding, rsa_verify_signature,
+        };
+        let digest = [0x42u8; 20];
+        let salt = [0x17u8; 32];
+        let encoded = pss_encode(256, TPM_ALG_SHA256, &digest, &salt).expect("encodes");
+        assert_eq!(pss_decode(TPM_ALG_SHA256, &digest, &encoded), Ok(()));
+        assert_eq!(
+            pss_decode(TPM_ALG_SHA256, &[0x43u8; 20], &encoded),
+            Err(TPM_RC_VALUE)
+        );
+        let modulus = vec![0xc5u8; 256];
+        assert_eq!(
+            rsa_verify_signature(
+                &modulus,
+                0,
+                RsaSignaturePadding::Pss,
+                TPM_ALG_SHA256,
+                &digest,
+                &encoded
+            ),
+            PublicCheck::Unsupported,
+            "libtpms PssDecode hashes a digest of any length; EVP verification requires the hash length"
+        );
+    }
+
+    #[test]
+    fn pss_for_a_1023_bit_modulus_in_128_bytes_uses_the_tpm_decoder() {
+        use crate::library::tpm2::crypto::{
+            BigUint, PublicCheck, RsaSignaturePadding, rsa_verify_signature,
+        };
+        use crate::library::tpm2::object_load::replay::{
+            RH_NULL, clock, exec_raw, load_external, plain, runtime_at, runtime_from, vector,
+        };
+        let p = BigUint::from_hex(
+            "fbff03c08ba7063d47bad8a135e6ba5d9a60fb595ba1daea9594265e2d256dbbd99b852b5c1d96a1bb21da522d9d90d8fc6fc5bdd4d2786048a29b2bd224d221",
+        )
+        .unwrap();
+        let q = BigUint::from_hex(
+            "7eee92ea2ef9e36cf0a1022746a4fd1fbde45b3efccccf99f0c54b07b37463edd576bd760a68fce89fa1119fcac87eae67e15d22651a487d4ede425cec1b0719",
+        )
+        .unwrap();
+        let n = p.mul(&q).unwrap();
+        assert_eq!(n.bit_len(), 1023, "a genuine 1023-bit modulus");
+        let modulus = n.to_be_bytes(128).unwrap();
+        assert!(modulus[0] & 0x40 != 0 && modulus[0] & 0x80 == 0);
+        let phi = p.sub_u64(1).unwrap().mul(&q.sub_u64(1).unwrap()).unwrap();
+        let d = BigUint::from_u64(65537).unwrap().mod_inverse(&phi).unwrap();
+
+        let digest = {
+            let mut hasher = Hasher::new(TPM_ALG_SHA256).unwrap();
+            hasher.update(b"1023-bit PSS");
+            hasher.finalize()
+        };
+        let (encoded, salt) = (0u8..=255)
+            .map(|byte| {
+                let salt = [byte; 32];
+                (
+                    pss_encode(128, TPM_ALG_SHA256, &digest, &salt).unwrap(),
+                    salt,
+                )
+            })
+            .find(|(encoded, _)| {
+                encoded[0] & 0x40 != 0 && BigUint::from_be_bytes(encoded).unwrap() < n
+            })
+            .expect("a block with the extra bit set below the modulus");
+        assert_eq!(encoded.len(), 128);
+        assert_eq!(salt.len(), 32);
+        let signature = BigUint::from_be_bytes(&encoded)
+            .unwrap()
+            .mod_exp(&d, &n)
+            .unwrap()
+            .to_be_bytes(128)
+            .unwrap();
+
+        let recovered = rsa_public_key_op(&modulus, 0, &signature).unwrap();
+        assert_eq!(recovered, encoded);
+        assert_eq!(pss_decode(TPM_ALG_SHA256, &digest, &recovered), Ok(()));
+        assert_eq!(
+            rsa_verify_signature(
+                &modulus,
+                0,
+                RsaSignaturePadding::Pss,
+                TPM_ALG_SHA256,
+                &digest,
+                &signature
+            ),
+            PublicCheck::Unsupported,
+            "OpenSSL checks the block against bits(n) - 1 = 1022 bits and would reject it"
+        );
+        let native = openssl::pkey::PKey::from_rsa(
+            openssl::rsa::Rsa::from_public_components(
+                openssl::bn::BigNum::from_slice(&modulus).unwrap(),
+                openssl::bn::BigNum::from_u32(65537).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut ctx = openssl::pkey_ctx::PkeyCtx::new(&native).unwrap();
+        ctx.verify_init().unwrap();
+        ctx.set_rsa_padding(openssl::rsa::Padding::PKCS1_PSS)
+            .unwrap();
+        ctx.set_signature_md(openssl::md::Md::sha256()).unwrap();
+        ctx.set_rsa_mgf1_md(openssl::md::Md::sha256()).unwrap();
+        ctx.set_rsa_pss_saltlen(openssl::sign::RsaPssSaltlen::custom(-2))
+            .unwrap();
+        assert!(
+            !ctx.verify(&digest, &signature).unwrap_or(false),
+            "the native checker disagrees with the TPM rules for this block"
+        );
+        let _ = openssl::error::ErrorStack::get();
+
+        let mut placeholder = modulus.clone();
+        placeholder[0] |= 0x80;
+        let mut public = 0x0001u16.to_be_bytes().to_vec();
+        public.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
+        public.extend_from_slice(&0x0004_0472u32.to_be_bytes());
+        public.extend_from_slice(&tpm2b(&[]));
+        public.extend_from_slice(&0x0010u16.to_be_bytes());
+        public.extend_from_slice(&0x0010u16.to_be_bytes());
+        public.extend_from_slice(&1024u16.to_be_bytes());
+        public.extend_from_slice(&0u32.to_be_bytes());
+        public.extend_from_slice(&tpm2b(&placeholder));
+        let clock = clock();
+        let mut loading = runtime_at("READY", &clock);
+        let loaded = exec_raw(&mut loading, &clock, load_external(&[], &public, RH_NULL));
+        assert_eq!(&loaded[6..10], &[0, 0, 0, 0], "LoadExternal {loaded:02x?}");
+        let mut state = crate::library::tpm2::volatile_all_store(&loading).unwrap();
+        let offsets: Vec<usize> = state
+            .windows(128)
+            .enumerate()
+            .filter(|(_, window)| *window == placeholder.as_slice())
+            .map(|(offset, _)| offset)
+            .collect();
+        assert_eq!(offsets.len(), 1, "the stored modulus appears once");
+        state[offsets[0]..offsets[0] + 128].copy_from_slice(&modulus);
+        let payload = state.len() - 20;
+        let digest_of_state = openssl::sha::sha1(&state[..payload]);
+        state[payload..].copy_from_slice(&digest_of_state);
+        let mut runtime = runtime_from(vector("PERMALL_READY"), &state, &clock);
+        let handle = 0x8000_0000u32;
+        let restored_modulus = runtime
+            .live
+            .objects
+            .iter()
+            .find_map(|slot| match &slot.body {
+                crate::library::tpm2::persistent::OwnedAnyObjectBody::Object(body) => {
+                    rsa_modulus(body).map(|modulus| modulus.to_vec())
+                }
+                _ => None,
+            });
+        assert_eq!(restored_modulus.as_deref(), Some(modulus.as_slice()));
+        let mut verify = |signature: &[u8]| {
+            let mut parameters = handle.to_be_bytes().to_vec();
+            parameters.extend_from_slice(&tpm2b(&digest));
+            parameters.extend_from_slice(&TPM_ALG_RSAPSS.to_be_bytes());
+            parameters.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
+            parameters.extend_from_slice(&tpm2b(signature));
+            let response = exec_raw(&mut runtime, &clock, plain(0x0000_0177, &parameters));
+            u32::from_be_bytes(response[6..10].try_into().unwrap())
+        };
+        assert_eq!(verify(&signature), 0, "VerifySignature on the restored key");
+        let mut altered = signature.clone();
+        altered[127] ^= 1;
+        assert_ne!(
+            verify(&altered),
+            0,
+            "a malformed signature is still rejected"
+        );
+        let mut other_digest_signature =
+            BigUint::from_be_bytes(&pss_encode(128, TPM_ALG_SHA256, &[0x11; 32], &salt).unwrap())
+                .unwrap();
+        other_digest_signature = other_digest_signature
+            .rem(&n)
+            .unwrap()
+            .mod_exp(&d, &n)
+            .unwrap();
+        assert_ne!(
+            verify(&other_digest_signature.to_be_bytes(128).unwrap()),
+            0,
+            "a signature over another digest is rejected"
+        );
+    }
+
+    #[test]
     fn pss_encode_decode_round_trip() {
         let digest = vec![0x5a; 32];
         let salt = vec![0x77; 32];
@@ -1763,13 +2072,259 @@ mod tests {
         );
     }
 
-    fn nist_p256() -> CurveParameters {
-        curve_parameters(0x0003).expect("a compiled curve")
+    fn nist_p256() -> EccCurve {
+        EccCurve::lookup(0x0003).expect("a compiled curve")
     }
 
     fn signing_rand(label: &[u8]) -> SeededRand {
         SeededRand::instantiate(&[0x31; 64], b"SIG", label, &[], 1, false)
             .expect("a non-empty derivation input")
+    }
+
+    #[test]
+    fn ecdsa_backend_failure_is_a_failure_not_a_fresh_nonce() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault};
+        let curve = nist_p256();
+        let private = curve.scalar_from_u64(0x1234).unwrap();
+        let mut used = signing_rand(b"ecdsa failure");
+        let mut reference = signing_rand(b"ecdsa failure");
+        arm_fault(FaultBoundary::Signature, 0);
+        let result = ecdsa_sign(&curve, &private, &[0x42; 32], &mut used);
+        disarm_fault();
+        assert_eq!(result, Err(TPM_RC_FAILURE));
+        random_in_order(&mut reference, &curve).unwrap();
+        assert_eq!(
+            used.random_bytes(32).unwrap(),
+            reference.random_bytes(32).unwrap(),
+            "exactly one nonce was drawn"
+        );
+        assert!(ecdsa_sign(&curve, &private, &[0x42; 32], &mut used).is_ok());
+    }
+
+    #[test]
+    fn schnorr_and_sm2_backend_failures_do_not_redraw_nonces() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
+        let curve = nist_p256();
+        let private = curve.scalar_from_u64(0x2468).unwrap();
+        for boundary in [FaultBoundary::PointOperation, FaultBoundary::Random] {
+            let mut used = signing_rand(b"schnorr failure");
+            let mut reference = signing_rand(b"schnorr failure");
+            let before = faults_fired();
+            arm_fault(boundary, 0);
+            let result = ecschnorr_sign(&curve, &private, &[0x24; 32], TPM_ALG_SHA256, &mut used);
+            disarm_fault();
+            assert_eq!(faults_fired() - before, 1, "{boundary:?}");
+            assert_eq!(result.err(), Some(TPM_RC_FAILURE), "ECSCHNORR {boundary:?}");
+            random_in_order(&mut reference, &curve).unwrap();
+            assert_eq!(
+                used.random_bytes(32).unwrap(),
+                reference.random_bytes(32).unwrap()
+            );
+
+            let mut used = signing_rand(b"sm2 failure");
+            let mut reference = signing_rand(b"sm2 failure");
+            let before = faults_fired();
+            arm_fault(boundary, 0);
+            let result = sm2_sign(&curve, &private, &[0x24; 32], &mut used);
+            disarm_fault();
+            assert!(faults_fired() > before, "{boundary:?}");
+            assert_eq!(result.err(), Some(TPM_RC_FAILURE), "SM2 {boundary:?}");
+            if boundary == FaultBoundary::PointOperation {
+                sm2_nonce(&mut reference, &curve).unwrap();
+            }
+            assert_eq!(
+                used.random_bytes(32).unwrap(),
+                reference.random_bytes(32).unwrap(),
+                "SM2 {boundary:?}: one nonce for a multiply failure, none for a precomputation failure"
+            );
+        }
+    }
+
+    #[test]
+    fn p521_ecdsa_with_drbg_nonces_on_both_sides_of_two_to_the_512() {
+        use crate::library::tpm2::crypto::BigUint;
+        let curve = EccCurve::lookup(0x0005).expect("P-521");
+        let order = BigUint::from_be_bytes(&curve.order()).unwrap();
+        let minus_one = order.sub_u64(1).unwrap();
+        let draw_len = curve.order_bytes() + 8;
+        let nonce_of = |label: &[u8]| {
+            let bytes = signing_rand(label).random_bytes(draw_len).unwrap();
+            BigUint::from_be_bytes(&bytes)
+                .unwrap()
+                .rem(&minus_one)
+                .unwrap()
+                .add_u64(1)
+                .unwrap()
+        };
+        let mut short_label = None;
+        let mut long_label = None;
+        for index in 0u32..20_000 {
+            let label = index.to_be_bytes();
+            let bits = nonce_of(&label).bit_len();
+            if bits <= 512 && short_label.is_none() {
+                short_label = Some(label);
+            }
+            if bits > 512 && long_label.is_none() {
+                long_label = Some(label);
+            }
+            if short_label.is_some() && long_label.is_some() {
+                break;
+            }
+        }
+        let d_bytes = [0x17u8; 66];
+        let d = curve.secret_scalar(&d_bytes).unwrap();
+        let d_value = BigUint::from_be_bytes(&d_bytes)
+            .unwrap()
+            .rem(&order)
+            .unwrap();
+        let digest = [0x5au8; 64];
+        for label in [
+            short_label.expect("a short nonce"),
+            long_label.expect("a long nonce"),
+        ] {
+            let k = nonce_of(&label);
+            let mut signer = signing_rand(&label);
+            let (r, s) = ecdsa_sign(&curve, &d, &digest, &mut signer).expect("a signature");
+            let x = BigUint::from_be_bytes(
+                &curve
+                    .mul_generator(&curve.secret_scalar(&k.to_be_bytes(66).unwrap()).unwrap())
+                    .unwrap()
+                    .x,
+            )
+            .unwrap()
+            .rem(&order)
+            .unwrap();
+            let z = BigUint::from_be_bytes(&digest).unwrap();
+            let expected_s = k
+                .mod_inverse(&order)
+                .unwrap()
+                .mod_mul(
+                    &z.mod_add(&x.mod_mul(&d_value, &order).unwrap(), &order)
+                        .unwrap(),
+                    &order,
+                )
+                .unwrap();
+            assert_eq!(BigUint::from_be_bytes(&r).unwrap(), x);
+            assert_eq!(
+                BigUint::from_be_bytes(&s).unwrap(),
+                expected_s,
+                "nonce bits {}",
+                k.bit_len()
+            );
+            let mut reference = signing_rand(&label);
+            reference.random_bytes(draw_len).unwrap();
+            assert_eq!(
+                signer.random_bytes(32).unwrap(),
+                reference.random_bytes(32).unwrap(),
+                "the signature consumes exactly the TPM nonce draw"
+            );
+        }
+    }
+
+    #[test]
+    fn sm2_nonce_coordinate_reduction_failure_is_a_failure_not_a_new_nonce() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
+        let curve = nist_p256();
+        let private = curve.scalar_from_u64(0x5a5a).unwrap();
+        let digest = [0x3c; 32];
+        let first_nonce_x = 2;
+        let mut used = signing_rand(b"sm2 x reduction");
+        let before = faults_fired();
+        arm_fault(FaultBoundary::PublicReduction, first_nonce_x);
+        let result = sm2_sign(&curve, &private, &digest, &mut used);
+        disarm_fault();
+        assert_eq!(
+            faults_fired() - before,
+            1,
+            "the reduction of the first nonce's x is reached"
+        );
+        assert_eq!(
+            result,
+            Err(TPM_RC_FAILURE),
+            "no signature after a backend failure"
+        );
+        let mut reference = signing_rand(b"sm2 x reduction");
+        sm2_nonce(&mut reference, &curve).unwrap();
+        assert_eq!(
+            used.random_bytes(32).unwrap(),
+            reference.random_bytes(32).unwrap(),
+            "exactly one sm2_nonce call, with its normal redraw rule, before the failure"
+        );
+
+        let mut clean = signing_rand(b"sm2 x reduction");
+        let (r, s) = sm2_sign(&curve, &private, &digest, &mut clean)
+            .expect("signing succeeds without the fault");
+        let mut repeat = signing_rand(b"sm2 x reduction");
+        assert_eq!(
+            sm2_sign(&curve, &private, &digest, &mut repeat).unwrap(),
+            (r, s),
+            "the normal signature is deterministic for the same DRBG state"
+        );
+    }
+
+    #[test]
+    fn sm2_nonce_redraws_like_upstream_all_bytes_draw() {
+        let curve = nist_p256();
+        let order_bytes = curve.order_bytes();
+        let draws = |label: &[u8], count: usize| {
+            let mut rand = signing_rand(label);
+            (0..count)
+                .map(|_| {
+                    random_below(&mut rand, &curve)
+                        .expect("a draw")
+                        .scalar
+                        .to_bytes(order_bytes)
+                        .expect("encodes")
+                })
+                .collect::<Vec<_>>()
+        };
+        let short = |bytes: &[u8]| bytes[0] == 0 || bytes[order_bytes - 8] == 0;
+        let label = (0u32..)
+            .map(u32::to_be_bytes)
+            .find(|label| short(&draws(label, 1)[0]))
+            .expect("a short first draw");
+        let sequence = draws(&label, 9);
+        let accepted = sequence
+            .iter()
+            .find(|bytes| !short(bytes))
+            .expect("a full-width draw");
+        let mut rand = signing_rand(&label);
+        let nonce = sm2_nonce(&mut rand, &curve).expect("a nonce");
+        assert_eq!(&nonce.to_bytes(order_bytes).expect("encodes"), accepted);
+        assert_ne!(accepted, &sequence[0], "the short first draw is discarded");
+        let label = (0u32..)
+            .map(u32::to_be_bytes)
+            .find(|label| !short(&draws(label, 1)[0]))
+            .expect("a full-width first draw");
+        let mut rand = signing_rand(&label);
+        let nonce = sm2_nonce(&mut rand, &curve).expect("a nonce");
+        assert_eq!(
+            nonce.to_bytes(order_bytes).expect("encodes"),
+            draws(&label, 1)[0]
+        );
+        let p521 = EccCurve::lookup(0x0005).expect("a compiled curve");
+        let mut rand = signing_rand(b"p521");
+        let mut unmasked = vec![0u8; 66];
+        let mut draws_taken = 0;
+        loop {
+            rand.generate(&mut unmasked).expect("random bytes");
+            draws_taken += 1;
+            if let Some(value) = p521.scalar_below_order(&unmasked).unwrap()
+                && !value.is_zero()
+            {
+                let mut replay = signing_rand(b"p521");
+                let nonce = sm2_nonce(&mut replay, &p521).expect("a nonce");
+                assert_eq!(
+                    nonce, value,
+                    "P-521 rejects unmasked 66-byte draws like BnMaskBits"
+                );
+                break;
+            }
+        }
+        assert!(
+            draws_taken > 1,
+            "the unmasked P-521 draw usually needs several attempts"
+        );
     }
 
     fn sha256_of(data: &[u8]) -> Vec<u8> {
@@ -1782,9 +2337,9 @@ mod tests {
     fn ecc_scheme_sign_verify_round_trip() {
         let curve = nist_p256();
         let profile = default_profile();
-        let private = BigUint::from_u64(0x0123_4567_89ab_cdef);
-        let (x, y) = curve.multiply_generator(&private).expect("a public point");
-        let point = (&x, &y);
+        let private = curve.scalar_from_u64(0x0123_4567_89ab_cdef).unwrap();
+        let public = curve.mul_generator(&private).expect("a public point");
+        let point = (public.x.as_slice(), public.y.as_slice());
         let digest = sha256_of(b"abc");
         let other = sha256_of(b"xyz");
 
@@ -1807,6 +2362,7 @@ mod tests {
             &mut signing_rand(b"ecschnorr"),
         )
         .expect("an EC Schnorr signature");
+        let r = curve.public_scalar(&r).expect("a scalar");
         assert_eq!(
             ecschnorr_verify(&curve, point, &r, &s, TPM_ALG_SHA256, &digest, &profile),
             Ok(())
@@ -1829,14 +2385,14 @@ mod tests {
     fn ecc_verify_sha1_restriction() {
         let curve = nist_p256();
         let profile = custom_profile(&all_algorithms(), "no-sha1-verification");
-        let private = BigUint::from_u64(0x0123_4567_89ab_cdef);
-        let (x, y) = curve.multiply_generator(&private).expect("a public point");
-        let point = (&x, &y);
+        let private = curve.scalar_from_u64(0x0123_4567_89ab_cdef).unwrap();
+        let public = curve.mul_generator(&private).expect("a public point");
+        let point = (public.x.as_slice(), public.y.as_slice());
         let short = vec![0x5a; 20];
-        let r = BigUint::from_u64(1);
-        let s = BigUint::from_u64(2);
+        let r = curve.public_scalar_from_u64(1).unwrap();
+        let s = curve.public_scalar_from_u64(2).unwrap();
         assert_eq!(
-            ecdsa_verify(&curve, point, &r, &s, &short, &profile),
+            ecdsa_verify(&curve, point, &[1], &[2], &short, &profile),
             Err(TPM_RC_HASH),
             "ECDSA keys on the digest size"
         );

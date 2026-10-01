@@ -19,6 +19,8 @@
 // Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
 // Copyright (c) 2026 Yandex
 
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+
 use crate::library::constants::{
     TPM_RC_CANCELED, TPM_RC_CURVE, TPM_RC_ECC_POINT, TPM_RC_FAILURE, TPM_RC_HASH, TPM_RC_NO_RESULT,
     TPM_RC_SCHEME, TPM_RC_SIZE, TPM_RC_VALUE,
@@ -28,11 +30,11 @@ use crate::types::TpmResult;
 use super::algorithm::{TPM_ALG_ECC, TPM_ALG_ECDH, TPM_ALG_ECMQV, TPM_ALG_KDF2, TPM_ALG_SM2};
 use super::commit::CommitState;
 use super::crypto::{
-    BigUint, CurveParameters, EccKeyError, EccKeyMaterial, Hasher, SeededRand, curve_detail,
-    curve_parameters, generate_ecc_key,
+    EccAffine, EccBackendError, EccCurve, EccEphemeral, EccKeyError, EccScalar, Hasher,
+    PRIVATE_SCALAR_BYTES, SeededRand, SharedPointError, curve_detail, generate_ecc_ephemeral, wipe,
 };
 use super::marshal::BlobWriter;
-use super::persistent::{OwnedObjectBody, OwnedPublicId};
+use super::persistent::{OwnedObjectBody, OwnedPublicId, OwnedSecret};
 use super::public::{MAX_ECC_KEY_BYTES, PublicParms, Scheme};
 use super::template::TemplateReader;
 
@@ -52,27 +54,150 @@ impl EccPoint {
         }
     }
 
-    fn from_coordinates(curve: &CurveParameters, x: &BigUint, y: &BigUint) -> Option<Self> {
-        let width = curve.key_size_bytes;
-        Some(Self {
-            x: fixed_width(x, width)?,
-            y: fixed_width(y, width)?,
-        })
-    }
-
-    fn numbers(&self) -> (BigUint, BigUint) {
-        (
-            BigUint::from_be_bytes(&self.x),
-            BigUint::from_be_bytes(&self.y),
-        )
+    fn returned(point: EccAffine) -> Self {
+        Self {
+            x: returned_coordinate(point.x),
+            y: returned_coordinate(point.y),
+        }
     }
 }
 
-fn fixed_width(value: &BigUint, width: usize) -> Option<Vec<u8>> {
-    if value.is_zero() {
-        return Some(vec![0u8]);
+fn returned_coordinate(coordinate: Vec<u8>) -> Vec<u8> {
+    let occupied = coordinate.iter().fold(0u8, |acc, &byte| acc | byte);
+    if bool::from(occupied.ct_eq(&0)) {
+        vec![0u8]
+    } else {
+        coordinate
     }
-    value.to_be_bytes(width.max(value.byte_len()))
+}
+
+pub(super) struct SharedCoordinate {
+    full: Vec<u8>,
+    zero: Choice,
+}
+
+impl Drop for SharedCoordinate {
+    fn drop(&mut self) {
+        wipe(&mut self.full);
+    }
+}
+
+impl SharedCoordinate {
+    pub(super) fn new(full: Vec<u8>) -> Self {
+        let occupied = full.iter().fold(0u8, |acc, &byte| acc | byte);
+        Self {
+            zero: occupied.ct_eq(&0),
+            full,
+        }
+    }
+
+    fn public(bytes: &[u8], width: usize) -> Self {
+        let value = significant_bytes(bytes);
+        let mut full = vec![0u8; width.saturating_sub(value.len())];
+        full.extend_from_slice(value);
+        Self::new(full)
+    }
+}
+
+pub(super) struct SharedPoint {
+    x: SharedCoordinate,
+    y: SharedCoordinate,
+}
+
+impl SharedPoint {
+    fn new(point: EccAffine) -> Self {
+        Self {
+            x: SharedCoordinate::new(point.x),
+            y: SharedCoordinate::new(point.y),
+        }
+    }
+}
+
+enum HashPart<'a> {
+    Public(&'a [u8]),
+    Shared(&'a SharedCoordinate),
+}
+
+fn shared_digest(hash_alg: u16, parts: &[HashPart<'_>]) -> Option<Vec<u8>> {
+    let shared = parts
+        .iter()
+        .filter(|part| matches!(part, HashPart::Shared(_)))
+        .count();
+    let mut selected = vec![0u8; super::template::digest_size(hash_alg)?];
+    for variant in 0..1usize << shared {
+        let mut hasher = Hasher::new(hash_alg)?;
+        let mut chosen = Choice::from(1u8);
+        let mut index = 0;
+        for part in parts {
+            match part {
+                HashPart::Public(bytes) => hasher.update(bytes),
+                HashPart::Shared(coordinate) => {
+                    if (variant >> index) & 1 == 1 {
+                        hasher.update(&[0u8]);
+                        chosen &= coordinate.zero;
+                    } else {
+                        hasher.update(&coordinate.full);
+                        chosen &= !coordinate.zero;
+                    }
+                    index += 1;
+                }
+            }
+        }
+        for (target, byte) in selected.iter_mut().zip(hasher.finalize()) {
+            target.conditional_assign(&byte, chosen);
+        }
+    }
+    Some(selected)
+}
+
+pub(super) fn kdfe_shared(
+    hash_alg: u16,
+    z: &SharedCoordinate,
+    label: &[u8],
+    party_u_info: &[u8],
+    party_v_info: &[u8],
+    size_in_bits: u32,
+) -> Option<Vec<u8>> {
+    let digest_size = super::template::digest_size(hash_alg)?;
+    let wanted = usize::try_from(size_in_bits.div_ceil(8)).ok()?;
+    let mut out = Vec::with_capacity(wanted.next_multiple_of(digest_size));
+    let mut counter: u32 = 0;
+    while out.len() < wanted {
+        counter = counter.checked_add(1)?;
+        out.extend_from_slice(&shared_digest(
+            hash_alg,
+            &[
+                HashPart::Public(&counter.to_be_bytes()),
+                HashPart::Shared(z),
+                HashPart::Public(label),
+                HashPart::Public(party_u_info),
+                HashPart::Public(party_v_info),
+            ],
+        )?);
+    }
+    out.truncate(wanted);
+    if !size_in_bits.is_multiple_of(8) {
+        out[0] &= (1u8 << (size_in_bits % 8)) - 1;
+    }
+    Some(out)
+}
+
+fn significant_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|&byte| byte != 0)
+        .unwrap_or(bytes.len());
+    &bytes[start..]
+}
+
+pub(super) fn fit_be(bytes: &[u8], length: usize) -> Option<Vec<u8>> {
+    let value = significant_bytes(bytes);
+    if value.len() > length {
+        return None;
+    }
+    let mut out = vec![0u8; length];
+    out[length - value.len()..].copy_from_slice(value);
+    Some(out)
 }
 
 pub(super) fn parse_ecc_point(reader: &mut TemplateReader<'_>) -> Result<EccPoint, TpmResult> {
@@ -130,24 +255,79 @@ pub(super) fn ecc_public_point(body: &OwnedObjectBody) -> Option<EccPoint> {
     }
 }
 
-pub(super) fn ecc_private_scalar(body: &OwnedObjectBody) -> Option<&[u8]> {
-    body.sensitive
-        .sensitive
-        .as_ref()
-        .map(super::persistent::OwnedSecret::as_bytes)
+pub(super) fn ecc_stored_private(body: &OwnedObjectBody) -> Option<&OwnedSecret> {
+    body.sensitive.sensitive.as_ref()
 }
 
-pub(super) fn point_is_on_curve(curve_id: u16, point: &EccPoint) -> bool {
-    let Some(curve) = curve_parameters(curve_id) else {
-        return false;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScalarFailure {
+    Unusable,
+    Backend,
+}
+
+impl ScalarFailure {
+    pub(super) fn code(self, unusable: TpmResult) -> TpmResult {
+        match self {
+            Self::Unusable => unusable,
+            Self::Backend => TPM_RC_FAILURE,
+        }
+    }
+}
+
+pub(super) enum PrivateScalar {
+    Missing,
+    Unusable,
+    Backend,
+    Ready(EccScalar),
+}
+
+impl PrivateScalar {
+    pub(super) fn of(curve: &EccCurve, stored: Option<&OwnedSecret>) -> Self {
+        let Some(stored) = stored else {
+            return Self::Missing;
+        };
+        let Some(stored) = stored.fixed_width() else {
+            return Self::Unusable;
+        };
+        match curve.private_scalar(stored) {
+            Some(scalar) => Self::Ready(scalar),
+            None => Self::Backend,
+        }
+    }
+
+    pub(super) fn or_zero(self, curve: &EccCurve) -> Result<EccScalar, ScalarFailure> {
+        match self {
+            Self::Missing => curve.zero_scalar().ok_or(ScalarFailure::Backend),
+            Self::Unusable => Err(ScalarFailure::Unusable),
+            Self::Backend => Err(ScalarFailure::Backend),
+            Self::Ready(scalar) => Ok(scalar),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SharedFailure {
+    Unusable,
+    OffCurve,
+    Infinity,
+    Backend,
+}
+
+fn point_code(error: SharedPointError) -> TpmResult {
+    match error {
+        SharedPointError::OffCurve => TPM_RC_ECC_POINT,
+        SharedPointError::Infinity => TPM_RC_NO_RESULT,
+        SharedPointError::Backend => TPM_RC_FAILURE,
+    }
+}
+
+pub(super) fn point_is_on_curve(curve_id: u16, point: &EccPoint) -> Result<bool, TpmResult> {
+    let Some(curve) = EccCurve::lookup(curve_id) else {
+        return Ok(false);
     };
-    let (x, y) = point.numbers();
-    curve.is_point_on_curve(&x, &y)
-}
-
-fn reduced_coordinates(curve: &CurveParameters, point: &EccPoint) -> Option<(BigUint, BigUint)> {
-    let (x, y) = point.numbers();
-    Some((x.rem(&curve.prime)?, y.rem(&curve.prime)?))
+    curve
+        .is_on_curve(&point.x, &point.y)
+        .map_err(|EccBackendError| TPM_RC_FAILURE)
 }
 
 pub(super) fn point_multiply(
@@ -155,21 +335,63 @@ pub(super) fn point_multiply(
     base: Option<&EccPoint>,
     scalar: &[u8],
 ) -> Result<EccPoint, TpmResult> {
-    let curve = curve_parameters(curve_id).ok_or(TPM_RC_VALUE)?;
-    let value = BigUint::from_be_bytes(scalar);
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_VALUE)?;
+    if scalar.len() > PRIVATE_SCALAR_BYTES {
+        return Err(TPM_RC_NO_RESULT);
+    }
+    let scalar = curve.secret_scalar(scalar).ok_or(TPM_RC_FAILURE)?;
+    point_multiply_by(&curve, base, &scalar)
+}
+
+pub(super) fn private_point_multiply(
+    curve_id: u16,
+    base: Option<&EccPoint>,
+    stored: Option<&OwnedSecret>,
+) -> Result<EccPoint, TpmResult> {
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_VALUE)?;
+    let scalar = PrivateScalar::of(&curve, stored)
+        .or_zero(&curve)
+        .map_err(|failure| failure.code(TPM_RC_NO_RESULT))?;
+    point_multiply_by(&curve, base, &scalar)
+}
+
+pub(super) fn point_multiply_by(
+    curve: &EccCurve,
+    base: Option<&EccPoint>,
+    scalar: &EccScalar,
+) -> Result<EccPoint, TpmResult> {
     let product = match base {
         Some(base) => {
-            let (x, y) = base.numbers();
-            if !curve.is_point_on_curve(&x, &y) {
+            if !curve
+                .is_on_curve(&base.x, &base.y)
+                .map_err(|EccBackendError| TPM_RC_FAILURE)?
+            {
                 return Err(TPM_RC_ECC_POINT);
             }
-            let (x, y) = reduced_coordinates(&curve, base).ok_or(TPM_RC_NO_RESULT)?;
-            curve.multiply_point((&x, &y), &value)
+            curve.mul_point_checked(&base.x, &base.y, scalar)
         }
-        None => curve.multiply_generator(&value),
+        None => curve.mul_generator_checked(scalar),
     };
-    let (x, y) = product.ok_or(TPM_RC_NO_RESULT)?;
-    EccPoint::from_coordinates(&curve, &x, &y).ok_or(TPM_RC_FAILURE)
+    product.map(EccPoint::returned).map_err(point_code)
+}
+
+fn shared_point_multiply(
+    curve: &EccCurve,
+    base: &EccPoint,
+    scalar: Result<EccScalar, ScalarFailure>,
+) -> Result<SharedPoint, SharedFailure> {
+    let scalar = scalar.map_err(|failure| match failure {
+        ScalarFailure::Unusable => SharedFailure::Unusable,
+        ScalarFailure::Backend => SharedFailure::Backend,
+    })?;
+    curve
+        .mul_point_shared(&base.x, &base.y, &scalar)
+        .map(SharedPoint::new)
+        .map_err(|error| match error {
+            SharedPointError::OffCurve => SharedFailure::OffCurve,
+            SharedPointError::Infinity => SharedFailure::Infinity,
+            SharedPointError::Backend => SharedFailure::Backend,
+        })
 }
 
 pub(super) fn algorithm_detail(curve_id: u16) -> Option<Vec<u8>> {
@@ -219,7 +441,7 @@ pub(super) struct EccCiphertext {
     pub(super) c3: Vec<u8>,
 }
 
-fn kdf2_mask(hash_alg: u16, seed: &[u8], length: usize) -> Option<Vec<u8>> {
+fn kdf2_mask(hash_alg: u16, shared: &SharedPoint, length: usize) -> Option<Vec<u8>> {
     if length == 0 {
         return Some(Vec::new());
     }
@@ -227,14 +449,29 @@ fn kdf2_mask(hash_alg: u16, seed: &[u8], length: usize) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(length.next_multiple_of(digest_size));
     let mut counter: u32 = 1;
     while out.len() < length {
-        let mut hasher = Hasher::new(hash_alg)?;
-        hasher.update(seed);
-        hasher.update(&counter.to_be_bytes());
-        out.extend_from_slice(&hasher.finalize());
+        out.extend_from_slice(&shared_digest(
+            hash_alg,
+            &[
+                HashPart::Shared(&shared.x),
+                HashPart::Shared(&shared.y),
+                HashPart::Public(&counter.to_be_bytes()),
+            ],
+        )?);
         counter += 1;
     }
     out.truncate(length);
     Some(out)
+}
+
+fn integrity_digest(hash_alg: u16, shared: &SharedPoint, message: &[u8]) -> Option<Vec<u8>> {
+    shared_digest(
+        hash_alg,
+        &[
+            HashPart::Shared(&shared.x),
+            HashPart::Public(message),
+            HashPart::Shared(&shared.y),
+        ],
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,34 +490,33 @@ pub(super) fn crypt_ecc_encrypt(
     rand: &mut SeededRand,
     self_test: EccSelfTestHook<'_>,
 ) -> Result<EccCiphertext, TpmResult> {
-    curve_parameters(curve_id).ok_or(TPM_RC_CURVE)?;
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_CURVE)?;
     if scheme.scheme != TPM_ALG_KDF2 {
         return Err(TPM_RC_SCHEME);
     }
-    let ephemeral: EccKeyMaterial =
-        generate_ecc_key(curve_id, rand).map_err(|error| match error {
+    let ephemeral: EccEphemeral =
+        generate_ecc_ephemeral(curve_id, rand).map_err(|error| match error {
             EccKeyError::Curve => TPM_RC_CURVE,
             EccKeyError::NoResult => TPM_RC_NO_RESULT,
+            EccKeyError::Failure => TPM_RC_FAILURE,
         })?;
     let c1 = EccPoint {
         x: ephemeral.x,
         y: ephemeral.y,
     };
     self_test(EccSelfTest::Ecdh)?;
-    let p2 =
-        point_multiply(curve_id, Some(public), &ephemeral.private).map_err(|_| TPM_RC_NO_RESULT)?;
+    let p2 = shared_point_multiply(&curve, public, Ok(ephemeral.scalar)).map_err(|failure| {
+        if failure == SharedFailure::Backend {
+            TPM_RC_FAILURE
+        } else {
+            TPM_RC_NO_RESULT
+        }
+    })?;
     let hash_alg = scheme.hash_alg.ok_or(TPM_RC_HASH)?;
     self_test(EccSelfTest::Hash(hash_alg))?;
 
-    let mut hasher = Hasher::new(hash_alg).ok_or(TPM_RC_HASH)?;
-    hasher.update(&p2.x);
-    hasher.update(plain_text);
-    hasher.update(&p2.y);
-    let c3 = hasher.finalize();
-
-    let mut seed = p2.x.clone();
-    seed.extend_from_slice(&p2.y);
-    let mut c2 = kdf2_mask(hash_alg, &seed, plain_text.len()).ok_or(TPM_RC_HASH)?;
+    let c3 = integrity_digest(hash_alg, &p2, plain_text).ok_or(TPM_RC_HASH)?;
+    let mut c2 = kdf2_mask(hash_alg, &p2, plain_text.len()).ok_or(TPM_RC_HASH)?;
     for (masked, clear) in c2.iter_mut().zip(plain_text) {
         *masked ^= clear;
     }
@@ -289,40 +525,40 @@ pub(super) fn crypt_ecc_encrypt(
 
 pub(super) fn crypt_ecc_decrypt(
     curve_id: u16,
-    private: &[u8],
+    private: Option<&OwnedSecret>,
     scheme: Scheme,
     c1: &EccPoint,
     c2: &[u8],
     c3: &[u8],
     self_test: EccSelfTestHook<'_>,
 ) -> Result<Vec<u8>, TpmResult> {
-    let curve = curve_parameters(curve_id).ok_or(TPM_RC_CURVE)?;
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_CURVE)?;
     if scheme.scheme != TPM_ALG_KDF2 {
         return Err(TPM_RC_SCHEME);
     }
     self_test(EccSelfTest::Ecdh)?;
-    let p2 = match point_multiply(curve_id, Some(c1), private) {
+    let scalar = PrivateScalar::of(&curve, private).or_zero(&curve);
+    let p2 = match shared_point_multiply(&curve, c1, scalar) {
         Ok(point) => point,
-        Err(_) => {
-            let (x, y) = c1.numbers();
-            EccPoint::from_coordinates(&curve, &x, &y).ok_or(TPM_RC_FAILURE)?
+        Err(SharedFailure::Backend) => return Err(TPM_RC_FAILURE),
+        Err(SharedFailure::Unusable | SharedFailure::OffCurve | SharedFailure::Infinity) => {
+            SharedPoint {
+                x: SharedCoordinate::public(&c1.x, curve.field_bytes()),
+                y: SharedCoordinate::public(&c1.y, curve.field_bytes()),
+            }
         }
     };
     let hash_alg = scheme.hash_alg.ok_or(TPM_RC_HASH)?;
     self_test(EccSelfTest::Hash(hash_alg))?;
-    let mut hasher = Hasher::new(hash_alg).ok_or(TPM_RC_HASH)?;
-    hasher.update(&p2.x);
+    Hasher::new(hash_alg).ok_or(TPM_RC_HASH)?;
 
-    let mut seed = p2.x.clone();
-    seed.extend_from_slice(&p2.y);
-    let mut plain_text = kdf2_mask(hash_alg, &seed, c2.len()).ok_or(TPM_RC_HASH)?;
+    let mut plain_text = kdf2_mask(hash_alg, &p2, c2.len()).ok_or(TPM_RC_HASH)?;
     for (clear, masked) in plain_text.iter_mut().zip(c2) {
         *clear ^= masked;
     }
 
-    hasher.update(&plain_text);
-    hasher.update(&p2.y);
-    if !super::session::digests_equal(&hasher.finalize(), c3) {
+    let check = integrity_digest(hash_alg, &p2, &plain_text).ok_or(TPM_RC_HASH)?;
+    if check.len() != c3.len() || !bool::from(check.ct_eq(c3)) {
         return Err(TPM_RC_VALUE);
     }
     Ok(plain_text)
@@ -334,15 +570,11 @@ pub(super) fn commit_point_from_s2(
     s2: &[u8],
     y2: &[u8],
 ) -> Result<EccPoint, TpmResult> {
-    let curve = curve_parameters(curve_id).ok_or(TPM_RC_FAILURE)?;
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_FAILURE)?;
     let mut hasher = Hasher::new(name_alg).ok_or(TPM_RC_HASH)?;
     hasher.update(s2);
     let digest = hasher.finalize();
-    let width = curve.prime.byte_len();
-    let reduced = BigUint::from_be_bytes(&digest)
-        .rem(&curve.prime)
-        .ok_or(TPM_RC_NO_RESULT)?;
-    let x = reduced.to_be_bytes(width).ok_or(TPM_RC_NO_RESULT)?;
+    let x = curve.reduce_field(&digest).ok_or(TPM_RC_NO_RESULT)?;
     Ok(EccPoint { x, y: y2.to_vec() })
 }
 
@@ -350,35 +582,34 @@ pub(super) fn commit_compute(
     curve_id: u16,
     p1: Option<&EccPoint>,
     p2: Option<&EccPoint>,
-    private: &[u8],
-    r: &BigUint,
+    private: Option<&OwnedSecret>,
+    r: &EccScalar,
     canceled: &dyn Fn() -> bool,
 ) -> Result<(EccPoint, EccPoint, EccPoint), TpmResult> {
-    let curve = curve_parameters(curve_id).ok_or(TPM_RC_NO_RESULT)?;
-    let r_bytes = r
-        .to_be_bytes(curve.order.byte_len())
-        .ok_or(TPM_RC_NO_RESULT)?;
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_NO_RESULT)?;
     let mut k = EccPoint::empty();
     let mut l = EccPoint::empty();
     let mut e = EccPoint::empty();
     if let Some(p2) = p2 {
-        if !point_is_on_curve(curve_id, p2) {
+        if !point_is_on_curve(curve_id, p2)? {
             return Err(TPM_RC_VALUE);
         }
-        k = point_multiply(curve_id, Some(p2), private)?;
+        k = private_point_multiply(curve_id, Some(p2), private)?;
         if canceled() {
             return Err(TPM_RC_CANCELED);
         }
-        if r.is_zero() || *r >= curve.order {
+        if r.checked_is_zero()
+            .map_err(|EccBackendError| TPM_RC_FAILURE)?
+        {
             return Err(TPM_RC_VALUE);
         }
-        l = point_multiply(curve_id, Some(p2), &r_bytes)?;
+        l = point_multiply_by(&curve, Some(p2), r)?;
     }
     if p1.is_some() || p2.is_none() {
         if p2.is_some() && canceled() {
             return Err(TPM_RC_CANCELED);
         }
-        e = point_multiply(curve_id, p1, &r_bytes)?;
+        e = point_multiply_by(&curve, p1, r)?;
     }
     Ok((k, l, e))
 }
@@ -398,19 +629,16 @@ pub(super) struct TwoPhaseResult {
 pub(super) fn two_phase_key_exchange(
     curve_id: u16,
     scheme: u16,
-    static_private: &[u8],
-    ephemeral_private: &BigUint,
+    static_private: Option<&OwnedSecret>,
+    ephemeral_private: &EccScalar,
     qs_b: &EccPoint,
     qe_b: &EccPoint,
 ) -> Result<TwoPhaseResult, TpmResult> {
-    let curve = curve_parameters(curve_id).ok_or(TPM_RC_CURVE)?;
+    let curve = EccCurve::lookup(curve_id).ok_or(TPM_RC_CURVE)?;
     match scheme {
         TPM_ALG_ECDH => {
-            let ephemeral = ephemeral_private
-                .to_be_bytes(curve.order.byte_len())
-                .ok_or(TPM_RC_NO_RESULT)?;
-            let z1 = point_multiply(curve_id, Some(qs_b), static_private)?;
-            let z2 = point_multiply(curve_id, Some(qe_b), &ephemeral)?;
+            let z1 = private_point_multiply(curve_id, Some(qs_b), static_private)?;
+            let z2 = point_multiply_by(&curve, Some(qe_b), ephemeral_private)?;
             Ok(TwoPhaseResult {
                 z1,
                 z2,
@@ -434,59 +662,75 @@ pub(super) fn two_phase_key_exchange(
     }
 }
 
-fn upstream_mask_bits(value: &BigUint, mask_bit: usize) -> BigUint {
-    const RADIX_BITS: usize = 64;
-    let words = mask_bit.div_ceil(RADIX_BITS);
-    if words == 0 {
-        return BigUint::zero();
+const UPSTREAM_RADIX_BITS: usize = 64;
+
+pub(super) fn upstream_mask_kept_bits(mask_bit: usize) -> usize {
+    let words = mask_bit.div_ceil(UPSTREAM_RADIX_BITS);
+    let remainder = mask_bit % UPSTREAM_RADIX_BITS;
+    match (words, remainder) {
+        (0, _) => 0,
+        (_, 0) => words * UPSTREAM_RADIX_BITS,
+        _ => (words - 1) * UPSTREAM_RADIX_BITS + (UPSTREAM_RADIX_BITS - remainder),
     }
-    let remainder = mask_bit % RADIX_BITS;
-    let kept = if remainder == 0 {
-        words * RADIX_BITS
-    } else {
-        (words - 1) * RADIX_BITS + (RADIX_BITS - remainder)
-    };
-    let mut masked = value.clone();
-    masked.mask_bits(kept);
-    masked
 }
 
-fn associated_value(value: &BigUint, bits: usize) -> BigUint {
-    upstream_mask_bits(value, bits).add(&BigUint::from_u64(1).shl(bits))
+fn associated_value(coordinate: &[u8], bits: usize) -> Vec<u8> {
+    let kept = upstream_mask_kept_bits(bits);
+    let width = kept.max(bits + 1).div_ceil(8) + 1;
+    let mut value = vec![0u8; width];
+    for (offset, &byte) in coordinate.iter().rev().enumerate().take(width) {
+        let bit = offset * 8;
+        value[width - 1 - offset] = if bit >= kept {
+            0
+        } else if bit + 8 > kept {
+            byte & ((1u8 << (kept - bit)) - 1)
+        } else {
+            byte
+        };
+    }
+    value[width - 1 - bits / 8] |= 1u8 << (bits % 8);
+    value
 }
 
 fn sm2_key_exchange(
-    curve: &CurveParameters,
-    static_private: &[u8],
-    ephemeral_private: &BigUint,
+    curve: &EccCurve,
+    static_private: Option<&OwnedSecret>,
+    ephemeral_private: &EccScalar,
     qs_b: &EccPoint,
     qe_b: &EccPoint,
 ) -> Result<EccPoint, TpmResult> {
-    let w = (curve.order.bit_len() - 1) / 2 - 1;
-    let (qe_a_x, _) = curve
-        .multiply_generator(ephemeral_private)
+    let w = (curve.order_bits() - 1) / 2 - 1;
+    let qe_a = curve
+        .mul_generator_checked(ephemeral_private)
+        .map_err(point_code)?;
+    let x_a = curve
+        .public_scalar(&associated_value(&qe_a.x, w))
         .ok_or(TPM_RC_NO_RESULT)?;
-    let ds_a = BigUint::from_be_bytes(static_private);
+    let ds_a = PrivateScalar::of(curve, static_private)
+        .or_zero(curve)
+        .map_err(|failure| failure.code(TPM_RC_NO_RESULT))?;
     let ta = ephemeral_private
-        .mul(&associated_value(&qe_a_x, w))
-        .add(&ds_a)
-        .rem(&curve.order)
+        .mul_public(&x_a)
+        .and_then(|product| product.add(&ds_a))
         .ok_or(TPM_RC_NO_RESULT)?;
-
-    let (qs_b_x, qs_b_y) = qs_b.numbers();
-    let (qe_b_x, qe_b_y) = qe_b.numbers();
-    let (zx, zy) = curve
-        .multiply_and_add(
-            (&qs_b_x, &qs_b_y),
-            &BigUint::from_u64(1),
-            (&qe_b_x, &qe_b_y),
-            &associated_value(&qe_b_x, w),
+    let x_b = curve
+        .public_scalar(&associated_value(&qe_b.x, w))
+        .ok_or(TPM_RC_NO_RESULT)?;
+    let z = curve
+        .mul_add(
+            &curve.public_scalar_from_u64(1).ok_or(TPM_RC_NO_RESULT)?,
+            Some((&qs_b.x, &qs_b.y)),
+            &x_b,
+            (&qe_b.x, &qe_b.y),
         )
         .ok_or(TPM_RC_NO_RESULT)?;
-    let (zx, zy) = curve
-        .multiply_point((&zx, &zy), &ta)
-        .ok_or(TPM_RC_NO_RESULT)?;
-    EccPoint::from_coordinates(curve, &zx, &zy).ok_or(TPM_RC_FAILURE)
+    let shared = curve
+        .mul_point_checked(&z.x, &z.y, &ta)
+        .map_err(|error| match error {
+            SharedPointError::Backend => TPM_RC_FAILURE,
+            SharedPointError::OffCurve | SharedPointError::Infinity => TPM_RC_NO_RESULT,
+        })?;
+    Ok(EccPoint::returned(shared))
 }
 
 pub(super) fn commit_value(
@@ -494,9 +738,13 @@ pub(super) fn commit_value(
     curve_id: u16,
     name: &[u8],
     count: Option<u16>,
-) -> Option<BigUint> {
-    let curve = curve_parameters(curve_id)?;
-    commit.generate_r(&curve, name, count)
+) -> Result<Option<EccScalar>, TpmResult> {
+    let Some(curve) = EccCurve::lookup(curve_id) else {
+        return Ok(None);
+    };
+    commit
+        .generate_r(&curve, name, count)
+        .map_err(|EccBackendError| TPM_RC_FAILURE)
 }
 
 pub(super) fn is_ecc_object(body: &OwnedObjectBody) -> bool {
@@ -509,7 +757,7 @@ mod tests {
     use crate::library::tpm2::algorithm::{
         TPM_ALG_KDF1_SP800_56A, TPM_ALG_NULL, TPM_ALG_SHA256, TPM_ALG_SHA384,
     };
-    use crate::library::tpm2::crypto::{curve_key_size_bits, is_compiled_curve};
+    use crate::library::tpm2::crypto::{BigUint, curve_key_size_bits, is_compiled_curve};
     use crate::library::tpm2::test_support::tpm2b;
 
     const P256: u16 = 0x0003;
@@ -533,16 +781,631 @@ mod tests {
         parse_ecc_point(&mut reader)
     }
 
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    fn p256_zero_x_point() -> EccPoint {
+        EccPoint {
+            x: vec![0u8; 32],
+            y: hex("66485c780e2f83d72433bd5d84a06bb6541c2af31dae871728bf856a174f93f4"),
+        }
+    }
+
+    fn kdf2_sha256() -> Scheme {
+        Scheme {
+            scheme: TPM_ALG_KDF2,
+            hash_alg: Some(TPM_ALG_SHA256),
+            count: None,
+            kdf: None,
+        }
+    }
+
+    fn stored(bytes: &[u8]) -> OwnedSecret {
+        OwnedSecret::copy_of(bytes)
+    }
+
+    fn small_scalar(value: u8, width: usize) -> Vec<u8> {
+        let mut private = vec![0u8; width];
+        private[width - 1] = value;
+        private
+    }
+
+    #[test]
+    fn zero_shared_coordinate_leaves_decrypt_work_unchanged() {
+        use crate::library::tpm2::crypto::work;
+        let point = p256_zero_x_point();
+        assert_eq!(point_is_on_curve(P256, &point), Ok(true));
+        let mut measured = Vec::new();
+        for d in [1u8, 2] {
+            let (result, counters) = work::measure(|| {
+                crypt_ecc_decrypt(
+                    P256,
+                    Some(&stored(&small_scalar(d, 32))),
+                    kdf2_sha256(),
+                    &point,
+                    &[0x42; 32],
+                    &[0; 32],
+                    &mut |_| Ok(()),
+                )
+            });
+            assert_eq!(result, Err(TPM_RC_VALUE), "d = {d}");
+            measured.push(counters);
+        }
+        assert_eq!(
+            measured[0], measured[1],
+            "[1]C1 has a zero x coordinate and [2]C1 does not; the work must not show it"
+        );
+    }
+
+    fn byte_encoded(coordinate: &[u8]) -> Vec<u8> {
+        if coordinate.iter().all(|&byte| byte == 0) {
+            vec![0u8]
+        } else {
+            coordinate.to_vec()
+        }
+    }
+
+    fn reference_digest(parts: &[&[u8]]) -> Vec<u8> {
+        let mut hasher = Hasher::new(TPM_ALG_SHA256).expect("SHA-256");
+        for part in parts {
+            hasher.update(part);
+        }
+        hasher.finalize()
+    }
+
+    fn reference_kdf2(x: &[u8], y: &[u8], length: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut counter = 1u32;
+        while out.len() < length {
+            out.extend(reference_digest(&[x, y, &counter.to_be_bytes()]));
+            counter += 1;
+        }
+        out.truncate(length);
+        out
+    }
+
+    fn shared_coordinates() -> Vec<Vec<u8>> {
+        let mut leading = vec![0u8; 32];
+        leading[31] = 0x07;
+        vec![vec![0u8; 32], leading, vec![0xa5; 32]]
+    }
+
+    #[test]
+    fn shared_kdfe_byte_encoding_of_zero() {
+        use crate::library::tpm2::crypto::kdfe;
+        for coordinate in shared_coordinates() {
+            let shared = SharedCoordinate::new(coordinate.clone());
+            for bits in [256u32, 129, 8, 0] {
+                assert_eq!(
+                    kdfe_shared(
+                        TPM_ALG_SHA256,
+                        &shared,
+                        b"SECRET\0",
+                        b"party u",
+                        b"party v",
+                        bits
+                    ),
+                    kdfe(
+                        TPM_ALG_SHA256,
+                        &byte_encoded(&coordinate),
+                        b"SECRET\0",
+                        b"party u",
+                        b"party v",
+                        bits
+                    ),
+                    "coordinate {coordinate:02x?} bits {bits}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kdf2_and_integrity_byte_encoding_of_zero() {
+        for x in shared_coordinates() {
+            for y in shared_coordinates() {
+                let shared = SharedPoint {
+                    x: SharedCoordinate::new(x.clone()),
+                    y: SharedCoordinate::new(y.clone()),
+                };
+                let (ex, ey) = (byte_encoded(&x), byte_encoded(&y));
+                for length in [0usize, 1, 32, 33, 100] {
+                    assert_eq!(
+                        kdf2_mask(TPM_ALG_SHA256, &shared, length),
+                        Some(reference_kdf2(&ex, &ey, length))
+                    );
+                }
+                assert_eq!(
+                    integrity_digest(TPM_ALG_SHA256, &shared, b"message"),
+                    Some(reference_digest(&[&ex, b"message", &ey]))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_shared_coordinate_decrypt_upstream_encoding() {
+        let point = p256_zero_x_point();
+        let message = b"zero shared coordinate".to_vec();
+        for (d, shared) in [
+            (1u8, point.clone()),
+            (
+                2,
+                point_multiply(P256, Some(&point), &small_scalar(2, 32)).unwrap(),
+            ),
+        ] {
+            let (x, y) = (byte_encoded(&shared.x), byte_encoded(&shared.y));
+            let mut c2 = reference_kdf2(&x, &y, message.len());
+            for (masked, clear) in c2.iter_mut().zip(&message) {
+                *masked ^= clear;
+            }
+            let c3 = reference_digest(&[&x, &message, &y]);
+            assert_eq!(
+                crypt_ecc_decrypt(
+                    P256,
+                    Some(&stored(&small_scalar(d, 32))),
+                    kdf2_sha256(),
+                    &point,
+                    &c2,
+                    &c3,
+                    &mut |_| Ok(())
+                ),
+                Ok(message.clone()),
+                "d = {d}"
+            );
+            let mut tampered = c3.clone();
+            tampered[0] ^= 1;
+            assert_eq!(
+                crypt_ecc_decrypt(
+                    P256,
+                    Some(&stored(&small_scalar(d, 32))),
+                    kdf2_sha256(),
+                    &point,
+                    &c2,
+                    &tampered,
+                    &mut |_| Ok(())
+                ),
+                Err(TPM_RC_VALUE),
+                "d = {d}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_shared_coordinate_decrypts_repeatedly_on_p256_and_p521() {
+        let p521_zero_x = EccPoint {
+            x: vec![0u8; 66],
+            y: hex(
+                "012df13601594a883ef2d935e44bb90bf4d6619b74e52af7552f97769011c0719eb439cfab2a88d40fe59a2bed1f43557169a2d0a2ccd280c607b92bbf51ffe0b078",
+            ),
+        };
+        let message = b"decrypts through a zero shared x".to_vec();
+        for (curve_id, zero_point) in [(P256, p256_zero_x_point()), (P521, p521_zero_x)] {
+            let curve = curve(curve_id);
+            let width = curve.order_bytes();
+            let order = BigUint::from_be_bytes(&curve.order()).unwrap();
+            let private = BigUint::from_u64(0x0123_4567_89ab_cdef).unwrap();
+            let inverse = private.mod_inverse(&order).unwrap();
+            let c1 = point_multiply(
+                curve_id,
+                Some(&zero_point),
+                &inverse.to_be_bytes(width).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                c1.x.iter().any(|&byte| byte != 0),
+                "C1 itself is not the zero point"
+            );
+            let control_shared = point_multiply(
+                curve_id,
+                Some(&c1),
+                &BigUint::from_u64(0x0123_4567_89ab_cdee)
+                    .unwrap()
+                    .to_be_bytes(width)
+                    .unwrap(),
+            )
+            .unwrap();
+            for (label, key, shared) in [
+                ("zero x", 0x0123_4567_89ab_cdefu64, zero_point.clone()),
+                ("control", 0x0123_4567_89ab_cdee, control_shared),
+            ] {
+                let key = stored(&BigUint::from_u64(key).unwrap().to_be_bytes(width).unwrap());
+                let (x, y) = (byte_encoded(&shared.x), byte_encoded(&shared.y));
+                let mut c2 = reference_kdf2(&x, &y, message.len());
+                for (masked, clear) in c2.iter_mut().zip(&message) {
+                    *masked ^= clear;
+                }
+                let c3 = reference_digest(&[&x, &message, &y]);
+                for _ in 0..16 {
+                    assert_eq!(
+                        crypt_ecc_decrypt(
+                            curve_id,
+                            Some(&key),
+                            kdf2_sha256(),
+                            &c1,
+                            &c2,
+                            &c3,
+                            &mut |_| Ok(())
+                        ),
+                        Ok(message.clone()),
+                        "curve {curve_id:#06x} {label}"
+                    );
+                }
+                let mut tampered_c3 = c3.clone();
+                tampered_c3[31] ^= 0x80;
+                let mut tampered_c2 = c2.clone();
+                tampered_c2[0] ^= 1;
+                for _ in 0..4 {
+                    assert_eq!(
+                        crypt_ecc_decrypt(
+                            curve_id,
+                            Some(&key),
+                            kdf2_sha256(),
+                            &c1,
+                            &c2,
+                            &tampered_c3,
+                            &mut |_| Ok(())
+                        ),
+                        Err(TPM_RC_VALUE),
+                        "curve {curve_id:#06x} {label}: a wrong C3 is rejected after the shared point"
+                    );
+                    assert_eq!(
+                        crypt_ecc_decrypt(
+                            curve_id,
+                            Some(&key),
+                            kdf2_sha256(),
+                            &c1,
+                            &tampered_c2,
+                            &c3,
+                            &mut |_| Ok(())
+                        ),
+                        Err(TPM_RC_VALUE),
+                        "curve {curve_id:#06x} {label}: a changed C2 fails the C3 check"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_point_offsets_never_consume_the_tpm_drbg() {
+        let message = message_of(48);
+        for curve_id in [P256, P521, 0x0010, 0x0011] {
+            if !is_compiled_curve(curve_id) {
+                continue;
+            }
+            let public = multiple_of(curve_id, 0x1234);
+            for round in 0..4u8 {
+                let label = [b'd', b'r', b'b', b'g', round];
+                let mut used = rand(&label);
+                let mut reference = rand(&label);
+                let ciphertext = crypt_ecc_encrypt(
+                    curve_id,
+                    &public,
+                    kdf2(TPM_ALG_SHA256),
+                    &message,
+                    &mut used,
+                    &mut no_self_test,
+                )
+                .unwrap();
+                let ephemeral = generate_ecc_ephemeral(curve_id, &mut reference).unwrap();
+                assert_eq!(
+                    (ciphertext.c1.x, ciphertext.c1.y),
+                    (ephemeral.x, ephemeral.y)
+                );
+                assert_eq!(
+                    used.random_bytes(64).unwrap(),
+                    reference.random_bytes(64).unwrap(),
+                    "curve {curve_id:#06x}: the following DRBG output is unchanged"
+                );
+            }
+        }
+    }
+
+    fn multiple_of(curve_id: u16, value: u64) -> EccPoint {
+        point_multiply(curve_id, None, &scalar(curve_id, value)).expect("a generator multiple")
+    }
+
+    #[test]
+    fn decryption_backend_failure_is_a_failure_not_the_raw_c1_path() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault};
+        let point = p256_zero_x_point();
+        let key = stored(&small_scalar(1, 32));
+        arm_fault(FaultBoundary::PointOperation, 0);
+        let result = crypt_ecc_decrypt(
+            P256,
+            Some(&key),
+            kdf2_sha256(),
+            &point,
+            &[1, 2, 3],
+            &[0; 32],
+            &mut |_| Ok(()),
+        );
+        disarm_fault();
+        assert_eq!(result, Err(TPM_RC_FAILURE));
+        let public = multiple_of(P256, 0x77);
+        let mut generator = rand(b"encrypt failure");
+        arm_fault(FaultBoundary::PointOperation, 0);
+        let result = crypt_ecc_encrypt(
+            P256,
+            &public,
+            kdf2(TPM_ALG_SHA256),
+            b"m",
+            &mut generator,
+            &mut no_self_test,
+        );
+        disarm_fault();
+        assert_eq!(result.err(), Some(TPM_RC_FAILURE));
+    }
+
+    fn public_c1_ciphertext(c1: &EccPoint, message: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let (x, y) = (byte_encoded(&c1.x), byte_encoded(&c1.y));
+        let mut c2 = reference_kdf2(&x, &y, message.len());
+        for (masked, clear) in c2.iter_mut().zip(message) {
+            *masked ^= clear;
+        }
+        (c2, reference_digest(&[&x, message, &y]))
+    }
+
+    #[test]
+    fn public_c1_ciphertexts_are_never_accepted_after_a_backend_failure() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
+        let chosen = b"attacker-chosen plaintext".to_vec();
+        let message = b"genuine plaintext".to_vec();
+        for curve_id in [P256, P521] {
+            let width = curve(curve_id).order_bytes();
+            let private = 0x0123_4567_89ab_cdefu64;
+            let key = stored(
+                &BigUint::from_u64(private)
+                    .unwrap()
+                    .to_be_bytes(width)
+                    .unwrap(),
+            );
+            let c1 = multiple_of(curve_id, 0x99);
+            let (forged_c2, forged_c3) = public_c1_ciphertext(&c1, &chosen);
+            let shared = point_multiply(
+                curve_id,
+                Some(&c1),
+                &BigUint::from_u64(private)
+                    .unwrap()
+                    .to_be_bytes(width)
+                    .unwrap(),
+            )
+            .unwrap();
+            let (valid_c2, valid_c3) = public_c1_ciphertext(&shared, &message);
+            let decrypt = |c2: &[u8], c3: &[u8]| {
+                crypt_ecc_decrypt(
+                    curve_id,
+                    Some(&key),
+                    kdf2_sha256(),
+                    &c1,
+                    c2,
+                    c3,
+                    &mut |_| Ok(()),
+                )
+            };
+            assert_eq!(
+                decrypt(&forged_c2, &forged_c3),
+                Err(TPM_RC_VALUE),
+                "{curve_id:#06x}: normal rejection"
+            );
+            assert_eq!(decrypt(&valid_c2, &valid_c3), Ok(message.clone()));
+            for (boundary, label) in [
+                (
+                    FaultBoundary::Random,
+                    "RNG failure while importing the private scalar",
+                ),
+                (
+                    FaultBoundary::ImportReduction,
+                    "arithmetic failure while importing the private scalar",
+                ),
+                (
+                    FaultBoundary::Remask,
+                    "failure while refreshing the scalar masks",
+                ),
+                (
+                    FaultBoundary::PointValidation,
+                    "backend failure while validating C1",
+                ),
+                (
+                    FaultBoundary::PointOperation,
+                    "backend failure in the shared-point computation",
+                ),
+                (
+                    FaultBoundary::MaskedProduct,
+                    "backend failure in the coordinate arithmetic",
+                ),
+                (
+                    FaultBoundary::Unmask,
+                    "backend failure while unmasking the shared point",
+                ),
+            ] {
+                for (c2, c3) in [(&forged_c2, &forged_c3), (&valid_c2, &valid_c3)] {
+                    let mut hits = 0;
+                    loop {
+                        let before = faults_fired();
+                        arm_fault(boundary, hits);
+                        let result = decrypt(c2, c3);
+                        disarm_fault();
+                        if faults_fired() == before {
+                            assert!(hits > 0, "{curve_id:#06x} {label}: the fault is reached");
+                            break;
+                        }
+                        assert_eq!(
+                            result,
+                            Err(TPM_RC_FAILURE),
+                            "{curve_id:#06x} {label}, hit {hits}"
+                        );
+                        hits += 1;
+                    }
+                }
+                assert_eq!(
+                    decrypt(&forged_c2, &forged_c3),
+                    Err(TPM_RC_VALUE),
+                    "{label}: no lasting state"
+                );
+                assert_eq!(
+                    decrypt(&valid_c2, &valid_c3),
+                    Ok(message.clone()),
+                    "{label}: recovery"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn point_validation_failures_are_classified_by_the_curve_equation() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault};
+        let curve = curve(P256);
+        let valid = multiple_of(P256, 0x42);
+        let off_curve = EccPoint {
+            x: valid.x.clone(),
+            y: vec![3; 32],
+        };
+        arm_fault(FaultBoundary::PointValidation, 0);
+        assert_eq!(
+            curve.is_on_curve(&valid.x, &valid.y),
+            Err(EccBackendError),
+            "a valid point the backend failed to set"
+        );
+        disarm_fault();
+        arm_fault(FaultBoundary::PointValidation, 0);
+        assert_eq!(
+            curve.is_on_curve(&off_curve.x, &off_curve.y),
+            Ok(false),
+            "an off-curve point stays off-curve"
+        );
+        disarm_fault();
+        assert_eq!(curve.is_on_curve(&valid.x, &valid.y), Ok(true));
+        assert_eq!(curve.is_on_curve(&off_curve.x, &off_curve.y), Ok(false));
+        let message = b"raw".to_vec();
+        let (c2, c3) = public_c1_ciphertext(&off_curve, &message);
+        let key = stored(&small_scalar(7, 32));
+        arm_fault(FaultBoundary::PointValidation, 0);
+        let result = crypt_ecc_decrypt(
+            P256,
+            Some(&key),
+            kdf2_sha256(),
+            &off_curve,
+            &c2,
+            &c3,
+            &mut |_| Ok(()),
+        );
+        disarm_fault();
+        assert_eq!(
+            result,
+            Ok(message),
+            "a genuinely off-curve C1 keeps the reference's raw-C1 result"
+        );
+    }
+
+    #[test]
+    fn verified_raw_c1_compatibility_cases_are_kept() {
+        let message = b"raw".to_vec();
+        let off_curve = EccPoint {
+            x: vec![1; 32],
+            y: vec![2; 32],
+        };
+        let key = stored(&small_scalar(7, 32));
+        for (label, private, c1) in [
+            ("off-curve C1", Some(&key), off_curve.clone()),
+            ("empty C1", Some(&key), EccPoint::empty()),
+            (
+                "missing private scalar: product at infinity",
+                None,
+                multiple_of(P256, 5),
+            ),
+        ] {
+            let (c2, c3) = public_c1_ciphertext(
+                &EccPoint {
+                    x: SharedCoordinate::public(&c1.x, 32).full.clone(),
+                    y: SharedCoordinate::public(&c1.y, 32).full.clone(),
+                },
+                &message,
+            );
+            assert_eq!(
+                crypt_ecc_decrypt(P256, private, kdf2_sha256(), &c1, &c2, &c3, &mut |_| Ok(())),
+                Ok(message.clone()),
+                "{label}: the reference keeps the raw C1 coordinates"
+            );
+        }
+    }
+
+    #[test]
+    fn ephemeral_backend_failures_are_failures_without_extra_drbg_draws() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
+        let public = multiple_of(P256, 0x31);
+        for boundary in [
+            FaultBoundary::Random,
+            FaultBoundary::Remask,
+            FaultBoundary::PointOperation,
+        ] {
+            let mut used = rand(b"ephemeral failure");
+            let mut reference = rand(b"ephemeral failure");
+            let before = faults_fired();
+            arm_fault(boundary, 0);
+            let result = crypt_ecc_encrypt(
+                P256,
+                &public,
+                kdf2(TPM_ALG_SHA256),
+                b"m",
+                &mut used,
+                &mut no_self_test,
+            );
+            disarm_fault();
+            assert_eq!(faults_fired() - before, 1, "{boundary:?} is reached");
+            assert_eq!(result.err(), Some(TPM_RC_FAILURE), "{boundary:?}");
+            reference
+                .random_bytes(curve(P256).order_bytes() + 8)
+                .unwrap();
+            assert_eq!(
+                used.random_bytes(32).unwrap(),
+                reference.random_bytes(32).unwrap(),
+                "{boundary:?}: one ephemeral draw, as on success"
+            );
+            assert!(
+                crypt_ecc_encrypt(
+                    P256,
+                    &public,
+                    kdf2(TPM_ALG_SHA256),
+                    b"m",
+                    &mut used,
+                    &mut no_self_test
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    fn on_curve(curve_id: u16, point: &EccPoint) -> bool {
+        point_is_on_curve(curve_id, point).expect("no backend failure")
+    }
+
+    fn curve(curve_id: u16) -> EccCurve {
+        EccCurve::lookup(curve_id).expect("a compiled curve")
+    }
+
     fn generator(curve_id: u16) -> EccPoint {
-        let curve = curve_parameters(curve_id).expect("a compiled curve");
-        EccPoint::from_coordinates(&curve, &curve.generator_x, &curve.generator_y)
-            .expect("the generator encodes")
+        let detail = curve_detail(curve_id).expect("a compiled curve");
+        EccPoint {
+            x: detail.generator_x,
+            y: detail.generator_y,
+        }
+    }
+
+    fn secret(curve_id: u16, value: u64) -> EccScalar {
+        curve(curve_id).scalar_from_u64(value).unwrap()
     }
 
     fn scalar(curve_id: u16, value: u64) -> Vec<u8> {
-        let curve = curve_parameters(curve_id).expect("a compiled curve");
-        BigUint::from_u64(value)
-            .to_be_bytes(curve.order.byte_len())
+        let curve = curve(curve_id);
+        curve
+            .scalar_from_u64(value)
+            .unwrap()
+            .to_bytes(curve.order_bytes())
             .expect("a scalar encodes")
     }
 
@@ -652,7 +1515,7 @@ mod tests {
     fn generator_on_curve_all_curves() {
         for curve_id in ALL_CURVES {
             assert!(is_compiled_curve(curve_id));
-            assert!(point_is_on_curve(curve_id, &generator(curve_id)));
+            assert_eq!(point_is_on_curve(curve_id, &generator(curve_id)), Ok(true));
         }
     }
 
@@ -660,8 +1523,8 @@ mod tests {
     fn off_curve_point_rejection() {
         let mut point = generator(P256);
         point.y[31] ^= 0x01;
-        assert!(!point_is_on_curve(P256, &point));
-        assert!(!point_is_on_curve(0x0007, &generator(P256)));
+        assert_eq!(point_is_on_curve(P256, &point), Ok(false));
+        assert_eq!(point_is_on_curve(0x0007, &generator(P256)), Ok(false));
     }
 
     #[test]
@@ -810,7 +1673,7 @@ mod tests {
             assert_eq!(cipher.c3.len(), 32);
             let recovered = crypt_ecc_decrypt(
                 P256,
-                &private,
+                Some(&stored(&private)),
                 kdf2(TPM_ALG_SHA256),
                 &cipher.c1,
                 &cipher.c2,
@@ -839,7 +1702,7 @@ mod tests {
             assert_eq!(
                 crypt_ecc_decrypt(
                     curve_id,
-                    &private,
+                    Some(&stored(&private)),
                     kdf2(TPM_ALG_SHA256),
                     &cipher.c1,
                     &cipher.c2,
@@ -873,7 +1736,7 @@ mod tests {
         assert_eq!(
             crypt_ecc_decrypt(
                 P256,
-                &private,
+                Some(&stored(&private)),
                 kdf2(TPM_ALG_SHA256),
                 &broken_c1,
                 &cipher.c2,
@@ -888,7 +1751,7 @@ mod tests {
         assert_eq!(
             crypt_ecc_decrypt(
                 P256,
-                &private,
+                Some(&stored(&private)),
                 kdf2(TPM_ALG_SHA256),
                 &cipher.c1,
                 &broken_c2,
@@ -903,7 +1766,7 @@ mod tests {
         assert_eq!(
             crypt_ecc_decrypt(
                 P256,
-                &private,
+                Some(&stored(&private)),
                 kdf2(TPM_ALG_SHA256),
                 &cipher.c1,
                 &cipher.c2,
@@ -939,7 +1802,7 @@ mod tests {
         assert_eq!(
             crypt_ecc_decrypt(
                 P256,
-                &private,
+                Some(&stored(&private)),
                 scheme,
                 &public,
                 b"x",
@@ -991,11 +1854,18 @@ mod tests {
     #[test]
     fn commit_output_point_selection() {
         let private = scalar(P256, 0x2222);
-        let r = BigUint::from_u64(0x3333);
+        let r = secret(P256, 0x3333);
         let point = generator(P256);
 
-        let (k, l, e) =
-            commit_compute(P256, None, None, &private, &r, &never_canceled).expect("K, L and E");
+        let (k, l, e) = commit_compute(
+            P256,
+            None,
+            None,
+            Some(&stored(&private)),
+            &r,
+            &never_canceled,
+        )
+        .expect("K, L and E");
         assert_eq!(k, EccPoint::empty());
         assert_eq!(l, EccPoint::empty());
         assert_eq!(
@@ -1003,8 +1873,15 @@ mod tests {
             point_multiply(P256, None, &scalar(P256, 0x3333)).expect("[r]G")
         );
 
-        let (k, l, e) = commit_compute(P256, Some(&point), None, &private, &r, &never_canceled)
-            .expect("K, L and E");
+        let (k, l, e) = commit_compute(
+            P256,
+            Some(&point),
+            None,
+            Some(&stored(&private)),
+            &r,
+            &never_canceled,
+        )
+        .expect("K, L and E");
         assert_eq!(k, EccPoint::empty());
         assert_eq!(l, EccPoint::empty());
         assert_eq!(
@@ -1012,8 +1889,15 @@ mod tests {
             point_multiply(P256, Some(&point), &scalar(P256, 0x3333)).expect("[r]P1")
         );
 
-        let (k, l, e) = commit_compute(P256, None, Some(&point), &private, &r, &never_canceled)
-            .expect("K, L and E");
+        let (k, l, e) = commit_compute(
+            P256,
+            None,
+            Some(&point),
+            Some(&stored(&private)),
+            &r,
+            &never_canceled,
+        )
+        .expect("K, L and E");
         assert_eq!(
             k,
             point_multiply(P256, Some(&point), &private).expect("[d]P2")
@@ -1028,7 +1912,7 @@ mod tests {
             P256,
             Some(&point),
             Some(&point),
-            &private,
+            Some(&stored(&private)),
             &r,
             &never_canceled,
         )
@@ -1047,8 +1931,8 @@ mod tests {
                 P256,
                 None,
                 Some(&point),
-                &scalar(P256, 1),
-                &BigUint::from_u64(2),
+                Some(&stored(&scalar(P256, 1))),
+                &secret(P256, 2),
                 &never_canceled
             ),
             Err(TPM_RC_VALUE)
@@ -1056,15 +1940,20 @@ mod tests {
     }
 
     #[test]
-    fn commit_value_above_order_value_error() {
-        let curve = curve_parameters(P256).expect("a compiled curve");
+    fn commit_value_equal_to_order_value_error() {
+        let curve = curve(P256);
+        let reduced = curve.scalar(&curve.order()).expect("the order reduces");
+        assert!(
+            reduced.is_zero(),
+            "an order-valued commitment reduces to zero"
+        );
         assert_eq!(
             commit_compute(
                 P256,
                 None,
                 Some(&generator(P256)),
-                &scalar(P256, 1),
-                &curve.order,
+                Some(&stored(&scalar(P256, 1))),
+                &reduced,
                 &never_canceled
             ),
             Err(TPM_RC_VALUE)
@@ -1074,11 +1963,18 @@ mod tests {
     #[test]
     fn two_phase_ecdh_dual_shared_point_output() {
         let ds_a = scalar(P256, 0x0a0a);
-        let de_a = BigUint::from_u64(0x0b0b);
+        let de_a = secret(P256, 0x0b0b);
         let qs_b = point_multiply(P256, None, &scalar(P256, 0x0c0c)).expect("a point");
         let qe_b = point_multiply(P256, None, &scalar(P256, 0x0d0d)).expect("a point");
-        let result = two_phase_key_exchange(P256, TPM_ALG_ECDH, &ds_a, &de_a, &qs_b, &qe_b)
-            .expect("the exchange succeeds");
+        let result = two_phase_key_exchange(
+            P256,
+            TPM_ALG_ECDH,
+            Some(&stored(&ds_a)),
+            &de_a,
+            &qs_b,
+            &qe_b,
+        )
+        .expect("the exchange succeeds");
         assert_eq!(result.outcome, TwoPhaseOutcome::Points);
         assert_eq!(
             result.z1,
@@ -1093,24 +1989,38 @@ mod tests {
     #[test]
     fn two_phase_sm2_single_point_output() {
         let ds_a = scalar(SM2P256, 0x1111);
-        let de_a = BigUint::from_u64(0x2222);
+        let de_a = secret(SM2P256, 0x2222);
         let qs_b = point_multiply(SM2P256, None, &scalar(SM2P256, 0x3333)).expect("a point");
         let qe_b = point_multiply(SM2P256, None, &scalar(SM2P256, 0x4444)).expect("a point");
-        let result = two_phase_key_exchange(SM2P256, TPM_ALG_SM2, &ds_a, &de_a, &qs_b, &qe_b)
-            .expect("the exchange succeeds");
+        let result = two_phase_key_exchange(
+            SM2P256,
+            TPM_ALG_SM2,
+            Some(&stored(&ds_a)),
+            &de_a,
+            &qs_b,
+            &qe_b,
+        )
+        .expect("the exchange succeeds");
         assert_eq!(result.outcome, TwoPhaseOutcome::Points);
         assert_ne!(result.z1, EccPoint::empty());
         assert_eq!(result.z2, EccPoint::empty());
-        assert!(point_is_on_curve(SM2P256, &result.z1));
+        assert_eq!(point_is_on_curve(SM2P256, &result.z1), Ok(true));
     }
 
     #[test]
     fn two_phase_ecmqv_vendored_divide_by_zero() {
         let ds_a = scalar(P256, 0x1111);
-        let de_a = BigUint::from_u64(0x2222);
+        let de_a = secret(P256, 0x2222);
         let point = generator(P256);
-        let result = two_phase_key_exchange(P256, TPM_ALG_ECMQV, &ds_a, &de_a, &point, &point)
-            .expect("the vendored path reports its failure through the outcome");
+        let result = two_phase_key_exchange(
+            P256,
+            TPM_ALG_ECMQV,
+            Some(&stored(&ds_a)),
+            &de_a,
+            &point,
+            &point,
+        )
+        .expect("the vendored path reports its failure through the outcome");
         assert_eq!(result.outcome, TwoPhaseOutcome::DivideByZero);
     }
 
@@ -1121,8 +2031,8 @@ mod tests {
             two_phase_key_exchange(
                 P256,
                 TPM_ALG_SHA256,
-                &scalar(P256, 1),
-                &BigUint::from_u64(1),
+                Some(&stored(&scalar(P256, 1))),
+                &secret(P256, 1),
                 &point,
                 &point
             )
@@ -1132,9 +2042,11 @@ mod tests {
     }
 
     fn plus_prime(coordinate: &[u8]) -> Vec<u8> {
-        let curve = curve_parameters(P256).expect("NIST P256");
+        let prime = curve_detail(P256).expect("NIST P256").prime;
         BigUint::from_be_bytes(coordinate)
-            .add(&curve.prime)
+            .unwrap()
+            .add(&BigUint::from_be_bytes(&prime).unwrap())
+            .unwrap()
             .to_be_bytes(33)
             .expect("a 33-byte alias")
     }
@@ -1159,7 +2071,7 @@ mod tests {
             },
         ] {
             assert!(
-                point_is_on_curve(P256, &aliased),
+                on_curve(P256, &aliased),
                 "the curve equation is evaluated modulo p"
             );
             assert_eq!(
@@ -1172,13 +2084,12 @@ mod tests {
 
     #[test]
     fn prime_coordinate_zero_reduction_off_curve() {
-        let curve = curve_parameters(P256).expect("NIST P256");
         let peer = multiple_of_generator(2);
         let point = EccPoint {
-            x: curve.prime.to_be_bytes(32).expect("the prime"),
+            x: curve_detail(P256).expect("NIST P256").prime,
             y: peer.y.clone(),
         };
-        assert!(!point_is_on_curve(P256, &point), "(0, y) is off the curve");
+        assert!(!on_curve(P256, &point), "(0, y) is off the curve");
         assert_eq!(
             point_multiply(P256, Some(&point), &scalar(P256, 3)),
             Err(TPM_RC_ECC_POINT)
@@ -1206,7 +2117,7 @@ mod tests {
         assert_eq!(
             crypt_ecc_decrypt(
                 P256,
-                &private,
+                Some(&stored(&private)),
                 kdf2(TPM_ALG_SHA256),
                 &aliased,
                 &cipher.c2,
@@ -1238,7 +2149,7 @@ mod tests {
             assert_eq!(
                 crypt_ecc_decrypt(
                     P256,
-                    &private,
+                    Some(&stored(&private)),
                     kdf2(TPM_ALG_SHA256),
                     &cipher.c1,
                     &cipher.c2,
@@ -1253,7 +2164,7 @@ mod tests {
             assert_eq!(
                 crypt_ecc_decrypt(
                     P256,
-                    &private,
+                    Some(&stored(&private)),
                     kdf2(TPM_ALG_SHA256),
                     &cipher.c1,
                     &cipher.c2,
@@ -1267,7 +2178,7 @@ mod tests {
         assert_eq!(
             crypt_ecc_decrypt(
                 P256,
-                &private,
+                Some(&stored(&private)),
                 kdf2(TPM_ALG_SHA256),
                 &cipher.c1,
                 &cipher.c2,
@@ -1305,7 +2216,7 @@ mod tests {
         gates.clear();
         crypt_ecc_decrypt(
             P256,
-            &private,
+            Some(&stored(&private)),
             kdf2(TPM_ALG_SHA256),
             &cipher.c1,
             &cipher.c2,
@@ -1347,7 +2258,7 @@ mod tests {
     #[test]
     fn commit_cancel_poll_vendored_boundaries() {
         let private = scalar(P256, 0x4444);
-        let r = BigUint::from_u64(0x5555);
+        let r = secret(P256, 0x5555);
         let point = multiple_of_generator(2);
         let polls = core::cell::Cell::new(0usize);
         let count = || {
@@ -1356,47 +2267,93 @@ mod tests {
         };
 
         polls.set(0);
-        commit_compute(P256, None, None, &private, &r, &count).expect("K, L and E");
+        commit_compute(P256, None, None, Some(&stored(&private)), &r, &count).expect("K, L and E");
         assert_eq!(polls.get(), 0, "the [r]G path has no checkpoint");
 
         polls.set(0);
-        commit_compute(P256, Some(&point), None, &private, &r, &count).expect("K, L and E");
+        commit_compute(
+            P256,
+            Some(&point),
+            None,
+            Some(&stored(&private)),
+            &r,
+            &count,
+        )
+        .expect("K, L and E");
         assert_eq!(polls.get(), 0, "the [r]P1 path has no checkpoint");
 
         polls.set(0);
-        commit_compute(P256, None, Some(&point), &private, &r, &count).expect("K, L and E");
+        commit_compute(
+            P256,
+            None,
+            Some(&point),
+            Some(&stored(&private)),
+            &r,
+            &count,
+        )
+        .expect("K, L and E");
         assert_eq!(polls.get(), 1, "one checkpoint between K and L");
 
         polls.set(0);
-        commit_compute(P256, Some(&point), Some(&point), &private, &r, &count).expect("K, L and E");
+        commit_compute(
+            P256,
+            Some(&point),
+            Some(&point),
+            Some(&stored(&private)),
+            &r,
+            &count,
+        )
+        .expect("K, L and E");
         assert_eq!(polls.get(), 2, "a second checkpoint before E");
     }
 
     #[test]
     fn signaled_cancel_commit_stop() {
         let private = scalar(P256, 0x6666);
-        let r = BigUint::from_u64(0x7777);
+        let r = secret(P256, 0x7777);
         let point = multiple_of_generator(2);
         let always = || true;
         assert_eq!(
-            commit_compute(P256, None, Some(&point), &private, &r, &always),
+            commit_compute(
+                P256,
+                None,
+                Some(&point),
+                Some(&stored(&private)),
+                &r,
+                &always
+            ),
             Err(crate::library::constants::TPM_RC_CANCELED)
         );
         assert_eq!(
-            commit_compute(P256, Some(&point), Some(&point), &private, &r, &always),
+            commit_compute(
+                P256,
+                Some(&point),
+                Some(&point),
+                Some(&stored(&private)),
+                &r,
+                &always
+            ),
             Err(crate::library::constants::TPM_RC_CANCELED)
         );
         assert!(
-            commit_compute(P256, Some(&point), None, &private, &r, &always).is_ok(),
+            commit_compute(
+                P256,
+                Some(&point),
+                None,
+                Some(&stored(&private)),
+                &r,
+                &always
+            )
+            .is_ok(),
             "a path without P2 never reaches a checkpoint"
         );
-        assert!(commit_compute(P256, None, None, &private, &r, &always).is_ok());
+        assert!(commit_compute(P256, None, None, Some(&stored(&private)), &r, &always).is_ok());
     }
 
     #[test]
     fn second_checkpoint_after_first_pass_only() {
         let private = scalar(P256, 0x8888);
-        let r = BigUint::from_u64(0x9999);
+        let r = secret(P256, 0x9999);
         let point = multiple_of_generator(2);
         let polls = core::cell::Cell::new(0usize);
         let second_only = || {
@@ -1404,28 +2361,46 @@ mod tests {
             polls.get() == 2
         };
         assert_eq!(
-            commit_compute(P256, Some(&point), Some(&point), &private, &r, &second_only),
+            commit_compute(
+                P256,
+                Some(&point),
+                Some(&point),
+                Some(&stored(&private)),
+                &r,
+                &second_only
+            ),
             Err(crate::library::constants::TPM_RC_CANCELED)
         );
         assert_eq!(polls.get(), 2);
     }
 
+    fn reference_associated_value(value: &BigUint, bits: usize) -> BigUint {
+        let mut masked = value.clone();
+        masked.mask_bits(upstream_mask_kept_bits(bits)).unwrap();
+        if masked.test_bit(bits) {
+            masked
+        } else {
+            masked
+                .add(&BigUint::from_u64(1).unwrap().shl(bits).unwrap())
+                .unwrap()
+        }
+    }
+
     #[test]
     fn upstream_mask_word_granularity() {
-        let value = BigUint::from_be_bytes(&[0xff; 32]);
-        assert_eq!(upstream_mask_bits(&value, 0), BigUint::zero());
+        assert_eq!(upstream_mask_kept_bits(0), 0);
         assert_eq!(
-            upstream_mask_bits(&value, 64),
-            BigUint::from_be_bytes(&[0xff; 8]),
+            upstream_mask_kept_bits(64),
+            64,
             "a whole-word mask keeps exactly that word"
         );
         assert_eq!(
-            upstream_mask_bits(&value, 126).bit_len(),
+            upstream_mask_kept_bits(126),
             66,
             "the vendored shift keeps sixty-six bits, not one hundred twenty-six"
         );
         assert_eq!(
-            upstream_mask_bits(&value, 8).bit_len(),
+            upstream_mask_kept_bits(8),
             56,
             "a sub-word mask keeps the complement of the requested bits"
         );
@@ -1433,14 +2408,42 @@ mod tests {
 
     #[test]
     fn associated_value_bit_above_mask() {
-        let value = BigUint::from_be_bytes(&[0xff; 32]);
+        let value = BigUint::from_be_bytes(&[0xff; 32]).unwrap();
+        let mut masked = value.clone();
+        masked.mask_bits(56).unwrap();
         assert_eq!(
-            associated_value(&value, 8),
-            upstream_mask_bits(&value, 8).add(&BigUint::from_u64(0x100))
+            BigUint::from_be_bytes(&associated_value(&[0xff; 32], 8)).unwrap(),
+            masked,
+            "avfSm2 sets bit w; a bit the upstream mask kept stays as it is"
+        );
+        let mut cleared = [0xff; 32];
+        cleared[30] = 0xfe;
+        let mut masked = BigUint::from_be_bytes(&cleared).unwrap();
+        masked.mask_bits(56).unwrap();
+        assert_eq!(
+            BigUint::from_be_bytes(&associated_value(&cleared, 8)).unwrap(),
+            masked.add(&BigUint::from_u64(0x100).unwrap()).unwrap()
         );
         assert_eq!(
-            associated_value(&BigUint::zero(), 4),
-            BigUint::from_u64(0x10)
+            BigUint::from_be_bytes(&associated_value(&[], 4)).unwrap(),
+            BigUint::from_u64(0x10).unwrap()
         );
+    }
+
+    #[test]
+    fn associated_value_reference_agreement_per_curve() {
+        for curve_id in ALL_CURVES {
+            let curve = curve(curve_id);
+            let w = (curve.order_bits() - 1) / 2 - 1;
+            for fill in [0x00u8, 0x01, 0x5a, 0x80, 0xff] {
+                let mut coordinate = vec![fill; curve.field_bytes()];
+                coordinate[0] ^= 0x33;
+                assert_eq!(
+                    BigUint::from_be_bytes(&associated_value(&coordinate, w)).unwrap(),
+                    reference_associated_value(&BigUint::from_be_bytes(&coordinate).unwrap(), w),
+                    "curve {curve_id:#06x} fill {fill:#04x}"
+                );
+            }
+        }
     }
 }

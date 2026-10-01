@@ -498,24 +498,15 @@ fn marshal_nv_tpmt_sensitive(
     Ok(())
 }
 
-fn bn_prime_word_bytes(prime: &OwnedBnPrime) -> Result<Vec<u8>, TpmResult> {
-    let size_words = usize::from(prime.numbytes).div_ceil(8);
-    let padded = size_words.checked_mul(8).ok_or(TPM_FAIL)?;
-    let mut data = prime.data.as_bytes().to_vec();
-    if data.len() > padded {
-        return Err(TPM_FAIL);
-    }
-    data.resize(padded, 0);
-    Ok(data)
-}
-
 fn marshal_bn_prime(w: &mut WireWriter, prime: Option<&OwnedBnPrime>) -> Result<(), TpmResult> {
     w.nv_header(BN_PRIME_T_VERSION, BN_PRIME_T_MAGIC, 1);
     match prime {
         Some(prime) => {
-            let data = bn_prime_word_bytes(prime)?;
-            w.u16(u16::try_from(data.len()).map_err(|_| TPM_FAIL)?);
-            w.bytes(&data);
+            let words = prime.serialized_words();
+            w.u16(u16::try_from(words.len() * 8).map_err(|_| TPM_FAIL)?);
+            for word in words {
+                w.bytes(&word.to_be_bytes());
+            }
         }
         None => w.u16(0),
     }
@@ -887,14 +878,13 @@ pub(in crate::library::tpm2) fn rsa3072_object_image(
     {
         for (index, prime) in exponent.primes.iter().enumerate() {
             let entry = R3K_PRIVATE_EXPONENT + index * SIZEOF_BN_RSA3072_PRIME;
-            let words = bn_prime_word_bytes(prime)?;
-            if words.len() > SIZEOF_BN_PRIME_D {
+            let words = prime.serialized_words();
+            if words.len() * 8 > SIZEOF_BN_PRIME_D {
                 return Err(TPM_FAIL);
             }
             region.put_u64(entry + BN_PRIME_ALLOCATED, (SIZEOF_BN_PRIME_D / 8) as u64)?;
-            region.put_u64(entry + BN_PRIME_SIZE, (words.len() / 8) as u64)?;
-            for (word_index, word) in words.chunks_exact(8).enumerate() {
-                let value = u64::from_be_bytes(word.try_into().map_err(|_| TPM_FAIL)?);
+            region.put_u64(entry + BN_PRIME_SIZE, words.len() as u64)?;
+            for (word_index, &value) in words.iter().enumerate() {
                 region.put_u64(entry + BN_PRIME_D + word_index * 8, value)?;
             }
         }

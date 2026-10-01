@@ -18,10 +18,12 @@
 // Copyright (c) 2026 Yandex
 
 use super::crypto::{
-    BigUint, RSA_DEFAULT_PUBLIC_EXPONENT, oaep_decode, oaep_encode, rsa_private_key_op,
-    rsa_public_key_op, rsaes_decode, rsaes_encode,
+    RSA_DEFAULT_PUBLIC_EXPONENT, RecoveredExponent, RsaCrtKey, RsaRuntimeCache, oaep_decode,
+    oaep_encode, recover_rsa_private_exponent, rsa_private_key_op, rsa_public_key_op, rsaes_decode,
+    rsaes_encode,
 };
 use super::self_test::LazySelfTest;
+use super::signature::public_value_below;
 
 pub(super) const OAEP_TEST_LABEL: &[u8] = b"OAEP Test Value\0";
 pub(in crate::library::tpm2) const OAEP_TEST_SEED_SIZE: usize = 64;
@@ -153,39 +155,8 @@ pub(in crate::library::tpm2) enum RawRsaSelfTestStage {
     DecryptCompare,
 }
 
-struct TestKey {
-    modulus: BigUint,
-    p: BigUint,
-    q: BigUint,
-    d_p: BigUint,
-    d_q: BigUint,
-    q_inv: BigUint,
-}
-
-fn load_test_key() -> Option<TestKey> {
-    let modulus = BigUint::from_be_bytes(&TEST_MODULUS);
-    let first = BigUint::from_be_bytes(&TEST_PRIME);
-    let (second, remainder) = modulus.div_rem(&first)?;
-    if !remainder.is_zero() {
-        return None;
-    }
-    let (p, q) = if first < second {
-        (second, first)
-    } else {
-        (first, second)
-    };
-    let exponent = BigUint::from_u64(u64::from(RSA_DEFAULT_PUBLIC_EXPONENT));
-    let d_p = exponent.mod_inverse(&p.sub_u64(1)?)?;
-    let d_q = exponent.mod_inverse(&q.sub_u64(1)?)?;
-    let q_inv = q.mod_inverse(&p)?;
-    Some(TestKey {
-        modulus,
-        p,
-        q,
-        d_p,
-        d_q,
-        q_inv,
-    })
+fn load_test_key() -> Option<RecoveredExponent> {
+    recover_rsa_private_exponent(&TEST_MODULUS, &TEST_PRIME, RSA_DEFAULT_PUBLIC_EXPONENT)
 }
 
 enum Padding<'a> {
@@ -222,16 +193,26 @@ impl Padding<'_> {
     }
 }
 
-fn private_operation(key: &TestKey, ciphertext: &[u8]) -> Option<Vec<u8>> {
-    let value = BigUint::from_be_bytes(ciphertext);
-    if value >= key.modulus {
+fn private_operation(key: &RecoveredExponent, ciphertext: &[u8]) -> Option<Vec<u8>> {
+    if !public_value_below(ciphertext, &TEST_MODULUS) {
         return None;
     }
-    let plain = rsa_private_key_op(&key.p, &key.q, &key.d_p, &key.d_q, &key.q_inv, &value)?;
-    plain.to_be_bytes(TEST_MODULUS.len())
+    static TEST_KEY_CACHE: std::sync::LazyLock<RsaRuntimeCache> =
+        std::sync::LazyLock::new(RsaRuntimeCache::default);
+    let key = RsaCrtKey {
+        cache: Some(&TEST_KEY_CACHE),
+        modulus: &TEST_MODULUS,
+        exponent: RSA_DEFAULT_PUBLIC_EXPONENT,
+        prime: &TEST_PRIME,
+        q: &key.q,
+        d_p: &key.d_p,
+        d_q: &key.d_q,
+        q_inv: &key.q_inv,
+    };
+    rsa_private_key_op(&key, ciphertext)
 }
 
-fn decrypt(key: &TestKey, padding: &Padding<'_>, ciphertext: &[u8]) -> Option<Vec<u8>> {
+fn decrypt(key: &RecoveredExponent, padding: &Padding<'_>, ciphertext: &[u8]) -> Option<Vec<u8>> {
     padding.decode(&private_operation(key, ciphertext)?)
 }
 
@@ -257,13 +238,8 @@ pub(in crate::library::tpm2) fn run_rsaes_known_answer(
 
 pub(in crate::library::tpm2) fn run_rsaep_known_answer() -> Result<(), RawRsaSelfTestStage> {
     let key = load_test_key().ok_or(RawRsaSelfTestStage::Encrypt)?;
-    let ciphertext = rsa_public_key_op(
-        &key.modulus,
-        RSA_DEFAULT_PUBLIC_EXPONENT,
-        &BigUint::from_be_bytes(&TEST_VALUE),
-    )
-    .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
-    .ok_or(RawRsaSelfTestStage::Encrypt)?;
+    let ciphertext = rsa_public_key_op(&TEST_MODULUS, RSA_DEFAULT_PUBLIC_EXPONENT, &TEST_VALUE)
+        .ok_or(RawRsaSelfTestStage::Encrypt)?;
     if ciphertext != RSAEP_KNOWN_CIPHERTEXT {
         return Err(RawRsaSelfTestStage::EncryptCompare);
     }
@@ -284,13 +260,8 @@ fn run_known_answer(
     let padded = padding
         .encode(message)
         .ok_or(PaddedRsaSelfTestStage::Encrypt)?;
-    let ciphertext = rsa_public_key_op(
-        &key.modulus,
-        RSA_DEFAULT_PUBLIC_EXPONENT,
-        &BigUint::from_be_bytes(&padded),
-    )
-    .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
-    .ok_or(PaddedRsaSelfTestStage::Encrypt)?;
+    let ciphertext = rsa_public_key_op(&TEST_MODULUS, RSA_DEFAULT_PUBLIC_EXPONENT, &padded)
+        .ok_or(PaddedRsaSelfTestStage::Encrypt)?;
 
     let recovered =
         decrypt(&key, padding, &ciphertext).ok_or(PaddedRsaSelfTestStage::RoundTripDecrypt)?;
@@ -327,8 +298,16 @@ mod tests {
 
     #[test]
     fn vendored_key_load_prime_product_modulus() {
+        use crate::library::tpm2::crypto::{BigUint, crt_words_be};
         let key = load_test_key().expect("the pinned modulus is divisible by the pinned prime");
-        assert_eq!(key.p.mul(&key.q), key.modulus);
+        let q = BigUint::from_be_bytes(&crt_words_be(&key.q)).unwrap();
+        assert_eq!(
+            BigUint::from_be_bytes(&TEST_PRIME)
+                .unwrap()
+                .mul(&q)
+                .unwrap(),
+            BigUint::from_be_bytes(&TEST_MODULUS).unwrap()
+        );
         assert_eq!(TEST_MODULUS.len(), 256);
         assert_eq!(TEST_PRIME.len(), 128);
     }
@@ -368,7 +347,6 @@ mod tests {
 
     #[test]
     fn different_message_ciphertext_comparison_failure() {
-        let key = load_test_key().expect("the test key loads");
         let other = [0x5au8; TEST_MESSAGE_SIZE];
         let padded = oaep_encode(
             TEST_HASH_ALG,
@@ -378,13 +356,8 @@ mod tests {
             TEST_MODULUS.len(),
         )
         .expect("the encode succeeds");
-        let ciphertext = rsa_public_key_op(
-            &key.modulus,
-            RSA_DEFAULT_PUBLIC_EXPONENT,
-            &BigUint::from_be_bytes(&padded),
-        )
-        .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
-        .expect("the public operation succeeds");
+        let ciphertext = rsa_public_key_op(&TEST_MODULUS, RSA_DEFAULT_PUBLIC_EXPONENT, &padded)
+            .expect("the public operation succeeds");
         assert_eq!(
             run_known_answer(
                 &TEST_VALUE[..TEST_MESSAGE_SIZE],
@@ -525,17 +498,11 @@ mod tests {
 
     #[test]
     fn rsaes_different_message_comparison_failure() {
-        let key = load_test_key().expect("the test key loads");
         let padding = rsaes_padding();
         let padded = rsaes_encode(TEST_MODULUS.len(), &[0x5au8; TEST_MESSAGE_SIZE], &padding)
             .expect("the encode succeeds");
-        let ciphertext = rsa_public_key_op(
-            &key.modulus,
-            RSA_DEFAULT_PUBLIC_EXPONENT,
-            &BigUint::from_be_bytes(&padded),
-        )
-        .and_then(|value| value.to_be_bytes(TEST_MODULUS.len()))
-        .expect("the public operation succeeds");
+        let ciphertext = rsa_public_key_op(&TEST_MODULUS, RSA_DEFAULT_PUBLIC_EXPONENT, &padded)
+            .expect("the public operation succeeds");
         assert_eq!(
             run_known_answer(
                 &TEST_VALUE[..TEST_MESSAGE_SIZE],

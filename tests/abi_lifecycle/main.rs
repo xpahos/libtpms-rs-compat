@@ -56,6 +56,8 @@ macro_rules! family {
 
 static LIFECYCLE_CASES: Family = family!("get-test-result", b"GTORACLE", "get_test_result");
 static POLICY_SESSION_CASES: Family = family!("policy-sessions", b"PSORACLE", "policy_sessions");
+static ECC_COMMAND_CASES: Family = family!("ecc-commands", b"EAORACLE", "ecc_commands");
+static RSA_ENCRYPTION_CASES: Family = family!("rsa-encryption", b"REORACLE", "rsa_encryption");
 
 fn run(family: &Family, name: &str) {
     harness::isolated(name, |tpm: &Tpm| {
@@ -169,6 +171,51 @@ abi_cases! {
         nv_missing_policy_attribute_precedes_a_digest_mismatch,
         nv_trial_session_precedes_the_policy_gate,
         nv_password_authorization_ignores_the_policy_attributes,
+    ],
+    ECC_COMMAND_CASES: [
+        constant_time_ecc_p192_matches_the_reference,
+        constant_time_ecc_p224_matches_the_reference,
+        constant_time_ecc_p256_matches_the_reference,
+        constant_time_ecc_p384_matches_the_reference,
+        constant_time_ecc_p521_matches_the_reference,
+        constant_time_ecc_bn256_matches_the_reference,
+        constant_time_ecc_bn638_matches_the_reference,
+        constant_time_ecc_sm2_matches_the_reference,
+        constant_time_sm2_nonce_draws_match_the_reference,
+        constant_time_ecc_keys_restored_from_reference_state_a,
+        constant_time_ecc_keys_restored_from_reference_state_b,
+        constant_time_ecc_keys_restored_from_reference_state_c,
+        constant_time_ecc_p192_zero_shared_coordinate_matches_the_reference,
+        constant_time_ecc_p256_zero_shared_coordinate_matches_the_reference,
+        constant_time_ecc_p384_zero_shared_coordinate_matches_the_reference,
+        constant_time_ecc_p521_zero_shared_coordinate_matches_the_reference,
+        constant_time_ecc_sm2_zero_shared_coordinate_matches_the_reference,
+        constant_time_ecc_scalar_encodings_match_the_reference,
+        constant_time_ecc_p256_scalar_encodings_restored_from_reference_state,
+        constant_time_ecc_p521_scalar_encodings_restored_from_reference_state,
+        constant_time_ecc_bn638_scalar_encodings_restored_from_reference_state,
+    ],
+    RSA_ENCRYPTION_CASES: [
+        constant_time_rsa_1024_larger_prime_matches_the_reference,
+        constant_time_rsa_1024_smaller_prime_matches_the_reference,
+        constant_time_rsa_2048_larger_prime_matches_the_reference,
+        constant_time_rsa_2048_smaller_prime_matches_the_reference,
+        constant_time_rsa_3072_larger_prime_matches_the_reference,
+        constant_time_rsa_3072_smaller_prime_matches_the_reference,
+        constant_time_rsa_rejected_keys_match_the_reference,
+        constant_time_rsa_keys_restored_from_reference_state_larger_prime,
+        constant_time_rsa_keys_restored_from_reference_state_smaller_prime,
+        constant_time_rsa_short_qinv_storage_matches_the_reference,
+        constant_time_rsa_full_qinv_storage_matches_the_reference,
+        constant_time_rsa_uneven_1024_storage_matches_the_reference,
+        constant_time_rsa_uneven_2048_storage_matches_the_reference,
+        constant_time_rsa_uneven_3072_storage_matches_the_reference,
+        constant_time_rsa_imported_keys_match_the_reference,
+        constant_time_rsa_storage_restored_from_reference_state_a,
+        constant_time_rsa_storage_restored_from_reference_state_b,
+        constant_time_rsa_malformed_storage_keys_match_the_reference,
+        constant_time_oaep_self_test_after_nonzero_leading_byte_matches_the_reference,
+        constant_time_oaep_self_test_after_zero_leading_byte_wrong_label_matches_the_reference,
     ],
 }
 

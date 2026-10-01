@@ -1072,10 +1072,10 @@ mod tests {
 
         let signature = certify_signature(response);
         let r_size = u16::from_be_bytes([signature[4], signature[5]]) as usize;
-        let r = BigUint::from_be_bytes(&signature[6..6 + r_size]);
+        let r = BigUint::from_be_bytes(&signature[6..6 + r_size]).unwrap();
         let s_at = 6 + r_size;
         let s_size = u16::from_be_bytes([signature[s_at], signature[s_at + 1]]) as usize;
-        let s = BigUint::from_be_bytes(&signature[s_at + 2..s_at + 2 + s_size]);
+        let s = BigUint::from_be_bytes(&signature[s_at + 2..s_at + 2 + s_size]).unwrap();
 
         let object = resolve_any_object(runtime, handle).expect("the signer is loaded");
         let OwnedAnyObjectBody::Object(body) = &object.body else {
@@ -1088,6 +1088,7 @@ mod tests {
         let order = &curve.order;
 
         let digest = BigUint::from_be_bytes(&tbs_digest(response))
+            .unwrap()
             .rem(order)
             .expect("a reduced digest");
         let s_inverse = s.mod_inverse(order).expect("s is invertible");
@@ -1096,7 +1097,10 @@ mod tests {
         let (x_coordinate, _) = curve
             .multiply_sum(
                 &u1,
-                (&BigUint::from_be_bytes(x), &BigUint::from_be_bytes(y)),
+                (
+                    &BigUint::from_be_bytes(x).unwrap(),
+                    &BigUint::from_be_bytes(y).unwrap(),
+                ),
                 &u2,
             )
             .expect("the verification point");
@@ -1128,7 +1132,11 @@ mod tests {
             panic!("an RSA key");
         };
         let recovered = BigUint::from_be_bytes(blob)
-            .mod_exp(&BigUint::from_u64(65537), &BigUint::from_be_bytes(modulus))
+            .unwrap()
+            .mod_exp(
+                &BigUint::from_u64(65537).unwrap(),
+                &BigUint::from_be_bytes(modulus).unwrap(),
+            )
             .expect("the public operation succeeds")
             .to_be_bytes(256)
             .expect("the block fits the modulus");

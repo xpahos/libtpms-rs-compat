@@ -19,6 +19,9 @@ sha2 = { version = "0.10", default-features = false, features = ["compress"] }
 subtle = { version = "2.6", default-features = false }
 des = { version = "0.8", default-features = false }
 camellia = { version = "0.1", default-features = false }
+openssl = { version = "0.10.81", default-features = false }
+openssl-sys = "0.9.117"
+foreign-types = "0.3.2"
 
 [features]
 default = ["tpm2"]

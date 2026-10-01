@@ -17,10 +17,12 @@
 // Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
 // Copyright (c) 2026 Yandex
 
+use subtle::ConstantTimeEq;
+
 use crate::library::constants::TPM_RC_FAILURE;
 use crate::types::TpmResult;
 
-use super::crypto::{BigUint, CurveParameters, kdfa_from};
+use super::crypto::{EccBackendError, EccCurve, EccScalar, kdfa_from};
 use super::persistent::OwnedSecret;
 use super::runtime::Tpm2Runtime;
 use super::state::COMMIT_ARRAY_SIZE;
@@ -92,20 +94,28 @@ impl CommitState {
 
     pub(super) fn generate_r(
         &self,
-        curve: &CurveParameters,
+        curve: &EccCurve,
         name: &[u8],
         count: Option<u16>,
-    ) -> Option<BigUint> {
+    ) -> Result<Option<EccScalar>, EccBackendError> {
         let context_v = match count {
-            Some(count) => self.counter_for(count)?,
+            Some(count) => match self.counter_for(count) {
+                Some(counter) => counter,
+                None => return Ok(None),
+            },
             None => self.counter,
         }
         .to_be_bytes();
-        let order_bytes = curve.order.byte_len();
-        let bits = u32::try_from(order_bytes.checked_mul(8)?).ok()?;
+        let order_bytes = curve.order_bytes();
+        let Some(bits) = order_bytes
+            .checked_mul(8)
+            .and_then(|bits| u32::try_from(bits).ok())
+        else {
+            return Ok(None);
+        };
         let mut counter: u32 = 1;
         while counter < GENERATE_ITERATION_LIMIT {
-            let stream = kdfa_from(
+            let Some(stream) = kdfa_from(
                 CONTEXT_INTEGRITY_HASH_ALG,
                 self.nonce.as_bytes(),
                 COMMIT_STRING,
@@ -113,22 +123,36 @@ impl CommitState {
                 &context_v,
                 bits,
                 &mut counter,
-            )?;
-            if BigUint::from_be_bytes(&stream) >= curve.order {
-                continue;
-            }
-            if stream[..=order_bytes / 2].iter().any(|&byte| byte != 0) {
-                return Some(BigUint::from_be_bytes(&stream));
+            ) else {
+                return Ok(None);
+            };
+            let stream = super::crypto::SecretBytes(stream);
+            let stream = &stream.0;
+            let upper_half = stream[..=order_bytes / 2]
+                .iter()
+                .fold(0u8, |acc, &byte| acc | byte);
+            if let Some(r) = curve.scalar_below_order(stream)?
+                && !bool::from(upper_half.ct_eq(&0))
+            {
+                return Ok(Some(r));
             }
         }
-        None
+        Ok(None)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::tpm2::crypto::{curve_parameters, is_compiled_curve};
+    use crate::library::tpm2::crypto::is_compiled_curve;
+
+    fn below_order(value: &EccScalar, curve: &EccCurve) -> bool {
+        let order = curve.order();
+        value
+            .to_bytes(order.len())
+            .expect("a scalar fits the order width")
+            < order
+    }
 
     fn state() -> CommitState {
         CommitState {
@@ -228,42 +252,62 @@ mod tests {
 
     #[test]
     fn generated_value_determinism_and_order_bound() {
-        let curve = curve_parameters(0x0003).expect("NIST P256");
+        let curve = EccCurve::lookup(0x0003).expect("NIST P256");
         let state = state();
         let first = state
             .generate_r(&curve, b"", None)
+            .unwrap()
             .expect("a commit value is produced");
         let second = state
             .generate_r(&curve, b"", None)
+            .unwrap()
             .expect("a commit value is produced");
         assert_eq!(first, second);
-        assert!(first < curve.order);
+        assert!(below_order(&first, &curve));
         assert!(!first.is_zero());
     }
 
     #[test]
     fn name_and_counter_generated_value_dependence() {
-        let curve = curve_parameters(0x0003).expect("NIST P256");
+        let curve = EccCurve::lookup(0x0003).expect("NIST P256");
         let mut state = state();
-        let base = state.generate_r(&curve, b"", None).expect("a value");
+        let base = state
+            .generate_r(&curve, b"", None)
+            .unwrap()
+            .expect("a value");
         assert_ne!(
-            state.generate_r(&curve, b"name", None).expect("a value"),
+            state
+                .generate_r(&curve, b"name", None)
+                .unwrap()
+                .expect("a value"),
             base
         );
         state.counter = 7;
-        assert_ne!(state.generate_r(&curve, b"", None).expect("a value"), base);
+        assert_ne!(
+            state
+                .generate_r(&curve, b"", None)
+                .unwrap()
+                .expect("a value"),
+            base
+        );
     }
 
     #[test]
     fn counted_generation_live_commitment_requirement() {
-        let curve = curve_parameters(0x0003).expect("NIST P256");
+        let curve = EccCurve::lookup(0x0003).expect("NIST P256");
         let mut state = state();
-        assert!(state.generate_r(&curve, b"", Some(0)).is_none());
+        assert!(state.generate_r(&curve, b"", Some(0)).unwrap().is_none());
         let count = state.commit();
-        let bound = state.generate_r(&curve, b"", Some(count)).expect("a value");
+        let bound = state
+            .generate_r(&curve, b"", Some(count))
+            .unwrap()
+            .expect("a value");
         state.counter = 0;
         assert_eq!(
-            state.generate_r(&curve, b"", None).expect("a value"),
+            state
+                .generate_r(&curve, b"", None)
+                .unwrap()
+                .expect("a value"),
             bound,
             "the counter that was current at commit time is replayed"
         );
@@ -276,11 +320,34 @@ mod tests {
             0x0001u16, 0x0002, 0x0003, 0x0004, 0x0005, 0x0010, 0x0011, 0x0020,
         ] {
             assert!(is_compiled_curve(curve_id));
-            let curve = curve_parameters(curve_id).expect("a compiled curve");
+            let curve = EccCurve::lookup(curve_id).expect("a compiled curve");
             let value = state
                 .generate_r(&curve, b"", None)
+                .unwrap()
                 .unwrap_or_else(|| panic!("curve {curve_id:#06x} produces a value"));
-            assert!(value < curve.order, "curve {curve_id:#06x}");
+            assert!(below_order(&value, &curve), "curve {curve_id:#06x}");
         }
+    }
+
+    #[test]
+    fn commit_r_backend_failure_is_reported_not_skipped() {
+        use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
+        let curve = EccCurve::lookup(0x0003).unwrap();
+        let reference = state().generate_r(&curve, b"name", None).unwrap().unwrap();
+        let before = faults_fired();
+        arm_fault(FaultBoundary::Random, 0);
+        let failed = state().generate_r(&curve, b"name", None);
+        disarm_fault();
+        assert_eq!(faults_fired() - before, 1);
+        assert!(
+            failed.is_err(),
+            "a backend failure does not advance to another candidate"
+        );
+        let retried = state().generate_r(&curve, b"name", None).unwrap().unwrap();
+        assert_eq!(
+            retried.to_bytes(32),
+            reference.to_bytes(32),
+            "the same r after the failure"
+        );
     }
 }

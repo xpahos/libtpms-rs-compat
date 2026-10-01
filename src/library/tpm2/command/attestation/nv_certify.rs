@@ -1155,9 +1155,10 @@ mod tests {
         let signature = &parameters[2 + attest_size + 6..];
         assert_eq!(signature.len(), 256);
 
-        let n = BigUint::from_be_bytes(&modulus);
-        let e = BigUint::from_u64(65537);
+        let n = BigUint::from_be_bytes(&modulus).unwrap();
+        let e = BigUint::from_u64(65537).unwrap();
         let recovered = BigUint::from_be_bytes(signature)
+            .unwrap()
             .mod_exp(&e, &n)
             .expect("the public operation succeeds")
             .to_be_bytes(256)
@@ -1396,7 +1397,8 @@ mod tests {
             &ecc_template(0x0010, 0, TPM_ECC_NIST_P256, SIGN_KEY_ATTRS),
         );
         let body = loaded_body(&runtime, key);
-        let d = BigUint::from_be_bytes(body.sensitive.sensitive.as_ref().unwrap().as_bytes());
+        let d =
+            BigUint::from_be_bytes(body.sensitive.sensitive.as_ref().unwrap().as_bytes()).unwrap();
         let curve = curve_parameters(TPM_ECC_NIST_P256).expect("a compiled curve");
         let order = &curve.order;
 
@@ -1417,13 +1419,13 @@ mod tests {
             assert_eq!(hash_alg, TPM_ALG_SHA256);
             assert_eq!(r_bytes.len(), 32, "an order-sized r");
             assert_eq!(s_bytes.len(), 32, "an order-sized s");
-            let r = BigUint::from_be_bytes(&r_bytes);
-            let s = BigUint::from_be_bytes(&s_bytes);
+            let r = BigUint::from_be_bytes(&r_bytes).unwrap();
+            let s = BigUint::from_be_bytes(&s_bytes).unwrap();
             let digest = attested_digest(&response, TPM_ALG_SHA256);
 
             let k = match scheme {
                 TPM_ALG_ECDSA => {
-                    let z = BigUint::from_be_bytes(&digest).rem(order).unwrap();
+                    let z = BigUint::from_be_bytes(&digest).unwrap().rem(order).unwrap();
                     let rd = r.mod_mul(&d, order).unwrap();
                     s.mod_inverse(order)
                         .unwrap()
@@ -1432,7 +1434,7 @@ mod tests {
                 }
                 TPM_ALG_ECSCHNORR => s.mod_sub(&r.mod_mul(&d, order).unwrap(), order).unwrap(),
                 _ => {
-                    let one_plus_d = d.add_u64(1).rem(order).unwrap();
+                    let one_plus_d = d.add_u64(1).unwrap().rem(order).unwrap();
                     s.mod_mul(&one_plus_d, order)
                         .unwrap()
                         .mod_add(&r.mod_mul(&d, order).unwrap(), order)
@@ -1447,9 +1449,12 @@ mod tests {
                     let mut hasher = Hasher::new(TPM_ALG_SHA256).unwrap();
                     hasher.update(&x.to_be_bytes(32).unwrap());
                     hasher.update(&digest);
-                    BigUint::from_be_bytes(&hasher.finalize())
+                    BigUint::from_be_bytes(&hasher.finalize()).unwrap()
                 }
-                _ => BigUint::from_be_bytes(&digest).mod_add(&x, order).unwrap(),
+                _ => BigUint::from_be_bytes(&digest)
+                    .unwrap()
+                    .mod_add(&x, order)
+                    .unwrap(),
             };
             assert_eq!(recovered, r, "scheme {scheme:#06x} reproduces r");
         }
@@ -1791,9 +1796,10 @@ mod tests {
         let signature = &parameters[2 + attest_size + 6..];
         assert_eq!(signature.len(), 256);
 
-        let n = BigUint::from_be_bytes(&modulus);
+        let n = BigUint::from_be_bytes(&modulus).unwrap();
         let recovered = BigUint::from_be_bytes(signature)
-            .mod_exp(&BigUint::from_u64(65537), &n)
+            .unwrap()
+            .mod_exp(&BigUint::from_u64(65537).unwrap(), &n)
             .expect("the public operation succeeds")
             .to_be_bytes(256)
             .expect("the recovered block fits the modulus");

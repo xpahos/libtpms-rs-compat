@@ -29,8 +29,12 @@ mod commit;
 mod compile_constants;
 mod context;
 mod crypto;
+#[cfg(test)]
+mod crypto_outputs;
 mod dictionary_attack;
 mod ecc;
+#[cfg(test)]
+mod ecc_scalar_encoding;
 mod entity;
 mod failure_mode;
 #[cfg(test)]

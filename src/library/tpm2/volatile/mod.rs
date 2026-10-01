@@ -30,6 +30,7 @@ pub(super) use store::{CURRENT_OBJECT_VERSION, volatile_all_store, volatile_obje
 pub(super) use store::{capture_volatile_state, marshal_volatile_state};
 
 use sha1::{Digest, Sha1};
+use subtle::ConstantTimeEq;
 
 use super::clock::{
     HostClock, RuntimeClock, adjust_post_resume, apply_tail_v4, tail_v4_monotonic_adjust,
@@ -483,7 +484,7 @@ pub(super) fn unmarshal_volatile_state_blob<'a>(
     }
     let digest = &remaining[remaining.len() - SHA1_DIGEST_SIZE..];
 
-    if digest != computed.as_slice() {
+    if !bool::from(digest.ct_eq(computed.as_slice())) {
         return Ok(UnmarshalledBlob::Unverified(
             decoded,
             PersistentAllError::IntegrityDigestMismatch,

@@ -24,9 +24,10 @@ use crate::library::constants::{
 use crate::types::TpmResult;
 
 use super::crypto::{
-    BigUint, Hasher, HmacState, curve_key_size_bits, curve_parameters,
-    recover_rsa_private_exponent, validate_tdes_key,
+    EccCurve, Hasher, HmacState, RecoveryError, curve_key_size_bits, recover_rsa_components,
+    validate_tdes_key,
 };
+use super::ecc::fit_be;
 use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use super::object::{
     ATTR_EPS_HIERARCHY, ATTR_EXTERNAL, ATTR_OCCUPIED, ATTR_PPS_HIERARCHY, ATTR_PRIMARY,
@@ -77,8 +78,8 @@ pub(super) fn read_sensitive_area(
     ) {
         return Err(TPM_RC_TYPE);
     }
-    let auth_value = reader.tpm2b(DIGEST_SIZE)?.to_vec();
-    let seed_value = reader.tpm2b(DIGEST_SIZE)?.to_vec();
+    let auth_value = OwnedSecret::copy_of(reader.tpm2b(DIGEST_SIZE)?);
+    let seed_value = OwnedSecret::copy_of(reader.tpm2b(DIGEST_SIZE)?);
     let sensitive = match sensitive_type {
         TPM_ALG_RSA => reader.tpm2b(RSA_PRIVATE_SIZE)?,
         TPM_ALG_ECC => reader.tpm2b(MAX_ECC_KEY_BYTES)?,
@@ -87,8 +88,8 @@ pub(super) fn read_sensitive_area(
     };
     Ok(OwnedTpmtSensitive {
         sensitive_type,
-        auth_value: OwnedSecret::from_vec(auth_value),
-        seed_value: OwnedSecret::from_vec(seed_value),
+        auth_value,
+        seed_value,
         sensitive: Some(OwnedSecret::copy_of(sensitive)),
     })
 }
@@ -179,17 +180,18 @@ fn validate_rsa(
     if *exponent != 0 && *exponent < 7 {
         return Err(TPM_RC_VALUE + blame_public);
     }
-    if let Some(secret) = secret
-        && (secret.len() * 2 != key_bytes || secret.first().copied().unwrap_or(0) < 0x80)
-    {
-        return Err(TPM_RC_KEY_SIZE + blame_sensitive);
+    if let Some(secret) = secret {
+        let top_bit = subtle::Choice::from(secret.first().copied().unwrap_or(0) >> 7);
+        if secret.len() * 2 != key_bytes || !bool::from(top_bit) {
+            return Err(TPM_RC_KEY_SIZE + blame_sensitive);
+        }
     }
     Ok(())
 }
 
 fn validate_ecc(
     public: &OwnedTpmtPublic,
-    secret: Option<&[u8]>,
+    secret: Option<Option<&OwnedSecret>>,
     blame_public: TpmResult,
 ) -> Result<(), TpmResult> {
     let PublicParms::Ecc { curve_id, .. } = &public.parameters else {
@@ -198,7 +200,7 @@ fn validate_ecc(
     let OwnedPublicId::Ecc { x, y } = &public.unique else {
         return Err(TPM_RC_FAILURE);
     };
-    let curve = curve_parameters(*curve_id).ok_or(TPM_RC_CURVE)?;
+    let curve = EccCurve::lookup(*curve_id).ok_or(TPM_RC_CURVE)?;
     let key_bytes = usize::from(curve_key_size_bits(*curve_id).ok_or(TPM_RC_CURVE)?).div_ceil(8);
     match secret {
         None => {
@@ -206,25 +208,23 @@ fn validate_ecc(
                 return Err(TPM_RC_KEY + blame_public);
             }
             if public.name_alg != TPM_ALG_NULL
-                && !curve.is_point_on_curve(&BigUint::from_be_bytes(x), &BigUint::from_be_bytes(y))
+                && !curve.is_on_curve(x, y).map_err(|_| TPM_RC_FAILURE)?
             {
                 return Err(TPM_RC_ECC_POINT + blame_public);
             }
         }
-        Some(secret) => {
-            let scalar = BigUint::from_be_bytes(secret);
-            if scalar.is_zero() || scalar >= curve.order {
+        Some(stored) => {
+            let Some(stored) = stored
+                .and_then(OwnedSecret::fixed_width)
+                .filter(|stored| curve.private_scalar_in_range(stored))
+            else {
                 return Err(TPM_RC_KEY_SIZE);
-            }
+            };
             if public.name_alg != TPM_ALG_NULL {
-                let (computed_x, computed_y) =
-                    curve.multiply_generator(&scalar).ok_or(TPM_RC_BINDING)?;
-                let matches = computed_x
-                    .to_be_bytes(x.len())
-                    .is_some_and(|value| value == *x)
-                    && computed_y
-                        .to_be_bytes(y.len())
-                        .is_some_and(|value| value == *y);
+                let scalar = curve.private_scalar(stored).ok_or(TPM_RC_FAILURE)?;
+                let computed = curve.mul_generator(&scalar).ok_or(TPM_RC_FAILURE)?;
+                let matches = fit_be(&computed.x, x.len()).is_some_and(|value| value == *x)
+                    && fit_be(&computed.y, y.len()).is_some_and(|value| value == *y);
                 if !matches {
                     return Err(TPM_RC_BINDING);
                 }
@@ -257,7 +257,11 @@ pub(super) fn validate_keys(
     });
     match public.object_type {
         TPM_ALG_RSA => validate_rsa(public, secret, blame_public, blame_sensitive)?,
-        TPM_ALG_ECC => validate_ecc(public, secret, blame_public)?,
+        TPM_ALG_ECC => validate_ecc(
+            public,
+            sensitive.map(|sensitive| sensitive.sensitive.as_ref()),
+            blame_public,
+        )?,
         _ => {
             let unique = match &public.unique {
                 OwnedPublicId::KeyedHash(unique) | OwnedPublicId::Sym(unique) => unique,
@@ -378,14 +382,18 @@ pub(super) fn object_load(
             .as_ref()
             .map_or(&[][..], OwnedSecret::as_bytes);
         let recovered =
-            recover_rsa_private_exponent(modulus, prime, *exponent).ok_or(TPM_RC_BINDING)?;
+            recover_rsa_components(modulus, prime, *exponent).map_err(|error| match error {
+                RecoveryError::Invalid => TPM_RC_BINDING,
+                RecoveryError::Backend => TPM_RC_FAILURE,
+            })?;
         private_exponent = Some(OwnedPrivateExponent {
             primes: [
-                owned_prime(&recovered.q),
-                owned_prime(&recovered.d_p),
-                owned_prime(&recovered.d_q),
-                owned_prime(&recovered.q_inv),
+                owned_prime(recovered.q),
+                owned_prime(recovered.d_p),
+                owned_prime(recovered.d_q),
+                owned_prime(recovered.q_inv),
             ],
+            runtime: crate::library::tpm2::crypto::RsaRuntimeCache::default(),
         });
     }
 

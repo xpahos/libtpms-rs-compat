@@ -27,14 +27,14 @@ use super::algorithm::{
     algorithm_profile_name,
 };
 use super::crypto::{
-    BigUint, SeededRand, oaep_decode, oaep_encode, rsa_private_key_op, rsa_public_key_op,
+    SecretBytes, SeededRand, oaep_decode, oaep_encode, rsa_private_key_op, rsa_public_key_op,
     rsaes_decode, rsaes_encode, rsaes_padding_length,
 };
 use super::persistent::{OwnedObjectBody, OwnedPublicId, OwnedTpmtPublic};
 use super::profile::ValidatedProfile;
 use super::public::PublicParms;
 use super::self_test::LazySelfTest;
-use super::signature::{rsa_key_parts, rsa_modulus};
+use super::signature::{public_value_below, rsa_crt_key, rsa_modulus};
 use super::template::{TemplateReader, digest_size};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,14 +134,14 @@ fn public_area_exponent(public: &OwnedTpmtPublic) -> Result<u32, TpmResult> {
 }
 
 fn right_aligned(modulus_len: usize, message: &[u8]) -> Result<Vec<u8>, TpmResult> {
-    let significant = message
+    let overflow = message.len().saturating_sub(modulus_len);
+    let spill = message[..overflow]
         .iter()
-        .position(|&byte| byte != 0)
-        .unwrap_or(message.len());
-    let value = &message[significant..];
-    if value.len() > modulus_len {
+        .fold(0u8, |acc, &byte| acc | byte);
+    if spill != 0 {
         return Err(TPM_RC_VALUE);
     }
+    let value = &message[overflow..];
     let mut out = vec![0u8; modulus_len];
     out[modulus_len - value.len()..].copy_from_slice(value);
     Ok(out)
@@ -195,11 +195,7 @@ pub(super) fn crypt_rsa_encrypt(
         }
         _ => return Err(TPM_RC_SCHEME),
     };
-    let value = BigUint::from_be_bytes(&encoded);
-    let modulus = BigUint::from_be_bytes(&modulus);
-    rsa_public_key_op(&modulus, public_area_exponent(public)?, &value)
-        .and_then(|result| result.to_be_bytes(modulus_len))
-        .ok_or(TPM_RC_SIZE)
+    rsa_public_key_op(&modulus, public_area_exponent(public)?, &encoded).ok_or(TPM_RC_SIZE)
 }
 
 pub(super) fn check_ciphertext_size(
@@ -222,19 +218,19 @@ pub(super) fn crypt_rsa_decrypt(
 ) -> Result<Vec<u8>, TpmResult> {
     check_ciphertext_size(body, ciphertext)?;
     let modulus = public_modulus(body)?;
-    let recovered = private_operation(body, &modulus, ciphertext)?;
+    let recovered = SecretBytes(private_operation(body, &modulus, ciphertext)?);
     match scheme.scheme {
         TPM_ALG_NULL => {
             if forbids_unpadded {
                 Err(TPM_RC_SCHEME)
             } else {
-                Ok(recovered)
+                Ok(recovered.0.clone())
             }
         }
-        TPM_ALG_RSAES => rsaes_decode(&recovered).ok_or(TPM_RC_VALUE),
+        TPM_ALG_RSAES => rsaes_decode(&recovered.0).ok_or(TPM_RC_VALUE),
         TPM_ALG_OAEP => {
             digest_size(scheme.hash_alg).ok_or(TPM_RC_VALUE)?;
-            oaep_decode(scheme.hash_alg, label, &recovered, gate)?.ok_or(TPM_RC_VALUE)
+            oaep_decode(scheme.hash_alg, label, &recovered.0, gate)?.ok_or(TPM_RC_VALUE)
         }
         _ => Err(TPM_RC_SCHEME),
     }
@@ -245,14 +241,11 @@ fn private_operation(
     modulus: &[u8],
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, TpmResult> {
-    let value = BigUint::from_be_bytes(ciphertext);
-    if value >= BigUint::from_be_bytes(modulus) {
+    if !public_value_below(ciphertext, modulus) {
         return Err(TPM_RC_SIZE);
     }
-    let (p, q, d_p, d_q, q_inv) = rsa_key_parts(body).ok_or(TPM_RC_BINDING)?;
-    rsa_private_key_op(&p, &q, &d_p, &d_q, &q_inv, &value)
-        .and_then(|plain| plain.to_be_bytes(modulus.len()))
-        .ok_or(TPM_RC_FAILURE)
+    let key = rsa_crt_key(body).ok_or(TPM_RC_BINDING)?;
+    rsa_private_key_op(&key, ciphertext).ok_or(TPM_RC_FAILURE)
 }
 
 #[cfg(test)]
@@ -325,11 +318,12 @@ mod tests {
             private_exponent: recover_rsa_private_exponent(modulus, &TEST_PRIME, 0).map(
                 |recovered| OwnedPrivateExponent {
                     primes: [
-                        owned_prime(&recovered.q),
-                        owned_prime(&recovered.d_p),
-                        owned_prime(&recovered.d_q),
-                        owned_prime(&recovered.q_inv),
+                        owned_prime(recovered.q),
+                        owned_prime(recovered.d_p),
+                        owned_prime(recovered.d_q),
+                        owned_prime(recovered.q_inv),
                     ],
+                    runtime: crate::library::tpm2::crypto::RsaRuntimeCache::default(),
                 },
             ),
             qualified_name: Vec::new(),
@@ -356,6 +350,38 @@ mod tests {
             "the scheme consumes its bytes"
         );
         Ok(scheme)
+    }
+
+    fn reference_right_aligned(modulus_len: usize, message: &[u8]) -> Result<Vec<u8>, TpmResult> {
+        let significant = message
+            .iter()
+            .position(|&byte| byte != 0)
+            .unwrap_or(message.len());
+        let value = &message[significant..];
+        if value.len() > modulus_len {
+            return Err(TPM_RC_VALUE);
+        }
+        let mut out = vec![0u8; modulus_len];
+        out[modulus_len - value.len()..].copy_from_slice(value);
+        Ok(out)
+    }
+
+    #[test]
+    fn right_alignment_leading_zero_reference_agreement() {
+        for modulus_len in [1usize, 4, 16] {
+            for length in 0..=modulus_len + 5 {
+                for zeros in 0..=length {
+                    let mut message: Vec<u8> =
+                        (0..length).map(|index| index as u8 | 0x80).collect();
+                    message[..zeros].fill(0);
+                    assert_eq!(
+                        right_aligned(modulus_len, &message),
+                        reference_right_aligned(modulus_len, &message),
+                        "modulus {modulus_len} length {length} zeros {zeros}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

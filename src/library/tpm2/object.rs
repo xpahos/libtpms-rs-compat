@@ -19,7 +19,7 @@
 // Copyright (c) 2026 Alexander Gryanko <xpahos@gmail.com>
 // Copyright (c) 2026 Yandex
 
-use super::crypto::COMPILED_HASHES;
+use super::crypto::{COMPILED_HASHES, CRT_WORDS};
 use super::hierarchy::{TPM_RH_ENDORSEMENT, TPM_RH_NULL, TPM_RH_OWNER, TPM_RH_PLATFORM};
 use super::marshal::{BlobReader, BlockDisposition, BlockSkipError, skip_optional_block};
 use super::persistent::{PersistentAllError, PersistentField, StateSection, parse_nv_header};
@@ -49,8 +49,10 @@ pub(super) const PRIVATE_EXPONENT_T_VERSION: u16 = 2;
 pub(super) const BN_PRIME_T_MAGIC: u32 = 0x2fe7_36ab;
 pub(super) const BN_PRIME_T_VERSION: u16 = 2;
 
-pub(super) const BN_PRIME_WORDS: usize = 24;
 pub(super) const CRYPT_UWORD_BYTES: usize = 8;
+pub(super) const BN_PRIME_WORDS: usize = super::nv::layout::SIZEOF_BN_PRIME_D / CRYPT_UWORD_BYTES;
+
+const _: () = assert!(BN_PRIME_WORDS == CRT_WORDS);
 
 pub(super) const ATTR_PUBLIC_ONLY: u32 = 1 << 0;
 pub(super) const ATTR_EPS_HIERARCHY: u32 = 1 << 1;
@@ -1409,15 +1411,21 @@ mod tests {
 
     #[test]
     fn oversized_bn_prime_size_error() {
-        for numbytes in [193u16, 200, u16::MAX] {
+        assert_eq!(
+            BN_PRIME_WORDS, 25,
+            "ci_prime_t holds BN_STRUCT_ALLOCATION(1536) words"
+        );
+        for numbytes in [201u16, 208, u16::MAX] {
             let data = bn_prime(numbytes);
             let mut reader = BlobReader::new(&data);
             let error = parse_bn_prime(&mut reader).unwrap_err();
             assert_eq!(error.tpm_result(), TPM_RC_SIZE, "numbytes {numbytes}");
         }
-        let data = bn_prime(192);
-        let mut reader = BlobReader::new(&data);
-        assert!(parse_bn_prime(&mut reader).is_ok());
+        for numbytes in [192u16, 193, 200] {
+            let data = bn_prime(numbytes);
+            let mut reader = BlobReader::new(&data);
+            assert!(parse_bn_prime(&mut reader).is_ok(), "numbytes {numbytes}");
+        }
     }
 
     #[test]

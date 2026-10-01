@@ -20,7 +20,7 @@
 
 use crate::types::TpmResult;
 
-use super::bignum::BigUint;
+use super::ossl::{BigUint, miller_rabin_witness};
 use super::rand_state::{SEED_COMPAT_LEVEL_RSA_PRIME_ADJUST_FIX, SeededRand};
 
 pub(in crate::library::tpm2) const LAST_PRIME_IN_TABLE: u32 = 65537;
@@ -219,17 +219,19 @@ pub(in crate::library::tpm2) fn prime_sieve(
     candidate: &mut BigUint,
     field: &mut [u8],
     prime_limit: u32,
-) -> u32 {
+) -> Result<u32, TpmResult> {
+    let failure = crate::library::constants::TPM_RC_FAILURE;
     let field_size = field.len();
     let field_bits = field_size * 8;
 
-    let mut adjust = candidate.mod_u64(105) as u32;
+    let mut adjust = candidate.mod_u32(105).ok_or(failure)?;
     if adjust & 1 != 0 {
         adjust += 105;
     }
-    *candidate = candidate
-        .sub_u64(u64::from(adjust))
-        .unwrap_or_else(BigUint::zero);
+    *candidate = match candidate.sub_u64(u64::from(adjust)) {
+        Some(adjusted) => adjusted,
+        None => BigUint::zero().ok_or(failure)?,
+    };
 
     for (offset, chunk) in field.chunks_mut(SEED_VALUES_SIZE).enumerate() {
         let _ = offset;
@@ -263,7 +265,7 @@ pub(in crate::library::tpm2) fn prime_sieve(
             index -= 1;
         }
 
-        let residue = candidate.mod_u64(u64::from(composite)) as u32;
+        let residue = candidate.mod_u32(composite).ok_or(failure)?;
 
         let mut index = count as usize;
         let mut exhausted = false;
@@ -301,7 +303,7 @@ pub(in crate::library::tpm2) fn prime_sieve(
         }
     }
 
-    bits_in_array(field)
+    Ok(bits_in_array(field))
 }
 
 pub(in crate::library::tpm2) fn miller_rabin_rounds(bits: usize) -> u32 {
@@ -320,47 +322,39 @@ pub(in crate::library::tpm2) fn miller_rabin(
 ) -> Result<bool, TpmResult> {
     #[cfg(test)]
     super::work::count_primality_test();
+    let failure = crate::library::constants::TPM_RC_FAILURE;
     let iterations = miller_rabin_rounds(witness.bit_len());
-    let Some(minus_one) = witness.sub_u64(1) else {
+    if witness.is_zero() {
         return Ok(false);
-    };
-    if minus_one.is_zero() {
+    }
+    let minus_one = witness.sub_u64(1).ok_or(failure)?;
+    if minus_one.is_zero() || !witness.is_odd() {
         return Ok(false);
     }
     let mut power = 1usize;
     while power < minus_one.bit_len() && !minus_one.test_bit(power) {
         power += 1;
     }
-    let odd_part = minus_one.shr(power);
+    let width = witness.byte_len();
+    let candidate = witness.to_be_bytes(width).ok_or(failure)?;
+    let odd_part = minus_one
+        .shr(power)
+        .and_then(|odd_part| odd_part.to_be_bytes(width))
+        .ok_or(failure)?;
+    let one = BigUint::from_u64(1).ok_or(failure)?;
     let witness_bits = witness.bit_len();
 
     for _ in 0..iterations {
         let base = loop {
             let candidate = rand.random_integer(witness_bits)?;
-            if candidate > BigUint::from_u64(1) && candidate < minus_one {
+            if candidate > one && candidate < minus_one {
                 break candidate;
             }
         };
-        let mut value = base
-            .mod_exp(&odd_part, witness)
-            .ok_or(crate::library::constants::TPM_RC_FAILURE)?;
-        if value == BigUint::from_u64(1) || value == minus_one {
-            continue;
-        }
-        let mut composite = true;
-        for _ in 1..power {
-            value = value
-                .mod_mul(&value, witness)
-                .ok_or(crate::library::constants::TPM_RC_FAILURE)?;
-            if value == minus_one {
-                composite = false;
-                break;
-            }
-            if value == BigUint::from_u64(1) {
-                return Ok(false);
-            }
-        }
-        if composite {
+        let base = base.to_be_bytes(width).ok_or(failure)?;
+        let passes =
+            miller_rabin_witness(&candidate, &base, &odd_part, power as u32).ok_or(failure)?;
+        if !passes {
             return Ok(false);
         }
     }
@@ -392,7 +386,7 @@ pub(in crate::library::tpm2) fn prime_select_with_sieve(
     let mut field = [0u8; MAX_FIELD_SIZE];
     #[cfg(test)]
     super::work::count_sieve_pass();
-    let mut ones = prime_sieve(candidate, &mut field, prime_limit);
+    let mut ones = prime_sieve(candidate, &mut field, prime_limit)?;
 
     while ones > 0 {
         #[cfg(test)]
@@ -401,8 +395,9 @@ pub(in crate::library::tpm2) fn prime_select_with_sieve(
         if chosen < 0 || chosen >= (MAX_FIELD_SIZE * 8) as i32 {
             return Err(crate::library::constants::TPM_RC_FAILURE);
         }
-        let test = candidate.add_u64(chosen as u64 * 2);
-        let residue = test.mod_u64(u64::from(exponent)) as u32;
+        let failure = crate::library::constants::TPM_RC_FAILURE;
+        let test = candidate.add_u64(chosen as u64 * 2).ok_or(failure)?;
+        let residue = test.mod_u32(exponent).ok_or(failure)?;
         if residue != 0 && residue != 1 && miller_rabin(&test, rand)? {
             *candidate = test;
             return Ok(PrimeSelection::Found);
@@ -624,10 +619,10 @@ mod tests {
     #[test]
     fn sieve_candidate_odd_multiple_105_alignment() {
         for start in [1_000_001u64, 1_000_003, 1_000_005, 105, 211] {
-            let mut candidate = BigUint::from_u64(start);
+            let mut candidate = BigUint::from_u64(start).unwrap();
             let mut field = [0u8; 512];
-            prime_sieve(&mut candidate, &mut field, adjust_prime_limit(1024, 1));
-            assert_eq!(candidate.mod_u64(105), 0, "start {start}");
+            prime_sieve(&mut candidate, &mut field, adjust_prime_limit(1024, 1)).unwrap();
+            assert_eq!(candidate.mod_u32(105), Some(0), "start {start}");
             assert!(candidate.is_odd(), "start {start}");
             assert!(candidate.low_u64() <= start, "start {start}");
             assert!(start - candidate.low_u64() < 210, "start {start}");
@@ -636,10 +631,10 @@ mod tests {
 
     #[test]
     fn surviving_sieve_bit_coprimality() {
-        let mut candidate = BigUint::from_u64(1_000_003);
+        let mut candidate = BigUint::from_u64(1_000_003).unwrap();
         let mut field = [0u8; 128];
         let limit = adjust_prime_limit(1024, 1);
-        let ones = prime_sieve(&mut candidate, &mut field, limit);
+        let ones = prime_sieve(&mut candidate, &mut field, limit).unwrap();
         assert!(ones > 0);
         let base = candidate.low_u64();
         let mut counted = 0;
@@ -665,10 +660,10 @@ mod tests {
 
     #[test]
     fn sieve_divisible_value_clearing() {
-        let mut candidate = BigUint::from_u64(500_009);
+        let mut candidate = BigUint::from_u64(500_009).unwrap();
         let mut field = [0u8; 64];
         let limit = adjust_prime_limit(1024, 1);
-        prime_sieve(&mut candidate, &mut field, limit);
+        prime_sieve(&mut candidate, &mut field, limit).unwrap();
         let base = candidate.low_u64();
         for bit in 0..field.len() * 8 {
             let value = base + 2 * bit as u64;
@@ -683,12 +678,14 @@ mod tests {
     #[test]
     fn miller_rabin_nist_curve_prime_acceptance() {
         let mut generator = rand();
-        let power = |bits: usize| BigUint::from_u64(1).shl(bits);
+        let power = |bits: usize| BigUint::from_u64(1).unwrap().shl(bits).unwrap();
         let p256 = power(256)
             .sub(&power(224))
             .unwrap()
             .add(&power(192))
+            .unwrap()
             .add(&power(96))
+            .unwrap()
             .sub_u64(1)
             .unwrap();
         let p384 = power(384)
@@ -697,6 +694,7 @@ mod tests {
             .sub(&power(96))
             .unwrap()
             .add(&power(32))
+            .unwrap()
             .sub_u64(1)
             .unwrap();
         assert_eq!(p256.bit_len(), 256);
@@ -709,9 +707,24 @@ mod tests {
     fn miller_rabin_composite_rejection() {
         let mut generator = rand();
         for composite in [
-            BigUint::from_u64(0xffff_ffff_ffff_fffd),
-            BigUint::from_u64(3).mul(&BigUint::from_u64(1).shl(256).sub_u64(189).unwrap()),
-            BigUint::from_u64(1).shl(521).sub_u64(3).unwrap(),
+            BigUint::from_u64(0xffff_ffff_ffff_fffd).unwrap(),
+            BigUint::from_u64(3)
+                .unwrap()
+                .mul(
+                    &BigUint::from_u64(1)
+                        .unwrap()
+                        .shl(256)
+                        .unwrap()
+                        .sub_u64(189)
+                        .unwrap(),
+                )
+                .unwrap(),
+            BigUint::from_u64(1)
+                .unwrap()
+                .shl(521)
+                .unwrap()
+                .sub_u64(3)
+                .unwrap(),
         ] {
             assert!(!miller_rabin(&composite, &mut generator).unwrap());
         }
@@ -720,7 +733,12 @@ mod tests {
     #[test]
     fn miller_rabin_mersenne_prime_acceptance() {
         let mut generator = rand();
-        let prime = BigUint::from_u64(1).shl(521).sub_u64(1).unwrap();
+        let prime = BigUint::from_u64(1)
+            .unwrap()
+            .shl(521)
+            .unwrap()
+            .sub_u64(1)
+            .unwrap();
         assert!(miller_rabin(&prime, &mut generator).unwrap());
     }
 
@@ -740,14 +758,14 @@ mod tests {
     fn sieve_selection_exponent_congruence() {
         let mut generator = rand();
         let mut candidate = generator.random_integer(512).unwrap();
-        candidate.set_low_bit();
+        candidate.set_low_bit().unwrap();
         let start = candidate.clone();
         assert_eq!(
             prime_select_with_sieve(&mut candidate, 65537, &mut generator).unwrap(),
             PrimeSelection::Found
         );
         assert!(miller_rabin(&candidate, &mut generator).unwrap());
-        let residue = candidate.mod_u64(65537);
+        let residue = candidate.mod_u32(65537).unwrap();
         assert_ne!(residue, 0);
         assert_ne!(residue, 1);
         assert!(candidate.bit_len() <= start.bit_len() + 1);
@@ -758,7 +776,7 @@ mod tests {
         let run = || {
             let mut generator = rand();
             let mut candidate = generator.random_integer(512).unwrap();
-            candidate.set_low_bit();
+            candidate.set_low_bit().unwrap();
             prime_select_with_sieve(&mut candidate, 65537, &mut generator).unwrap();
             candidate
         };

@@ -27,14 +27,17 @@ use crate::types::TpmResult;
 
 use super::algorithm::{TPM_ALG_ECC, TPM_ALG_ECDH, TPM_ALG_NULL, TPM_ALG_OAEP, TPM_ALG_RSA};
 use super::crypto::{
-    BigUint, EccKeyError, curve_parameters, kdfe, oaep_decode, rsa_private_key_op,
+    EccAffine, EccCurve, EccKeyError, SecretBytes, SharedPointError, oaep_decode,
+    rsa_private_key_op, wipe,
 };
+use super::ecc::{PrivateScalar, SharedCoordinate, ecc_stored_private, kdfe_shared};
 use super::marshal::{BlobReader, Tpm2bError};
-use super::persistent::{OwnedObjectBody, OwnedPrivateExponent, OwnedPublicId};
+use super::persistent::{OwnedObjectBody, OwnedPublicId};
 use super::public::PublicParms;
 use super::rsa_encryption::{RsaDecryptScheme, crypt_rsa_encrypt};
 use super::self_test::{LazySelfTest, self_test_algorithm, self_test_reached, self_test_rsa_oaep};
 use super::session::digest_size;
+use super::signature::{public_value_below, rsa_crt_key};
 use super::template::TPMA_OBJECT_DECRYPT;
 
 pub(super) const SECRET_LABEL: &[u8] = b"SECRET\0";
@@ -47,15 +50,6 @@ const MAX_ECC_PARAMETER: usize = 80;
 
 pub(super) fn is_asymmetric(object_type: u16) -> bool {
     matches!(object_type, TPM_ALG_RSA | TPM_ALG_ECC)
-}
-
-fn limbs_to_big(data: &[u8]) -> BigUint {
-    let mut value = BigUint::zero();
-    for (index, chunk) in data.chunks_exact(8).enumerate() {
-        let limb = u64::from_be_bytes(chunk.try_into().expect("eight bytes"));
-        value = value.add(&BigUint::from_u64(limb).shl(index * 64));
-    }
-    value
 }
 
 fn oaep_hash_algorithm(body: &OwnedObjectBody) -> Result<u16, TpmResult> {
@@ -94,23 +88,14 @@ fn rsa_decrypt(
         return Err(TPM_RC_SIZE);
     }
     gate.algorithm(TPM_ALG_OAEP)?;
-    if BigUint::from_be_bytes(secret) >= BigUint::from_be_bytes(modulus) {
+    if !public_value_below(secret, modulus) {
         return Err(TPM_RC_SIZE);
     }
 
-    let prime = body.sensitive.sensitive.as_ref().ok_or(TPM_RC_BINDING)?;
-    let exponent: &OwnedPrivateExponent = body.private_exponent.as_ref().ok_or(TPM_RC_BINDING)?;
-    let p = BigUint::from_be_bytes(prime.as_bytes());
-    let q = limbs_to_big(exponent.primes[0].data.as_bytes());
-    let d_p = limbs_to_big(exponent.primes[1].data.as_bytes());
-    let d_q = limbs_to_big(exponent.primes[2].data.as_bytes());
-    let q_inv = limbs_to_big(exponent.primes[3].data.as_bytes());
+    let key = rsa_crt_key(body).ok_or(TPM_RC_BINDING)?;
+    let padded = SecretBytes(rsa_private_key_op(&key, secret).ok_or(TPM_RC_FAILURE)?);
 
-    let value = BigUint::from_be_bytes(secret);
-    let plain = rsa_private_key_op(&p, &q, &d_p, &d_q, &q_inv, &value).ok_or(TPM_RC_FAILURE)?;
-    let padded = plain.to_be_bytes(modulus.len()).ok_or(TPM_RC_FAILURE)?;
-
-    let recovered = oaep_decode(hash_alg, label, &padded, gate)?.ok_or(TPM_RC_VALUE)?;
+    let recovered = oaep_decode(hash_alg, label, &padded.0, gate)?.ok_or(TPM_RC_VALUE)?;
     if recovered.len() > limit {
         return Err(TPM_RC_VALUE);
     }
@@ -141,31 +126,34 @@ fn ecc_decrypt(
     let PublicParms::Ecc { curve_id, .. } = &body.public.parameters else {
         return Err(TPM_RC_FAILURE);
     };
-    let curve = curve_parameters(*curve_id).ok_or(TPM_RC_FAILURE)?;
+    let curve = EccCurve::lookup(*curve_id).ok_or(TPM_RC_FAILURE)?;
     let (public_x, public_y) = read_ecc_point(secret)?;
     gate.algorithm(TPM_ALG_ECDH)?;
 
-    let peer_x = BigUint::from_be_bytes(public_x);
-    let peer_y = BigUint::from_be_bytes(public_y);
-    if !curve.is_point_on_curve(&peer_x, &peer_y) {
+    if !curve
+        .is_on_curve(public_x, public_y)
+        .map_err(|_| TPM_RC_FAILURE)?
+    {
         return Err(TPM_RC_ECC_POINT);
     }
 
-    let private = body.sensitive.sensitive.as_ref().ok_or(TPM_RC_BINDING)?;
-    let scalar = BigUint::from_be_bytes(private.as_bytes());
-    let (shared_x, _) = curve
-        .multiply_point((&peer_x, &peer_y), &scalar)
-        .ok_or(TPM_RC_NO_RESULT)?;
-    let z = shared_x
-        .to_be_bytes(curve.key_size_bytes)
-        .ok_or(TPM_RC_FAILURE)?;
+    let scalar = match PrivateScalar::of(&curve, ecc_stored_private(body)) {
+        PrivateScalar::Missing => return Err(TPM_RC_BINDING),
+        PrivateScalar::Unusable => return Err(TPM_RC_NO_RESULT),
+        PrivateScalar::Backend => return Err(TPM_RC_FAILURE),
+        PrivateScalar::Ready(scalar) => scalar,
+    };
+    let z = shared_x(
+        curve.mul_point_shared(public_x, public_y, &scalar),
+        TPM_RC_NO_RESULT,
+    )?;
 
     let OwnedPublicId::Ecc { x, .. } = &body.public.unique else {
         return Err(TPM_RC_FAILURE);
     };
     let bits = digest_size(body.public.name_alg).ok_or(TPM_RC_SCHEME)? * 8;
     gate.algorithm(body.public.name_alg)?;
-    kdfe(body.public.name_alg, &z, label, public_x, x, bits as u32).ok_or(TPM_RC_FAILURE)
+    kdfe_shared(body.public.name_alg, &z, label, public_x, x, bits as u32).ok_or(TPM_RC_FAILURE)
 }
 
 pub(super) fn secret_decrypt(
@@ -240,20 +228,19 @@ fn ecc_secret_encrypt(
     let OwnedPublicId::Ecc { x, y } = &public.unique else {
         return Err(TPM_RC_FAILURE);
     };
-    let curve = curve_parameters(*curve_id).ok_or(TPM_RC_KEY)?;
-    let peer_x = BigUint::from_be_bytes(x);
-    let peer_y = BigUint::from_be_bytes(y);
-    if !curve.is_point_on_curve(&peer_x, &peer_y) {
+    let curve = EccCurve::lookup(*curve_id).ok_or(TPM_RC_KEY)?;
+    if !curve.is_on_curve(x, y).map_err(|_| TPM_RC_FAILURE)? {
         return Err(TPM_RC_KEY);
     }
     self_test_algorithm(runtime, TPM_ALG_ECDH)?;
 
     let mut rand = super::random::take_live_rand(runtime)?;
-    let ephemeral = super::crypto::generate_ecc_key(*curve_id, &mut rand);
+    let ephemeral = super::crypto::generate_ecc_ephemeral(*curve_id, &mut rand);
     super::random::finish_live_rand(runtime, rand)?;
     let ephemeral = ephemeral.map_err(|error| match error {
         EccKeyError::Curve => TPM_RC_KEY,
         EccKeyError::NoResult => TPM_RC_NO_RESULT,
+        EccKeyError::Failure => TPM_RC_FAILURE,
     })?;
 
     let mut secret = Vec::with_capacity(4 + ephemeral.x.len() + ephemeral.y.len());
@@ -262,15 +249,9 @@ fn ecc_secret_encrypt(
     secret.extend_from_slice(&(ephemeral.y.len() as u16).to_be_bytes());
     secret.extend_from_slice(&ephemeral.y);
 
-    let scalar = BigUint::from_be_bytes(&ephemeral.private);
-    let (shared_x, _) = curve
-        .multiply_point((&peer_x, &peer_y), &scalar)
-        .ok_or(TPM_RC_KEY)?;
-    let z = shared_x
-        .to_be_bytes(curve.key_size_bytes)
-        .ok_or(TPM_RC_FAILURE)?;
+    let z = shared_x(curve.mul_point_shared(x, y, &ephemeral.scalar), TPM_RC_KEY)?;
     self_test_algorithm(runtime, public.name_alg)?;
-    let data = kdfe(
+    let data = kdfe_shared(
         public.name_alg,
         &z,
         label,
@@ -295,6 +276,20 @@ pub(super) fn secret_encrypt(
         TPM_ALG_RSA => rsa_secret_encrypt(runtime, public, label, length),
         TPM_ALG_ECC => ecc_secret_encrypt(runtime, public, label, length),
         _ => Err(TPM_RC_FAILURE),
+    }
+}
+
+fn shared_x(
+    point: Result<EccAffine, SharedPointError>,
+    infinity: TpmResult,
+) -> Result<SharedCoordinate, TpmResult> {
+    match point {
+        Ok(EccAffine { x, mut y }) => {
+            wipe(&mut y);
+            Ok(SharedCoordinate::new(x))
+        }
+        Err(SharedPointError::Infinity | SharedPointError::OffCurve) => Err(infinity),
+        Err(SharedPointError::Backend) => Err(TPM_RC_FAILURE),
     }
 }
 
@@ -513,8 +508,8 @@ mod tests {
         let PublicParms::Ecc { curve_id, .. } = &parent.public.parameters else {
             panic!("an ECC parent");
         };
-        let curve = curve_parameters(*curve_id).expect("a compiled curve");
-        assert!(curve.is_point_on_curve(&BigUint::from_be_bytes(x), &BigUint::from_be_bytes(y)));
+        let curve = EccCurve::lookup(*curve_id).expect("a compiled curve");
+        assert!(curve.on_curve(x, y));
 
         assert_eq!(
             secret_decrypt(

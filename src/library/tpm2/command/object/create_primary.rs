@@ -1393,12 +1393,12 @@ mod tests {
             before.private_exponent.as_ref().map(|e| e
                 .primes
                 .iter()
-                .map(|p| (p.numbytes, p.data.as_bytes().to_vec()))
+                .map(|p| (p.words, p.serialized_words().to_vec()))
                 .collect::<Vec<_>>()),
             after.private_exponent.as_ref().map(|e| e
                 .primes
                 .iter()
-                .map(|p| (p.numbytes, p.data.as_bytes().to_vec()))
+                .map(|p| (p.words, p.serialized_words().to_vec()))
                 .collect::<Vec<_>>())
         );
     }
