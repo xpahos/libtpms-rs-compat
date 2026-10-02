@@ -73,6 +73,15 @@ impl OwnedSecret {
     }
 
     pub(in crate::library::tpm2) fn fixed_width(&self) -> Option<&[u8; SECRET_STORAGE_BYTES]> {
+        #[cfg(test)]
+        {
+            let (padding, payload) = self.storage.split_at(self.storage.len() - self.length);
+            crate::library::tpm2::memcheck::secret(payload);
+            crate::library::tpm2::memcheck::observe("stored-scalar", payload);
+            if !padding.is_empty() {
+                crate::library::tpm2::memcheck::observe("stored-padding", padding);
+            }
+        }
         (&*self.storage).try_into().ok()
     }
 

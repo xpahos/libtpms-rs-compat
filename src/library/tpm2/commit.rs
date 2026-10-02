@@ -128,6 +128,11 @@ impl CommitState {
             };
             let stream = super::crypto::SecretBytes(stream);
             let stream = &stream.0;
+            #[cfg(test)]
+            {
+                super::memcheck::secret(stream);
+                super::memcheck::observe("commit-stream", stream);
+            }
             let upper_half = stream[..=order_bytes / 2]
                 .iter()
                 .fold(0u8, |acc, &byte| acc | byte);

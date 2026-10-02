@@ -386,6 +386,13 @@ fn pss_encode(
 pub(super) fn rsa_crt_key(body: &OwnedObjectBody) -> Option<RsaCrtKey<'_>> {
     let prime = body.sensitive.sensitive.as_ref()?;
     let exponent = body.private_exponent.as_ref()?;
+    #[cfg(test)]
+    {
+        super::memcheck::secret(prime.as_bytes());
+        for words in &exponent.primes {
+            super::memcheck::secret_words(&words.words);
+        }
+    }
     Some(RsaCrtKey {
         cache: Some(&exponent.runtime),
         modulus: rsa_modulus(body)?,
@@ -430,6 +437,10 @@ fn rsa_sign(
             rsassa_check(modulus_size, scheme.hash_alg, digest)?;
             let key = rsa_crt_key(body).ok_or(TPM_RC_FAILURE)?;
             let signature = rsassa_sign(&key, scheme.hash_alg, digest).ok_or(TPM_RC_FAILURE)?;
+            #[cfg(test)]
+            {
+                super::memcheck::observe("signature-output", &signature);
+            }
             return Ok(Signature::Rsa {
                 scheme: scheme.scheme,
                 hash_alg: scheme.hash_alg,
@@ -451,6 +462,10 @@ fn rsa_sign(
 
     let key = rsa_crt_key(body).ok_or(TPM_RC_FAILURE)?;
     let signature = rsa_private_key_op(&key, &encoded).ok_or(TPM_RC_FAILURE)?;
+    #[cfg(test)]
+    {
+        super::memcheck::observe("signature-output", &signature);
+    }
 
     Ok(Signature::Rsa {
         scheme: scheme.scheme,
@@ -498,6 +513,10 @@ fn ecc_sign(
         }
         _ => return Err(TPM_RC_SCHEME),
     };
+    #[cfg(test)]
+    for half in [&r, &s] {
+        super::memcheck::observe("signature-output", half);
+    }
     Ok(Signature::Ecc {
         scheme: scheme.scheme,
         hash_alg: scheme.hash_alg,
@@ -540,6 +559,8 @@ fn ecschnorr_sign(
                 return Err(TPM_RC_FAILURE);
             }
         };
+        #[cfg(test)]
+        super::memcheck::observe("schnorr-commitment", &point.x);
         let Some(e) = fit_be(&point.x, order_bytes) else {
             continue;
         };
@@ -586,6 +607,8 @@ fn sm2_sign(
                 return Err(TPM_RC_FAILURE);
             }
         };
+        #[cfg(test)]
+        super::memcheck::observe("sm2-commitment", &point.x);
         let x = public(&point.x)?.ok_or(TPM_RC_FAILURE)?;
         let r = e.add(&x).ok_or(TPM_RC_FAILURE)?;
         if r.is_zero() {
@@ -628,11 +651,16 @@ fn ecdaa_sign(
         let t = hasher.finalize();
         if let Some(s) = schnorr_s(curve, &t, &commit, d)? {
             state.commit.end_commit(scheme.count);
+            let s = s.to_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?;
+            #[cfg(test)]
+            for half in [&nonce_bytes, &s] {
+                super::memcheck::observe("signature-output", half);
+            }
             return Ok(Signature::Ecc {
                 scheme: TPM_ALG_ECDAA,
                 hash_alg: scheme.hash_alg,
                 r: nonce_bytes,
-                s: s.to_bytes(order_bytes).ok_or(TPM_RC_FAILURE)?,
+                s,
             });
         }
     }
@@ -685,6 +713,11 @@ fn truncate_digest(digest: &[u8], order_bits: usize) -> Vec<u8> {
 fn random_in_order(rand: &mut SeededRand, curve: &EccCurve) -> Result<EccScalar, TpmResult> {
     let mut bytes = SecretBytes(vec![0u8; curve.order_bytes() + 8]);
     rand.generate(&mut bytes.0)?;
+    #[cfg(test)]
+    {
+        super::memcheck::secret(&bytes.0);
+        super::memcheck::observe("nonce-draw", &bytes.0);
+    }
     curve.scalar_from_extra_bits(&bytes.0).ok_or(TPM_RC_FAILURE)
 }
 
@@ -703,9 +736,13 @@ fn random_below(rand: &mut SeededRand, curve: &EccCurve) -> Result<NonceDraw, Tp
     for _ in 0..RANGE_ATTEMPTS {
         let mut bytes = vec![0u8; length];
         rand.generate(&mut bytes)?;
+        #[cfg(test)]
+        super::memcheck::secret(&bytes);
         if kept < 8 * length {
             bytes[0] &= (1u8 << (kept % 8)) - 1;
         }
+        #[cfg(test)]
+        super::memcheck::observe("nonce-candidate", &bytes);
         let zero = bytes.iter().fold(0u8, |acc, &byte| acc | byte).ct_eq(&0);
         let short = bytes[0].ct_eq(&0) | bytes[length.saturating_sub(8)].ct_eq(&0);
         let draw = curve

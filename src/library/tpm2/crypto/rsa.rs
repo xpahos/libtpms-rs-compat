@@ -71,13 +71,18 @@ fn random_prime_candidate(bits: usize, rand: &mut SeededRand) -> Result<BigUint,
     let failure = crate::library::constants::TPM_RC_FAILURE;
     if rand.seed_compat_level() == SEED_COMPAT_LEVEL_ORIGINAL {
         let mut bytes = rand.random_bytes(bits / 8)?;
+        #[cfg(test)]
+        {
+            crate::library::tpm2::memcheck::secret(&bytes);
+            crate::library::tpm2::memcheck::observe("prime-candidate", &bytes);
+        }
         bytes.reverse();
         let mut value = BigUint::from_be_bytes(&bytes).ok_or(failure)?;
         bytes.fill(0);
         adjust_prime_candidate_pre_rev155(&mut value).ok_or(failure)?;
         Ok(value)
     } else {
-        let mut value = rand.random_integer(bits)?;
+        let mut value = rand.random_secret_integer(bits)?;
         adjust_prime_candidate_new(&mut value).ok_or(failure)?;
         Ok(value)
     }
@@ -296,6 +301,10 @@ pub(in crate::library::tpm2) fn generate_rsa_key(
         }
 
         let (d_p, d_q, q_inv) = z.exponent_words().ok_or(RsaKeyError::Failure)?;
+        #[cfg(test)]
+        {
+            crate::library::tpm2::memcheck::observe("public-modulus", &modulus_bytes_out);
+        }
         return Ok(RsaKeyMaterial {
             modulus: modulus_bytes_out,
             prime: prime_bytes_out,

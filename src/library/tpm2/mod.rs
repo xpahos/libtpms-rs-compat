@@ -47,6 +47,8 @@ mod live;
 mod lockout;
 mod manufacture;
 mod marshal;
+#[cfg(test)]
+mod memcheck;
 mod nv;
 mod object;
 mod object_create;

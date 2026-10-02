@@ -173,6 +173,8 @@ enum RandSource {
     Drbg(Drbg),
     Kdf(KdfState),
     Live(LiveDrbg),
+    #[cfg(test)]
+    Script(std::collections::VecDeque<u8>),
 }
 
 pub(in crate::library::tpm2) struct SeededRand {
@@ -210,6 +212,22 @@ impl SeededRand {
         })
     }
 
+    #[cfg(test)]
+    pub(in crate::library::tpm2) fn scripted(bytes: &[u8], seed_compat_level: u8) -> Self {
+        Self {
+            source: RandSource::Script(bytes.iter().copied().collect()),
+            seed_compat_level,
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::library::tpm2) fn script_remaining(&self) -> Option<usize> {
+        match &self.source {
+            RandSource::Script(script) => Some(script.len()),
+            _ => None,
+        }
+    }
+
     pub(in crate::library::tpm2) fn from_live(live: LiveDrbg) -> Self {
         Self {
             source: RandSource::Live(live),
@@ -240,6 +258,8 @@ impl SeededRand {
             RandSource::Drbg(drbg) => drbg.additional_data(data),
             RandSource::Live(live) => live.additional_data(data),
             RandSource::Kdf(_) => Ok(()),
+            #[cfg(test)]
+            RandSource::Script(_) => Ok(()),
         }
     }
 
@@ -251,6 +271,16 @@ impl SeededRand {
             RandSource::Drbg(drbg) => drbg.generate(out),
             RandSource::Kdf(kdf) => kdf.generate(out),
             RandSource::Live(live) => live.generate(out),
+            #[cfg(test)]
+            RandSource::Script(script) => {
+                if script.len() < out.len() {
+                    return Err(crate::library::constants::TPM_RC_NO_RESULT);
+                }
+                for byte in out.iter_mut() {
+                    *byte = script.pop_front().unwrap_or_default();
+                }
+                Ok(())
+            }
         }
     }
 
@@ -268,6 +298,22 @@ impl SeededRand {
         bits: usize,
     ) -> Result<BigUint, TpmResult> {
         let bytes = self.random_bytes(bits.div_ceil(8))?;
+        let failure = crate::library::constants::TPM_RC_FAILURE;
+        let mut value = BigUint::from_be_bytes(&bytes).ok_or(failure)?;
+        value.mask_bits(bits).ok_or(failure)?;
+        Ok(value)
+    }
+
+    pub(in crate::library::tpm2) fn random_secret_integer(
+        &mut self,
+        bits: usize,
+    ) -> Result<BigUint, TpmResult> {
+        let bytes = self.random_bytes(bits.div_ceil(8))?;
+        #[cfg(test)]
+        {
+            crate::library::tpm2::memcheck::secret(&bytes);
+            crate::library::tpm2::memcheck::observe("prime-candidate", &bytes);
+        }
         let failure = crate::library::constants::TPM_RC_FAILURE;
         let mut value = BigUint::from_be_bytes(&bytes).ok_or(failure)?;
         value.mask_bits(bits).ok_or(failure)?;

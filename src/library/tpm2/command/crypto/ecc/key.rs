@@ -1174,4 +1174,108 @@ mod tests {
         assert!(!commit.is_set(0), "the reset cleared the bitmap");
         assert_eq!(commit.counter, 0);
     }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_ecc_commands_publish_only_their_successful_responses() {
+        use crate::library::tpm2::memcheck::{Shadow, shadow, traced};
+        let (s2, y2) = commit_operand();
+        let ephemeral = cmd(CC_EC_EPHEMERAL, &[], None, &CURVE_P256.to_be_bytes());
+        type Case = (
+            &'static str,
+            Vec<Vec<u8>>,
+            Vec<u8>,
+            usize,
+            Option<(&'static str, usize)>,
+        );
+        let cases: [Case; 5] = [
+            (
+                "TPM2_ECDH_ZGen",
+                vec![decrypt_key(&[])],
+                cmd(
+                    CC_ECDH_ZGEN,
+                    &[H0],
+                    Some(&pw(&[])),
+                    &point2b(&generator_multiple(2)),
+                ),
+                64,
+                None,
+            ),
+            (
+                "TPM2_ECDH_KeyGen",
+                vec![decrypt_key(&[])],
+                cmd(CC_ECDH_KEYGEN, &[H0], None, &[]),
+                128,
+                None,
+            ),
+            ("TPM2_EC_Ephemeral", vec![], ephemeral.clone(), 64, None),
+            (
+                "TPM2_Commit",
+                vec![ecdaa_key()],
+                commit_packet(&point2b(&generator_multiple(2)), &s2, &y2),
+                192,
+                Some(("commit-product", 6)),
+            ),
+            (
+                "TPM2_ZGen_2Phase",
+                vec![decrypt_key(&[]), ephemeral],
+                two_phase(0),
+                128,
+                Some(("two-phase-product", 4)),
+            ),
+        ];
+        for (label, setup, packet, coordinates, internal) in cases {
+            for conceal in [true, false] {
+                let mut runtime = ready_with(&setup);
+                let (response, trace) = traced(conceal, || dispatch_bytes(&mut runtime, &packet));
+                assert_eq!(response_code(&response), 0, "{label} succeeds");
+                let published = trace.published("command-response");
+                assert_eq!(published.len(), 1, "{label}: {:?}", trace.publications());
+                for other in trace.publications() {
+                    assert!(
+                        other.label == "command-response"
+                            || (other.label == "command-response-auth"
+                                && other.undefined == Some(0)),
+                        "{label}: only the response is published: {other:?}"
+                    );
+                }
+                let (before, undefined) = if conceal {
+                    (Shadow::Mixed, coordinates)
+                } else {
+                    (Shadow::Defined, 0)
+                };
+                assert_eq!(published[0].before, before, "{label} conceal={conceal}");
+                assert_eq!(
+                    published[0].undefined,
+                    Some(undefined),
+                    "{label} conceal={conceal}: the serialized coordinates stay secret until the response is released"
+                );
+                assert_eq!(
+                    shadow(&response_parameters(&response)),
+                    Shadow::Defined,
+                    "{label}: the response is public"
+                );
+                if let Some((internal, count)) = internal {
+                    let state = if conceal {
+                        Shadow::Undefined
+                    } else {
+                        Shadow::Defined
+                    };
+                    assert_eq!(trace.all(internal, state), count, "{label}");
+                }
+            }
+        }
+        let mut runtime = ready_with(&[decrypt_key(&[])]);
+        let (response, trace) = traced(true, || dispatch_bytes(&mut runtime, &two_phase(5)));
+        assert_ne!(
+            response_code(&response),
+            0,
+            "an unused commit counter fails"
+        );
+        assert!(
+            trace.publications().is_empty(),
+            "a failed command publishes nothing: {:?}",
+            trace.publications()
+        );
+    }
 }

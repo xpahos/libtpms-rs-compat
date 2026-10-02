@@ -128,6 +128,8 @@ fn run(
                 return Err(code);
             }
         }
+        #[cfg(test)]
+        publish_response(&out_parameters, &[]);
         return Ok(Response::success_with_handles(
             TPM_ST_NO_SESSIONS,
             out_handles,
@@ -175,11 +177,21 @@ fn run(
         }
     };
     record_session_state(runtime, &area);
+    #[cfg(test)]
+    publish_response(&out_parameters, &auth_response);
     Ok(Response::success_with_sessions(
         out_handles,
         out_parameters,
         auth_response,
     ))
+}
+
+#[cfg(test)]
+fn publish_response(parameters: &[u8], auth_response: &[u8]) {
+    crate::library::tpm2::memcheck::publish("command-response", parameters);
+    if !auth_response.is_empty() {
+        crate::library::tpm2::memcheck::publish("command-response-auth", auth_response);
+    }
 }
 
 fn split_authorization_area<'a>(

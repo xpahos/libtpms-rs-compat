@@ -41,7 +41,9 @@ pub(super) use hmac::HmacState;
 pub(super) use kdf::kdfe;
 pub(super) use kdf::{kdfa, kdfa_from, mgf1};
 #[cfg(test)]
-pub(super) use ossl::{BigUint, crt_words_be, curve_parameters, prepared_key_count, review_keys};
+pub(super) use ossl::{
+    BigUint, crt_words_be, curve_parameters, prepared_key_count, review_keys, validated_factor_sets,
+};
 pub(super) use ossl::{
     CRT_WORDS, CrtWords, EccAffine, EccCurve, EccPublicScalar, EccScalar, EcdsaAttempt,
     PRIVATE_SCALAR_BYTES, PublicCheck, RecoveredExponent, RecoveryError, RsaCrtKey,

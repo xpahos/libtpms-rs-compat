@@ -32,7 +32,9 @@ pub(in crate::library::tpm2) use rsa::{
     rsa_public_key_op, rsa_verify_signature, rsassa_sign,
 };
 #[cfg(test)]
-pub(in crate::library::tpm2) use rsa::{crt_words_be, prepared_key_count, review_keys};
+pub(in crate::library::tpm2) use rsa::{
+    crt_words_be, prepared_key_count, review_keys, validated_factor_sets,
+};
 pub(in crate::library::tpm2) use secret::{SecretBytes, wipe};
 
 #[cfg(test)]
@@ -108,6 +110,7 @@ mod tests {
                 !matches!(
                     relative.as_str(),
                     "library/tpm2/crypto_outputs.rs"
+                        | "library/tpm2/memcheck.rs"
                         | "library/tpm2/crypto/work.rs"
                         | "library/tpm2/ecc_scalar_encoding.rs"
                 )
@@ -448,6 +451,23 @@ mod tests {
             !ffi.contains("BN_MONT_CTX"),
             "no Montgomery context on a caller-supplied modulus"
         );
+    }
+
+    #[test]
+    fn public_points_are_validated_by_openssl_not_by_a_project_curve_equation() {
+        let sources = production_sources();
+        let ecc = source(&sources, "library/tpm2/crypto/ossl/ecc.rs");
+        assert!(!ecc.contains("fn satisfies_equation("));
+        let checked = function_body(ecc, "fn checked_point(");
+        assert!(
+            checked.contains(".set_affine_coordinates_gfp(") && checked.contains("only_off_curve(")
+        );
+        for forbidden in ["mod_sqr(", "mod_mul(", "components_gfp("] {
+            assert!(
+                !checked.contains(forbidden),
+                "checked_point calls {forbidden}"
+            );
+        }
     }
 
     #[test]

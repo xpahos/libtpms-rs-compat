@@ -113,6 +113,8 @@ fn ensure_private_exponent(runtime: &mut Tpm2Runtime, slot: usize) -> Result<(),
         .sensitive
         .as_ref()
         .map_or(&[][..], OwnedSecret::as_bytes);
+    #[cfg(test)]
+    crate::library::tpm2::memcheck::secret(prime);
     let recovered =
         recover_rsa_private_exponent(modulus, prime, *exponent).ok_or(TPM_RC_FAILURE)?;
     let private_exponent = OwnedPrivateExponent {

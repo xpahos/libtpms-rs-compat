@@ -1217,6 +1217,7 @@ mod tests {
             "command/pcr/test_support.rs",
             "command/platform/test_support.rs",
             "test_support.rs",
+            "memcheck.rs",
         ];
 
         fn production_slice(source: &str) -> &str {

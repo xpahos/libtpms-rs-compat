@@ -401,11 +401,8 @@ fn crt_coefficient(
     modulus: &BigNumRef,
     ctx: &mut BigNumContextRef,
 ) -> Outcome<CrtWords> {
-    let width = CRT_BYTES.max(backend!(
-        usize::try_from(larger.num_bytes().max(smaller.num_bytes())).ok()
-    ));
-    let larger_bytes = PrimeBytes(backend!(larger.to_be(width).ok()));
-    let smaller_bytes = PrimeBytes(backend!(smaller.to_be(width).ok()));
+    let larger_bytes = PrimeBytes(backend!(larger.to_be(CRT_BYTES).ok()));
+    let smaller_bytes = PrimeBytes(backend!(smaller.to_be(CRT_BYTES).ok()));
     let fermat_applies = is_odd_bytes(&larger_bytes.0)
         && is_odd_bytes(&smaller_bytes.0)
         && !at_most_two(&larger_bytes.0)
@@ -541,6 +538,8 @@ fn prepare(key: &RsaCrtKey<'_>, fingerprint: [u8; 32]) -> Result<PreparedRsaKey,
     if !n.is_odd() || n.num_bits() < 2 {
         return Ok(unusable);
     }
+    #[cfg(test)]
+    crate::library::tpm2::memcheck::observe("private-key-prime", key.prime);
     let width = CRT_BYTES.max(key.prime.len());
     let stored = transient(SecretBn::from_be(key.prime))?;
     let other = present(secret_words(key.q))?;
@@ -565,6 +564,8 @@ fn prepare(key: &RsaCrtKey<'_>, fingerprint: [u8; 32]) -> Result<PreparedRsaKey,
         Outcome::Backend => return Err(Transient),
     };
     drop((larger_bytes, smaller_bytes));
+    #[cfg(test)]
+    crate::library::tpm2::memcheck::observe("rsa-private-exponent", &d.0);
     let d = transient(SecretBn::from_be(&d.0))?;
     present(checkpoint(Boundary::NativeKey))?;
     let native = transient(RsaPrivateKeyBuilder::new(
@@ -583,6 +584,13 @@ fn prepare(key: &RsaCrtKey<'_>, fingerprint: [u8; 32]) -> Result<PreparedRsaKey,
 const VALIDATED_FACTOR_SETS: usize = 64;
 
 static VALIDATED_FACTORS: Mutex<VecDeque<[u8; 32]>> = Mutex::new(VecDeque::new());
+
+#[cfg(test)]
+pub(in crate::library::tpm2) fn validated_factor_sets() -> usize {
+    VALIDATED_FACTORS
+        .lock()
+        .map_or(0, |validated| validated.len())
+}
 
 #[cfg(test)]
 thread_local! {
@@ -1110,6 +1118,8 @@ impl CrtCandidate {
 }
 
 fn divided_quotient(n: &BigNumRef, prime: &[u8], limbs: usize) -> Outcome<SecretBn> {
+    #[cfg(test)]
+    crate::library::tpm2::memcheck::observe("recovery-prime", prime);
     let divisor = backend!(SecretBn::from_be(prime).ok());
     if divisor.num_bits() == 0 {
         return Outcome::Invalid;
@@ -1138,6 +1148,8 @@ fn divided_quotient(n: &BigNumRef, prime: &[u8], limbs: usize) -> Outcome<Secret
 }
 
 fn hensel_quotient(n: &BigNumRef, prime: &[u8], limbs: usize) -> Outcome<SecretBn> {
+    #[cfg(test)]
+    crate::library::tpm2::memcheck::observe("recovery-prime", prime);
     if bool::from(ct_is_zero(prime)) {
         return Outcome::Invalid;
     }
@@ -1999,6 +2011,37 @@ mod tests {
                 [0; CRT_WORDS],
                 [0; CRT_WORDS],
             ],
+        }
+    }
+
+    #[test]
+    fn prime_factors_of_another_modulus_never_become_usable() {
+        for (larger, smaller, wrong_larger, wrong_smaller) in [
+            (61u64, 53u64, 71u64, 67u64),
+            (1_000_003, 999_983, 1_000_033, 999_979),
+        ] {
+            let key = toy_key(larger, smaller);
+            let mut other = toy_key(wrong_larger, wrong_smaller);
+            other.modulus = key.modulus.clone();
+            let n = int(larger).mul(&int(smaller)).unwrap();
+            let message = int(0x2a);
+            let ciphertext = be(&message.mod_exp(&int(65537), &n).unwrap(), 8);
+            assert_eq!(
+                rsa_private_key_op(&key.crt(), &ciphertext).map(|plain| big(&plain)),
+                Some(message),
+                "{larger} x {smaller}: the genuine factors decrypt"
+            );
+            for _ in 0..2 {
+                assert!(matches!(
+                    prepare(&other.crt(), fingerprint(&other.crt())),
+                    Ok(PreparedRsaKey { key: None, .. })
+                ));
+                assert_eq!(
+                    rsa_private_key_op(&other.crt(), &ciphertext),
+                    None,
+                    "{wrong_larger} x {wrong_smaller} are primes of another modulus"
+                );
+            }
         }
     }
 

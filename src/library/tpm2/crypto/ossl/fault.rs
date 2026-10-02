@@ -21,6 +21,7 @@ pub(in crate::library::tpm2) enum Boundary {
     Random,
     Remask,
     ImportReduction,
+    #[cfg(test)]
     PointValidation,
     PublicReduction,
 }

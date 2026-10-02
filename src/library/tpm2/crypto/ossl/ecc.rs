@@ -240,12 +240,41 @@ impl PartialEq for EccPublicScalar {
     }
 }
 
+const ERR_LIB_EC: i32 = 16;
+const EC_R_POINT_IS_NOT_ON_CURVE: i32 = 107;
+const EC_R_NEED_NEW_SETUP_VALUES: i32 = 157;
+
 fn needs_new_setup(error: &ErrorStack) -> bool {
-    const ERR_LIB_EC: i32 = 16;
-    const EC_R_NEED_NEW_SETUP_VALUES: i32 = 157;
     error.errors().iter().any(|entry| {
         entry.library_code() == ERR_LIB_EC && entry.reason_code() == EC_R_NEED_NEW_SETUP_VALUES
     })
+}
+
+#[cfg(test)]
+fn validation_result(result: Result<(), ErrorStack>) -> Result<(), ErrorStack> {
+    if checkpoint(Boundary::PointValidation).is_some() {
+        return result;
+    }
+    drop(result);
+    drop(ErrorStack::get());
+    const ERR_LIB_BN: i32 = 3;
+    const ERR_R_MALLOC_FAILURE: i32 = 256;
+    super::ffi::raise_error(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    super::ffi::raise_error(ERR_LIB_EC, EC_R_POINT_IS_NOT_ON_CURVE);
+    Err(ErrorStack::get())
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn validation_result(result: Result<(), ErrorStack>) -> Result<(), ErrorStack> {
+    result
+}
+
+fn only_off_curve(error: &ErrorStack) -> bool {
+    !error.errors().is_empty()
+        && error.errors().iter().all(|entry| {
+            entry.library_code() == ERR_LIB_EC && entry.reason_code() == EC_R_POINT_IS_NOT_ON_CURVE
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -353,22 +382,11 @@ impl EccCurve {
             .nnmod(&y, &self.data.field, ctx)
             .map_err(backend)?;
         let mut point = EcPoint::new(self.group()).map_err(backend)?;
-        let set = match checkpoint(Boundary::PointValidation) {
-            Some(()) => point
-                .set_affine_coordinates_gfp(self.group(), &x_reduced, &y_reduced, ctx)
-                .is_ok(),
-            None => false,
-        };
         drop(ErrorStack::get());
-        if !set {
-            return match self.satisfies_equation(&x_reduced, &y_reduced, ctx) {
-                Ok(false) => Ok(None),
-                Ok(true) | Err(_) => Err(EccBackendError),
-            };
-        }
-        match point.is_on_curve(self.group(), ctx) {
-            Ok(true) => Ok(Some(point)),
-            Ok(false) => Ok(None),
+        let set = point.set_affine_coordinates_gfp(self.group(), &x_reduced, &y_reduced, ctx);
+        match validation_result(set) {
+            Ok(()) => Ok(Some(point)),
+            Err(error) if only_off_curve(&error) => Ok(None),
             Err(_) => Err(EccBackendError),
         }
     }
@@ -391,32 +409,6 @@ impl EccCurve {
     #[cfg(test)]
     pub(in crate::library::tpm2) fn on_curve(&self, x: &[u8], y: &[u8]) -> bool {
         self.is_on_curve(x, y).expect("no backend failure")
-    }
-
-    fn satisfies_equation(
-        &self,
-        x: &BigNumRef,
-        y: &BigNumRef,
-        ctx: &mut BigNumContextRef,
-    ) -> Result<bool, ErrorStack> {
-        let mut prime = BigNum::new()?;
-        let mut a = BigNum::new()?;
-        let mut b = BigNum::new()?;
-        self.group()
-            .components_gfp(&mut prime, &mut a, &mut b, ctx)?;
-        let mut left = BigNum::new()?;
-        left.mod_sqr(y, &prime, ctx)?;
-        let mut square = BigNum::new()?;
-        square.mod_sqr(x, &prime, ctx)?;
-        let mut cube = BigNum::new()?;
-        cube.mod_mul(&square, x, &prime, ctx)?;
-        let mut linear = BigNum::new()?;
-        linear.mod_mul(&a, x, &prime, ctx)?;
-        let mut partial = BigNum::new()?;
-        partial.mod_add(&cube, &linear, &prime, ctx)?;
-        let mut right = BigNum::new()?;
-        right.mod_add(&partial, &b, &prime, ctx)?;
-        Ok(left == right)
     }
 
     pub(in crate::library::tpm2) fn is_on_curve(
@@ -763,6 +755,11 @@ impl EccCurve {
             None => return Err(SharedPointError::Backend),
         };
         let shared = self.difference(&sum, &offset, &mut ctx);
+        #[cfg(test)]
+        if let Some(point) = shared.as_ref() {
+            crate::library::tpm2::memcheck::observe("shared-point", &point.x);
+            crate::library::tpm2::memcheck::observe("offset-point", &sum.x);
+        }
         for coordinate in [&mut sum.x, &mut sum.y, &mut offset.x, &mut offset.y] {
             cleanse(coordinate);
         }
@@ -854,6 +851,8 @@ impl EccCurve {
             return Some(EcdsaAttempt::Retry);
         }
         let commitment = self.affine(point.point(), &mut ctx)?;
+        #[cfg(test)]
+        crate::library::tpm2::memcheck::observe("ecdsa-commitment", &commitment.x);
         drop(point);
         let x = BigNum::from_slice(&commitment.x).ok()?;
         let mut r = BigNum::new().ok()?;
@@ -2056,6 +2055,50 @@ mod tests {
                 || events.iter().map(|(_, masks, _)| masks).sum::<u32>() > 0,
             "short random operands still occur at their natural rate"
         );
+    }
+
+    #[test]
+    fn public_double_multiplication_handles_identity_equal_and_opposite_points() {
+        for curve_id in ALL_CURVES {
+            let curve = curve(curve_id);
+            let n = order(&curve);
+            let p = curve
+                .mul_generator_public(&public(&curve, &int(0x1234)))
+                .unwrap();
+            let doubled = curve
+                .mul_generator_public(&public(&curve, &int(0x2468)))
+                .unwrap();
+            let one = curve.public_scalar_from_u64(1).unwrap();
+            let zero = curve.public_scalar_from_u64(0).unwrap();
+            let minus_one = public(&curve, &n.sub_u64(1).unwrap());
+            let point = (p.x.as_slice(), p.y.as_slice());
+            let context = format!("curve {curve_id:#06x}");
+            assert_eq!(
+                curve.mul_add(&one, Some(point), &one, point),
+                Some(doubled),
+                "{context}: equal points double"
+            );
+            assert_eq!(
+                curve.mul_add(&one, Some(point), &minus_one, point),
+                None,
+                "{context}: opposite points sum to infinity"
+            );
+            assert_eq!(
+                curve.mul_add(&zero, None, &one, point),
+                Some(p.clone()),
+                "{context}: the identity on the generator side"
+            );
+            assert_eq!(
+                curve.mul_add(&one, Some(point), &zero, point),
+                Some(p.clone()),
+                "{context}: the identity on the second point"
+            );
+            assert_eq!(
+                curve.mul_add(&zero, None, &zero, point),
+                None,
+                "{context}: both products at infinity"
+            );
+        }
     }
 
     #[test]

@@ -57,6 +57,18 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+#[cfg(test)]
+pub(super) fn raise_error(library: c_int, reason: c_int) {
+    // SAFETY: ERR_new starts a new entry on this thread's error queue,
+    // ERR_set_debug records static NUL-terminated strings, and ERR_set_error
+    // with a null format only stores the library and reason codes.
+    unsafe {
+        openssl_sys::ERR_new();
+        openssl_sys::ERR_set_debug(c"fault.rs".as_ptr(), 0, c"injected".as_ptr());
+        openssl_sys::ERR_set_error(library, reason, core::ptr::null());
+    }
+}
+
 pub(in crate::library::tpm2::crypto::ossl) fn cleanse(buffer: &mut [u8]) {
     // SAFETY: the pointer and length describe the caller's exclusively borrowed
     // slice; OPENSSL_cleanse only overwrites those bytes.

@@ -520,6 +520,10 @@ pub(super) fn crypt_ecc_encrypt(
     for (masked, clear) in c2.iter_mut().zip(plain_text) {
         *masked ^= clear;
     }
+    #[cfg(test)]
+    for part in [&c1.x, &c1.y, &c2, &c3] {
+        super::memcheck::observe("ciphertext", part);
+    }
     Ok(EccCiphertext { c1, c2, c3 })
 }
 
@@ -578,6 +582,12 @@ pub(super) fn commit_point_from_s2(
     Ok(EccPoint { x, y: y2.to_vec() })
 }
 
+#[cfg(test)]
+fn observe_point(label: &'static str, point: &EccPoint) {
+    super::memcheck::observe(label, &point.x);
+    super::memcheck::observe(label, &point.y);
+}
+
 pub(super) fn commit_compute(
     curve_id: u16,
     p1: Option<&EccPoint>,
@@ -595,6 +605,8 @@ pub(super) fn commit_compute(
             return Err(TPM_RC_VALUE);
         }
         k = private_point_multiply(curve_id, Some(p2), private)?;
+        #[cfg(test)]
+        observe_point("commit-product", &k);
         if canceled() {
             return Err(TPM_RC_CANCELED);
         }
@@ -604,12 +616,16 @@ pub(super) fn commit_compute(
             return Err(TPM_RC_VALUE);
         }
         l = point_multiply_by(&curve, Some(p2), r)?;
+        #[cfg(test)]
+        observe_point("commit-product", &l);
     }
     if p1.is_some() || p2.is_none() {
         if p2.is_some() && canceled() {
             return Err(TPM_RC_CANCELED);
         }
         e = point_multiply_by(&curve, p1, r)?;
+        #[cfg(test)]
+        observe_point("commit-product", &e);
     }
     Ok((k, l, e))
 }
@@ -638,7 +654,11 @@ pub(super) fn two_phase_key_exchange(
     match scheme {
         TPM_ALG_ECDH => {
             let z1 = private_point_multiply(curve_id, Some(qs_b), static_private)?;
+            #[cfg(test)]
+            observe_point("two-phase-product", &z1);
             let z2 = point_multiply_by(&curve, Some(qe_b), ephemeral_private)?;
+            #[cfg(test)]
+            observe_point("two-phase-product", &z2);
             Ok(TwoPhaseResult {
                 z1,
                 z2,
@@ -652,6 +672,8 @@ pub(super) fn two_phase_key_exchange(
         }),
         TPM_ALG_SM2 => {
             let z1 = sm2_key_exchange(&curve, static_private, ephemeral_private, qs_b, qe_b)?;
+            #[cfg(test)]
+            observe_point("two-phase-product", &z1);
             Ok(TwoPhaseResult {
                 z1,
                 z2: EccPoint::empty(),
@@ -1257,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn point_validation_failures_are_classified_by_the_curve_equation() {
+    fn point_validation_backend_failures_are_never_classified_as_off_curve() {
         use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault};
         let curve = curve(P256);
         let valid = multiple_of(P256, 0x42);
@@ -1275,8 +1297,8 @@ mod tests {
         arm_fault(FaultBoundary::PointValidation, 0);
         assert_eq!(
             curve.is_on_curve(&off_curve.x, &off_curve.y),
-            Ok(false),
-            "an off-curve point stays off-curve"
+            Err(EccBackendError),
+            "a backend failure is a failure even for an off-curve point"
         );
         disarm_fault();
         assert_eq!(curve.is_on_curve(&valid.x, &valid.y), Ok(true));
@@ -1295,6 +1317,20 @@ mod tests {
             &mut |_| Ok(()),
         );
         disarm_fault();
+        assert_eq!(
+            result,
+            Err(TPM_RC_FAILURE),
+            "a backend failure never selects the raw-C1 path"
+        );
+        let result = crypt_ecc_decrypt(
+            P256,
+            Some(&key),
+            kdf2_sha256(),
+            &off_curve,
+            &c2,
+            &c3,
+            &mut |_| Ok(()),
+        );
         assert_eq!(
             result,
             Ok(message),

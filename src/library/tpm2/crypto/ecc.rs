@@ -297,6 +297,7 @@ pub(in crate::library::tpm2) fn generate_private_scalar(
     rand: &mut SeededRand,
 ) -> Result<EccScalar, crate::types::TpmResult> {
     let draw = super::SecretBytes(rand.random_bytes(curve.order_bytes() + 8)?);
+    crate::library::tpm2::memcheck::secret(&draw.0);
     curve
         .scalar_from_extra_bits(&draw.0)
         .ok_or(crate::library::constants::TPM_RC_FAILURE)
@@ -317,6 +318,11 @@ pub(in crate::library::tpm2) fn generate_ecc_ephemeral(
         rand.random_bytes(curve.order_bytes() + 8)
             .map_err(|_| EccKeyError::NoResult)?,
     );
+    #[cfg(test)]
+    {
+        crate::library::tpm2::memcheck::secret(&draw.0);
+        crate::library::tpm2::memcheck::observe("ephemeral-draw", &draw.0);
+    }
     let scalar = curve
         .scalar_from_extra_bits(&draw.0)
         .ok_or(EccKeyError::Failure)?;
@@ -338,13 +344,17 @@ pub(in crate::library::tpm2) fn generate_ecc_key(
 ) -> Result<EccKeyMaterial, EccKeyError> {
     let curve = EccCurve::lookup(curve_id).ok_or(EccKeyError::Curve)?;
     let EccEphemeral { x, y, scalar } = generate_ecc_ephemeral(curve_id, rand)?;
-    Ok(EccKeyMaterial {
-        x,
-        y,
-        private: scalar
-            .export_bytes(curve.field_bytes())
-            .ok_or(EccKeyError::Failure)?,
-    })
+    let private = scalar
+        .export_bytes(curve.field_bytes())
+        .ok_or(EccKeyError::Failure)?;
+    #[cfg(test)]
+    {
+        for coordinate in [&x, &y] {
+            crate::library::tpm2::memcheck::observe("public-key", coordinate);
+        }
+        crate::library::tpm2::memcheck::observe("exported-private", &private);
+    }
+    Ok(EccKeyMaterial { x, y, private })
 }
 
 #[cfg(test)]

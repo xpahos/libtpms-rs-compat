@@ -27,8 +27,32 @@ use crate::types::TpmResult;
 use super::crypto::{CrtWords, EccCurve, EccScalar, crt_words_be};
 use super::persistent::OwnedBnPrime;
 
-fn stored(bytes: &[u8]) -> OwnedSecret {
-    OwnedSecret::copy_of(bytes)
+const MATRIX_INPUT: &str = "matrix-input/";
+
+fn secret_input(case: impl FnOnce() -> String, bytes: &[u8]) {
+    super::memcheck::secret(bytes);
+    super::memcheck::observe_case(|| format!("{MATRIX_INPUT}{}", case()), bytes);
+}
+
+fn released(bytes: &[u8]) {
+    super::memcheck::publish("caller-result", bytes);
+}
+
+fn release_signature(signature: &Signature) {
+    match signature {
+        Signature::Ecc { r, s, .. } => {
+            released(r);
+            released(s);
+        }
+        Signature::Rsa { signature, .. } => released(signature),
+        _ => {}
+    }
+}
+
+fn stored(case: &str, bytes: &[u8]) -> OwnedSecret {
+    let secret = OwnedSecret::copy_of(bytes);
+    secret_input(|| format!("{case}/stored"), secret.as_bytes());
+    secret
 }
 
 fn words_of(value: CrtWords) -> (u16, Vec<u8>) {
@@ -55,7 +79,9 @@ macro_rules! key_parts {
     }};
 }
 fn recover_words(modulus: &[u8], prime: &[u8], exponent: u32) -> Option<Vec<Vec<u8>>> {
-    let recovered = super::crypto::recover_rsa_private_exponent(modulus, prime, exponent)?;
+    let imported = prime.to_vec();
+    secret_input(|| "recover".into(), &imported);
+    let recovered = super::crypto::recover_rsa_private_exponent(modulus, &imported, exponent)?;
     Some(
         [recovered.q, recovered.d_p, recovered.d_q, recovered.q_inv]
             .into_iter()
@@ -95,10 +121,12 @@ fn exponent_from(words: &[(u16, Vec<u8>)]) -> OwnedPrivateExponent {
     }
 }
 
-fn ephemeral(curve_id: u16, value: u64) -> EccScalar {
+fn ephemeral(case: &str, curve_id: u16, value: u64) -> EccScalar {
+    let bytes = value.to_be_bytes();
+    secret_input(|| format!("{case}/ephemeral"), &bytes);
     EccCurve::lookup(curve_id)
         .unwrap()
-        .scalar_from_u64(value)
+        .secret_scalar(&bytes)
         .unwrap()
 }
 
@@ -126,7 +154,10 @@ fn fingerprint(bytes: &[u8]) -> String {
 
 fn record(out: &mut Vec<String>, label: &str, result: Result<Vec<u8>, TpmResult>) {
     match result {
-        Ok(bytes) => out.push(format!("{label} {}", fingerprint(&bytes))),
+        Ok(bytes) => {
+            let verified = super::memcheck::verification_copy(&bytes);
+            out.push(format!("{label} {}", fingerprint(&verified)));
+        }
         Err(code) => out.push(format!("{label} err:{code:#x}")),
     }
 }
@@ -169,7 +200,11 @@ fn body(
             sensitive_type: public.object_type,
             auth_value: OwnedSecret::from_vec(Vec::new()),
             seed_value: OwnedSecret::from_vec(Vec::new()),
-            sensitive: Some(OwnedSecret::from_vec(private)),
+            sensitive: Some({
+                let secret = OwnedSecret::from_vec(private);
+                secret_input(|| "body".into(), secret.as_bytes());
+                secret
+            }),
         },
         public,
         private_exponent: exponent,
@@ -296,6 +331,7 @@ fn rsa_matrix(out: &mut Vec<String>) {
             CancellationToken::disabled(),
         )
         .unwrap();
+        released(&key.modulus);
         let (modulus, prime, words) = key_parts!(key);
         record(out, &format!("{name}/modulus"), Ok(modulus.clone()));
         record(out, &format!("{name}/prime"), Ok(prime.clone()));
@@ -342,6 +378,9 @@ fn rsa_matrix(out: &mut Vec<String>) {
                 commit: commit_state(),
             };
             let signature = sign_digest(Some(&key_body), &scheme, &digest, &profile, &mut state);
+            if let Ok(signature) = &signature {
+                release_signature(signature);
+            }
             record(
                 out,
                 &format!("{name}/{tag}"),
@@ -456,6 +495,8 @@ fn ecc_matrix(out: &mut Vec<String>) {
         let detail = curve_detail(curve_id).unwrap();
         let mut generator = rand(name.as_bytes(), 1);
         let key = super::crypto::generate_ecc_key(curve_id, &mut generator).unwrap();
+        released(&key.x);
+        released(&key.y);
         record(out, &format!("{name}/key-x"), Ok(key.x.clone()));
         record(out, &format!("{name}/key-y"), Ok(key.y.clone()));
         record(out, &format!("{name}/key-d"), Ok(key.private.clone()));
@@ -465,6 +506,8 @@ fn ecc_matrix(out: &mut Vec<String>) {
             Ok(generator.random_bytes(32).unwrap()),
         );
         let other = super::crypto::generate_ecc_key(curve_id, &mut rand(b"other", 1)).unwrap();
+        released(&other.x);
+        released(&other.y);
 
         let order = detail.order.clone();
         let width = key.private.len();
@@ -511,33 +554,31 @@ fn ecc_matrix(out: &mut Vec<String>) {
         let mut off_curve = public.clone();
         off_curve.y[0] ^= 0x01;
         for (tag, scalar) in &scalars {
+            secret_input(|| format!("{name}/mulg-{tag}"), scalar);
             record(
                 out,
                 &format!("{name}/mulg-{tag}"),
                 point_multiply(curve_id, None, scalar).map(|p| point_bytes(&p)),
             );
+            secret_input(|| format!("{name}/mulq-{tag}"), scalar);
             record(
                 out,
                 &format!("{name}/mulq-{tag}"),
                 point_multiply(curve_id, Some(&public), scalar).map(|p| point_bytes(&p)),
             );
         }
-        record(
-            out,
-            &format!("{name}/mul-aliased"),
-            point_multiply(curve_id, Some(&aliased), &other.private).map(|p| point_bytes(&p)),
-        );
-        record(
-            out,
-            &format!("{name}/mul-generator-point"),
-            point_multiply(curve_id, Some(&generator_point), &other.private)
-                .map(|p| point_bytes(&p)),
-        );
-        record(
-            out,
-            &format!("{name}/mul-off-curve"),
-            point_multiply(curve_id, Some(&off_curve), &other.private).map(|p| point_bytes(&p)),
-        );
+        for (tag, base) in [
+            ("aliased", &aliased),
+            ("generator-point", &generator_point),
+            ("off-curve", &off_curve),
+        ] {
+            secret_input(|| format!("{name}/mul-{tag}"), &other.private);
+            record(
+                out,
+                &format!("{name}/mul-{tag}"),
+                point_multiply(curve_id, Some(base), &other.private).map(|p| point_bytes(&p)),
+            );
+        }
 
         let digest = sha256(name.as_bytes());
         for (scheme_alg, tag) in [
@@ -572,6 +613,9 @@ fn ecc_matrix(out: &mut Vec<String>) {
             };
             state.commit.commit();
             let signature = sign_digest(Some(&key_body), &scheme, &digest, &profile, &mut state);
+            if let Ok(signature) = &signature {
+                release_signature(signature);
+            }
             record(
                 out,
                 &format!("{name}/{tag}"),
@@ -640,6 +684,9 @@ fn ecc_matrix(out: &mut Vec<String>) {
         );
         match encrypted {
             Ok(cipher) => {
+                for part in [&cipher.c1.x, &cipher.c1.y, &cipher.c2, &cipher.c3] {
+                    released(part);
+                }
                 let mut image = point_bytes(&cipher.c1);
                 image.extend_from_slice(&cipher.c2);
                 image.extend_from_slice(&cipher.c3);
@@ -649,7 +696,7 @@ fn ecc_matrix(out: &mut Vec<String>) {
                     &format!("{name}/ecc-decrypt"),
                     crypt_ecc_decrypt(
                         curve_id,
-                        Some(&stored(&key.private)),
+                        Some(&stored(&format!("{name}/ecc-decrypt"), &key.private)),
                         kdf2,
                         &cipher.c1,
                         &cipher.c2,
@@ -666,7 +713,10 @@ fn ecc_matrix(out: &mut Vec<String>) {
                     &format!("{name}/ecc-decrypt-aliased"),
                     crypt_ecc_decrypt(
                         curve_id,
-                        Some(&stored(&key.private)),
+                        Some(&stored(
+                            &format!("{name}/ecc-decrypt-aliased"),
+                            &key.private,
+                        )),
                         kdf2,
                         &aliased_c1,
                         &cipher.c2,
@@ -705,8 +755,8 @@ fn ecc_matrix(out: &mut Vec<String>) {
             let exchanged = two_phase_key_exchange(
                 curve_id,
                 scheme_alg,
-                Some(&stored(&key.private)),
-                &ephemeral(curve_id, 0x0123_4567_89ab),
+                Some(&stored(&format!("{name}/{tag}"), &key.private)),
+                &ephemeral(&format!("{name}/{tag}"), curve_id, 0x0123_4567_89ab),
                 &other_public,
                 &public,
             );
@@ -726,8 +776,8 @@ fn ecc_matrix(out: &mut Vec<String>) {
             curve_id,
             Some(&other_public),
             Some(&public),
-            Some(&stored(&key.private)),
-            &ephemeral(curve_id, 0x0bad_cafe),
+            Some(&stored(&format!("{name}/commit"), &key.private)),
+            &ephemeral(&format!("{name}/commit"), curve_id, 0x0bad_cafe),
             &never,
         );
         record(
@@ -808,4 +858,969 @@ fn ecc_outputs_match_commit_16260bd() {
         include_str!("testdata/crypto_outputs_ecc_16260bd.txt"),
         include_str!("testdata/crypto_outputs_ecc_c_parity.txt"),
     );
+}
+
+#[derive(Clone, Copy)]
+struct Matrix {
+    run: fn(&mut Vec<String>),
+    secret_inputs: usize,
+}
+
+const ECC_MATRIX: Matrix = Matrix {
+    run: ecc_matrix,
+    secret_inputs: 42 * CURVES.len(),
+};
+
+const RSA_MATRIX: Matrix = Matrix {
+    run: rsa_matrix,
+    secret_inputs: 4 * 6,
+};
+
+fn memcheck_matrix(conceal: bool, matrix: Matrix) -> Vec<String> {
+    use super::memcheck::{Shadow, concealing, traced};
+    let mut out = Vec::new();
+    let (held, trace) = traced(conceal, || {
+        (matrix.run)(&mut out);
+        concealing()
+    });
+    assert_eq!(held, conceal, "the marking mode held for the whole run");
+    let expected = if conceal {
+        Shadow::Undefined
+    } else {
+        Shadow::Defined
+    };
+    let inputs: Vec<&(String, Shadow)> = trace
+        .observations()
+        .iter()
+        .filter(|(label, _)| label.starts_with(MATRIX_INPUT))
+        .collect();
+    let wrong: Vec<String> = inputs
+        .iter()
+        .filter(|(_, state)| *state != expected)
+        .map(|(label, state)| format!("{label}: {state:?}"))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "secret matrix inputs were not {expected:?} before use:\n{}",
+        wrong.join("\n")
+    );
+    assert_eq!(
+        inputs.len(),
+        matrix.secret_inputs,
+        "every secret matrix input was checked"
+    );
+    out
+}
+
+fn rsa_concealed_diagnostic() -> Vec<String> {
+    memcheck_matrix(true, RSA_MATRIX)
+}
+
+fn check_ecc_listing(out: &[String]) {
+    assert_listing_with_parity(
+        out,
+        include_str!("testdata/crypto_outputs_ecc_16260bd.txt"),
+        include_str!("testdata/crypto_outputs_ecc_c_parity.txt"),
+    );
+}
+
+fn check_rsa_listing(out: &[String]) {
+    assert_listing(out, include_str!("testdata/crypto_outputs_rsa_16260bd.txt"));
+}
+
+#[test]
+#[ignore = "secret-flow check: run under valgrind --tool=memcheck"]
+fn memcheck_ecc_matrix_with_concealed_secrets() {
+    check_ecc_listing(&memcheck_matrix(true, ECC_MATRIX));
+}
+
+#[test]
+#[ignore = "secret-flow control: run under valgrind --tool=memcheck"]
+fn memcheck_ecc_matrix_control() {
+    check_ecc_listing(&memcheck_matrix(false, ECC_MATRIX));
+}
+
+#[test]
+#[ignore = "secret-flow check: run alone in a fresh process under valgrind --tool=memcheck"]
+fn memcheck_rsa_matrix_cold_process() {
+    assert_eq!(
+        super::crypto::validated_factor_sets(),
+        0,
+        "a cold run is the first RSA work in a fresh process"
+    );
+    check_rsa_listing(&rsa_concealed_diagnostic());
+}
+
+#[test]
+#[ignore = "secret-flow check: run under valgrind --tool=memcheck"]
+fn memcheck_rsa_matrix_with_concealed_secrets() {
+    check_rsa_listing(&rsa_concealed_diagnostic());
+}
+
+#[test]
+#[ignore = "secret-flow check: run under valgrind --tool=memcheck"]
+fn memcheck_rsa_matrix_with_validated_factor_sets() {
+    let mut warm = Vec::new();
+    rsa_matrix(&mut warm);
+    assert!(
+        super::crypto::validated_factor_sets() > 0,
+        "the untainted pass validated the factor sets"
+    );
+    check_rsa_listing(&rsa_concealed_diagnostic());
+}
+
+#[test]
+#[ignore = "secret-flow control: run under valgrind --tool=memcheck"]
+fn memcheck_rsa_matrix_control() {
+    check_rsa_listing(&memcheck_matrix(false, RSA_MATRIX));
+}
+
+#[test]
+#[ignore = "guard: passes only under Valgrind's Memcheck tool"]
+fn memcheck_guard_accepts_only_memcheck() {
+    assert!(
+        super::memcheck::running_on_valgrind(),
+        "not running under Valgrind"
+    );
+    super::memcheck::require_memcheck();
+}
+
+#[test]
+#[ignore = "Memcheck canary: must report one finding under valgrind"]
+fn memcheck_canary_reports_a_secret_index() {
+    super::memcheck::require_memcheck();
+    assert_eq!(super::memcheck::canary(true), 3);
+}
+
+#[test]
+#[ignore = "Memcheck canary: the scoped marking helper must produce one finding under valgrind"]
+fn memcheck_scoped_canary_reports_a_marked_branch() {
+    use super::memcheck::{MarkingScope, require_memcheck, scoped_canary};
+    require_memcheck();
+    let _scope = MarkingScope::concealed();
+    assert_eq!(scoped_canary(3), 3);
+}
+
+#[test]
+#[ignore = "Memcheck canary control: the scoped helper in a control scope must stay clean"]
+fn memcheck_scoped_canary_control() {
+    use super::memcheck::{MarkingScope, require_memcheck, scoped_canary};
+    require_memcheck();
+    let _scope = MarkingScope::control();
+    assert_eq!(scoped_canary(3), 3);
+}
+
+#[test]
+#[ignore = "Memcheck canary control: must stay clean under valgrind"]
+fn memcheck_canary_control() {
+    super::memcheck::require_memcheck();
+    assert_eq!(super::memcheck::canary(false), 3);
+}
+
+#[test]
+#[ignore = "performance profile; run with --ignored --nocapture on the target"]
+fn ecc_performance_profile() {
+    use std::time::Instant;
+    fn median(mut samples: Vec<f64>) -> f64 {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    }
+    fn time(rounds: usize, mut body: impl FnMut()) -> f64 {
+        body();
+        median(
+            (0..rounds)
+                .map(|_| {
+                    let start = Instant::now();
+                    body();
+                    start.elapsed().as_secs_f64() * 1e6
+                })
+                .collect(),
+        )
+    }
+    let profile = profile();
+    let kdf2 = Scheme {
+        scheme: TPM_ALG_KDF2,
+        hash_alg: Some(TPM_ALG_SHA256),
+        count: None,
+        kdf: None,
+    };
+    for curve_id in CURVES {
+        let rounds = 64;
+        let mut generator = rand(b"profile", 1);
+        let key = super::crypto::generate_ecc_key(curve_id, &mut generator).unwrap();
+        let keygen = time(rounds, || {
+            super::crypto::generate_ecc_key(curve_id, &mut generator).unwrap();
+        });
+        let public = EccPoint {
+            x: key.x.clone(),
+            y: key.y.clone(),
+        };
+        let mulg = time(rounds, || {
+            point_multiply(curve_id, None, &key.private).unwrap();
+        });
+        let mulq = time(rounds, || {
+            point_multiply(curve_id, Some(&public), &key.private).unwrap();
+        });
+        let digest = sha256(b"profile");
+        let mut signing = Vec::new();
+        for scheme_alg in [TPM_ALG_ECDSA, TPM_ALG_ECSCHNORR, TPM_ALG_SM2, TPM_ALG_ECDAA] {
+            let key_scheme = if scheme_alg == TPM_ALG_ECDAA {
+                Scheme {
+                    scheme: TPM_ALG_ECDAA,
+                    hash_alg: Some(TPM_ALG_SHA256),
+                    count: Some(0),
+                    kdf: None,
+                }
+            } else {
+                null_scheme()
+            };
+            let key_body = body(
+                ecc_public(curve_id, key.x.clone(), key.y.clone(), key_scheme),
+                key.private.clone(),
+                None,
+            );
+            let mut state = SigningState {
+                rand: rand(b"sign", 1),
+                commit: commit_state(),
+            };
+            signing.push(time(rounds, || {
+                let scheme = SigScheme {
+                    scheme: scheme_alg,
+                    hash_alg: TPM_ALG_SHA256,
+                    count: state.commit.commit(),
+                };
+                sign_digest(Some(&key_body), &scheme, &digest, &profile, &mut state).unwrap();
+            }));
+        }
+        let mut encrypt_rand = rand(b"encrypt", 1);
+        let ciphertext = crypt_ecc_encrypt(
+            curve_id,
+            &public,
+            kdf2,
+            b"message",
+            &mut encrypt_rand,
+            &mut hook,
+        )
+        .unwrap();
+        let encrypt = time(rounds, || {
+            crypt_ecc_encrypt(
+                curve_id,
+                &public,
+                kdf2,
+                b"message",
+                &mut encrypt_rand,
+                &mut hook,
+            )
+            .unwrap();
+        });
+        let private = stored("profile", &key.private);
+        let decrypt = time(rounds, || {
+            crypt_ecc_decrypt(
+                curve_id,
+                Some(&private),
+                kdf2,
+                &ciphertext.c1,
+                &ciphertext.c2,
+                &ciphertext.c3,
+                &mut hook,
+            )
+            .unwrap();
+        });
+        eprintln!(
+            "ECC {curve_id:#06x} median us: keygen {keygen:.1} mulG {mulg:.1} mulQ {mulq:.1} ecdsa {:.1} ecschnorr {:.1} sm2 {:.1} ecdaa {:.1} encrypt {encrypt:.1} decrypt {decrypt:.1}",
+            signing[0], signing[1], signing[2], signing[3]
+        );
+    }
+}
+
+mod boundaries {
+    use super::super::memcheck::{Shadow, Trace, shadow, traced, verification_copy};
+    use super::*;
+
+    const P256: u16 = 0x0003;
+    const P521: u16 = 0x0005;
+    const SM2_CURVE: u16 = 0x0020;
+
+    fn states(trace: &Trace, label: &str) -> Vec<Shadow> {
+        trace.states(label)
+    }
+
+    #[track_caller]
+    fn all(trace: &Trace, label: &str, expected: Shadow) -> usize {
+        trace.all(label, expected)
+    }
+
+    fn ecc_key_body(curve_id: u16, scheme: Scheme) -> (OwnedObjectBody, Vec<u8>, Vec<u8>) {
+        let mut generator = rand(b"boundary key", 1);
+        let key = super::super::crypto::generate_ecc_key(curve_id, &mut generator).unwrap();
+        let x = verification_copy(&key.x);
+        let y = verification_copy(&key.y);
+        (
+            body(
+                ecc_public(curve_id, x.clone(), y.clone(), scheme),
+                key.private,
+                None,
+            ),
+            x,
+            y,
+        )
+    }
+
+    fn sign(
+        body: &OwnedObjectBody,
+        scheme_alg: u16,
+        rand: SeededRand,
+    ) -> (Result<Signature, TpmResult>, SigningState) {
+        let mut state = SigningState {
+            rand,
+            commit: commit_state(),
+        };
+        let count = state.commit.commit();
+        let scheme = SigScheme {
+            scheme: scheme_alg,
+            hash_alg: TPM_ALG_SHA256,
+            count,
+        };
+        let signature = sign_digest(
+            Some(body),
+            &scheme,
+            &sha256(b"boundary"),
+            &profile(),
+            &mut state,
+        );
+        (signature, state)
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_nonce_candidates_are_marked_before_their_predicates() {
+        let (key, _, _) = ecc_key_body(P256, null_scheme());
+        let order = curve_detail(P256).unwrap().order;
+        let mut short = vec![0x5au8; 32];
+        short[0] = 0;
+        let mut script = vec![0u8; 32];
+        script.extend_from_slice(&[0xffu8; 32]);
+        assert!(
+            [0xffu8; 32].as_slice() > order.as_slice(),
+            "an out-of-range candidate"
+        );
+        script.extend_from_slice(&short);
+        script.extend_from_slice(&[0x5au8; 32]);
+        let ((signature, state), entries) = traced(true, || {
+            sign(&key, TPM_ALG_SM2, SeededRand::scripted(&script, 1))
+        });
+        let signature = signature.expect("the fourth candidate signs");
+        assert_eq!(state.rand.script_remaining(), Some(0), "exactly four draws");
+        assert_eq!(
+            all(&entries, "nonce-candidate", Shadow::Undefined),
+            4,
+            "zero, out-of-range, short and accepted candidates are all marked before their predicates"
+        );
+        all(&entries, "sm2-commitment", Shadow::Undefined);
+        entries.tainted("signature-output");
+        assert!(
+            entries.publications().is_empty(),
+            "the signature is published by the enclosing command, not the library"
+        );
+        release_signature(&signature);
+        assert!(
+            validate_signature(&key, false, &sha256(b"boundary"), &signature, &profile()).is_ok()
+        );
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_signing_commitments_stay_secret_until_the_signature() {
+        for (curve_id, scheme_alg, label) in [
+            (P256, TPM_ALG_ECDSA, "ecdsa-commitment"),
+            (P521, TPM_ALG_ECDSA, "ecdsa-commitment"),
+            (P256, TPM_ALG_ECSCHNORR, "schnorr-commitment"),
+            (P521, TPM_ALG_ECSCHNORR, "schnorr-commitment"),
+            (SM2_CURVE, TPM_ALG_SM2, "sm2-commitment"),
+            (P521, TPM_ALG_SM2, "sm2-commitment"),
+        ] {
+            let (key, _, _) = ecc_key_body(curve_id, null_scheme());
+            let ((signature, _), entries) =
+                traced(true, || sign(&key, scheme_alg, rand(b"boundary sign", 1)));
+            let signature = signature.expect("a signature");
+            all(&entries, label, Shadow::Undefined);
+            entries.tainted("signature-output");
+            assert!(entries.publications().is_empty());
+            release_signature(&signature);
+            if scheme_alg != TPM_ALG_SM2 {
+                all(&entries, "nonce-draw", Shadow::Undefined);
+            }
+            assert!(
+                validate_signature(&key, false, &sha256(b"boundary"), &signature, &profile())
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_retries_and_backend_failures_publish_nothing() {
+        use super::super::crypto::{FaultBoundary, arm_fault, disarm_fault};
+        let (key, _, _) = ecc_key_body(P256, null_scheme());
+        arm_fault(FaultBoundary::Signature, 0);
+        let ((failed, _), entries) = traced(true, || {
+            sign(&key, TPM_ALG_ECDSA, rand(b"boundary fault", 1))
+        });
+        assert!(disarm_fault() || failed.is_err());
+        assert!(failed.is_err(), "the injected failure fails the signature");
+        all(&entries, "ecdsa-commitment", Shadow::Undefined);
+        assert!(
+            states(&entries, "signature-output").is_empty(),
+            "a failed attempt produces no signature"
+        );
+        assert!(
+            entries.publications().is_empty(),
+            "a failed attempt publishes nothing"
+        );
+        let curve = EccCurve::lookup(P256).unwrap();
+        let (attempt, entries) = traced(true, || {
+            let private = curve.secret_scalar(&[0x42; 32]).unwrap();
+            curve
+                .ecdsa_sign(&private, &curve.zero_scalar().unwrap(), &[0x11; 32])
+                .map(|attempt| matches!(attempt, super::super::crypto::EcdsaAttempt::Retry))
+        });
+        assert_eq!(attempt, Some(true), "a zero nonce is a genuine retry");
+        assert!(states(&entries, "signature-output").is_empty());
+        assert!(
+            entries.publications().is_empty(),
+            "a retry publishes nothing"
+        );
+        let mut short = vec![0x5au8; 32];
+        short[0] = 0;
+        let mut script = short.clone();
+        script.extend_from_slice(&[0x6bu8; 32]);
+        let ((signature, _), entries) = traced(true, || {
+            sign(&key, TPM_ALG_SM2, SeededRand::scripted(&script, 1))
+        });
+        assert!(signature.is_ok());
+        assert_eq!(all(&entries, "nonce-candidate", Shadow::Undefined), 2);
+        assert_eq!(
+            all(&entries, "sm2-commitment", Shadow::Undefined),
+            1,
+            "the redrawn short nonce never reaches a commitment"
+        );
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_imported_and_restored_material_is_marked_before_use() {
+        let mut generator = rand(b"boundary rsa", 1);
+        let key = super::super::crypto::generate_rsa_key(
+            1024,
+            0,
+            false,
+            &mut generator,
+            CancellationToken::disabled(),
+        )
+        .unwrap();
+        let modulus = verification_copy(&key.modulus);
+        let prime = verification_copy(&key.prime);
+        let sensitive = OwnedTpmtSensitive {
+            sensitive_type: TPM_ALG_RSA,
+            auth_value: OwnedSecret::from_vec(Vec::new()),
+            seed_value: OwnedSecret::from_vec(Vec::new()),
+            sensitive: Some(OwnedSecret::from_vec(prime.clone())),
+        };
+        let (loaded, entries) = traced(true, || {
+            super::super::object_load::object_load(
+                None,
+                rsa_public(modulus.clone(), 0),
+                Some(sensitive),
+                0,
+                0,
+                vec![0x00, 0x0b],
+            )
+        });
+        let loaded = loaded.expect("the imported RSA key loads");
+        assert!(
+            shadow(&prime) == Shadow::Defined,
+            "the fixture copy stays public"
+        );
+        all(&entries, "imported-prime-validation", Shadow::Undefined);
+        all(&entries, "recovery-prime", Shadow::Undefined);
+        let restored = body(
+            rsa_public(modulus.clone(), 0),
+            prime.clone(),
+            loaded.private_exponent,
+        );
+        let message = verification_copy(&be_sub_small(&modulus, 7));
+        let (decrypted, entries) = traced(true, || {
+            crypt_rsa_decrypt(
+                &restored,
+                &RsaDecryptScheme {
+                    scheme: TPM_ALG_NULL,
+                    hash_alg: 0,
+                },
+                &message,
+                &[],
+                false,
+                &mut LazySelfTest::untested(),
+            )
+        });
+        assert!(decrypted.is_ok());
+        all(&entries, "private-key-prime", Shadow::Undefined);
+        all(&entries, "rsa-private-exponent", Shadow::Undefined);
+
+        let (ecc, x, y) = ecc_key_body(P256, null_scheme());
+        let stored = ecc.sensitive.sensitive.clone();
+        let sensitive = OwnedTpmtSensitive {
+            sensitive_type: TPM_ALG_ECC,
+            auth_value: OwnedSecret::from_vec(Vec::new()),
+            seed_value: OwnedSecret::from_vec(Vec::new()),
+            sensitive: stored,
+        };
+        let (loaded, entries) = traced(true, || {
+            super::super::object_load::object_load(
+                None,
+                ecc_public(P256, x.clone(), y.clone(), null_scheme()),
+                Some(sensitive),
+                0,
+                0,
+                vec![0x00, 0x0b],
+            )
+        });
+        assert!(loaded.is_ok(), "the imported ECC key validates");
+        all(&entries, "stored-scalar", Shadow::Undefined);
+    }
+
+    #[test]
+    #[ignore = "needs Valgrind Memcheck"]
+    fn memcheck_boundary_context_save_marks_the_restored_prime_before_recovery() {
+        use super::super::object::ATTR_PRIVATE_EXP;
+        use super::super::object_load::replay::{clock, context_save, exec_raw, runtime_at};
+        use super::super::persistent::OwnedAnyObjectBody;
+
+        let clock = clock();
+        let mut runtime = runtime_at("AFTER_CREATE", &clock);
+        let slot = runtime
+            .live
+            .objects
+            .iter()
+            .position(|entry| {
+                entry.attributes & ATTR_PRIVATE_EXP != 0
+                    && matches!(&entry.body, OwnedAnyObjectBody::Object(body)
+                        if body.public.object_type == TPM_ALG_RSA)
+            })
+            .expect("the snapshot holds an RSA object with a cached private exponent");
+        let entry = &mut runtime.live.objects[slot];
+        entry.attributes &= !ATTR_PRIVATE_EXP;
+        if let OwnedAnyObjectBody::Object(body) = &mut entry.body {
+            body.private_exponent = None;
+        }
+        let handle = 0x8000_0000 + u32::try_from(slot).unwrap();
+        let (saved, entries) = traced(true, || {
+            exec_raw(&mut runtime, &clock, context_save(handle))
+        });
+        assert_eq!(saved[6..10], [0, 0, 0, 0], "the save succeeds");
+        assert!(
+            runtime.live.objects[slot].attributes & ATTR_PRIVATE_EXP != 0,
+            "the save recovered the private exponent"
+        );
+        all(&entries, "recovery-prime", Shadow::Undefined);
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_internal_secrets_and_public_results() {
+        let (key, x, y) = ecc_key_body(P256, null_scheme());
+        let public = EccPoint { x, y };
+        let kdf2 = Scheme {
+            scheme: TPM_ALG_KDF2,
+            hash_alg: Some(TPM_ALG_SHA256),
+            count: None,
+            kdf: None,
+        };
+        let (ciphertext, entries) = traced(true, || {
+            crypt_ecc_encrypt(
+                P256,
+                &public,
+                kdf2,
+                b"boundary",
+                &mut rand(b"enc", 1),
+                &mut hook,
+            )
+        });
+        let ciphertext = ciphertext.unwrap();
+        all(&entries, "ephemeral-draw", Shadow::Undefined);
+        all(&entries, "shared-point", Shadow::Undefined);
+        all(&entries, "offset-point", Shadow::Undefined);
+        all(&entries, "ciphertext", Shadow::Undefined);
+        assert!(entries.publications().is_empty());
+        for part in [
+            &ciphertext.c1.x,
+            &ciphertext.c1.y,
+            &ciphertext.c2,
+            &ciphertext.c3,
+        ] {
+            released(part);
+        }
+        let private = key.sensitive.sensitive.as_ref().unwrap();
+        let (plain, entries) = traced(true, || {
+            crypt_ecc_decrypt(
+                P256,
+                Some(private),
+                kdf2,
+                &ciphertext.c1,
+                &ciphertext.c2,
+                &ciphertext.c3,
+                &mut hook,
+            )
+        });
+        assert_eq!(verification_copy(&plain.unwrap()), b"boundary");
+        all(&entries, "stored-scalar", Shadow::Undefined);
+        all(&entries, "shared-point", Shadow::Undefined);
+        let (zgen, entries) = traced(true, || {
+            super::super::ecc::private_point_multiply(P256, Some(&ciphertext.c1), Some(private))
+        });
+        assert!(zgen.is_ok());
+        assert!(
+            entries.publications().is_empty(),
+            "a point-multiplication helper never publishes its product"
+        );
+        let (generated, entries) = traced(true, || {
+            super::super::crypto::generate_ecc_key(P521, &mut rand(b"boundary keygen", 1))
+        });
+        assert!(generated.is_ok());
+        all(&entries, "ephemeral-draw", Shadow::Undefined);
+        all(&entries, "public-key", Shadow::Undefined);
+        assert!(entries.publications().is_empty());
+        all(&entries, "exported-private", Shadow::Undefined);
+        let (commit_r, entries) = traced(true, || {
+            commit_state().generate_r(&EccCurve::lookup(P256).unwrap(), b"name", None)
+        });
+        assert!(matches!(commit_r, Ok(Some(_))));
+        all(&entries, "commit-stream", Shadow::Undefined);
+        let (rsa, entries) = traced(true, || {
+            super::super::crypto::generate_rsa_key(
+                1024,
+                0,
+                true,
+                &mut rand(b"boundary rsa keygen", 1),
+                CancellationToken::disabled(),
+            )
+        });
+        assert!(rsa.is_ok());
+        all(&entries, "prime-candidate", Shadow::Undefined);
+        all(&entries, "public-modulus", Shadow::Undefined);
+        assert!(entries.publications().is_empty());
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_stored_secrets_keep_public_padding_defined() {
+        use super::super::memcheck::undefined_bytes;
+        use super::super::persistent::SECRET_STORAGE_BYTES;
+        let mut leading_zeros = vec![0x6du8; 32];
+        leading_zeros[..3].fill(0);
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("short", vec![0x35u8; 20]),
+            ("p256", rand(b"padding p256", 1).random_bytes(32).unwrap()),
+            (
+                "full-width",
+                rand(b"padding full", 1)
+                    .random_bytes(SECRET_STORAGE_BYTES)
+                    .unwrap(),
+            ),
+            ("leading-zeros", leading_zeros),
+        ];
+        for (tag, payload) in cases {
+            let padding = SECRET_STORAGE_BYTES - payload.len();
+            for conceal in [true, false] {
+                let secret = OwnedSecret::copy_of(&payload);
+                let ((combined, undefined), entries) = traced(conceal, || {
+                    let fixed = secret.fixed_width().expect("a fixed-width secret");
+                    (shadow(fixed), undefined_bytes(fixed))
+                });
+                let (payload_state, combined_state, undefined_count) = if conceal {
+                    let combined_state = if padding == 0 {
+                        Shadow::Undefined
+                    } else {
+                        Shadow::Mixed
+                    };
+                    (Shadow::Undefined, combined_state, payload.len())
+                } else {
+                    (Shadow::Defined, Shadow::Defined, 0)
+                };
+                assert_eq!(
+                    all(&entries, "stored-scalar", payload_state),
+                    1,
+                    "{tag}: the whole payload, including its own zero bytes"
+                );
+                if padding == 0 {
+                    assert!(states(&entries, "stored-padding").is_empty(), "{tag}");
+                } else {
+                    all(&entries, "stored-padding", Shadow::Defined);
+                }
+                assert_eq!(combined, combined_state, "{tag} conceal={conceal}");
+                assert_eq!(
+                    undefined,
+                    Some(undefined_count),
+                    "{tag} conceal={conceal}: only the payload bytes are secret"
+                );
+            }
+        }
+    }
+
+    fn scalar_input(curve: &EccCurve, value: u8) -> EccScalar {
+        let bytes = [value; 32];
+        super::super::memcheck::secret(&bytes);
+        curve.secret_scalar(&bytes).unwrap()
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_failed_compound_operations_publish_no_points() {
+        use crate::library::constants::{TPM_RC_CANCELED, TPM_RC_ECC_POINT, TPM_RC_VALUE};
+        use core::cell::Cell;
+        let curve = EccCurve::lookup(P256).unwrap();
+        let (key, x, y) = ecc_key_body(P256, null_scheme());
+        let private = key.sensitive.sensitive.as_ref().unwrap();
+        let public = EccPoint { x, y };
+        let p2 = super::super::ecc::point_multiply(P256, None, &[0x07]).unwrap();
+        let mut off_curve = p2.clone();
+        off_curve.y[0] ^= 0x01;
+
+        let checks = Cell::new(0);
+        let (canceled, entries) = traced(true, || {
+            let canceled = || {
+                checks.set(checks.get() + 1);
+                true
+            };
+            commit_compute(
+                P256,
+                None,
+                Some(&p2),
+                Some(private),
+                &scalar_input(&curve, 0x21),
+                &canceled,
+            )
+        });
+        assert_eq!(canceled.err(), Some(TPM_RC_CANCELED));
+        assert_eq!(checks.get(), 1, "canceled immediately after K");
+        assert!(
+            entries.publications().is_empty(),
+            "a canceled Commit published {:?}",
+            entries.publications()
+        );
+        assert_eq!(all(&entries, "commit-product", Shadow::Undefined), 2, "K");
+
+        let (rejected, entries) = traced(true, || {
+            commit_compute(
+                P256,
+                None,
+                Some(&p2),
+                Some(private),
+                &curve.zero_scalar().unwrap(),
+                &|| false,
+            )
+        });
+        assert_eq!(rejected.err(), Some(TPM_RC_VALUE), "r is rejected after K");
+        assert!(
+            entries.publications().is_empty(),
+            "a rejected Commit published {:?}",
+            entries.publications()
+        );
+        assert_eq!(all(&entries, "commit-product", Shadow::Undefined), 2, "K");
+
+        let (failed, entries) = traced(true, || {
+            commit_compute(
+                P256,
+                Some(&off_curve),
+                Some(&p2),
+                Some(private),
+                &scalar_input(&curve, 0x22),
+                &|| false,
+            )
+        });
+        assert_eq!(
+            failed.err(),
+            Some(TPM_RC_ECC_POINT),
+            "E fails after K and L"
+        );
+        assert_eq!(
+            all(&entries, "commit-product", Shadow::Undefined),
+            4,
+            "K, L"
+        );
+        assert!(
+            entries.publications().is_empty(),
+            "a failed Commit published {:?}",
+            entries.publications()
+        );
+
+        let (exchanged, entries) = traced(true, || {
+            two_phase_key_exchange(
+                P256,
+                TPM_ALG_ECDH,
+                Some(private),
+                &scalar_input(&curve, 0x23),
+                &public,
+                &off_curve,
+            )
+        });
+        assert_eq!(
+            exchanged.err(),
+            Some(TPM_RC_ECC_POINT),
+            "z2 fails after z1 succeeded"
+        );
+        assert!(
+            entries.publications().is_empty(),
+            "a failed two-phase exchange published {:?}",
+            entries.publications()
+        );
+        assert_eq!(
+            all(&entries, "two-phase-product", Shadow::Undefined),
+            2,
+            "z1"
+        );
+
+        let (committed, entries) = traced(true, || {
+            commit_compute(
+                P256,
+                Some(&public),
+                Some(&p2),
+                Some(private),
+                &scalar_input(&curve, 0x24),
+                &|| false,
+            )
+        });
+        assert!(committed.is_ok());
+        assert_eq!(
+            all(&entries, "commit-product", Shadow::Undefined),
+            6,
+            "K, L and E stay secret inside the operation"
+        );
+        let (exchanged, entries) = traced(true, || {
+            two_phase_key_exchange(
+                P256,
+                TPM_ALG_ECDH,
+                Some(private),
+                &scalar_input(&curve, 0x25),
+                &public,
+                &p2,
+            )
+        });
+        assert!(exchanged.is_ok());
+        assert_eq!(
+            all(&entries, "two-phase-product", Shadow::Undefined),
+            4,
+            "z1 and z2 stay secret inside the operation"
+        );
+        let (product, entries) = traced(true, || {
+            super::super::ecc::point_multiply_by(&curve, Some(&public), &scalar_input(&curve, 0x26))
+        });
+        assert!(product.is_ok());
+        assert!(
+            entries.publications().is_empty(),
+            "the returned product is published by the enclosing operation, not the helper"
+        );
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_public_constants_stay_defined() {
+        use super::super::crypto::{BigUint, rsa_public_key_op};
+        let ((), entries) = traced(true, || {
+            let constant = BigUint::from_u64(65537)
+                .unwrap()
+                .add_u64(2)
+                .unwrap()
+                .to_be_bytes(4)
+                .unwrap();
+            super::super::memcheck::observe("public-constant", &constant);
+            let curve = EccCurve::lookup(P256).unwrap();
+            let scalar = curve
+                .public_scalar_from_u64(5)
+                .unwrap()
+                .to_bytes(32)
+                .unwrap();
+            super::super::memcheck::observe("public-constant", &scalar);
+            let detail = curve_detail(P521).unwrap();
+            super::super::memcheck::observe("public-constant", &detail.order);
+            super::super::memcheck::observe("public-constant", &detail.generator_x);
+            let modulus = be_sub_small(&[0xffu8; 128], 0);
+            let mut odd = modulus.clone();
+            odd[127] = 0xfb;
+            let message = vec![0x02u8; 128];
+            let mut message = message;
+            message[0] = 0;
+            let encrypted = rsa_public_key_op(&odd, 65537, &message).unwrap();
+            super::super::memcheck::observe("public-constant", &encrypted);
+        });
+        assert_eq!(all(&entries, "public-constant", Shadow::Defined), 5);
+    }
+
+    #[test]
+    #[ignore = "boundary diagnostic control: run under valgrind --tool=memcheck"]
+    fn memcheck_boundary_control_scope_marks_nothing() {
+        let (key, _, _) = ecc_key_body(P256, null_scheme());
+        let mut script = vec![0u8; 32];
+        script.extend_from_slice(&[0x5au8; 32]);
+        let ((signature, _), entries) = traced(false, || {
+            sign(&key, TPM_ALG_SM2, SeededRand::scripted(&script, 1))
+        });
+        assert!(signature.is_ok());
+        assert_eq!(all(&entries, "nonce-candidate", Shadow::Defined), 2);
+        all(&entries, "sm2-commitment", Shadow::Defined);
+        all(&entries, "stored-scalar", Shadow::Defined);
+    }
+}
+
+fn concealed_phase(diagnostic: fn() -> Vec<String>) -> Vec<String> {
+    std::thread::Builder::new()
+        .name("concealed".into())
+        .spawn(move || {
+            let listing = diagnostic();
+            assert!(
+                !listing.is_empty(),
+                "the concealed phase produced a listing"
+            );
+            listing
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn control_phase(diagnostic: fn() -> Vec<String>) -> Vec<String> {
+    std::thread::Builder::new()
+        .name("control".into())
+        .spawn(move || {
+            let listing = diagnostic();
+            assert!(!listing.is_empty(), "the control phase produced a listing");
+            listing
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+#[test]
+#[ignore = "secret-flow sequence: a control run after a concealed run in one process"]
+fn memcheck_ecc_concealed_then_control() {
+    check_ecc_listing(&concealed_phase(|| memcheck_matrix(true, ECC_MATRIX)));
+    check_ecc_listing(&control_phase(|| memcheck_matrix(false, ECC_MATRIX)));
+}
+
+#[test]
+#[ignore = "secret-flow sequence: a control run after a concealed run in one process"]
+fn memcheck_rsa_concealed_then_control() {
+    check_rsa_listing(&concealed_phase(rsa_concealed_diagnostic));
+    check_rsa_listing(&control_phase(|| memcheck_matrix(false, RSA_MATRIX)));
+}
+
+#[test]
+#[ignore = "secret-flow sequence: the general RSA diagnostic after a control run warmed the cache"]
+fn memcheck_rsa_control_then_concealed() {
+    check_rsa_listing(&control_phase(|| memcheck_matrix(false, RSA_MATRIX)));
+    assert!(
+        super::crypto::validated_factor_sets() > 0,
+        "the completed control run validated the factor sets first"
+    );
+    check_rsa_listing(&concealed_phase(rsa_concealed_diagnostic));
 }

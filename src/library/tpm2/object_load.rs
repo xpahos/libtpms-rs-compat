@@ -181,6 +181,8 @@ fn validate_rsa(
         return Err(TPM_RC_VALUE + blame_public);
     }
     if let Some(secret) = secret {
+        #[cfg(test)]
+        crate::library::tpm2::memcheck::observe("imported-prime-validation", secret);
         let top_bit = subtle::Choice::from(secret.first().copied().unwrap_or(0) >> 7);
         if secret.len() * 2 != key_bytes || !bool::from(top_bit) {
             return Err(TPM_RC_KEY_SIZE + blame_sensitive);
@@ -347,6 +349,12 @@ pub(super) fn object_load(
     blame_sensitive: TpmResult,
     name: Vec<u8>,
 ) -> Result<LoadedObject, TpmResult> {
+    #[cfg(test)]
+    if public.object_type == TPM_ALG_RSA
+        && let Some(prime) = sensitive.as_ref().and_then(|s| s.sensitive.as_ref())
+    {
+        crate::library::tpm2::memcheck::secret(prime.as_bytes());
+    }
     let parent_info = parent.map(ParentContext::info);
     if sensitive.is_none() || public.name_alg == TPM_ALG_NULL {
         scheme_checks(None, &public).map_err(|code| add_modifier(code, blame_public))?;
