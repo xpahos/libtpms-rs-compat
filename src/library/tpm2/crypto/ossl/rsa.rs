@@ -32,14 +32,7 @@ use subtle::{ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater};
 
 use super::super::rsa::RSA_DEFAULT_PUBLIC_EXPONENT;
 use super::fault::{Boundary, checkpoint};
-use super::ffi::{
-    check_prime, cleanse, mod_exp_consttime, oaep_check, pkcs1_type2_check, private_random_bits,
-};
-use super::masked::{
-    Outcome, Shares, add_public, add_shares, ct_is_zero, equals_public, hensel_inverse,
-    high_bytes_zero, masked_import, masked_invert, masked_mul, masked_scale, negate, power_of_two,
-    residue_shares, unmask_to_bytes, widen,
-};
+use super::ffi::{check_prime, cleanse, mod_exp_consttime, oaep_check, pkcs1_type2_check};
 use super::secret::SecretBn;
 
 pub(in crate::library::tpm2) const CRT_WORDS: usize = 25;
@@ -66,6 +59,13 @@ pub(in crate::library::tpm2) struct RecoveredExponent {
     pub(in crate::library::tpm2) d_p: CrtWords,
     pub(in crate::library::tpm2) d_q: CrtWords,
     pub(in crate::library::tpm2) q_inv: CrtWords,
+}
+
+#[derive(Debug)]
+enum Outcome<T> {
+    Value(T),
+    Invalid,
+    Backend,
 }
 
 fn effective_exponent(exponent: u32) -> u32 {
@@ -102,8 +102,8 @@ fn secret_words(words: &CrtWords) -> Option<SecretBn> {
     value
 }
 
-fn crt_words(value: &SecretBn) -> Option<CrtWords> {
-    let mut bytes = value.to_be(CRT_BYTES).ok()?;
+fn crt_words(value: &BigNumRef) -> Option<CrtWords> {
+    let mut bytes = value.to_vec_padded(i32::try_from(CRT_BYTES).ok()?).ok()?;
     let mut words = [0u64; CRT_WORDS];
     for (index, word) in words.iter_mut().enumerate() {
         let end = CRT_BYTES - index * WORD_BYTES;
@@ -174,20 +174,6 @@ fn at_most_one(bytes: &[u8]) -> bool {
     bool::from((high | (last >> 1)).ct_eq(&0))
 }
 
-fn factors_multiply_to(larger: &[u8], smaller: &[u8], modulus: &BigNumRef) -> Option<bool> {
-    let mut ctx = BigNumContext::new().ok()?;
-    let width = larger.len().max(smaller.len());
-    let mut bound = BigNum::new().ok()?;
-    bound.set_bit(i32::try_from(16 * width).ok()?).ok()?;
-    if modulus.ucmp(&bound).is_ge() {
-        return Some(false);
-    }
-    let left = masked_import(larger, &bound, &mut ctx)?;
-    let right = masked_import(smaller, &bound, &mut ctx)?;
-    let product = masked_mul(&left, &right, &bound, &mut ctx)?;
-    equals_public(&product, modulus, &bound, &mut ctx)
-}
-
 fn at_most_two(bytes: &[u8]) -> bool {
     let Some((last, high)) = bytes.split_last() else {
         return true;
@@ -195,38 +181,6 @@ fn at_most_two(bytes: &[u8]) -> bool {
     let high = high.iter().fold(0u8, |acc, &byte| acc | byte);
     let above_two = (*last).ct_gt(&2);
     bool::from(high.ct_eq(&0) & !above_two)
-}
-
-fn is_odd_bytes(bytes: &[u8]) -> bool {
-    bytes.last().is_some_and(|byte| byte & 1 == 1)
-}
-
-fn bytes_words(bytes: &[u8]) -> Option<CrtWords> {
-    if bytes.len() > CRT_BYTES && !high_bytes_zero(bytes, CRT_BYTES) {
-        return None;
-    }
-    let kept = &bytes[bytes.len().saturating_sub(CRT_BYTES)..];
-    let mut padded = PrimeBytes(vec![0u8; CRT_BYTES]);
-    padded.0[CRT_BYTES - kept.len()..].copy_from_slice(kept);
-    let mut words = [0u64; CRT_WORDS];
-    for (index, word) in words.iter_mut().enumerate() {
-        let end = CRT_BYTES - index * WORD_BYTES;
-        let mut chunk = [0u8; WORD_BYTES];
-        chunk.copy_from_slice(&padded.0[end - WORD_BYTES..end]);
-        *word = u64::from_be_bytes(chunk);
-    }
-    Some(words)
-}
-
-fn wide_modulus(value_bytes: usize) -> Option<(BigNum, usize)> {
-    let bits = 8 * value_bytes.next_multiple_of(WORD_BYTES) + 64;
-    Some((power_of_two(bits)?, bits))
-}
-
-fn minus_one(modulus: &BigNumRef) -> Option<BigNum> {
-    let mut value = modulus.to_owned().ok()?;
-    value.sub_word(1).ok()?;
-    Some(value)
 }
 
 macro_rules! backend {
@@ -246,13 +200,6 @@ macro_rules! outcome {
             Outcome::Backend => return Outcome::Backend,
         }
     };
-}
-
-fn exact(value: Outcome<PrimeBytes>) -> Outcome<PrimeBytes> {
-    match value {
-        Outcome::Invalid => Outcome::Backend,
-        other => other,
-    }
 }
 
 fn no_inverse(error: &ErrorStack) -> bool {
@@ -279,34 +226,20 @@ fn checked_inverse(
     }
 }
 
-fn unmasked(shares: &Shares, modulus: &BigNumRef, width: usize) -> Outcome<PrimeBytes> {
-    let length = backend!(usize::try_from(modulus.num_bytes()).ok());
-    let full = PrimeBytes(backend!(unmask_to_bytes(shares, modulus, length)));
-    if full.0.len() < width || !high_bytes_zero(&full.0, width) {
-        return Outcome::Invalid;
-    }
-    Outcome::Value(PrimeBytes(full.0[full.0.len() - width..].to_vec()))
+fn predecessor(value: &BigNumRef) -> Option<SecretBn> {
+    let mut result = SecretBn::copy_of(value).ok()?;
+    result.sub_word(1).ok()?;
+    Some(result)
 }
 
-fn exponent_inverse(
-    modulus: &Shares,
-    residue: &Shares,
+fn crt_exponent_of(
+    prime: &SecretBn,
     exponent: u32,
-    wide: &BigNumRef,
-    width: usize,
     ctx: &mut BigNumContextRef,
-) -> Outcome<PrimeBytes> {
+) -> Outcome<SecretBn> {
     let e = backend!(BigNum::from_u32(exponent).ok());
-    let inverse = outcome!(masked_invert(residue, &e, ctx));
-    let multiplier = backend!(widen(&backend!(negate(&inverse, &e, ctx)), &e, wide, ctx));
-    drop(inverse);
-    let product = backend!(masked_mul(&multiplier, modulus, wide, ctx));
-    let one = backend!(BigNum::from_u32(1).ok());
-    let numerator = backend!(add_public(&product, &one, wide, ctx));
-    let mut e_inverse = backend!(BigNum::new().ok());
-    backend!(e_inverse.mod_inverse(&e, wide, ctx).ok());
-    let quotient = backend!(masked_scale(&numerator, &e_inverse, wide, ctx));
-    exact(unmasked(&quotient, wide, width))
+    let modulus = backend!(predecessor(prime));
+    checked_inverse(&e, &modulus, ctx)
 }
 
 fn crt_exponent(prime: &[u8], exponent: u32) -> Outcome<CrtWords> {
@@ -314,154 +247,31 @@ fn crt_exponent(prime: &[u8], exponent: u32) -> Outcome<CrtWords> {
         return Outcome::Invalid;
     }
     let mut ctx = backend!(BigNumContext::new().ok());
-    if exponent == 1 || exponent.is_multiple_of(2) {
-        let e = backend!(BigNum::from_u32(exponent).ok());
-        let mut predecessor = backend!(SecretBn::from_be(prime).ok());
-        backend!(predecessor.sub_word(1).ok());
-        let inverse = outcome!(blinded_exponent_inverse(&e, &predecessor, &mut ctx));
-        return Outcome::Value(backend!(crt_words(&inverse)));
-    }
-    let (wide, _) = backend!(wide_modulus(prime.len()));
-    let wide_minus_one = backend!(minus_one(&wide));
-    let predecessor = backend!(add_public(
-        &backend!(masked_import(prime, &wide, &mut ctx)),
-        &wide_minus_one,
-        &wide,
-        &mut ctx,
-    ));
-    let e = backend!(BigNum::from_u32(exponent).ok());
-    let residue = backend!(residue_shares(prime, 1, &e, &mut ctx));
-    let bytes = outcome!(exponent_inverse(
-        &predecessor,
-        &residue,
-        exponent,
-        &wide,
-        prime.len(),
-        &mut ctx,
-    ));
-    Outcome::Value(backend!(bytes_words(&bytes.0)))
-}
-
-fn fermat_coefficient(
-    smaller: &SecretBn,
-    larger: &SecretBn,
-    smaller_bytes: &[u8],
-    larger_bytes: &[u8],
-    modulus: &BigNumRef,
-    ctx: &mut BigNumContextRef,
-) -> Outcome<PrimeBytes> {
-    let width = larger_bytes.len();
-    let mut exponent = backend!(SecretBn::copy_of(larger).ok());
-    backend!(exponent.sub_word(1).ok());
-    let mut idempotent = backend!(SecretBn::new().ok());
-    backend!(mod_exp_consttime(&mut idempotent, smaller, &exponent, modulus, ctx).ok());
-    backend!(checkpoint(Boundary::Exponentiation));
-    drop(exponent);
-    let idempotent_bytes = PrimeBytes(backend!(
-        idempotent
-            .to_be(backend!(usize::try_from(modulus.num_bytes()).ok()))
-            .ok()
-    ));
-    drop(idempotent);
-
-    let check_bits = 16 * width + 64;
-    let check_modulus = backend!(power_of_two(check_bits));
-    let larger_shares = backend!(masked_import(larger_bytes, &check_modulus, ctx));
-    let larger_inverse = backend!(hensel_inverse(
-        &larger_shares,
-        check_bits,
-        &check_modulus,
-        ctx
-    ));
-    let check_minus_one = backend!(minus_one(&check_modulus));
-    let shifted = backend!(add_public(
-        &backend!(masked_import(&idempotent_bytes.0, &check_modulus, ctx)),
-        &check_minus_one,
-        &check_modulus,
-        ctx,
-    ));
-    let quotient = backend!(masked_mul(&shifted, &larger_inverse, &check_modulus, ctx));
-    outcome!(unmasked(&quotient, &check_modulus, width));
-
-    let (wide, wide_bits) = backend!(wide_modulus(width));
-    let smaller_shares = backend!(masked_import(smaller_bytes, &wide, ctx));
-    let smaller_inverse = backend!(hensel_inverse(&smaller_shares, wide_bits, &wide, ctx));
-    let coefficient = backend!(masked_mul(
-        &backend!(masked_import(&idempotent_bytes.0, &wide, ctx)),
-        &smaller_inverse,
-        &wide,
-        ctx,
-    ));
-    exact(unmasked(&coefficient, &wide, width))
+    let prime = backend!(SecretBn::from_be(prime).ok());
+    let exponent = outcome!(crt_exponent_of(&prime, exponent, &mut ctx));
+    Outcome::Value(backend!(crt_words(&exponent)))
 }
 
 fn crt_coefficient(
     smaller: &SecretBn,
     larger: &SecretBn,
-    modulus: &BigNumRef,
     ctx: &mut BigNumContextRef,
 ) -> Outcome<CrtWords> {
-    let larger_bytes = PrimeBytes(backend!(larger.to_be(CRT_BYTES).ok()));
-    let smaller_bytes = PrimeBytes(backend!(smaller.to_be(CRT_BYTES).ok()));
-    let fermat_applies = is_odd_bytes(&larger_bytes.0)
-        && is_odd_bytes(&smaller_bytes.0)
-        && !at_most_two(&larger_bytes.0)
-        && modulus.is_odd();
-    if fermat_applies {
-        match fermat_coefficient(
-            smaller,
-            larger,
-            &smaller_bytes.0,
-            &larger_bytes.0,
-            modulus,
-            ctx,
-        ) {
-            Outcome::Value(coefficient) => {
-                return Outcome::Value(backend!(bytes_words(&coefficient.0)));
-            }
-            Outcome::Backend => return Outcome::Backend,
-            Outcome::Invalid => {}
-        }
-    }
     if larger.num_bits() == 0 {
         return Outcome::Invalid;
     }
-    #[cfg(test)]
-    EUCLIDEAN_COEFFICIENTS.with(|count| count.set(count.get() + 1));
     let inverse = outcome!(checked_inverse(smaller, larger, ctx));
     Outcome::Value(backend!(crt_words(&inverse)))
 }
 
-const BLINDING_BITS: i32 = 64;
-
-fn coprime_blind(exponent: &BigNumRef, ctx: &mut BigNumContextRef) -> Option<BigNum> {
-    loop {
-        let mut blind = BigNum::new().ok()?;
-        private_random_bits(&mut blind, BLINDING_BITS).ok()?;
-        blind.set_bit(BLINDING_BITS - 1).ok()?;
-        let mut divisor = BigNum::new().ok()?;
-        divisor.gcd(&blind, exponent, ctx).ok()?;
-        if divisor.num_bits() == 1 {
-            return Some(blind);
-        }
-    }
-}
-
-fn blinded_exponent_inverse(
-    exponent: &BigNumRef,
-    modulus: &BigNumRef,
-    ctx: &mut BigNumContextRef,
-) -> Outcome<SecretBn> {
-    if modulus.num_bits() <= 1 {
-        return Outcome::Invalid;
-    }
-    let blind = backend!(coprime_blind(exponent, ctx));
-    let mut widened = backend!(SecretBn::new().ok());
-    backend!(widened.checked_mul(modulus, &blind, ctx).ok());
-    let wide_inverse = outcome!(checked_inverse(exponent, &widened, ctx));
-    let mut inverse = backend!(SecretBn::new().ok());
-    backend!(inverse.nnmod(&wide_inverse, modulus, ctx).ok());
-    Outcome::Value(inverse)
+fn factors_multiply_to(larger: &[u8], smaller: &[u8], modulus: &BigNumRef) -> Option<bool> {
+    let mut ctx = BigNumContext::new().ok()?;
+    let left = SecretBn::from_be(larger).ok()?;
+    let right = SecretBn::from_be(smaller).ok()?;
+    let mut product = SecretBn::new().ok()?;
+    checkpoint(Boundary::Product)?;
+    product.checked_mul(&left, &right, &mut ctx).ok()?;
+    Some(product.ucmp(modulus).is_eq())
 }
 
 struct NativeRsaKey {
@@ -558,20 +368,28 @@ fn prepare(key: &RsaCrtKey<'_>, fingerprint: [u8; 32]) -> Result<PreparedRsaKey,
     if !factors_are_prime(&n, &larger_bytes.0, &smaller_bytes.0)? {
         return Ok(unusable);
     }
-    let d = match private_exponent(&n, exponent, &larger_bytes.0, &smaller_bytes.0) {
-        Outcome::Value(d) => d,
+    let p = transient(SecretBn::from_be(&larger_bytes.0))?;
+    let q = transient(SecretBn::from_be(&smaller_bytes.0))?;
+    drop((larger_bytes, smaller_bytes));
+    let components = match private_components(&p, &q, exponent) {
+        Outcome::Value(components) => components,
         Outcome::Invalid => return Ok(unusable),
         Outcome::Backend => return Err(Transient),
     };
-    drop((larger_bytes, smaller_bytes));
-    #[cfg(test)]
-    crate::library::tpm2::memcheck::observe("rsa-private-exponent", &d.0);
-    let d = transient(SecretBn::from_be(&d.0))?;
     present(checkpoint(Boundary::NativeKey))?;
-    let native = transient(RsaPrivateKeyBuilder::new(
-        transient(n.to_owned())?,
-        transient(BigNum::from_u32(exponent))?,
-        transient(d.export())?,
+    let [d, d_p, d_q, q_inv] = components;
+    let native = transient(
+        transient(RsaPrivateKeyBuilder::new(
+            transient(n.to_owned())?,
+            transient(BigNum::from_u32(exponent))?,
+            transient(d.export())?,
+        ))?
+        .set_factors(transient(p.export())?, transient(q.export())?),
+    )?;
+    let native = transient(native.set_crt_params(
+        transient(d_p.export())?,
+        transient(d_q.export())?,
+        transient(q_inv.export())?,
     ))?
     .build();
     let pkey = transient(PKey::from_rsa(native.clone()))?;
@@ -579,6 +397,25 @@ fn prepare(key: &RsaCrtKey<'_>, fingerprint: [u8; 32]) -> Result<PreparedRsaKey,
         fingerprint,
         key: Some(NativeRsaKey { rsa: native, pkey }),
     })
+}
+
+fn private_components(p: &SecretBn, q: &SecretBn, exponent: u32) -> Outcome<[SecretBn; 4]> {
+    let mut ctx = backend!(BigNumContext::new().ok());
+    let e = backend!(BigNum::from_u32(exponent).ok());
+    let p_minus_one = backend!(predecessor(p));
+    let q_minus_one = backend!(predecessor(q));
+    let mut totient = backend!(SecretBn::new().ok());
+    backend!(checkpoint(Boundary::Product));
+    backend!(
+        totient
+            .checked_mul(&p_minus_one, &q_minus_one, &mut ctx)
+            .ok()
+    );
+    let d = outcome!(checked_inverse(&e, &totient, &mut ctx));
+    let d_p = outcome!(checked_inverse(&e, &p_minus_one, &mut ctx));
+    let d_q = outcome!(checked_inverse(&e, &q_minus_one, &mut ctx));
+    let q_inv = outcome!(checked_inverse(q, p, &mut ctx));
+    Outcome::Value([d, d_p, d_q, q_inv])
 }
 
 const VALIDATED_FACTOR_SETS: usize = 64;
@@ -598,39 +435,23 @@ thread_local! {
 }
 
 #[cfg(test)]
-thread_local! {
-    static EUCLIDEAN_COEFFICIENTS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn euclidean_coefficient_count() -> u64 {
-    EUCLIDEAN_COEFFICIENTS.with(core::cell::Cell::get)
-}
-
-#[cfg(test)]
 fn primality_test_count() -> u64 {
     PRIMALITY_TESTS.with(core::cell::Cell::get)
 }
 
-fn factor_identity(n: &BigNumRef, larger: &[u8], smaller: &[u8]) -> [u8; 32] {
+fn factor_identity(n: &BigNumRef) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"rsa factors");
+    hasher.update(b"rsa modulus of two distinct primes");
     let modulus = n.to_vec();
-    for part in [modulus.as_slice(), larger, smaller] {
-        hasher.update(&(part.len() as u64).to_be_bytes());
-        hasher.update(part);
-    }
+    hasher.update(&(modulus.len() as u64).to_be_bytes());
+    hasher.update(&modulus);
     hasher.finish()
 }
 
 #[cfg(test)]
 fn forget_factor_set(key: &RsaCrtKey<'_>) {
     let n = BigNum::from_slice(key.modulus).unwrap();
-    let width = CRT_BYTES.max(key.prime.len());
-    let stored = SecretBn::from_be(key.prime).unwrap();
-    let other = secret_words(key.q).unwrap();
-    let (larger, smaller) = ordered_prime_bytes(&stored, &other, width).unwrap();
-    let identity = factor_identity(&n, &larger.0, &smaller.0);
+    let identity = factor_identity(&n);
     VALIDATED_FACTORS
         .lock()
         .unwrap()
@@ -638,7 +459,7 @@ fn forget_factor_set(key: &RsaCrtKey<'_>) {
 }
 
 fn factors_are_prime(n: &BigNumRef, larger: &[u8], smaller: &[u8]) -> Result<bool, Transient> {
-    let identity = factor_identity(n, larger, smaller);
+    let identity = factor_identity(n);
     {
         let validated = transient(VALIDATED_FACTORS.lock())?;
         if validated
@@ -667,47 +488,6 @@ fn factors_are_prime(n: &BigNumRef, larger: &[u8], smaller: &[u8]) -> Result<boo
     }
     validated.push_back(identity);
     Ok(true)
-}
-
-fn private_exponent(
-    n: &BigNumRef,
-    exponent: u32,
-    larger: &[u8],
-    smaller: &[u8],
-) -> Outcome<PrimeBytes> {
-    let width = backend!(usize::try_from(n.num_bytes()).ok());
-    if exponent == 1 {
-        let mut one = vec![0u8; width];
-        if let Some(last) = one.last_mut() {
-            *last = 1;
-        }
-        return Outcome::Value(PrimeBytes(one));
-    }
-    let mut ctx = backend!(BigNumContext::new().ok());
-    let (wide, _) = backend!(wide_modulus(width));
-    let factors = backend!(add_shares(
-        &backend!(masked_import(larger, &wide, &mut ctx)),
-        &backend!(masked_import(smaller, &wide, &mut ctx)),
-        &wide,
-        &mut ctx,
-    ));
-    let mut successor = backend!(n.to_owned().ok());
-    backend!(successor.add_word(1).ok());
-    let totient = backend!(add_public(
-        &backend!(negate(&factors, &wide, &mut ctx)),
-        &successor,
-        &wide,
-        &mut ctx,
-    ));
-    drop(factors);
-    let e = backend!(BigNum::from_u32(exponent).ok());
-    let residue = backend!(masked_mul(
-        &backend!(residue_shares(larger, 1, &e, &mut ctx)),
-        &backend!(residue_shares(smaller, 1, &e, &mut ctx)),
-        &e,
-        &mut ctx,
-    ));
-    exponent_inverse(&totient, &residue, exponent, &wide, width, &mut ctx)
 }
 
 fn prepared(key: &RsaCrtKey<'_>) -> Option<Arc<PreparedRsaKey>> {
@@ -978,37 +758,11 @@ impl CrtCandidate {
             return Some(true);
         }
         let (larger, smaller) = self.factor_bytes()?;
-        let mut ctx = BigNumContext::new().ok()?;
-        let (wide, _) = wide_modulus(larger.0.len())?;
-        let difference = add_shares(
-            &masked_import(&larger.0, &wide, &mut ctx)?,
-            &negate(
-                &masked_import(&smaller.0, &wide, &mut ctx)?,
-                &wide,
-                &mut ctx,
-            )?,
-            &wide,
-            &mut ctx,
-        )?;
-        let bytes = PrimeBytes(unmask_to_bytes(
-            &difference,
-            &wide,
-            usize::try_from(wide.num_bytes()).ok()?,
-        )?);
-        let threshold = usize::try_from(bits - 1).ok()?;
-        let mut reached = subtle::Choice::from(0u8);
-        for (index, byte) in bytes.0.iter().rev().enumerate() {
-            let low = index * 8;
-            let mask = if low + 8 <= threshold {
-                0u8
-            } else if low >= threshold {
-                0xff
-            } else {
-                0xffu8 << (threshold - low)
-            };
-            reached |= !(byte & mask).ct_eq(&0);
-        }
-        Some(bool::from(reached))
+        let larger = SecretBn::from_be(&larger.0).ok()?;
+        let smaller = SecretBn::from_be(&smaller.0).ok()?;
+        let mut difference = SecretBn::new().ok()?;
+        difference.checked_sub(&larger, &smaller).ok()?;
+        Some(u32::try_from(difference.num_bits()).ok()? >= bits)
     }
 
     fn factor_bytes(&self) -> Option<(PrimeBytes, PrimeBytes)> {
@@ -1017,21 +771,11 @@ impl CrtCandidate {
     }
 
     pub(in crate::library::tpm2) fn modulus(&mut self) -> Option<Vec<u8>> {
-        let (larger, smaller) = self.factor_bytes()?;
         let mut ctx = BigNumContext::new().ok()?;
-        let bound = power_of_two(16 * larger.0.len())?;
-        let product = masked_mul(
-            &masked_import(&larger.0, &bound, &mut ctx)?,
-            &masked_import(&smaller.0, &bound, &mut ctx)?,
-            &bound,
-            &mut ctx,
-        )?;
-        let bytes = unmask_to_bytes(&product, &bound, usize::try_from(bound.num_bytes()).ok()?)?;
-        let first = bytes
-            .iter()
-            .position(|&byte| byte != 0)
-            .unwrap_or(bytes.len());
-        let minimal = bytes[first..].to_vec();
+        let mut product = BigNum::new().ok()?;
+        checkpoint(Boundary::Product)?;
+        product.checked_mul(&self.p, &self.q, &mut ctx).ok()?;
+        let minimal = product.to_vec();
         self.modulus = Some(BigNum::from_slice(&minimal).ok()?);
         Some(minimal)
     }
@@ -1055,8 +799,8 @@ impl CrtCandidate {
         let d_p = crt_exponent(&larger.0, exponent).half()?;
         let d_q = crt_exponent(&smaller.0, exponent).half()?;
         drop((larger, smaller));
-        let modulus = self.modulus.as_ref()?;
-        let q_inv = crt_coefficient(&self.q, &self.p, modulus, &mut ctx).half()?;
+        self.modulus.as_ref()?;
+        let q_inv = crt_coefficient(&self.q, &self.p, &mut ctx).half()?;
         let q_inv_exists = q_inv.is_some();
         let p_ok = d_p.is_some();
         let q_ok = d_q.is_some();
@@ -1117,7 +861,7 @@ impl CrtCandidate {
     }
 }
 
-fn divided_quotient(n: &BigNumRef, prime: &[u8], limbs: usize) -> Outcome<SecretBn> {
+fn quotient(n: &BigNumRef, prime: &[u8], limbs: usize) -> Outcome<SecretBn> {
     #[cfg(test)]
     crate::library::tpm2::memcheck::observe("recovery-prime", prime);
     let divisor = backend!(SecretBn::from_be(prime).ok());
@@ -1125,50 +869,16 @@ fn divided_quotient(n: &BigNumRef, prime: &[u8], limbs: usize) -> Outcome<Secret
         return Outcome::Invalid;
     }
     let mut ctx = backend!(BigNumContext::new().ok());
-    let mut blind = backend!(BigNum::new().ok());
-    backend!(private_random_bits(&mut blind, BLINDING_BITS).ok());
-    backend!(blind.set_bit(BLINDING_BITS - 1).ok());
-    let mut scaled_modulus = backend!(SecretBn::new().ok());
-    backend!(scaled_modulus.checked_mul(n, &blind, &mut ctx).ok());
-    let mut scaled_divisor = backend!(SecretBn::new().ok());
-    backend!(scaled_divisor.checked_mul(&divisor, &blind, &mut ctx).ok());
     let mut quotient = backend!(SecretBn::new().ok());
     let mut remainder = backend!(SecretBn::new().ok());
-    backend!(
-        quotient
-            .div_rem(&mut remainder, &scaled_modulus, &scaled_divisor, &mut ctx)
-            .ok()
-    );
+    backend!(checkpoint(Boundary::Division));
+    backend!(quotient.div_rem(&mut remainder, n, &divisor, &mut ctx).ok());
     let quotient_fits = backend!(usize::try_from(quotient.num_bits()).ok()) <= limbs * 64;
     if remainder.num_bits() == 0 && quotient_fits {
         Outcome::Value(quotient)
     } else {
         Outcome::Invalid
     }
-}
-
-fn hensel_quotient(n: &BigNumRef, prime: &[u8], limbs: usize) -> Outcome<SecretBn> {
-    #[cfg(test)]
-    crate::library::tpm2::memcheck::observe("recovery-prime", prime);
-    if bool::from(ct_is_zero(prime)) {
-        return Outcome::Invalid;
-    }
-    let mut ctx = backend!(BigNumContext::new().ok());
-    let width = limbs * WORD_BYTES;
-    let (wide, bits) = backend!(wide_modulus(width.max(prime.len())));
-    let mut odd = PrimeBytes(prime.to_vec());
-    if let Some(last) = odd.0.last_mut() {
-        *last |= 1;
-    }
-    let shares = backend!(masked_import(&odd.0, &wide, &mut ctx));
-    drop(odd);
-    let inverse = backend!(hensel_inverse(&shares, bits, &wide, &mut ctx));
-    let quotient = backend!(masked_scale(&inverse, n, &wide, &mut ctx));
-    let quotient = outcome!(unmasked(&quotient, &wide, width));
-    if !backend!(factors_multiply_to(prime, &quotient.0, n)) {
-        return Outcome::Invalid;
-    }
-    Outcome::Value(backend!(SecretBn::from_be(&quotient.0).ok()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1196,11 +906,7 @@ pub(in crate::library::tpm2) fn recover_rsa_components(
     let exponent = effective_exponent(exponent);
     let limbs = crt_limbs(modulus.len(), prime.len()).ok_or(RecoveryError::Invalid)?;
     let n = backend(BigNum::from_slice(modulus).ok())?;
-    let quotient = match if n.is_odd() {
-        hensel_quotient(&n, prime, limbs)
-    } else {
-        divided_quotient(&n, prime, limbs)
-    } {
+    let quotient = match quotient(&n, prime, limbs) {
         Outcome::Value(quotient) => quotient,
         Outcome::Invalid => return Err(RecoveryError::Invalid),
         Outcome::Backend => return Err(RecoveryError::Backend),
@@ -1304,6 +1010,14 @@ pub(in crate::library::tpm2) mod review_keys {
             q,
         )
     }
+}
+
+#[cfg(test)]
+pub(in crate::library::tpm2) fn forget_validated_factor_sets() {
+    VALIDATED_FACTORS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
 }
 
 #[cfg(test)]
@@ -2046,6 +1760,81 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "F14 memo regression: run under valgrind --tool=memcheck"]
+    fn memcheck_memo_lookup_never_branches_on_another_keys_factors() {
+        use crate::library::tpm2::memcheck::{error_count, traced};
+        let concealed = generated(1024, b"memo concealed");
+        let control = generated(1024, b"memo control");
+        let ordered = |key: &Key| {
+            let n = BigNum::from_slice(&key.modulus).unwrap();
+            let stored = SecretBn::from_be(&key.prime).unwrap();
+            let other = secret_words(&key.words[0]).unwrap();
+            let (larger, smaller) = ordered_prime_bytes(&stored, &other, CRT_BYTES).unwrap();
+            (n, larger, smaller)
+        };
+        forget_validated_factor_sets();
+        let (n, larger, smaller) = ordered(&concealed);
+        let (valid, _) = traced(true, || {
+            crate::library::tpm2::memcheck::secret(&larger.0);
+            crate::library::tpm2::memcheck::secret(&smaller.0);
+            factors_are_prime(&n, &larger.0, &smaller.0).ok()
+        });
+        assert_eq!(valid, Some(true), "the concealed key validates");
+        let (n, larger, smaller) = ordered(&control);
+        let (valid, _) = traced(false, || factors_are_prime(&n, &larger.0, &smaller.0).ok());
+        assert_eq!(valid, Some(true), "the control key validates");
+        assert_eq!(validated_factor_sets(), 2);
+        let before = error_count();
+        let (hit, _) = traced(false, || factors_are_prime(&n, &larger.0, &smaller.0).ok());
+        let during = error_count() - before;
+        assert_eq!(hit, Some(true), "the control key hits the memo");
+        assert_eq!(
+            during, 0,
+            "the memo lookup never branches on the secret factors of another validated key"
+        );
+        forget_validated_factor_sets();
+    }
+
+    #[test]
+    fn a_validated_modulus_never_admits_another_factorization() {
+        let (larger, smaller) = (1_000_003u64, 999_983u64);
+        let key = toy_key(larger, smaller);
+        let n = int(larger).mul(&int(smaller)).unwrap();
+        let ciphertext = be(&int(0x2a).mod_exp(&int(65537), &n).unwrap(), 8);
+        assert!(rsa_private_key_op(&key.crt(), &ciphertext).is_some());
+        let identity = factor_identity(&BigNum::from_slice(&key.modulus).unwrap());
+        assert!(
+            VALIDATED_FACTORS.lock().unwrap().contains(&identity),
+            "the memo holds the public modulus identity"
+        );
+        let trivial = |stored: &BigUint, other: &BigUint| Key {
+            modulus: key.modulus.clone(),
+            prime: be(stored, 8),
+            words: [
+                words_of(other),
+                [0; CRT_WORDS],
+                [0; CRT_WORDS],
+                [0; CRT_WORDS],
+            ],
+        };
+        for candidate in [
+            trivial(&int(1), &n),
+            trivial(&n, &int(1)),
+            trivial(&int(larger), &int(smaller + 2)),
+            trivial(&int(larger + 2), &int(smaller)),
+        ] {
+            assert!(
+                matches!(
+                    prepare(&candidate.crt(), fingerprint(&candidate.crt())),
+                    Ok(PreparedRsaKey { key: None, .. })
+                ),
+                "only the validated factorization of a memoised modulus is usable"
+            );
+        }
+        forget_factor_set(&key.crt());
+    }
+
+    #[test]
     fn invalid_factor_sets_never_become_usable() {
         for (first, second, wrong_message) in [(1093u64, 1093u64, 3u64), (9, 763, 5), (3, 341, 5)] {
             let n = int(first).mul(&int(second)).unwrap();
@@ -2224,12 +2013,17 @@ mod tests {
         let prepared = prepared(&key.crt()).unwrap();
         let native = &prepared.key.as_ref().unwrap().rsa;
         assert!(
-            native.p().is_none()
-                && native.q().is_none()
-                && native.dmp1().is_none()
-                && native.dmq1().is_none()
-                && native.iqmp().is_none(),
-            "the native key carries n, e, d only: OpenSSL never sets up p or q"
+            native.p().is_some()
+                && native.q().is_some()
+                && native.dmp1().is_some()
+                && native.dmq1().is_some()
+                && native.iqmp().is_some(),
+            "the native key is a complete CRT key"
+        );
+        assert_eq!(
+            native.check_key().ok(),
+            Some(true),
+            "OpenSSL accepts the CRT key"
         );
         assert!(
             primality_test_count() - tests <= 1,
@@ -2274,18 +2068,10 @@ mod tests {
     }
 
     #[test]
-    fn recovery_backend_failures_never_select_the_euclidean_fallback() {
+    fn recovery_backend_failures_are_reported_as_failures() {
         use super::super::fault::Boundary;
         let key = generated(1024, b"recovery faults");
-        for boundary in [
-            Boundary::Exponentiation,
-            Boundary::HenselInverse,
-            Boundary::MaskedInverse,
-            Boundary::MaskedProduct,
-            Boundary::Unmask,
-            Boundary::Inverse,
-        ] {
-            let euclidean = euclidean_coefficient_count();
+        for boundary in [Boundary::Division, Boundary::Inverse] {
             let injected = injected_failures(boundary, || {
                 match recover_rsa_private_exponent(&key.modulus, &key.prime, 0) {
                     Some(recovered) => {
@@ -2298,15 +2084,8 @@ mod tests {
                     None => false,
                 }
             });
-            assert_eq!(
-                euclidean_coefficient_count(),
-                euclidean,
-                "{boundary:?}: no injected failure reaches the Euclidean fallback"
-            );
             eprintln!("recovery: {boundary:?} failed at {injected} points");
-            if boundary != Boundary::Inverse {
-                assert!(injected > 0, "{boundary:?} is on the recovery path");
-            }
+            assert!(injected > 0, "{boundary:?} is on the recovery path");
             let retried = recovered(key.modulus.clone(), key.prime.clone());
             assert_eq!(
                 retried.words, key.words,
@@ -2362,17 +2141,17 @@ mod tests {
             Some(false),
             "no inverse is invalid material"
         );
-        for boundary in [
-            Boundary::MaskedInverse,
-            Boundary::Unmask,
-            Boundary::Exponentiation,
+        for (boundary, skipped) in [
+            (Boundary::Inverse, 0),
+            (Boundary::Inverse, 1),
+            (Boundary::Inverse, 2),
         ] {
             let mut subject = candidate(13, 17);
-            arm(boundary, 0);
+            arm(boundary, skipped);
             assert_eq!(
                 subject.compute(5),
                 None,
-                "{boundary:?} is a backend failure, not Some(false)"
+                "{boundary:?} #{skipped} is a backend failure, not Some(false)"
             );
             disarm();
         }
@@ -2389,7 +2168,7 @@ mod tests {
     fn recovery_reports_backend_failures_apart_from_invalid_primes() {
         use super::super::fault::{Boundary, arm, disarm};
         let key = generated(1024, b"recovery errors");
-        arm(Boundary::HenselInverse, 0);
+        arm(Boundary::Division, 0);
         let failed = recover_rsa_components(&key.modulus, &key.prime, 0);
         disarm();
         assert_eq!(failed.err(), Some(RecoveryError::Backend));
@@ -2411,9 +2190,8 @@ mod tests {
         let ciphertext = rsa_public_key_op(&key.modulus, 65537, &message).unwrap();
         for boundary in [
             Boundary::Primality,
-            Boundary::MaskedProduct,
-            Boundary::MaskedInverse,
-            Boundary::Unmask,
+            Boundary::Product,
+            Boundary::Inverse,
             Boundary::NativeKey,
         ] {
             let injected = injected_failures(boundary, || {
@@ -2451,42 +2229,6 @@ mod tests {
         let invalid = toy_key(1093, 1093);
         let ciphertext = be(&int(3).mod_exp(&int(65537), &int(1093 * 1093)).unwrap(), 8);
         assert_eq!(rsa_private_key_op(&invalid.crt(), &ciphertext), None);
-    }
-
-    #[test]
-    fn public_products_of_secret_factors_multiply_only_shares() {
-        use super::super::masked::take_operands;
-        for bits in [2048u16, 3072] {
-            let key = generated(bits, b"masked modulus");
-            let factor_bits = i32::from(bits / 2) + 1;
-            let mut candidate = CrtCandidate::new(key.prime.len()).unwrap();
-            candidate.p = SecretBn::from_be(&key.prime).unwrap();
-            candidate.q = secret_words(&key.words[0]).unwrap();
-            take_operands();
-            assert_eq!(candidate.modulus(), Some(key.modulus.clone()));
-            let products = take_operands();
-            assert_eq!(products.len(), 4, "one masked product: four share operands");
-            let bound_bits = 16 * CRT_BYTES as i32;
-            for (label, width) in &products {
-                assert_eq!(*label, "product operand");
-                assert!(
-                    *width > factor_bits && *width > bound_bits - 64,
-                    "{bits}-bit key: a multiplication operand of {width} bits is not a share"
-                );
-            }
-            take_operands();
-            assert!(candidate.compute(65537).unwrap());
-            assert_eq!(
-                candidate.exponent_words().unwrap(),
-                (key.words[1], key.words[2], key.words[3])
-            );
-            for (label, width) in take_operands() {
-                assert!(
-                    label != "product operand" || width > factor_bits,
-                    "{bits}-bit key: recovery multiplied a {width}-bit operand"
-                );
-            }
-        }
     }
 
     #[test]
@@ -2601,11 +2343,9 @@ mod tests {
             (7, 11, Some(8)),
         ] {
             for _ in 0..16 {
-                let modulus = BigNum::from_slice(&(smaller * larger).to_be_bytes()).unwrap();
-                let inverse =
-                    crt_coefficient(&secret(smaller), &secret(larger), &modulus, &mut ctx)
-                        .half()
-                        .unwrap();
+                let inverse = crt_coefficient(&secret(smaller), &secret(larger), &mut ctx)
+                    .half()
+                    .unwrap();
                 assert_eq!(
                     inverse.map(|words| words[0]),
                     expected,
@@ -2625,11 +2365,9 @@ mod tests {
                 "{bits}-bit key generation"
             );
             for _ in 0..4 {
-                let modulus = BigNum::from_slice(&key.modulus).unwrap();
                 let computed = crt_coefficient(
                     &SecretBn::from_be(&be(&smaller, CRT_BYTES)).unwrap(),
                     &SecretBn::from_be(&be(&larger, CRT_BYTES)).unwrap(),
-                    &modulus,
                     &mut ctx,
                 )
                 .half()
@@ -2679,14 +2417,7 @@ mod tests {
             let (modulus, prime, q) = uneven_key(prime_bits);
             assert_eq!(q.bit_len(), prime_bits + 1);
             let expected = reference_recover(&modulus, &prime, 0).expect("the reference recovers");
-            let euclidean = euclidean_coefficient_count();
             let key = recovered(modulus.clone(), prime.clone());
-            assert_eq!(
-                euclidean_coefficient_count(),
-                euclidean,
-                "{prime_bits}/{} bits: qInv comes from the blinded Fermat path",
-                prime_bits + 1
-            );
             for _ in 0..3 {
                 let again = recovered(modulus.clone(), prime.clone());
                 assert_eq!(again.words, key.words, "repeated recovery is identical");

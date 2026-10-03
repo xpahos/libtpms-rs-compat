@@ -340,7 +340,7 @@ mod tests {
         let curve = EccCurve::lookup(0x0003).unwrap();
         let reference = state().generate_r(&curve, b"name", None).unwrap().unwrap();
         let before = faults_fired();
-        arm_fault(FaultBoundary::Random, 0);
+        arm_fault(FaultBoundary::ImportReduction, 0);
         let failed = state().generate_r(&curve, b"name", None);
         disarm_fault();
         assert_eq!(faults_fired() - before, 1);

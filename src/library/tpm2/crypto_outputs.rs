@@ -1262,21 +1262,26 @@ mod boundaries {
     fn memcheck_boundary_retries_and_backend_failures_publish_nothing() {
         use super::super::crypto::{FaultBoundary, arm_fault, disarm_fault};
         let (key, _, _) = ecc_key_body(P256, null_scheme());
-        arm_fault(FaultBoundary::Signature, 0);
-        let ((failed, _), entries) = traced(true, || {
-            sign(&key, TPM_ALG_ECDSA, rand(b"boundary fault", 1))
-        });
-        assert!(disarm_fault() || failed.is_err());
-        assert!(failed.is_err(), "the injected failure fails the signature");
-        all(&entries, "ecdsa-commitment", Shadow::Undefined);
-        assert!(
-            states(&entries, "signature-output").is_empty(),
-            "a failed attempt produces no signature"
-        );
-        assert!(
-            entries.publications().is_empty(),
-            "a failed attempt publishes nothing"
-        );
+        for boundary in [FaultBoundary::Signature, FaultBoundary::Exponentiation] {
+            arm_fault(boundary, 0);
+            let ((failed, _), entries) = traced(true, || {
+                sign(&key, TPM_ALG_ECDSA, rand(b"boundary fault", 1))
+            });
+            assert!(disarm_fault(), "{boundary:?} fired");
+            assert!(
+                failed.is_err(),
+                "{boundary:?}: the injected failure fails the signature"
+            );
+            all(&entries, "ecdsa-commitment", Shadow::Undefined);
+            assert!(
+                states(&entries, "signature-output").is_empty(),
+                "{boundary:?}: a failed attempt produces no signature"
+            );
+            assert!(
+                entries.publications().is_empty(),
+                "{boundary:?}: a failed attempt publishes nothing"
+            );
+        }
         let curve = EccCurve::lookup(P256).unwrap();
         let (attempt, entries) = traced(true, || {
             let private = curve.secret_scalar(&[0x42; 32]).unwrap();
@@ -1362,9 +1367,13 @@ mod boundaries {
                 &mut LazySelfTest::untested(),
             )
         });
-        assert!(decrypted.is_ok());
+        let decrypted = decrypted.expect("the restored key decrypts");
         all(&entries, "private-key-prime", Shadow::Undefined);
-        all(&entries, "rsa-private-exponent", Shadow::Undefined);
+        assert!(
+            matches!(shadow(&decrypted), Shadow::Undefined | Shadow::Mixed),
+            "the private operation derived from the marked primes keeps its result secret"
+        );
+        assert!(entries.publications().is_empty());
 
         let (ecc, x, y) = ecc_key_body(P256, null_scheme());
         let stored = ecc.sensitive.sensitive.clone();
@@ -1448,7 +1457,6 @@ mod boundaries {
         let ciphertext = ciphertext.unwrap();
         all(&entries, "ephemeral-draw", Shadow::Undefined);
         all(&entries, "shared-point", Shadow::Undefined);
-        all(&entries, "offset-point", Shadow::Undefined);
         all(&entries, "ciphertext", Shadow::Undefined);
         assert!(entries.publications().is_empty());
         for part in [
@@ -1485,11 +1493,18 @@ mod boundaries {
         let (generated, entries) = traced(true, || {
             super::super::crypto::generate_ecc_key(P521, &mut rand(b"boundary keygen", 1))
         });
-        assert!(generated.is_ok());
+        let generated = generated.expect("a P-521 key");
+        let order_bits = EccCurve::lookup(P521).unwrap().order_bits();
+        let positions = super::super::memcheck::undefined_bit_positions(&generated.private)
+            .expect("Memcheck shadow bits");
+        assert!(
+            positions[..order_bits].iter().all(|undefined| *undefined),
+            "every bit below the order of the exported private scalar stays secret"
+        );
         all(&entries, "ephemeral-draw", Shadow::Undefined);
         all(&entries, "public-key", Shadow::Undefined);
         assert!(entries.publications().is_empty());
-        all(&entries, "exported-private", Shadow::Undefined);
+        entries.tainted("exported-private");
         let (commit_r, entries) = traced(true, || {
             commit_state().generate_r(&EccCurve::lookup(P256).unwrap(), b"name", None)
         });
@@ -1824,3 +1839,5 @@ fn memcheck_rsa_control_then_concealed() {
     );
     check_rsa_listing(&concealed_phase(rsa_concealed_diagnostic));
 }
+
+mod findings;

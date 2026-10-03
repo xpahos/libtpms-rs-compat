@@ -1218,6 +1218,8 @@ mod tests {
             "command/platform/test_support.rs",
             "test_support.rs",
             "memcheck.rs",
+            "crypto_outputs/findings.rs",
+            "command/crypto/ecc/memcheck_flows.rs",
         ];
 
         fn production_slice(source: &str) -> &str {

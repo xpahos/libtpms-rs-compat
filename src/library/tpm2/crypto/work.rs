@@ -49,6 +49,37 @@ pub(in crate::library::tpm2) fn count_sieve_pass() {
 
 pub(in crate::library::tpm2) fn count_generation_attempt() {
     bump(&GENERATION_ATTEMPTS, 1);
+    let hook = GENERATION_ATTEMPT_HOOK.with(|hook| hook.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook();
+        GENERATION_ATTEMPT_HOOK.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(hook);
+            }
+        });
+    }
+}
+
+thread_local! {
+    static GENERATION_ATTEMPT_HOOK: core::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+#[must_use = "the hook is removed when the guard is dropped"]
+pub(in crate::library::tpm2) struct GenerationAttemptHook;
+
+impl GenerationAttemptHook {
+    pub(in crate::library::tpm2) fn install(hook: impl FnMut() + 'static) -> Self {
+        GENERATION_ATTEMPT_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        Self
+    }
+}
+
+impl Drop for GenerationAttemptHook {
+    fn drop(&mut self) {
+        GENERATION_ATTEMPT_HOOK.with(|slot| *slot.borrow_mut() = None);
+    }
 }
 
 pub(in crate::library::tpm2) fn count_generator_bytes(length: usize) {

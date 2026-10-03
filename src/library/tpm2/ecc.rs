@@ -1217,16 +1217,8 @@ mod tests {
             assert_eq!(decrypt(&valid_c2, &valid_c3), Ok(message.clone()));
             for (boundary, label) in [
                 (
-                    FaultBoundary::Random,
-                    "RNG failure while importing the private scalar",
-                ),
-                (
                     FaultBoundary::ImportReduction,
                     "arithmetic failure while importing the private scalar",
-                ),
-                (
-                    FaultBoundary::Remask,
-                    "failure while refreshing the scalar masks",
                 ),
                 (
                     FaultBoundary::PointValidation,
@@ -1235,14 +1227,6 @@ mod tests {
                 (
                     FaultBoundary::PointOperation,
                     "backend failure in the shared-point computation",
-                ),
-                (
-                    FaultBoundary::MaskedProduct,
-                    "backend failure in the coordinate arithmetic",
-                ),
-                (
-                    FaultBoundary::Unmask,
-                    "backend failure while unmasking the shared point",
                 ),
             ] {
                 for (c2, c3) in [(&forged_c2, &forged_c3), (&valid_c2, &valid_c3)] {
@@ -1375,8 +1359,7 @@ mod tests {
         use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
         let public = multiple_of(P256, 0x31);
         for boundary in [
-            FaultBoundary::Random,
-            FaultBoundary::Remask,
+            FaultBoundary::ImportReduction,
             FaultBoundary::PointOperation,
         ] {
             let mut used = rand(b"ephemeral failure");

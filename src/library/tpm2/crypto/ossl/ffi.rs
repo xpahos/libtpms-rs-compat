@@ -8,14 +8,13 @@
 
 use core::ffi::{c_int, c_void};
 
-use super::fault::{Boundary, checkpoint};
 use foreign_types::{ForeignType, ForeignTypeRef};
 use openssl::bn::{BigNum, BigNumContextRef, BigNumRef};
 use openssl::ec::{EcGroupRef, EcKey, EcPoint};
 use openssl::ecdsa::EcdsaSig;
 use openssl::error::ErrorStack;
 use openssl::pkey::Private;
-use openssl_sys::{BIGNUM, BN_CTX, BN_ULONG, EC_KEY, EC_POINT, ECDSA_SIG};
+use openssl_sys::{BIGNUM, BN_CTX, EC_KEY, EC_POINT, ECDSA_SIG};
 
 unsafe extern "C" {
     fn BN_mod_exp_mont_consttime(
@@ -34,10 +33,7 @@ unsafe extern "C" {
         key: *mut EC_KEY,
     ) -> *mut ECDSA_SIG;
     fn EC_POINT_clear_free(point: *mut EC_POINT);
-    fn BN_priv_rand_range(result: *mut BIGNUM, range: *const BIGNUM) -> c_int;
-    fn BN_priv_rand(result: *mut BIGNUM, bits: c_int, top: c_int, bottom: c_int) -> c_int;
     fn BN_check_prime(value: *const BIGNUM, ctx: *mut BN_CTX, callback: *mut c_void) -> c_int;
-    fn BN_consttime_swap(condition: BN_ULONG, a: *mut BIGNUM, b: *mut BIGNUM, words: c_int);
     fn OPENSSL_cleanse(buffer: *mut c_void, length: usize);
     fn OSSL_PARAM_construct_utf8_string(
         key: *const core::ffi::c_char,
@@ -151,54 +147,6 @@ pub(super) fn ecdsa_sign_with_nonce(
         EcdsaSig::from_ptr(raw)
     };
     Ok((signature.r().to_owned()?, signature.s().to_owned()?))
-}
-
-pub(super) fn private_random_below(
-    result: &mut BigNumRef,
-    range: &BigNumRef,
-) -> Result<(), ErrorStack> {
-    checkpoint(Boundary::Random).ok_or_else(ErrorStack::get)?;
-    // SAFETY: both pointers come from live references; `result` is exclusively
-    // borrowed and distinct from `range`. BN_priv_rand_range only writes
-    // `result` and draws from OpenSSL's private DRBG, not from the TPM DRBG.
-    let status = unsafe { BN_priv_rand_range(result.as_ptr(), range.as_ptr()) };
-    if status == 1 {
-        Ok(())
-    } else {
-        Err(ErrorStack::get())
-    }
-}
-
-pub(super) fn private_random_bits(result: &mut BigNumRef, bits: i32) -> Result<(), ErrorStack> {
-    checkpoint(Boundary::Random).ok_or_else(ErrorStack::get)?;
-    // SAFETY: `result` is a live, exclusively borrowed BIGNUM; top = -1 and
-    // bottom = 0 request a value uniform in [0, 2^bits) from OpenSSL's private
-    // DRBG.
-    let status = unsafe { BN_priv_rand(result.as_ptr(), bits, -1, 0) };
-    if status == 1 {
-        Ok(())
-    } else {
-        Err(ErrorStack::get())
-    }
-}
-
-pub(super) fn consttime_swap(
-    condition: bool,
-    a: &mut BigNumRef,
-    b: &mut BigNumRef,
-    words: i32,
-) -> Result<(), ErrorStack> {
-    let bits = words.checked_mul(64).ok_or_else(ErrorStack::get)?;
-    for value in [&mut *a, &mut *b] {
-        value.set_bit(bits - 1)?;
-        value.clear_bit(bits - 1)?;
-    }
-    // SAFETY: `a` and `b` are distinct live BIGNUMs (two exclusive borrows) whose
-    // word arrays were just expanded to at least `words` words by setting the
-    // top bit of word `words - 1`; BN_consttime_swap reads and writes exactly
-    // `words` words of each and swaps `top`, `neg` and the constant-time flags.
-    unsafe { BN_consttime_swap(BN_ULONG::from(condition), a.as_ptr(), b.as_ptr(), words) };
-    Ok(())
 }
 
 pub(super) fn oaep_check(block: &[u8], label: &[u8], md: &openssl::md::MdRef) -> Option<Vec<u8>> {

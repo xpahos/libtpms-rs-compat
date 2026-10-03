@@ -9,18 +9,16 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2) enum Boundary {
     Exponentiation,
-    HenselInverse,
-    MaskedInverse,
-    MaskedProduct,
-    Unmask,
     Inverse,
+    Product,
+    Division,
     Primality,
     NativeKey,
     PointOperation,
+    ScalarArithmetic,
     Signature,
-    Random,
-    Remask,
     ImportReduction,
+    Coordinates,
     #[cfg(test)]
     PointValidation,
     PublicReduction,

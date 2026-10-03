@@ -13,6 +13,7 @@ const RUNNING_ON_VALGRIND: usize = 0x1001;
 const MAKE_MEM_UNDEFINED: usize = 0x4d43_0001;
 const MAKE_MEM_DEFINED: usize = 0x4d43_0002;
 const GET_VBITS: usize = 0x4d43_0008;
+const COUNT_ERRORS: usize = 0x1201;
 
 thread_local! {
     static CONCEALING: Cell<bool> = const { Cell::new(false) };
@@ -76,6 +77,10 @@ pub(super) fn running_on_valgrind() -> bool {
     request(RUNNING_ON_VALGRIND, 0, 0) != 0
 }
 
+pub(in crate::library::tpm2) fn error_count() -> usize {
+    request(COUNT_ERRORS, 0, 0)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2) enum Shadow {
     Defined,
@@ -95,6 +100,17 @@ pub(in crate::library::tpm2) fn shadow(bytes: &[u8]) -> Shadow {
 
 pub(in crate::library::tpm2) fn undefined_bytes(bytes: &[u8]) -> Option<usize> {
     vbits(bytes).map(|vbits| vbits.iter().filter(|&&bits| bits != 0).count())
+}
+
+pub(in crate::library::tpm2) fn undefined_bit_positions(bytes: &[u8]) -> Option<Vec<bool>> {
+    let vbits = vbits(bytes)?;
+    let mut positions = Vec::with_capacity(vbits.len() * 8);
+    for byte in vbits.iter().rev() {
+        for bit in 0..8 {
+            positions.push(byte >> bit & 1 == 1);
+        }
+    }
+    Some(positions)
 }
 
 fn vbits(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -219,6 +235,15 @@ fn record_observation(label: impl FnOnce() -> String, bytes: &[u8]) {
             }
         });
     }
+}
+
+pub(in crate::library::tpm2) fn publications_recorded() -> usize {
+    TRACE.with(|trace| {
+        trace
+            .borrow()
+            .as_ref()
+            .map_or(0, |trace| trace.publications.len())
+    })
 }
 
 pub(in crate::library::tpm2) fn publish(label: &'static str, bytes: &[u8]) {

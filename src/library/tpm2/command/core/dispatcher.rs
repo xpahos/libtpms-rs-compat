@@ -129,7 +129,13 @@ fn run(
             }
         }
         #[cfg(test)]
-        publish_response(&out_parameters, &[]);
+        let (out_parameters, _) = publish_response(
+            runtime,
+            command.command_code,
+            &out_handles,
+            out_parameters,
+            Vec::new(),
+        );
         return Ok(Response::success_with_handles(
             TPM_ST_NO_SESSIONS,
             out_handles,
@@ -178,7 +184,13 @@ fn run(
     };
     record_session_state(runtime, &area);
     #[cfg(test)]
-    publish_response(&out_parameters, &auth_response);
+    let (out_parameters, auth_response) = publish_response(
+        runtime,
+        command.command_code,
+        &out_handles,
+        out_parameters,
+        auth_response,
+    );
     Ok(Response::success_with_sessions(
         out_handles,
         out_parameters,
@@ -187,11 +199,62 @@ fn run(
 }
 
 #[cfg(test)]
-fn publish_response(parameters: &[u8], auth_response: &[u8]) {
-    crate::library::tpm2::memcheck::publish("command-response", parameters);
+fn publish_response(
+    runtime: &Tpm2Runtime,
+    code: u32,
+    handles: &[u8],
+    parameters: Vec<u8>,
+    auth_response: Vec<u8>,
+) -> (Vec<u8>, Vec<u8>) {
+    use crate::library::tpm2::memcheck::{publish, verification_copy};
+    publish("command-response", &parameters);
     if !auth_response.is_empty() {
-        crate::library::tpm2::memcheck::publish("command-response-auth", auth_response);
+        publish("command-response-auth", &auth_response);
     }
+    if code == registry::TPM_CC_CREATE_PRIMARY || code == registry::TPM_CC_CREATE_LOADED {
+        release_public_copies(runtime, handles);
+    }
+    (
+        verification_copy(&parameters),
+        verification_copy(&auth_response),
+    )
+}
+
+#[cfg(test)]
+fn release_public_copies(runtime: &Tpm2Runtime, handles: &[u8]) {
+    use crate::library::tpm2::persistent::{OwnedAnyObjectBody, OwnedPublicId};
+    let Some(handle) = handles
+        .first_chunk::<4>()
+        .map(|bytes| u32::from_be_bytes(*bytes))
+    else {
+        return;
+    };
+    let Some(slot) = handle
+        .checked_sub(0x8000_0000)
+        .and_then(|slot| usize::try_from(slot).ok())
+    else {
+        return;
+    };
+    let Some(OwnedAnyObjectBody::Object(body)) =
+        runtime.live.objects.get(slot).map(|entry| &entry.body)
+    else {
+        return;
+    };
+    let release = |bytes: &[u8]| {
+        if !bytes.is_empty() {
+            crate::library::tpm2::memcheck::publish("released-public-copy", bytes);
+        }
+    };
+    match &body.public.unique {
+        OwnedPublicId::Rsa(modulus) => release(modulus),
+        OwnedPublicId::Ecc { x, y } => {
+            release(x);
+            release(y);
+        }
+        _ => {}
+    }
+    release(&body.name);
+    release(&body.qualified_name);
 }
 
 fn split_authorization_area<'a>(

@@ -2123,18 +2123,27 @@ mod tests {
         use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault};
         let curve = nist_p256();
         let private = curve.scalar_from_u64(0x1234).unwrap();
+        for boundary in [FaultBoundary::Signature, FaultBoundary::Exponentiation] {
+            let mut used = signing_rand(b"ecdsa failure");
+            let mut reference = signing_rand(b"ecdsa failure");
+            let recorder = crate::library::tpm2::memcheck::Recorder::start();
+            arm_fault(boundary, 0);
+            let result = ecdsa_sign(&curve, &private, &[0x42; 32], &mut used);
+            assert!(disarm_fault(), "{boundary:?} fired");
+            assert_eq!(result, Err(TPM_RC_FAILURE), "{boundary:?}");
+            assert!(
+                recorder.trace().publications().is_empty(),
+                "{boundary:?}: a failed signature publishes nothing"
+            );
+            drop(recorder);
+            random_in_order(&mut reference, &curve).unwrap();
+            assert_eq!(
+                used.random_bytes(32).unwrap(),
+                reference.random_bytes(32).unwrap(),
+                "{boundary:?}: exactly one nonce was drawn"
+            );
+        }
         let mut used = signing_rand(b"ecdsa failure");
-        let mut reference = signing_rand(b"ecdsa failure");
-        arm_fault(FaultBoundary::Signature, 0);
-        let result = ecdsa_sign(&curve, &private, &[0x42; 32], &mut used);
-        disarm_fault();
-        assert_eq!(result, Err(TPM_RC_FAILURE));
-        random_in_order(&mut reference, &curve).unwrap();
-        assert_eq!(
-            used.random_bytes(32).unwrap(),
-            reference.random_bytes(32).unwrap(),
-            "exactly one nonce was drawn"
-        );
         assert!(ecdsa_sign(&curve, &private, &[0x42; 32], &mut used).is_ok());
     }
 
@@ -2143,7 +2152,13 @@ mod tests {
         use crate::library::tpm2::crypto::{FaultBoundary, arm_fault, disarm_fault, faults_fired};
         let curve = nist_p256();
         let private = curve.scalar_from_u64(0x2468).unwrap();
-        for boundary in [FaultBoundary::PointOperation, FaultBoundary::Random] {
+        for (boundary, precomputation) in [
+            (FaultBoundary::PointOperation, FaultBoundary::PointOperation),
+            (
+                FaultBoundary::ImportReduction,
+                FaultBoundary::Exponentiation,
+            ),
+        ] {
             let mut used = signing_rand(b"schnorr failure");
             let mut reference = signing_rand(b"schnorr failure");
             let before = faults_fired();
@@ -2161,18 +2176,18 @@ mod tests {
             let mut used = signing_rand(b"sm2 failure");
             let mut reference = signing_rand(b"sm2 failure");
             let before = faults_fired();
-            arm_fault(boundary, 0);
+            arm_fault(precomputation, 0);
             let result = sm2_sign(&curve, &private, &[0x24; 32], &mut used);
             disarm_fault();
-            assert!(faults_fired() > before, "{boundary:?}");
-            assert_eq!(result.err(), Some(TPM_RC_FAILURE), "SM2 {boundary:?}");
-            if boundary == FaultBoundary::PointOperation {
+            assert!(faults_fired() > before, "{precomputation:?}");
+            assert_eq!(result.err(), Some(TPM_RC_FAILURE), "SM2 {precomputation:?}");
+            if precomputation == FaultBoundary::PointOperation {
                 sm2_nonce(&mut reference, &curve).unwrap();
             }
             assert_eq!(
                 used.random_bytes(32).unwrap(),
                 reference.random_bytes(32).unwrap(),
-                "SM2 {boundary:?}: one nonce for a multiply failure, none for a precomputation failure"
+                "SM2 {precomputation:?}: one nonce for a multiply failure, none for a precomputation failure"
             );
         }
     }

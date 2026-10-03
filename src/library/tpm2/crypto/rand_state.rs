@@ -298,6 +298,11 @@ impl SeededRand {
         bits: usize,
     ) -> Result<BigUint, TpmResult> {
         let bytes = self.random_bytes(bits.div_ceil(8))?;
+        #[cfg(test)]
+        {
+            crate::library::tpm2::memcheck::secret(&bytes);
+            crate::library::tpm2::memcheck::observe("drbg-integer", &bytes);
+        }
         let failure = crate::library::constants::TPM_RC_FAILURE;
         let mut value = BigUint::from_be_bytes(&bytes).ok_or(failure)?;
         value.mask_bits(bits).ok_or(failure)?;

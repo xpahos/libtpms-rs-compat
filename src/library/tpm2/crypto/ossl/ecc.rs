@@ -24,18 +24,13 @@ use openssl::ec::{EcGroup, EcGroupRef, EcKey, EcPoint, EcPointRef};
 use openssl::ecdsa::EcdsaSig;
 use openssl::error::ErrorStack;
 use openssl::nid::Nid;
-use subtle::ConstantTimeEq;
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater};
 
 use super::super::ecc::{
     BN_P256, BN_P638, CurveSpec, NIST_P192, NIST_P224, NIST_P256, NIST_P384, NIST_P521, SM2_P256,
 };
 use super::fault::{Boundary, checkpoint};
-use super::ffi::{cleanse, consttime_swap, ecdsa_sign_with_nonce, sm2_public_key};
-use super::masked::{
-    Operation, Outcome, Shares, add_mod, add_shares, ct_is_zero, ct_less, exported_bytes,
-    invert_public_width, masked_invert, masked_mul, mul_mod, negate, nonzero_mask, random_mask,
-    sub_mod, sub_shares, unmask_to_bytes, words_for,
-};
+use super::ffi::{cleanse, ecdsa_sign_with_nonce, mod_exp_consttime, sm2_public_key};
 use super::rsa::PublicCheck;
 use super::secret::{SecretBn, SecretPoint};
 
@@ -45,19 +40,6 @@ pub(in crate::library::tpm2) const PRIVATE_SCALAR_BYTES: usize = MAX_INTEGER_BYT
 const CURVES: [&CurveSpec; 8] = [
     &NIST_P192, &NIST_P224, &NIST_P256, &NIST_P384, &NIST_P521, &BN_P256, &BN_P638, &SM2_P256,
 ];
-
-fn masked_import(bytes: &[u8], modulus: &BigNumRef, ctx: &mut BigNumContextRef) -> Option<Shares> {
-    if bytes.len() > MAX_INTEGER_BYTES {
-        return None;
-    }
-    super::masked::masked_import(bytes, modulus, ctx)
-}
-
-#[cfg(test)]
-thread_local! {
-    static FORCED_OFFSET: core::cell::Cell<Option<Vec<u8>>> = const { core::cell::Cell::new(None) };
-    static OFFSET_ATTEMPTS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-}
 
 struct CurveData {
     group: EcGroup,
@@ -183,6 +165,40 @@ fn padded(bytes: &[u8]) -> Option<[u8; MAX_INTEGER_BYTES]> {
     Some(out)
 }
 
+fn ct_less(left: &[u8], right: &[u8]) -> Choice {
+    let mut less = Choice::from(0u8);
+    let mut decided = Choice::from(0u8);
+    for (left, right) in left.iter().zip(right.iter()) {
+        let differs = !left.ct_eq(right);
+        less.conditional_assign(&right.ct_gt(left), !decided & differs);
+        decided |= differs;
+    }
+    less
+}
+
+fn ct_is_zero(bytes: &[u8]) -> Choice {
+    bytes.iter().fold(0u8, |acc, &byte| acc | byte).ct_eq(&0)
+}
+
+fn reason_is(error: &ErrorStack, library: i32, reason: i32) -> bool {
+    error
+        .errors()
+        .iter()
+        .any(|entry| entry.library_code() == library && entry.reason_code() == reason)
+}
+
+fn only_reason(error: &ErrorStack, library: i32, reason: i32) -> bool {
+    !error.errors().is_empty()
+        && error
+            .errors()
+            .iter()
+            .all(|entry| entry.library_code() == library && entry.reason_code() == reason)
+}
+
+const ERR_LIB_EC: i32 = 16;
+const EC_R_POINT_IS_NOT_ON_CURVE: i32 = 107;
+const EC_R_NEED_NEW_SETUP_VALUES: i32 = 157;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::library::tpm2) struct EccAffine {
     pub(in crate::library::tpm2) x: Vec<u8>,
@@ -197,8 +213,7 @@ pub(in crate::library::tpm2) struct EccCurve {
 
 pub(in crate::library::tpm2) struct EccScalar {
     curve: EccCurve,
-    masked: SecretBn,
-    mask: SecretBn,
+    value: SecretBn,
 }
 
 pub(in crate::library::tpm2) struct EccPublicScalar {
@@ -240,16 +255,6 @@ impl PartialEq for EccPublicScalar {
     }
 }
 
-const ERR_LIB_EC: i32 = 16;
-const EC_R_POINT_IS_NOT_ON_CURVE: i32 = 107;
-const EC_R_NEED_NEW_SETUP_VALUES: i32 = 157;
-
-fn needs_new_setup(error: &ErrorStack) -> bool {
-    error.errors().iter().any(|entry| {
-        entry.library_code() == ERR_LIB_EC && entry.reason_code() == EC_R_NEED_NEW_SETUP_VALUES
-    })
-}
-
 #[cfg(test)]
 fn validation_result(result: Result<(), ErrorStack>) -> Result<(), ErrorStack> {
     if checkpoint(Boundary::PointValidation).is_some() {
@@ -268,13 +273,6 @@ fn validation_result(result: Result<(), ErrorStack>) -> Result<(), ErrorStack> {
 #[inline(always)]
 fn validation_result(result: Result<(), ErrorStack>) -> Result<(), ErrorStack> {
     result
-}
-
-fn only_off_curve(error: &ErrorStack) -> bool {
-    !error.errors().is_empty()
-        && error.errors().iter().all(|entry| {
-            entry.library_code() == ERR_LIB_EC && entry.reason_code() == EC_R_POINT_IS_NOT_ON_CURVE
-        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,11 +338,10 @@ impl EccCurve {
         &self.data.order
     }
 
-    fn secret(&self, shares: Shares) -> EccScalar {
+    fn secret(&self, value: SecretBn) -> EccScalar {
         EccScalar {
             curve: *self,
-            masked: shares.masked,
-            mask: shares.mask,
+            value,
         }
     }
 
@@ -386,7 +383,7 @@ impl EccCurve {
         let set = point.set_affine_coordinates_gfp(self.group(), &x_reduced, &y_reduced, ctx);
         match validation_result(set) {
             Ok(()) => Ok(Some(point)),
-            Err(error) if only_off_curve(&error) => Ok(None),
+            Err(error) if only_reason(&error, ERR_LIB_EC, EC_R_POINT_IS_NOT_ON_CURVE) => Ok(None),
             Err(_) => Err(EccBackendError),
         }
     }
@@ -395,15 +392,29 @@ impl EccCurve {
         if point.is_infinity(self.group()) {
             return None;
         }
+        self.coordinates(point, ctx)
+    }
+
+    fn shared_affine(&self, point: &EcPointRef, ctx: &mut BigNumContextRef) -> Option<EccAffine> {
+        self.coordinates(point, ctx)
+    }
+
+    fn coordinates(&self, point: &EcPointRef, ctx: &mut BigNumContextRef) -> Option<EccAffine> {
         let mut x = SecretBn::new().ok()?;
+        checkpoint(Boundary::Coordinates)?;
         let mut y = SecretBn::new().ok()?;
         point
             .affine_coordinates_gfp(self.group(), &mut x, &mut y, ctx)
             .ok()?;
-        Some(EccAffine {
-            x: x.to_be(self.data.field_bytes).ok()?,
-            y: y.to_be(self.data.field_bytes).ok()?,
-        })
+        checkpoint(Boundary::Coordinates)?;
+        let mut x = x.to_be(self.data.field_bytes).ok()?;
+        match checkpoint(Boundary::Coordinates).and_then(|()| y.to_be(self.data.field_bytes).ok()) {
+            Some(y) => Some(EccAffine { x, y }),
+            None => {
+                cleanse(&mut x);
+                None
+            }
+        }
     }
 
     #[cfg(test)]
@@ -468,10 +479,20 @@ impl EccCurve {
         })
     }
 
-    pub(in crate::library::tpm2) fn secret_scalar(&self, bytes: &[u8]) -> Option<EccScalar> {
+    fn reduced(&self, bytes: &[u8], modulus: &BigNumRef) -> Option<SecretBn> {
+        if bytes.len() > MAX_INTEGER_BYTES {
+            return None;
+        }
         let mut ctx = BigNumContext::new().ok()?;
-        let shares = masked_import(bytes, self.order_ref(), &mut ctx)?;
-        self.secret(shares).refreshed(&mut ctx)
+        let raw = SecretBn::from_be(bytes).ok()?;
+        let mut value = SecretBn::new().ok()?;
+        checkpoint(Boundary::ImportReduction)?;
+        value.nnmod(&raw, modulus, &mut ctx).ok()?;
+        Some(value)
+    }
+
+    pub(in crate::library::tpm2) fn secret_scalar(&self, bytes: &[u8]) -> Option<EccScalar> {
+        Some(self.secret(self.reduced(bytes, self.order_ref())?))
     }
 
     #[cfg(test)]
@@ -485,33 +506,16 @@ impl EccCurve {
     }
 
     pub(in crate::library::tpm2) fn zero_scalar(&self) -> Option<EccScalar> {
-        let mask = random_mask(self.order_ref())?;
-        Some(self.secret(Shares {
-            masked: mask.duplicate().ok()?,
-            mask,
-        }))
+        Some(self.secret(SecretBn::new().ok()?))
     }
 
     pub(in crate::library::tpm2) fn scalar_from_extra_bits(
         &self,
         bytes: &[u8],
     ) -> Option<EccScalar> {
-        let mut ctx = BigNumContext::new().ok()?;
-        let modulus = &self.data.order_minus_one;
-        let shares = masked_import(bytes, modulus, &mut ctx)?;
-        let mut masked_bytes = exported_bytes(&shares.masked, MAX_INTEGER_BYTES)?;
-        let mut mask_bytes = exported_bytes(&shares.mask, MAX_INTEGER_BYTES)?;
-        let wrapped = bool::from(ct_less(&masked_bytes, &mask_bytes));
-        cleanse(&mut masked_bytes);
-        cleanse(&mut mask_bytes);
-        let mut masked = shares.masked;
-        masked.add_word(1).ok()?;
-        let mut lifted = shares.mask.duplicate().ok()?;
-        lifted.add_word(1).ok()?;
-        let mut mask = shares.mask;
-        consttime_swap(wrapped, &mut mask, &mut lifted, words_for(modulus)).ok()?;
-        drop(lifted);
-        self.secret(Shares { masked, mask }).refreshed(&mut ctx)
+        let mut value = self.reduced(bytes, &self.data.order_minus_one)?;
+        value.add_word(1).ok()?;
+        Some(self.secret(value))
     }
 
     pub(in crate::library::tpm2) fn scalar_below_order(
@@ -544,43 +548,25 @@ impl EccCurve {
         bool::from(ct_less(stored, &self.data.order_be) & !ct_is_zero(stored))
     }
 
-    fn masked_point(
+    fn product(
         &self,
         base: Option<&EcPointRef>,
         scalar: &EccScalar,
         ctx: &mut BigNumContextRef,
     ) -> Option<SecretPoint> {
         checkpoint(Boundary::PointOperation)?;
-        let scalar = &scalar.remasked(ctx)?;
-        let zero = BigNum::new().ok()?;
-        let negated_mask = sub_mod(&zero, &scalar.mask, self.order_ref(), ctx)?;
-        let mut left = SecretPoint::new(self.group()).ok()?;
-        let mut right = SecretPoint::new(self.group()).ok()?;
+        let mut product = SecretPoint::new(self.group()).ok()?;
         match base {
-            None => {
-                left.point_mut()
-                    .mul_generator2(self.group(), &scalar.masked, ctx)
-                    .ok()?;
-                right
-                    .point_mut()
-                    .mul_generator2(self.group(), &negated_mask, ctx)
-                    .ok()?;
-            }
-            Some(base) => {
-                left.point_mut()
-                    .mul2(self.group(), base, &scalar.masked, ctx)
-                    .ok()?;
-                right
-                    .point_mut()
-                    .mul2(self.group(), base, &negated_mask, ctx)
-                    .ok()?;
-            }
+            None => product
+                .point_mut()
+                .mul_generator2(self.group(), &scalar.value, ctx)
+                .ok()?,
+            Some(base) => product
+                .point_mut()
+                .mul2(self.group(), base, &scalar.value, ctx)
+                .ok()?,
         }
-        let mut sum = SecretPoint::new(self.group()).ok()?;
-        sum.point_mut()
-            .add(self.group(), left.point(), right.point(), ctx)
-            .ok()?;
-        Some(sum)
+        Some(product)
     }
 
     pub(in crate::library::tpm2) fn mul_generator(&self, scalar: &EccScalar) -> Option<EccAffine> {
@@ -604,7 +590,7 @@ impl EccCurve {
         ctx: &mut BigNumContextRef,
     ) -> Result<EccAffine, SharedPointError> {
         let product = self
-            .masked_point(base, scalar, ctx)
+            .product(base, scalar, ctx)
             .ok_or(SharedPointError::Backend)?;
         if product.point().is_infinity(self.group()) {
             return Err(SharedPointError::Infinity);
@@ -635,109 +621,6 @@ impl EccCurve {
         self.returned_point(Some(&base), scalar, &mut ctx)
     }
 
-    fn offset_points(
-        &self,
-        base: &EcPointRef,
-        scalar: &EccScalar,
-        ctx: &mut BigNumContextRef,
-    ) -> Option<Option<(EccAffine, EccAffine)>> {
-        loop {
-            let scalar = scalar.remasked(ctx)?;
-            let zero = BigNum::new().ok()?;
-            let negated_mask = sub_mod(&zero, &scalar.mask, self.order_ref(), ctx)?;
-            checkpoint(Boundary::PointOperation)?;
-            #[cfg(test)]
-            OFFSET_ATTEMPTS.with(|count| count.set(count.get() + 1));
-            #[cfg(test)]
-            let offset_scalar = match FORCED_OFFSET.with(|forced| forced.take()) {
-                Some(bytes) => SecretBn::from_be(&bytes).ok()?,
-                None => nonzero_mask(self.order_ref())?,
-            };
-            #[cfg(not(test))]
-            let offset_scalar = nonzero_mask(self.order_ref())?;
-            let mut masked_part = SecretPoint::new(self.group()).ok()?;
-            masked_part
-                .point_mut()
-                .mul2(self.group(), base, &scalar.masked, ctx)
-                .ok()?;
-            let mut mask_part = SecretPoint::new(self.group()).ok()?;
-            mask_part
-                .point_mut()
-                .mul2(self.group(), base, &negated_mask, ctx)
-                .ok()?;
-            let mut offset = SecretPoint::new(self.group()).ok()?;
-            offset
-                .point_mut()
-                .mul_generator2(self.group(), &offset_scalar, ctx)
-                .ok()?;
-            drop((scalar, negated_mask, offset_scalar));
-            let mut partial = SecretPoint::new(self.group()).ok()?;
-            partial
-                .point_mut()
-                .add(self.group(), masked_part.point(), offset.point(), ctx)
-                .ok()?;
-            drop(masked_part);
-            let mut sum = SecretPoint::new(self.group()).ok()?;
-            sum.point_mut()
-                .add(self.group(), partial.point(), mask_part.point(), ctx)
-                .ok()?;
-            drop((partial, mask_part));
-            if sum.point().is_infinity(self.group()) || offset.point().is_infinity(self.group()) {
-                continue;
-            }
-            let sum = self.affine(sum.point(), ctx)?;
-            let offset = self.affine(offset.point(), ctx)?;
-            if bool::from(sum.x.ct_eq(&offset.x)) {
-                if bool::from(sum.y.ct_eq(&offset.y)) {
-                    return Some(None);
-                }
-                continue;
-            }
-            return Some(Some((sum, offset)));
-        }
-    }
-
-    fn difference(
-        &self,
-        sum: &EccAffine,
-        offset: &EccAffine,
-        ctx: &mut BigNumContextRef,
-    ) -> Option<EccAffine> {
-        let field = &self.data.field;
-        let width = self.data.field_bytes;
-        let import = |bytes: &[u8], ctx: &mut BigNumContextRef| masked_import(bytes, field, ctx);
-        let sum_x = import(&sum.x, ctx)?;
-        let sum_y = import(&sum.y, ctx)?;
-        let offset_x = import(&offset.x, ctx)?;
-        let offset_y = import(&offset.y, ctx)?;
-        let run = sub_shares(&offset_x, &sum_x, field, ctx)?;
-        let rise = negate(&add_shares(&offset_y, &sum_y, field, ctx)?, field, ctx)?;
-        let Outcome::Value(run_inverse) = masked_invert(&run, field, ctx) else {
-            return None;
-        };
-        drop(run);
-        let slope = masked_mul(&rise, &run_inverse, field, ctx)?;
-        drop((rise, run_inverse));
-        let slope_squared = masked_mul(&slope, &slope, field, ctx)?;
-        let x = sub_shares(
-            &sub_shares(&slope_squared, &sum_x, field, ctx)?,
-            &offset_x,
-            field,
-            ctx,
-        )?;
-        drop(slope_squared);
-        let y = sub_shares(
-            &masked_mul(&slope, &sub_shares(&sum_x, &x, field, ctx)?, field, ctx)?,
-            &sum_y,
-            field,
-            ctx,
-        )?;
-        Some(EccAffine {
-            x: unmask_to_bytes(&x, field, width)?,
-            y: unmask_to_bytes(&y, field, width)?,
-        })
-    }
-
     pub(in crate::library::tpm2) fn mul_point_shared(
         &self,
         x: &[u8],
@@ -749,21 +632,21 @@ impl EccCurve {
             .checked_point(x, y, &mut ctx)
             .map_err(|_| SharedPointError::Backend)?
             .ok_or(SharedPointError::OffCurve)?;
-        let (mut sum, mut offset) = match self.offset_points(&base, scalar, &mut ctx) {
-            Some(Some(points)) => points,
-            Some(None) => return Err(SharedPointError::Infinity),
-            None => return Err(SharedPointError::Backend),
-        };
-        let shared = self.difference(&sum, &offset, &mut ctx);
+        let product = self
+            .product(Some(&base), scalar, &mut ctx)
+            .ok_or(SharedPointError::Backend)?;
+        if product.point().is_infinity(self.group()) {
+            return Err(SharedPointError::Infinity);
+        }
+        let shared = self
+            .shared_affine(product.point(), &mut ctx)
+            .ok_or(SharedPointError::Backend)?;
         #[cfg(test)]
-        if let Some(point) = shared.as_ref() {
-            crate::library::tpm2::memcheck::observe("shared-point", &point.x);
-            crate::library::tpm2::memcheck::observe("offset-point", &sum.x);
+        {
+            crate::library::tpm2::memcheck::observe("shared-point", &shared.x);
+            crate::library::tpm2::memcheck::observe("shared-point", &shared.y);
         }
-        for coordinate in [&mut sum.x, &mut sum.y, &mut offset.x, &mut offset.y] {
-            cleanse(coordinate);
-        }
-        shared.ok_or(SharedPointError::Backend)
+        Ok(shared)
     }
 
     #[cfg(test)]
@@ -814,29 +697,6 @@ impl EccCurve {
         self.affine(&sum, &mut ctx)
     }
 
-    fn truncated_digest(&self, digest: &[u8]) -> Option<BigNum> {
-        let order_bits = self.data.order_bits;
-        let length = digest.len().min(self.data.order_bytes);
-        let value = BigNum::from_slice(&digest[..length]).ok()?;
-        if length * 8 <= order_bits {
-            return Some(value);
-        }
-        let mut shifted = BigNum::new().ok()?;
-        shifted
-            .rshift(&value, i32::try_from(8 - (order_bits & 7)).ok()?)
-            .ok()?;
-        Some(shifted)
-    }
-
-    fn openssl_digest_encoding(&self, value: &BigNumRef) -> Option<Vec<u8>> {
-        let shift = self.data.order_bytes * 8 - self.data.order_bits;
-        let mut shifted = BigNum::new().ok()?;
-        shifted.lshift(value, i32::try_from(shift).ok()?).ok()?;
-        shifted
-            .to_vec_padded(i32::try_from(self.data.order_bytes).ok()?)
-            .ok()
-    }
-
     pub(in crate::library::tpm2) fn ecdsa_sign(
         &self,
         private: &EccScalar,
@@ -845,58 +705,46 @@ impl EccCurve {
     ) -> Option<EcdsaAttempt> {
         let mut ctx = BigNumContext::new().ok()?;
         let order = self.order_ref();
-        let minus_two = &self.data.order_minus_two;
-        let point = self.masked_point(None, nonce, &mut ctx)?;
+        let point = self.product(None, nonce, &mut ctx)?;
         if point.point().is_infinity(self.group()) {
             return Some(EcdsaAttempt::Retry);
         }
-        let commitment = self.affine(point.point(), &mut ctx)?;
+        let mut commitment = self.affine(point.point(), &mut ctx)?;
         #[cfg(test)]
         crate::library::tpm2::memcheck::observe("ecdsa-commitment", &commitment.x);
         drop(point);
-        let x = BigNum::from_slice(&commitment.x).ok()?;
-        let mut r = BigNum::new().ok()?;
+        let x = SecretBn::from_be(&commitment.x).ok();
+        cleanse(&mut commitment.x);
+        cleanse(&mut commitment.y);
+        let x = x?;
+        let mut r = SecretBn::new().ok()?;
         r.nnmod(&x, order, &mut ctx).ok()?;
         if r.num_bits() == 0 {
             return Some(EcdsaAttempt::Retry);
         }
-        let nonce_blind = nonzero_mask(order)?;
-        let Some(blinded_nonce) = nonce.blinded_value(&nonce_blind, &mut ctx)? else {
-            return Some(EcdsaAttempt::Retry);
-        };
-        let blinded_inverse = invert_public_width(&blinded_nonce, minus_two, order, &mut ctx)?;
-        drop(blinded_nonce);
-        let key_blind = nonzero_mask(order)?;
-        let blinded_key = private
-            .blinded_value(&key_blind, &mut ctx)?
-            .unwrap_or(SecretBn::new().ok()?);
-        let digest_value = self.truncated_digest(digest)?;
-        let blinded_digest = mul_mod(&digest_value, &key_blind, order, &mut ctx)?;
-        let encoded_digest = self.openssl_digest_encoding(&blinded_digest)?;
-        let key_blind_inverse = invert_public_width(&key_blind, minus_two, order, &mut ctx)?;
-        let unblinding = mul_mod(&nonce_blind, &key_blind_inverse, order, &mut ctx)?;
+        let mut nonce_inverse = SecretBn::new().ok()?;
+        checkpoint(Boundary::Exponentiation)?;
+        mod_exp_consttime(
+            &mut nonce_inverse,
+            &nonce.value,
+            &self.data.order_minus_two,
+            order,
+            &mut ctx,
+        )
+        .ok()?;
         checkpoint(Boundary::Signature)?;
-        let signed = ecdsa_sign_with_nonce(
-            self.group(),
-            &blinded_key,
-            &encoded_digest,
-            &blinded_inverse,
-            &r,
-        );
-        let blinded_s = match signed {
-            Ok((_, blinded_s)) => blinded_s,
-            Err(error) if needs_new_setup(&error) => return Some(EcdsaAttempt::Retry),
-            Err(_) => return None,
-        };
-        let s = mul_mod(&blinded_s, &unblinding, order, &mut ctx)?;
-        if s.num_bits() == 0 {
-            return Some(EcdsaAttempt::Retry);
-        }
+        drop(ErrorStack::get());
+        let s =
+            match ecdsa_sign_with_nonce(self.group(), &private.value, digest, &nonce_inverse, &r) {
+                Ok((_, s)) => s,
+                Err(error) if reason_is(&error, ERR_LIB_EC, EC_R_NEED_NEW_SETUP_VALUES) => {
+                    return Some(EcdsaAttempt::Retry);
+                }
+                Err(_) => return None,
+            };
         let length = i32::try_from(self.data.order_bytes).ok()?;
-        Some(EcdsaAttempt::Signed {
-            r: r.to_vec_padded(length).ok()?,
-            s: s.to_be(self.data.order_bytes).ok()?,
-        })
+        let (r, s) = (r.to_vec_padded(length).ok()?, s.to_vec_padded(length).ok()?);
+        Some(EcdsaAttempt::Signed { r, s })
     }
 
     pub(in crate::library::tpm2) fn sm2_verify(
@@ -966,121 +814,104 @@ impl EccCurve {
     }
 }
 
+type ModularOperation = fn(
+    &mut BigNumRef,
+    &BigNumRef,
+    &BigNumRef,
+    &BigNumRef,
+    &mut BigNumContextRef,
+) -> Result<(), ErrorStack>;
+
+fn modular_add(
+    result: &mut BigNumRef,
+    left: &BigNumRef,
+    right: &BigNumRef,
+    modulus: &BigNumRef,
+    ctx: &mut BigNumContextRef,
+) -> Result<(), ErrorStack> {
+    result.mod_add(left, right, modulus, ctx)
+}
+
+fn modular_sub(
+    result: &mut BigNumRef,
+    left: &BigNumRef,
+    right: &BigNumRef,
+    modulus: &BigNumRef,
+    ctx: &mut BigNumContextRef,
+) -> Result<(), ErrorStack> {
+    result.mod_sub(left, right, modulus, ctx)
+}
+
+fn modular_mul(
+    result: &mut BigNumRef,
+    left: &BigNumRef,
+    right: &BigNumRef,
+    modulus: &BigNumRef,
+    ctx: &mut BigNumContextRef,
+) -> Result<(), ErrorStack> {
+    result.mod_mul(left, right, modulus, ctx)
+}
+
 impl EccScalar {
     fn order(&self) -> &BigNumRef {
         self.curve.order_ref()
     }
 
-    fn with(&self, masked: SecretBn, mask: SecretBn) -> Self {
-        Self {
-            curve: self.curve,
-            masked,
-            mask,
-        }
-    }
-
-    fn refreshed(self, ctx: &mut BigNumContextRef) -> Option<Self> {
-        self.remasked(ctx)
-    }
-
-    fn blinded_value(
-        &self,
-        blind: &BigNumRef,
-        ctx: &mut BigNumContextRef,
-    ) -> Option<Option<SecretBn>> {
-        let order = self.order();
-        let masked_product = mul_mod(&self.masked, blind, order, ctx)?;
-        let mask_product = mul_mod(&self.mask, blind, order, ctx)?;
-        let value = sub_mod(&masked_product, &mask_product, order, ctx)?;
-        Some((value.num_bits() != 0).then_some(value))
+    fn combined(&self, other: &BigNumRef, operation: ModularOperation) -> Option<Self> {
+        let mut ctx = BigNumContext::new().ok()?;
+        let mut value = SecretBn::new().ok()?;
+        checkpoint(Boundary::ScalarArithmetic)?;
+        operation(&mut value, &self.value, other, self.order(), &mut ctx).ok()?;
+        Some(self.curve.secret(value))
     }
 
     pub(in crate::library::tpm2) fn add(&self, other: &Self) -> Option<Self> {
         (self.curve.index == other.curve.index).then_some(())?;
-        let mut ctx = BigNumContext::new().ok()?;
-        let order = self.order();
-        let fresh = random_mask(order)?;
-        let partial = add_mod(&self.masked, &fresh, order, &mut ctx)?;
-        let masked = add_mod(&partial, &other.masked, order, &mut ctx)?;
-        let partial_mask = add_mod(&self.mask, &fresh, order, &mut ctx)?;
-        let mask = add_mod(&partial_mask, &other.mask, order, &mut ctx)?;
-        Some(self.with(masked, mask))
+        self.combined(&other.value, modular_add)
     }
 
+    #[cfg(test)]
     pub(in crate::library::tpm2) fn neg(&self) -> Option<Self> {
-        let mut ctx = BigNumContext::new().ok()?;
-        let order = self.order();
-        let fresh = random_mask(order)?;
-        let masked = sub_mod(&fresh, &self.masked, order, &mut ctx)?;
-        let mask = sub_mod(&fresh, &self.mask, order, &mut ctx)?;
-        Some(self.with(masked, mask))
+        let zero = SecretBn::new().ok()?;
+        self.curve.secret(zero).combined(&self.value, modular_sub)
     }
 
     pub(in crate::library::tpm2) fn sub(&self, other: &Self) -> Option<Self> {
-        self.add(&other.neg()?)
-    }
-
-    fn remasked(&self, ctx: &mut BigNumContextRef) -> Option<Self> {
-        checkpoint(Boundary::Remask)?;
-        let fresh = random_mask(self.order())?;
-        let masked = add_mod(&self.masked, &fresh, self.order(), ctx)?;
-        let mask = add_mod(&self.mask, &fresh, self.order(), ctx)?;
-        Some(self.with(masked, mask))
+        (self.curve.index == other.curve.index).then_some(())?;
+        self.combined(&other.value, modular_sub)
     }
 
     pub(in crate::library::tpm2) fn mul(&self, other: &Self) -> Option<Self> {
         (self.curve.index == other.curve.index).then_some(())?;
-        let mut ctx = BigNumContext::new().ok()?;
-        let other = &other.remasked(&mut ctx)?;
-        let order = self.order();
-        let output_mask = random_mask(order)?;
-        let masked_masked = mul_mod(&self.masked, &other.masked, order, &mut ctx)?;
-        let masked_mask = mul_mod(&self.masked, &other.mask, order, &mut ctx)?;
-        let mask_masked = mul_mod(&self.mask, &other.masked, order, &mut ctx)?;
-        let mask_mask = mul_mod(&self.mask, &other.mask, order, &mut ctx)?;
-        let mut sum = add_mod(&output_mask, &masked_masked, order, &mut ctx)?;
-        sum = sub_mod(&sum, &masked_mask, order, &mut ctx)?;
-        sum = sub_mod(&sum, &mask_masked, order, &mut ctx)?;
-        sum = add_mod(&sum, &mask_mask, order, &mut ctx)?;
-        Some(self.with(sum, output_mask))
+        self.combined(&other.value, modular_mul)
     }
 
     pub(in crate::library::tpm2) fn mul_public(&self, factor: &EccPublicScalar) -> Option<Self> {
         (self.curve.index == factor.curve.index).then_some(())?;
-        let mut ctx = BigNumContext::new().ok()?;
-        let masked = mul_mod(&self.masked, &factor.value, self.order(), &mut ctx)?;
-        let mask = mul_mod(&self.mask, &factor.value, self.order(), &mut ctx)?;
-        self.with(masked, mask).refreshed(&mut ctx)
+        self.combined(&factor.value, modular_mul)
     }
 
     pub(in crate::library::tpm2) fn add_public(&self, term: &EccPublicScalar) -> Option<Self> {
         (self.curve.index == term.curve.index).then_some(())?;
-        let mut ctx = BigNumContext::new().ok()?;
-        let order = self.order();
-        let fresh = random_mask(order)?;
-        let partial = add_mod(&self.masked, &fresh, order, &mut ctx)?;
-        let masked = add_mod(&partial, &term.value, order, &mut ctx)?;
-        let mask = add_mod(&self.mask, &fresh, order, &mut ctx)?;
-        Some(self.with(masked, mask))
+        self.combined(&term.value, modular_add)
     }
 
     pub(in crate::library::tpm2) fn invert(&self) -> Option<Self> {
+        if self.value.num_bits() == 0 {
+            return None;
+        }
         let mut ctx = BigNumContext::new().ok()?;
-        let order = self.order();
-        let minus_two = &self.curve.data.order_minus_two;
-        let blind = nonzero_mask(order)?;
-        let blinded = self.blinded_value(&blind, &mut ctx)??;
-        let blinded_inverse = invert_public_width(&blinded, minus_two, order, &mut ctx)?;
-        drop(blinded);
-        let split = random_mask(order)?;
-        let shifted_blind = add_mod(&blind, &split, order, &mut ctx)?;
-        drop(blind);
-        let first = mul_mod(&blinded_inverse, &shifted_blind, order, &mut ctx)?;
-        let second = mul_mod(&blinded_inverse, &split, order, &mut ctx)?;
-        let output_mask = random_mask(order)?;
-        let partial = add_mod(&output_mask, &first, order, &mut ctx)?;
-        let masked = sub_mod(&partial, &second, order, &mut ctx)?;
-        Some(self.with(masked, output_mask))
+        let mut inverse = SecretBn::new().ok()?;
+        checkpoint(Boundary::Exponentiation)?;
+        mod_exp_consttime(
+            &mut inverse,
+            &self.value,
+            &self.curve.data.order_minus_two,
+            self.order(),
+            &mut ctx,
+        )
+        .ok()?;
+        Some(self.curve.secret(inverse))
     }
 
     #[cfg(test)]
@@ -1089,25 +920,14 @@ impl EccScalar {
     }
 
     pub(in crate::library::tpm2) fn checked_is_zero(&self) -> Result<bool, EccBackendError> {
-        let (Some(mut masked), Some(mut mask)) = (
-            exported_bytes(&self.masked, MAX_INTEGER_BYTES),
-            exported_bytes(&self.mask, MAX_INTEGER_BYTES),
-        ) else {
-            return Err(EccBackendError);
-        };
-        let zero = bool::from(masked.ct_eq(&mask));
-        cleanse(&mut masked);
-        cleanse(&mut mask);
-        Ok(zero)
+        Ok(self.value.num_bits() == 0)
     }
 
     pub(in crate::library::tpm2) fn reveal(&self) -> Option<EccPublicScalar> {
-        let mut ctx = BigNumContext::new().ok()?;
-        let mut value = BigNum::new().ok()?;
-        value
-            .mod_sub(&self.masked, &self.mask, self.order(), &mut ctx)
-            .ok()?;
-        Some(self.curve.public(value))
+        let mut bytes = self.value.to_be(self.curve.data.order_bytes).ok()?;
+        let value = BigNum::from_slice(&bytes).ok();
+        cleanse(&mut bytes);
+        Some(self.curve.public(value?))
     }
 
     #[cfg(test)]
@@ -1116,18 +936,15 @@ impl EccScalar {
     }
 
     pub(in crate::library::tpm2) fn export_bytes(&self, length: usize) -> Option<Vec<u8>> {
-        let mut ctx = BigNumContext::new().ok()?;
-        let fresh = self.remasked(&mut ctx)?;
-        let shares = Shares {
-            masked: fresh.masked,
-            mask: fresh.mask,
-        };
-        unmask_to_bytes(&shares, self.order(), length)
+        if length < self.curve.data.order_bytes {
+            return None;
+        }
+        self.value.to_be(length).ok()
     }
 }
 
 impl EccPublicScalar {
-    fn combine(&self, other: &Self, operation: Operation) -> Option<Self> {
+    fn combine(&self, other: &Self, operation: ModularOperation) -> Option<Self> {
         (self.curve.index == other.curve.index).then_some(())?;
         let mut ctx = BigNumContext::new().ok()?;
         let mut value = BigNum::new().ok()?;
@@ -1143,11 +960,11 @@ impl EccPublicScalar {
     }
 
     pub(in crate::library::tpm2) fn add(&self, other: &Self) -> Option<Self> {
-        self.combine(other, |r, a, b, m, ctx| r.mod_add(a, b, m, ctx))
+        self.combine(other, modular_add)
     }
 
     pub(in crate::library::tpm2) fn sub(&self, other: &Self) -> Option<Self> {
-        self.combine(other, |r, a, b, m, ctx| r.mod_sub(a, b, m, ctx))
+        self.combine(other, modular_sub)
     }
 
     pub(in crate::library::tpm2) fn neg(&self) -> Option<Self> {
@@ -1241,6 +1058,7 @@ pub(in crate::library::tpm2) mod reference {
 }
 
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::super::bignum::BigUint;
     use super::*;
@@ -1252,6 +1070,144 @@ mod tests {
 
     fn curve(curve_id: u16) -> EccCurve {
         EccCurve::lookup(curve_id).expect("a compiled curve")
+    }
+
+    fn function_lines(signature: &str) -> core::ops::RangeInclusive<u32> {
+        let source = include_str!("ecc.rs");
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is present"));
+        let mut depth = 0usize;
+        let mut end = source.len();
+        for (index, character) in source[start..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + index;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let line =
+            |offset: usize| u32::try_from(source[..offset].matches('\n').count() + 1).unwrap();
+        line(start)..=line(end)
+    }
+
+    fn cleared_in(cleared: &[(&'static str, u32)], signature: &str) -> usize {
+        let lines = function_lines(signature);
+        cleared
+            .iter()
+            .filter(|(file, line)| file.ends_with("crypto/ossl/ecc.rs") && lines.contains(line))
+            .count()
+    }
+
+    const COORDINATES: &str = "    fn coordinates(&self, point: &EcPointRef";
+    const ECDSA_SIGN: &str = "    pub(in crate::library::tpm2) fn ecdsa_sign(";
+
+    #[test]
+    fn intermediate_coordinates_are_cleared_on_success_and_every_failure() {
+        use super::super::fault::{arm, disarm};
+        use super::super::secret::cleared_secrets;
+        for curve_id in ALL_CURVES {
+            let curve = curve(curve_id);
+            let mut ctx = BigNumContext::new().unwrap();
+            let scalar = curve.scalar_from_u64(0x1234_5678).unwrap();
+            let product = curve.product(None, &scalar, &mut ctx).unwrap();
+            let expected = curve.mul_generator(&scalar).unwrap();
+            let context = format!("curve {curve_id:#06x}");
+            let (affine, cleared) = cleared_secrets(|| curve.affine(product.point(), &mut ctx));
+            assert_eq!(affine.as_ref(), Some(&expected), "{context}");
+            assert_eq!(cleared_in(&cleared, COORDINATES), 2, "{context}: success");
+            let (shared, cleared) =
+                cleared_secrets(|| curve.shared_affine(product.point(), &mut ctx));
+            assert_eq!(shared.as_ref(), Some(&expected), "{context}");
+            assert_eq!(
+                cleared_in(&cleared, COORDINATES),
+                2,
+                "{context}: shared success"
+            );
+            for (skipped, created, stage) in [
+                (0, 1, "after the first coordinate allocation"),
+                (1, 2, "after the coordinate conversion"),
+                (2, 2, "after exporting x"),
+            ] {
+                for shared in [false, true] {
+                    arm(Boundary::Coordinates, skipped);
+                    let (result, cleared) = cleared_secrets(|| {
+                        if shared {
+                            curve.shared_affine(product.point(), &mut ctx)
+                        } else {
+                            curve.affine(product.point(), &mut ctx)
+                        }
+                    });
+                    assert!(disarm(), "{context}: the fault {stage} fired");
+                    assert_eq!(result, None, "{context}: {stage}");
+                    assert_eq!(
+                        cleared_in(&cleared, COORDINATES),
+                        created,
+                        "{context}: every coordinate temporary {stage} is cleared (shared={shared})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ecdsa_failures_after_the_commitment_clear_its_coordinates() {
+        use super::super::fault::{arm, disarm};
+        use super::super::secret::cleared_secrets;
+        for curve_id in ALL_CURVES {
+            let curve = curve(curve_id);
+            let private = curve.scalar_from_u64(0x77).unwrap();
+            let nonce = curve.scalar_from_u64(0x99).unwrap();
+            let digest = [0x5au8; 32];
+            let context = format!("curve {curve_id:#06x}");
+            let (reference, cleared) =
+                cleared_secrets(|| curve.ecdsa_sign(&private, &nonce, &digest));
+            let Some(EcdsaAttempt::Signed { r, s }) = reference else {
+                panic!("{context}: a signature")
+            };
+            assert_eq!(cleared_in(&cleared, COORDINATES), 2, "{context}: success");
+            assert!(
+                cleared_in(&cleared, ECDSA_SIGN) >= 3,
+                "{context}: commitment x, r and the nonce inverse are cleared"
+            );
+            for boundary in [Boundary::Exponentiation, Boundary::Signature] {
+                arm(boundary, 0);
+                let (attempt, cleared) =
+                    cleared_secrets(|| curve.ecdsa_sign(&private, &nonce, &digest));
+                assert!(disarm(), "{context}: {boundary:?} fired");
+                assert!(
+                    attempt.is_none(),
+                    "{context}: {boundary:?} is a backend failure"
+                );
+                assert_eq!(
+                    cleared_in(&cleared, COORDINATES),
+                    2,
+                    "{context}: the commitment coordinates are cleared after {boundary:?}"
+                );
+                assert!(
+                    cleared_in(&cleared, ECDSA_SIGN) >= 2,
+                    "{context}: commitment x and r are cleared after {boundary:?}"
+                );
+            }
+            let Some(EcdsaAttempt::Signed {
+                r: again_r,
+                s: again_s,
+            }) = curve.ecdsa_sign(&private, &nonce, &digest)
+            else {
+                panic!("{context}: a signature after the failures")
+            };
+            assert_eq!(
+                (again_r, again_s),
+                (r, s),
+                "{context}: deterministic output"
+            );
+        }
     }
 
     fn rand(label: &[u8]) -> SeededRand {
@@ -1341,7 +1297,7 @@ mod tests {
     }
 
     #[test]
-    fn masked_import_reduces_every_input_length() {
+    fn scalar_import_reduces_every_input_length() {
         for curve_id in ALL_CURVES {
             let curve = curve(curve_id);
             let n = order(&curve);
@@ -1381,22 +1337,29 @@ mod tests {
     }
 
     #[test]
-    fn shares_are_fresh_and_never_hold_the_value() {
-        let curve = curve(0x0005);
-        let raw = int(0x1234_5678);
-        let first = secret(&curve, &raw);
-        let second = secret(&curve, &raw);
-        assert_eq!(value(&first), value(&second));
-        assert_ne!(first.masked.to_vec(), second.masked.to_vec());
-        assert_ne!(first.mask.to_vec(), second.mask.to_vec());
-        assert_ne!(big(&first.masked.to_vec()), raw);
-        for scalar in [&first, &second] {
-            assert!(scalar.masked.is_const_time() && scalar.mask.is_const_time());
+    fn secret_scalars_keep_the_constant_time_flag() {
+        for curve_id in ALL_CURVES {
+            let curve = curve(curve_id);
+            let raw = int(0x1234_5678);
+            let first = secret(&curve, &raw);
+            let second = secret(&curve, &raw);
+            assert_eq!(value(&first), value(&second));
+            let derived = [
+                first.add(&second).unwrap(),
+                first.sub(&second).unwrap(),
+                first.mul(&second).unwrap(),
+                first.invert().unwrap(),
+                curve.scalar_from_extra_bits(&[0x5a; 40]).unwrap(),
+                curve.zero_scalar().unwrap(),
+            ];
+            for scalar in [&first, &second].into_iter().chain(derived.iter()) {
+                assert!(scalar.value.is_const_time(), "curve {curve_id:#06x}");
+            }
         }
     }
 
     #[test]
-    fn masked_arithmetic_matches_the_reference_formulas() {
+    fn scalar_arithmetic_matches_the_reference_formulas() {
         for curve_id in ALL_CURVES {
             let curve = curve(curve_id);
             let n = order(&curve);
@@ -1561,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn masked_point_multiplication_matches_the_public_multiplication() {
+    fn point_multiplication_matches_the_public_multiplication() {
         for curve_id in ALL_CURVES {
             let curve = curve(curve_id);
             let n = order(&curve);
@@ -1605,71 +1568,26 @@ mod tests {
         }
     }
 
-    fn forced_offset_attempts(
-        curve: &EccCurve,
-        base: &EccAffine,
-        scalar: &EccScalar,
-        offset: Option<&BigUint>,
-    ) -> (Option<EccAffine>, u64) {
-        if let Some(offset) = offset {
-            let bytes = be(offset, curve.order_bytes());
-            FORCED_OFFSET.with(|forced| forced.set(Some(bytes)));
-        }
-        let before = OFFSET_ATTEMPTS.with(core::cell::Cell::get);
-        let result = curve.mul_point_shared(&base.x, &base.y, scalar);
-        FORCED_OFFSET.with(|forced| forced.set(None));
-        if let Err(error) = result {
-            assert_eq!(
-                error,
-                SharedPointError::Infinity,
-                "only infinity fails here"
-            );
-        }
-        let result = result.ok();
-        (result, OFFSET_ATTEMPTS.with(core::cell::Cell::get) - before)
-    }
-
     #[test]
-    fn exceptional_offsets_retry_and_a_shared_point_at_infinity_is_reported() {
-        for curve_id in [0x0003u16, 0x0005] {
+    fn a_shared_point_at_infinity_is_reported() {
+        for curve_id in ALL_CURVES {
             let curve = curve(curve_id);
-            let n = order(&curve);
-            let base_log = int(0x1357);
-            let key = int(0x0246_8ace);
             let base = curve
-                .mul_generator_public(&public(&curve, &base_log))
+                .mul_generator_public(&public(&curve, &int(0x1357)))
                 .unwrap();
-            let shared = key.mod_mul(&base_log, &n).unwrap();
-            let expected = curve
-                .mul_generator_public(&public(&curve, &shared))
-                .unwrap();
-            let scalar = secret(&curve, &key);
-            let negated = n.sub(&shared).unwrap();
-            let (result, attempts) = forced_offset_attempts(&curve, &base, &scalar, Some(&negated));
-            assert_eq!(
-                (result.as_ref(), attempts),
-                (Some(&expected), 2),
-                "R = -S makes T infinite: retry"
-            );
-            let half = negated
-                .mod_mul(&int(2).mod_inverse(&n).unwrap(), &n)
-                .unwrap();
-            let (result, attempts) = forced_offset_attempts(&curve, &base, &scalar, Some(&half));
-            assert_eq!(
-                (result.as_ref(), attempts),
-                (Some(&expected), 2),
-                "S = -2R makes T = -R: retry"
-            );
-            let (result, attempts) = forced_offset_attempts(&curve, &base, &scalar, None);
-            assert_eq!((result.as_ref(), attempts), (Some(&expected), 1));
-            for zero in [curve.zero_scalar().unwrap(), secret(&curve, &n)] {
-                let (result, attempts) = forced_offset_attempts(&curve, &base, &zero, None);
+            for zero in [curve.zero_scalar().unwrap(), secret(&curve, &order(&curve))] {
                 assert_eq!(
-                    (result, attempts),
-                    (None, 1),
-                    "a shared point at infinity is reported"
+                    curve.mul_point_shared(&base.x, &base.y, &zero),
+                    Err(SharedPointError::Infinity),
+                    "curve {curve_id:#06x}"
                 );
             }
+            let n_minus_one = secret(&curve, &order(&curve).sub_u64(1).unwrap());
+            let negated = curve
+                .mul_point_shared(&base.x, &base.y, &n_minus_one)
+                .unwrap();
+            assert_eq!(negated.x, base.x, "[n-1]P = -P");
+            assert_ne!(negated.y, base.y);
         }
     }
 
@@ -1685,12 +1603,7 @@ mod tests {
             let expected = curve
                 .mul_generator_public(&curve.public_scalar_from_u64(0x55 * 0x0bad_f00d).unwrap())
                 .unwrap();
-            for boundary in [
-                Boundary::PointOperation,
-                Boundary::MaskedProduct,
-                Boundary::MaskedInverse,
-                Boundary::Unmask,
-            ] {
+            for boundary in [Boundary::PointValidation, Boundary::PointOperation] {
                 let before = fired();
                 arm(boundary, 0);
                 let failed = curve.mul_point_shared(&base.x, &base.y, &scalar);
@@ -1716,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_points_with_a_zero_x_coordinate_never_reach_openssl() {
+    fn shared_points_with_a_zero_x_coordinate_keep_their_full_width() {
         for curve_id in [0x0003u16, 0x0005] {
             let curve = curve(curve_id);
             let width = curve.field_bytes();
@@ -1749,72 +1662,12 @@ mod tests {
                     (&zero_point.x, &zero_point.y),
                 )
                 .unwrap();
-            let control_base = curve
-                .mul_generator_public(&curve.public_scalar_from_u64(0x0bad_cafe).unwrap())
-                .unwrap();
-            let control = curve
-                .mul_add(
-                    &zero,
-                    None,
-                    &public(&curve, &key),
-                    (&control_base.x, &control_base.y),
-                )
-                .unwrap();
-            assert!(control.x.iter().any(|&byte| byte != 0));
-            let runs = 128;
-            let mut report = Vec::new();
-            for (label, base, expected) in [
-                ("zero x", &zero_base, &zero_point),
-                ("control", &control_base, &control),
-            ] {
-                let native = curve.point(&base.x, &base.y, &mut ctx).unwrap();
-                let mut zero_coordinates = 0u32;
-                let mut short_top_words = 0u32;
-                let mut distinct = std::collections::HashSet::new();
-                for _ in 0..runs {
-                    let scalar = secret(&curve, &key);
-                    let (sum, offset) = curve
-                        .offset_points(&native, &scalar, &mut ctx)
-                        .unwrap()
-                        .unwrap();
-                    for coordinate in [&sum.x, &sum.y, &offset.x, &offset.y] {
-                        zero_coordinates += u32::from(coordinate.iter().all(|&byte| byte == 0));
-                        let top = width - (width - 1) / 8 * 8;
-                        short_top_words +=
-                            u32::from(coordinate[..top].iter().all(|&byte| byte == 0));
-                    }
-                    distinct.insert(sum.x.clone());
-                    assert_eq!(
-                        curve.difference(&sum, &offset, &mut ctx).as_ref(),
-                        Some(expected),
-                        "curve {curve_id:#06x} {label}"
-                    );
-                    assert_eq!(
-                        curve
-                            .mul_point_shared(&base.x, &base.y, &scalar)
-                            .ok()
-                            .as_ref(),
-                        Some(expected)
-                    );
-                }
+            for _ in 0..8 {
+                let scalar = secret(&curve, &key);
                 assert_eq!(
-                    distinct.len(),
-                    runs,
-                    "{label}: every run uses a fresh offset"
-                );
-                report.push((label, zero_coordinates, short_top_words));
-            }
-            eprintln!(
-                "curve {curve_id:#06x}: coordinates extracted by OpenSSL over {runs} runs x 4 (label, zero, zero top word): {report:?}"
-            );
-            for (label, zero_coordinates, short_top_words) in &report {
-                assert_eq!(
-                    *zero_coordinates, 0,
-                    "{label}: OpenSSL never extracts a zero coordinate"
-                );
-                assert!(
-                    *short_top_words <= 8,
-                    "{label}: {short_top_words} zero top words"
+                    curve.mul_point_shared(&zero_base.x, &zero_base.y, &scalar),
+                    Ok(zero_point.clone()),
+                    "curve {curve_id:#06x}"
                 );
             }
         }
@@ -1900,12 +1753,12 @@ mod tests {
         assert_eq!(
             (again_r, again_s),
             (r, s),
-            "fresh blinding leaves the signature unchanged"
+            "signing is deterministic in the nonce"
         );
     }
 
     #[test]
-    fn blinded_ecdsa_matches_the_tpm_formula() {
+    fn ecdsa_matches_the_tpm_formula() {
         for curve_id in ALL_CURVES {
             let curve = curve(curve_id);
             let mut generator = rand(b"ecdsa");
@@ -2006,55 +1859,6 @@ mod tests {
                 "curve {curve_id:#06x}: OpenSSL's SM2 key manager only accepts the SM2 curve"
             );
         }
-    }
-
-    #[test]
-    fn operands_given_to_openssl_do_not_reveal_a_short_p521_secret() {
-        let curve = curve(0x0005);
-        let boundary = 512;
-        let short = int(1).shl(boundary - 1).unwrap().add_u64(0x1234).unwrap();
-        let long = order(&curve).sub_u64(0x55).unwrap();
-        assert!(short.bit_len() <= boundary && long.bit_len() > boundary);
-        let samples = 3000;
-        let mut events = Vec::new();
-        for value in [&short, &long] {
-            let mut short_masked = 0u32;
-            let mut short_masks = 0u32;
-            let mut short_blinded = 0u32;
-            for _ in 0..samples {
-                let scalar = secret(&curve, value);
-                let width = |bits: i32| usize::try_from(bits).unwrap() <= boundary;
-                short_masked += u32::from(width(scalar.masked.num_bits()));
-                short_masks += u32::from(width(scalar.mask.num_bits()));
-                let mut ctx = BigNumContext::new().unwrap();
-                let blind = nonzero_mask(curve.order_ref()).unwrap();
-                let blinded = scalar.blinded_value(&blind, &mut ctx).unwrap().unwrap();
-                short_blinded += u32::from(width(blinded.num_bits()));
-            }
-            events.push((short_masked, short_masks, short_blinded));
-        }
-        let expected = samples as f64 / 512.0;
-        eprintln!(
-            "P-521 zero-top-word events in {samples} samples (masked share, mask, Fermat base): short secret {:?}, long secret {:?}",
-            events[0], events[1]
-        );
-        for (label, (masked, masks, blinded)) in ["short", "long"].iter().zip(&events) {
-            for (name, count) in [
-                ("masked share", masked),
-                ("mask", masks),
-                ("Fermat base", blinded),
-            ] {
-                assert!(
-                    f64::from(*count) < expected * 4.0 + 8.0,
-                    "{label} secret: {name} had a short top word {count} times in {samples}"
-                );
-            }
-        }
-        assert!(
-            events.iter().map(|(masked, _, _)| masked).sum::<u32>() > 0
-                || events.iter().map(|(_, masks, _)| masks).sum::<u32>() > 0,
-            "short random operands still occur at their natural rate"
-        );
     }
 
     #[test]

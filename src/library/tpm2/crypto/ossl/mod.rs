@@ -10,7 +10,6 @@ mod bignum;
 mod ecc;
 mod fault;
 mod ffi;
-mod masked;
 mod rsa;
 mod secret;
 
@@ -33,7 +32,8 @@ pub(in crate::library::tpm2) use rsa::{
 };
 #[cfg(test)]
 pub(in crate::library::tpm2) use rsa::{
-    crt_words_be, prepared_key_count, review_keys, validated_factor_sets,
+    crt_words_be, forget_validated_factor_sets, prepared_key_count, review_keys,
+    validated_factor_sets,
 };
 pub(in crate::library::tpm2) use secret::{SecretBytes, wipe};
 
@@ -111,6 +111,8 @@ mod tests {
                     relative.as_str(),
                     "library/tpm2/crypto_outputs.rs"
                         | "library/tpm2/memcheck.rs"
+                        | "library/tpm2/crypto_outputs/findings.rs"
+                        | "library/tpm2/command/crypto/ecc/memcheck_flows.rs"
                         | "library/tpm2/crypto/work.rs"
                         | "library/tpm2/ecc_scalar_encoding.rs"
                 )
@@ -145,6 +147,256 @@ mod tests {
             }
         }
         panic!("{signature} ends")
+    }
+
+    const MODULAR_CALLS: [&str; 9] = [
+        "mod_inverse(",
+        "mod_mul(",
+        "mod_sqr(",
+        "mod_add(",
+        "mod_sub(",
+        "mod_exp(",
+        "modular_add(",
+        "modular_sub(",
+        "modular_mul(",
+    ];
+
+    fn call_arguments(source: &str, open: usize) -> &str {
+        let mut depth = 0usize;
+        for (index, character) in source[open..].char_indices() {
+            match character {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[open..open + index];
+                    }
+                }
+                _ => {}
+            }
+        }
+        &source[open..]
+    }
+
+    fn project_point_arithmetic(source: &str) -> Vec<String> {
+        let mut hits = Vec::new();
+        for formula in [
+            "fn difference(",
+            "fn offset_points(",
+            "fn masked_point(",
+            "fn chord(",
+            "fn point_add(",
+            "fn point_double(",
+        ] {
+            if source.contains(formula) {
+                hits.push(format!("project point formula `{formula}`"));
+            }
+        }
+        for dependency in ["masked::", "masked_import(", "unmask_to_bytes(", "Shares"] {
+            if source.contains(dependency) {
+                hits.push(format!("masking dependency `{dependency}`"));
+            }
+        }
+        for call in MODULAR_CALLS {
+            for (position, _) in source.match_indices(call) {
+                let arguments = call_arguments(source, position + call.len() - 1);
+                if arguments.contains("field") {
+                    hits.push(format!("field arithmetic `{call}{})`", &arguments[1..]));
+                }
+            }
+        }
+        hits
+    }
+
+    fn project_masking(sources: &[(String, String)]) -> Vec<String> {
+        let mut hits = Vec::new();
+        for (relative, source) in sources {
+            if relative == "library/tpm2/crypto/ossl/masked.rs" {
+                hits.push(format!("{relative}: the masking module"));
+            }
+            for needle in [
+                "struct Shares",
+                "Shares {",
+                "masked_import(",
+                "unmask_to_bytes(",
+                "fn remasked(",
+                "masked_mul(",
+                "random_mask(",
+                "nonzero_mask(",
+                "hensel_inverse(",
+                "fermat_coefficient(",
+                "consttime_swap(",
+            ] {
+                if source.contains(needle) {
+                    hits.push(format!("{relative}: `{needle}`"));
+                }
+            }
+        }
+        hits
+    }
+
+    const NATIVE_SHARED_POINT: &str = "
+    fn checked_point(&self, x: &[u8], y: &[u8], ctx: &mut BigNumContextRef) -> Option<EcPoint> {
+        x_reduced.nnmod(&x, &self.data.field, ctx).ok()?;
+        point.set_affine_coordinates_gfp(self.group(), &x_reduced, &y_reduced, ctx).ok()?;
+    }
+    pub fn mul_point_shared(&self, x: &[u8], y: &[u8], scalar: &EccScalar) -> Option<EccAffine> {
+        let product = self.product(Some(&base), scalar, &mut ctx)?;
+        self.shared_affine(product.point(), &mut ctx)
+    }
+    fn combined(&self, other: &BigNumRef) -> Option<Self> {
+        modular_mul(&mut value, &self.value, other, self.order(), &mut ctx).ok()?;
+    }
+";
+
+    const REINTRODUCED_DIFFERENCE: &str = "
+    pub fn mul_point_shared(&self, x: &[u8], y: &[u8], scalar: &EccScalar) -> Option<EccAffine> {
+        let (sum, offset) = self.sum_and_offset(&base, scalar)?;
+        let run = sub_mod(&offset.x, &sum.x, &self.data.field, ctx)?;
+        let mut slope = SecretBn::new().ok()?;
+        slope.mod_inverse(&run, &self.data.field, ctx).ok()?;
+        slope.mod_mul(&slope, &rise, &self.data.field, ctx).ok()?;
+    }
+";
+
+    #[test]
+    fn f18_detector_accepts_a_native_adapter_and_rejects_project_point_arithmetic() {
+        assert_eq!(
+            project_point_arithmetic(NATIVE_SHARED_POINT),
+            Vec::<String>::new(),
+            "an adapter that delegates multiplication and coordinate export to OpenSSL"
+        );
+        let hits = project_point_arithmetic(REINTRODUCED_DIFFERENCE);
+        assert!(
+            hits.iter()
+                .any(|hit| hit.contains("mod_inverse(&run, &self.data.field"))
+                && hits.iter().any(|hit| hit.contains("mod_mul(&slope")),
+            "{hits:?}"
+        );
+        let renamed = REINTRODUCED_DIFFERENCE.replace("mul_point_shared", "shared_secret_point");
+        assert_eq!(
+            project_point_arithmetic(&renamed).len(),
+            hits.len(),
+            "the detector follows the arithmetic, not the function name"
+        );
+        let masked = "use super::masked::{Shares, masked_import};";
+        assert!(project_point_arithmetic(masked).len() >= 2);
+        let fake = vec![(
+            "library/tpm2/crypto/ossl/ecc.rs".to_string(),
+            "fn scalar() { let shares = masked_import(bytes, order, ctx); }".to_string(),
+        )];
+        assert_eq!(project_masking(&fake).len(), 1);
+    }
+
+    #[test]
+    fn f18_production_ecc_has_no_project_point_arithmetic() {
+        let sources = production_sources();
+        for (relative, source) in &sources {
+            if relative.starts_with("library/tpm2/crypto/") || relative == "library/tpm2/ecc.rs" {
+                let hits = project_point_arithmetic(source);
+                assert!(
+                    hits.is_empty(),
+                    "{relative} computes points through project formulas: {hits:?}"
+                );
+            }
+        }
+        let ecc = source(&sources, "library/tpm2/crypto/ossl/ecc.rs");
+        let shared = function_body(ecc, "pub(in crate::library::tpm2) fn mul_point_shared(");
+        assert!(
+            shared.contains(".product(") && shared.contains(".shared_affine("),
+            "the shared point is an OpenSSL product exported by OpenSSL"
+        );
+        let product = function_body(ecc, "fn product(");
+        assert!(product.contains(".mul_generator2(") && product.contains(".mul2("));
+    }
+
+    fn raw_sources() -> Vec<(String, String)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = Vec::new();
+        visit(&root, &root, &mut sources);
+        sources
+    }
+
+    fn instrumentation_calls(relative: &str, source: &str) -> Vec<String> {
+        let mut hits = Vec::new();
+        for needle in [
+            "memcheck::public(",
+            "memcheck::publish(",
+            "memcheck::secret(",
+        ] {
+            for (position, _) in source.match_indices(needle) {
+                let line_start = source[..position].rfind('\n').map_or(0, |index| index + 1);
+                if source[line_start..position].matches('"').count() % 2 == 1 {
+                    continue;
+                }
+                let line = source[..position].matches('\n').count() + 1;
+                hits.push(format!("{relative}:{line} {needle}"));
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn only_the_dispatcher_releases_and_only_provenance_sources_mark() {
+        let test_only = [
+            "library/tpm2/memcheck.rs",
+            "library/tpm2/crypto_outputs.rs",
+            "library/tpm2/crypto_outputs/findings.rs",
+            "library/tpm2/command/crypto/ecc/memcheck_flows.rs",
+        ];
+        let mut releases = Vec::new();
+        let mut markings = Vec::new();
+        for (relative, source) in raw_sources() {
+            if test_only.contains(&relative.as_str()) {
+                continue;
+            }
+            let library = source
+                .find("#[cfg(test)]\nmod tests {")
+                .map_or(source.as_str(), |test_module| &source[..test_module]);
+            for hit in instrumentation_calls(&relative, library) {
+                if hit.contains("memcheck::secret(") {
+                    markings.push(hit);
+                } else {
+                    releases.push(hit);
+                }
+            }
+        }
+        assert!(
+            releases
+                .iter()
+                .all(|hit| hit.starts_with("library/tpm2/command/core/dispatcher.rs:")),
+            "library code releases secret-derived values before the enclosing command succeeds: {releases:?}"
+        );
+        let sources: Vec<&str> = markings
+            .iter()
+            .map(|hit| hit.split(':').next().unwrap_or_default())
+            .collect();
+        for forbidden in [
+            "library/tpm2/crypto/ossl/secret.rs",
+            "library/tpm2/crypto/ossl/bignum.rs",
+            "library/tpm2/crypto/ossl/ecc.rs",
+            "library/tpm2/crypto/ossl/rsa.rs",
+        ] {
+            assert!(
+                !sources.contains(&forbidden),
+                "{forbidden} marks by type instead of at the provenance source: {markings:?}"
+            );
+        }
+        let flagged = instrumentation_calls(
+            "synthetic.rs",
+            "fn affine() {\n    crate::library::tpm2::memcheck::public(&x);\n}",
+        );
+        assert_eq!(flagged, ["synthetic.rs:2 memcheck::public("]);
+    }
+
+    #[test]
+    fn f19_production_keeps_no_project_masks_or_shares() {
+        let hits = project_masking(&production_sources());
+        assert!(
+            hits.is_empty(),
+            "production still splits secrets into masks and shares:\n{}",
+            hits.join("\n")
+        );
     }
 
     #[test]
@@ -298,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn masked_scalars_are_unmasked_only_for_public_outputs_and_key_export() {
+    fn scalars_are_revealed_only_for_public_outputs_and_key_export() {
         let sources = production_sources();
         let count = |name: &str, needle: &str| source(&sources, name).matches(needle).count();
         let mut reveals: Vec<(String, usize)> = sources
@@ -324,21 +576,41 @@ mod tests {
             "only key generation exports d"
         );
         assert_eq!(count("library/tpm2/crypto/ecc.rs", ".export_bytes("), 1);
-        let ecc = source(&sources, "library/tpm2/crypto/ossl/ecc.rs");
-        let scalar_impl = &ecc[ecc.find("impl EccScalar {").expect("the masked scalar")..];
-        let scalar_impl = &scalar_impl[..scalar_impl
-            .find("impl EccPublicScalar {")
-            .expect("the public scalar")];
-        for forbidden in ["mod_inverse(", "checked_mul(", "div_rem(", ".nnmod("] {
-            assert!(
-                !scalar_impl.contains(forbidden),
-                "masked scalar arithmetic calls {forbidden}"
-            );
+    }
+
+    #[test]
+    fn no_masking_layer_or_project_point_formula_remains_in_production() {
+        let sources = production_sources();
+        assert!(
+            !sources
+                .iter()
+                .any(|(relative, _)| relative == "library/tpm2/crypto/ossl/masked.rs"),
+            "the masking module is gone"
+        );
+        for (relative, source) in &sources {
+            for needle in [
+                "masked_import",
+                "Shares",
+                "remask",
+                "unmask",
+                "hensel",
+                "fn difference(",
+                "offset_points",
+                "slope",
+                "BN_priv_rand",
+                "BN_consttime_swap",
+                "Jprojective",
+            ] {
+                assert!(
+                    !source.contains(needle),
+                    "{relative} still contains `{needle}`"
+                );
+            }
         }
     }
 
     #[test]
-    fn secret_shared_points_and_exports_use_the_constant_width_unmasking() {
+    fn shared_points_come_from_the_native_point_multiplication() {
         let sources = production_sources();
         let secret = source(&sources, "library/tpm2/secret.rs");
         assert_eq!(secret.matches(".mul_point_shared(").count(), 2);
@@ -354,37 +626,30 @@ mod tests {
             let body = &backend[backend.find(name).expect("the method")..];
             &body[..body.find("\n    }\n").expect("the method end")]
         };
-        for name in ["fn difference(", "fn export_bytes("] {
-            let body = method(name);
-            assert!(
-                body.contains("unmask_to_bytes("),
-                "{name} unmasks at constant width"
-            );
-            for forbidden in ["affine_coordinates", ".to_be(", "to_vec(", "fn affine("] {
-                assert!(!body.contains(forbidden), "{name} calls {forbidden}");
-            }
-        }
-        let offsets = method("fn offset_points(");
-        assert!(
-            !offsets.contains("masked_part.point(), mask_part.point()"),
-            "the two share products are never added to each other"
-        );
         let shared = method("pub(in crate::library::tpm2) fn mul_point_shared(");
-        assert!(shared.contains("offset_points(") && shared.contains("difference("));
-        assert!(!backend.contains("Jprojective") && !backend.contains("jacobian"));
+        assert!(shared.contains(".product(") && shared.contains("shared_affine("));
+        let product = method("fn product(");
+        assert!(product.contains(".mul_generator2(") && product.contains(".mul2("));
+        for caller in ["fn affine(", "fn shared_affine("] {
+            assert!(
+                method(caller).contains(".coordinates("),
+                "{caller} uses the clearing conversion"
+            );
+        }
+        let conversion = method("fn coordinates(");
+        assert!(conversion.contains(".affine_coordinates_gfp("));
+        assert_eq!(
+            conversion.matches("SecretBn::new()").count(),
+            2,
+            "both coordinate temporaries are cleared on drop"
+        );
+        assert!(!conversion.contains("BigNum::new()"));
     }
 
     #[test]
-    fn rsa_preparation_validates_before_deriving_d_and_never_sets_up_secret_moduli() {
+    fn rsa_preparation_validates_before_deriving_the_private_components() {
         let sources = production_sources();
         let rsa = source(&sources, "library/tpm2/crypto/ossl/rsa.rs");
-        for removed in [
-            "trial_round_trip",
-            "exponent_round_trips",
-            "from_private_components",
-        ] {
-            assert!(!rsa.contains(removed), "rsa.rs still contains {removed}");
-        }
         let prepare = &rsa[rsa.find("fn prepare(").expect("the preparation")..];
         let prepare = &prepare[..prepare.find("\n}\n").expect("the function end")];
         let product = prepare
@@ -393,64 +658,20 @@ mod tests {
         let primes = prepare
             .find("factors_are_prime(")
             .expect("the primality check");
-        let exponent = prepare.find("private_exponent(").expect("d");
+        let components = prepare
+            .find("private_components(")
+            .expect("d and the CRT values");
         assert!(
-            product < primes && primes < exponent,
-            "validation precedes d"
+            product < primes && primes < components,
+            "validation precedes the private components"
         );
         assert!(
-            prepare.contains("RsaPrivateKeyBuilder::new("),
-            "the native key has no CRT values"
+            prepare.contains(".set_factors(") && prepare.contains(".set_crt_params("),
+            "the native key is a complete CRT key"
         );
         let compute = &rsa[rsa.find("fn compute(").expect("CRT computation")..];
         let compute = &compute[..compute.find("\n    }\n").expect("the method end")];
-        for forbidden in [".ucmp(", "mod_inverse(", "blinded_exponent_inverse("] {
-            assert!(
-                !compute.contains(forbidden),
-                "CrtCandidate::compute calls {forbidden}"
-            );
-        }
-        let function = |text: &'static str, name: &str| -> &'static str {
-            let body = &text[text.find(name).expect("the function")..];
-            &body[..body
-                .find("\n}\n")
-                .or_else(|| body.find("\n    }\n"))
-                .expect("the end")]
-        };
-        let rsa_static: &'static str = Box::leak(rsa.to_string().into_boxed_str());
-        for name in [
-            "fn crt_coefficient(",
-            "fn fermat_coefficient(",
-            "pub(in crate::library::tpm2) fn modulus(",
-        ] {
-            assert!(
-                !function(rsa_static, name).contains("checked_mul("),
-                "{name} multiplies plain secret factors"
-            );
-        }
-        for name in ["fn fermat_coefficient(", "fn crt_coefficient("] {
-            let body = function(rsa_static, name);
-            assert!(
-                !body.contains(".is_none()") && !body.contains("unwrap_or"),
-                "{name} must not turn a backend failure into a mathematical result"
-            );
-        }
-        let masked: &'static str = Box::leak(
-            source(&sources, "library/tpm2/crypto/ossl/masked.rs")
-                .to_string()
-                .into_boxed_str(),
-        );
-        let widen = function(masked, "fn widen_with(");
-        assert!(
-            !widen.contains("&mut nothing")
-                && widen.contains("consttime_swap(wrapped, &mut chosen"),
-            "widen selects between two masked candidates instead of building a plain correction"
-        );
-        let ffi = source(&sources, "library/tpm2/crypto/ossl/ffi.rs");
-        assert!(
-            !ffi.contains("BN_MONT_CTX"),
-            "no Montgomery context on a caller-supplied modulus"
-        );
+        assert!(compute.contains("crt_exponent(") && compute.contains("crt_coefficient("));
     }
 
     #[test]
@@ -460,7 +681,8 @@ mod tests {
         assert!(!ecc.contains("fn satisfies_equation("));
         let checked = function_body(ecc, "fn checked_point(");
         assert!(
-            checked.contains(".set_affine_coordinates_gfp(") && checked.contains("only_off_curve(")
+            checked.contains(".set_affine_coordinates_gfp(")
+                && checked.contains("only_reason(&error, ERR_LIB_EC, EC_R_POINT_IS_NOT_ON_CURVE)")
         );
         for forbidden in ["mod_sqr(", "mod_mul(", "components_gfp("] {
             assert!(
