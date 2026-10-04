@@ -1,6 +1,7 @@
 /target
 /build
 Cargo.lock
+!/Cargo.lock
 __pycache__/
 *.py[cod]
 .pytest_cache/
