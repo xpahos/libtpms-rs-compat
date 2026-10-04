@@ -1,0 +1,1 @@
+#define TPMS_MINI_LIBRARY 1

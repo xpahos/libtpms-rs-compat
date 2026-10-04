@@ -1,0 +1,12 @@
+srcdir = @srcdir@
+VPATH = @srcdir@
+CC = @CC@
+CFLAGS = @CFLAGS@
+CPPFLAGS = @CPPFLAGS@
+LDFLAGS = @LDFLAGS@
+
+all: src/.libs/libtpms.so
+
+src/.libs/libtpms.so: $(srcdir)/src/tpm_library.c
+	mkdir -p src/.libs
+	$(CC) $(CPPFLAGS) -I$(srcdir)/include $(CFLAGS) -fPIC -shared -o $@ $(srcdir)/src/tpm_library.c $(LDFLAGS)
