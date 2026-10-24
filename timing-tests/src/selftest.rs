@@ -113,6 +113,7 @@ pub const DETERMINISTIC_CHECKS: &[(&str, Check)] = &[
 
 pub fn fixture_config(seed: u64, feedback: bool) -> SearchConfig {
     SearchConfig {
+        disable_known_case_skips: false,
         scenario: Scenario::ControlPositive,
         seed,
         max_evaluations: 240,
@@ -611,6 +612,7 @@ pub fn explicit_worker_failures(dir: &Path) -> Result<String, String> {
 
 fn small_verify_config() -> VerifyConfig {
     VerifyConfig {
+        disable_known_case_skips: false,
         budget: 4000,
         batch: 500,
         repeats: 2,
@@ -752,6 +754,7 @@ pub struct LiveParams {
 
 pub fn live_search_config(scenario: Scenario, params: &LiveParams, feedback: bool) -> SearchConfig {
     SearchConfig {
+        disable_known_case_skips: false,
         scenario,
         seed: params.seed,
         max_evaluations: params.search_evaluations,

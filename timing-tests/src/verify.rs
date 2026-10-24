@@ -15,6 +15,8 @@ use crate::worker::{BackendSpec, DudectOutcome, DudectPlan, DudectStatus, Limits
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyConfig {
+    #[serde(default, alias = "include_known_cases")]
+    pub disable_known_case_skips: bool,
     pub budget: usize,
     pub batch: usize,
     pub repeats: usize,
@@ -54,6 +56,7 @@ pub fn run_verdict(status: &DudectStatus) -> RunVerdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BackendVerdict {
+    SkippedKnownIssue,
     ReproducibleSignal,
     NoSignalWithinBudget,
     Inconclusive,
@@ -79,6 +82,7 @@ pub fn backend_verdict(runs: &[RunVerdict], required_repeats: usize) -> BackendV
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Category {
+    KnownIssueSkipped,
     ReproducibleSignalBoth,
     ReproducibleSignalRustOnly,
     ReproducibleSignalReferenceOnly,
@@ -92,6 +96,7 @@ pub enum Category {
 impl Category {
     pub fn describe(self) -> &'static str {
         match self {
+            Self::KnownIssueSkipped => "SKIP known timing issue (see per-backend results)",
             Self::ReproducibleSignalBoth => "reproducible timing signal in both backends",
             Self::ReproducibleSignalRustOnly => "reproducible signal in the Rust library only",
             Self::ReproducibleSignalReferenceOnly => {
@@ -118,6 +123,21 @@ pub fn categorize(verdicts: &BTreeMap<String, BackendVerdict>, functional_ok: bo
         || verdicts.is_empty()
     {
         return Category::InfrastructureOrFunctionalFailure;
+    }
+    if verdicts
+        .values()
+        .any(|v| *v == BackendVerdict::SkippedKnownIssue)
+    {
+        let measured = verdicts
+            .iter()
+            .filter(|(_, v)| **v != BackendVerdict::SkippedKnownIssue)
+            .map(|(backend, verdict)| (backend.clone(), *verdict))
+            .collect::<BTreeMap<_, _>>();
+        return if measured.is_empty() {
+            Category::KnownIssueSkipped
+        } else {
+            categorize(&measured, functional_ok)
+        };
     }
     let rust = verdicts.get("rust").copied();
     let reference = verdicts.get("reference").copied();
@@ -196,6 +216,8 @@ impl RunRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionalCheck {
+    #[serde(default)]
+    pub worker_info: crate::worker::WorkerInfo,
     pub backend: String,
     pub ok: bool,
     pub detail: String,
@@ -225,11 +247,12 @@ impl VerificationOutcome {
     }
 }
 
-pub const OUTCOME_CONTRACT: &str = "completed (exit 0): every requested candidate was verified and each one is a reproducible signal or no signal within a sufficient dudect budget; incomplete (exit 3): any candidate is inconclusive, has insufficient measurements, a time limit, an interruption, missing or mixed repeats, or not all candidates were processed; failed (exit 4): any functional or infrastructure failure, which takes precedence over incompleteness. A reproducible timing signal is a completed experiment, not a failure.";
+pub const OUTCOME_CONTRACT: &str = "completed (exit 0): every requested candidate was processed; each backend has a definite timing result or an explicit known-case SKIP (not a no-signal result); incomplete (exit 3): any candidate is inconclusive, has insufficient measurements, a time limit, an interruption, missing or mixed repeats, or not all candidates were processed; failed (exit 4): any functional or infrastructure failure, which takes precedence over incompleteness. A reproducible timing signal is a completed experiment, not a failure.";
 
 pub fn candidate_outcome(category: Category) -> VerificationOutcome {
     match category {
-        Category::ReproducibleSignalBoth
+        Category::KnownIssueSkipped
+        | Category::ReproducibleSignalBoth
         | Category::ReproducibleSignalRustOnly
         | Category::ReproducibleSignalReferenceOnly
         | Category::NoSignalDetectedWithinBudget
@@ -275,7 +298,9 @@ pub fn aggregate_outcome(
         reasons.push("no candidate was available to verify".into());
     }
     let detail = if reasons.is_empty() {
-        format!("all {requested} candidates verified with a definite result")
+        format!(
+            "all {requested} candidates processed with a definite result or explicit known-case SKIP"
+        )
     } else {
         reasons.join("; ")
     };
@@ -284,6 +309,8 @@ pub fn aggregate_outcome(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateResult {
+    #[serde(default)]
+    pub skipped: BTreeMap<String, crate::known_issues::KnownIssue>,
     #[serde(default)]
     pub artifact: String,
     #[serde(default)]
@@ -325,6 +352,11 @@ pub fn classify(result: &mut CandidateResult, repeats: usize) {
         .into_iter()
         .map(|(backend, runs)| (backend, backend_verdict(&runs, repeats)))
         .collect();
+    for backend in result.skipped.keys() {
+        result
+            .verdicts
+            .insert(backend.clone(), BackendVerdict::SkippedKnownIssue);
+    }
     result.category = categorize(&result.verdicts, functional_ok(result));
     result.outcome = candidate_outcome(result.category);
 }
@@ -469,6 +501,7 @@ pub fn save_candidates(
 }
 
 pub const DIAGNOSTIC_SEED_ORDER: &[&str] = &[
+    "order-minus-1-vs-small-1",
     "small-1-vs-random",
     "leading-zero-9-bytes-vs-full-width",
     "order-minus-1-vs-random",
@@ -549,9 +582,11 @@ pub fn functional_check(
 ) -> FunctionalCheck {
     let label = backend.label();
     let prepared = PreparedPair::prepare(scenario, pair);
+    let mut worker_info = crate::worker::WorkerInfo::new();
     let result = (|| -> Result<[Vec<u8>; 2], String> {
         let mut measurer = WorkerMeasurer::start(worker, backend.clone(), None, stderr, limits)
             .map_err(|e| e.to_string())?;
+        worker_info = measurer.info();
         let loaded = measurer
             .load(&prepared, LoadOrder::ClassAFirst)
             .map_err(|e| e.to_string())?;
@@ -565,6 +600,7 @@ pub fn functional_check(
                 .filter(|c| responses[*c] != prepared.classes[*c].expected_response)
                 .collect();
             FunctionalCheck {
+                worker_info,
                 backend: label,
                 ok: mismatched.is_empty(),
                 detail: if mismatched.is_empty() {
@@ -578,6 +614,7 @@ pub fn functional_check(
             }
         }
         Err(detail) => FunctionalCheck {
+            worker_info,
             backend: label,
             ok: false,
             detail,
@@ -623,6 +660,7 @@ pub fn verify_candidate(
     crate::artifacts::create_new_dir(dir).map_err(|e| e.to_string())?;
     let prepared = PreparedPair::prepare(candidate.scenario, pair);
     let mut functional = Vec::new();
+    let mut skipped = BTreeMap::new();
     for target in targets {
         let check = functional_check(
             worker,
@@ -638,6 +676,24 @@ pub fn verify_candidate(
             target.spec.label(),
             if check.ok { "ok" } else { "FAILED" }
         ));
+        if check.ok
+            && !config.disable_known_case_skips
+            && let Some(issue) = crate::known_issues::timing_skip(
+                candidate.scenario,
+                pair,
+                &target.spec.label(),
+                &check.worker_info,
+            )
+        {
+            progress(&format!(
+                "SKIP {} {} {}: {}",
+                artifact.name,
+                target.spec.label(),
+                issue.id,
+                issue.reason
+            ));
+            skipped.insert(target.spec.label(), issue);
+        }
         functional.push(check);
     }
     let cross = if functional.len() > 1 && functional.iter().all(|f| f.ok) {
@@ -650,6 +706,7 @@ pub fn verify_candidate(
         None
     };
     let mut result = CandidateResult {
+        skipped,
         artifact: artifact.name.to_string(),
         content_sha256: candidate.content_sha256()?,
         candidate_file: artifact.file.to_path_buf(),
@@ -677,6 +734,9 @@ pub fn verify_candidate(
             let order = LoadOrder::from_bit(repeat % 2 == 1);
             for target in targets {
                 let label = target.spec.label();
+                if result.skipped.contains_key(&label) {
+                    continue;
+                }
                 let run_dir = dir.join(&label).join(format!("run-{repeat}"));
                 let plan = dudect_plan(&target.spec, &prepared, order, config);
                 let wall = Duration::from_secs_f64(config.time_limit_s + 120.0);
@@ -728,6 +788,7 @@ mod tests {
 
     fn result_with(runs: &[(&str, RunVerdict)], functional_ok: bool) -> CandidateResult {
         let mut result = CandidateResult {
+            skipped: BTreeMap::new(),
             artifact: "x".into(),
             content_sha256: String::new(),
             candidate_file: PathBuf::new(),
@@ -741,6 +802,7 @@ mod tests {
             functional: ["rust", "reference"]
                 .iter()
                 .map(|b| FunctionalCheck {
+                    worker_info: Default::default(),
                     backend: b.to_string(),
                     ok: functional_ok,
                     detail: String::new(),
@@ -923,6 +985,7 @@ mod tests {
         }];
         let prepared = PreparedPair::prepare(candidate.scenario, candidate.pair().unwrap());
         let config = VerifyConfig {
+            disable_known_case_skips: false,
             budget: 20_000,
             batch: 1000,
             repeats: 2,

@@ -40,6 +40,8 @@ use crate::stats::{BatchStats, Score, StatConfig, batch_stats, first_batch_passe
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchConfig {
+    #[serde(default, alias = "include_known_cases")]
+    pub disable_known_case_skips: bool,
     pub scenario: Scenario,
     pub seed: u64,
     pub max_evaluations: usize,
@@ -75,6 +77,8 @@ pub enum Origin {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Observation {
+    #[serde(default)]
+    pub skipped: Option<crate::known_issues::KnownIssue>,
     pub evaluation: usize,
     pub origin: Origin,
     pub input_hex: String,
@@ -201,6 +205,26 @@ impl<M: Measurer> TimingExecutor<M> {
         observation.load_order = Some(order);
         let loaded = self.measurer.load(prepared, order)?;
         observation.handles = loaded.handles;
+        if !self.config.disable_known_case_skips {
+            observation.skipped = crate::known_issues::timing_skip(
+                prepared.scenario,
+                prepared.pair,
+                &self.measurer.label(),
+                &self.measurer.info(),
+            );
+            if observation.skipped.is_some() {
+                let responses = self.measurer.execute_once(&loaded)?;
+                for (class, response) in responses.iter().enumerate() {
+                    if *response != prepared.classes[class].expected_response {
+                        return Err(MeasureFailure::Functional {
+                            class: Some(class),
+                            detail: "known-case functional response mismatch".into(),
+                        });
+                    }
+                }
+                return Ok(());
+            }
+        }
         let batches = 1 + self.config.stats.confirm_batches;
         for index in 0..batches {
             let seed = self.rng.next_u64();
@@ -296,6 +320,7 @@ where
         let started = Instant::now();
         let bytes = input.mutator_bytes();
         let mut observation = Observation {
+            skipped: None,
             evaluation,
             origin,
             input_hex: hex::encode(bytes),
@@ -414,6 +439,9 @@ pub fn decide(
     }
     if let Some(invalid) = &observation.invalid {
         return reject(format!("invalid scalar pair: {invalid}"));
+    }
+    if let Some(skip) = &observation.skipped {
+        return reject(format!("SKIP {}: {}", skip.id, skip.reason));
     }
     let is_seed = matches!(observation.origin, Origin::Seed { .. });
     if !enabled {
@@ -1028,6 +1056,8 @@ pub fn seeded_candidate(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CampaignSummary {
+    #[serde(default)]
+    pub known_skips: Vec<HistoryEntry>,
     pub backend: String,
     pub scenario: Scenario,
     pub evaluations: usize,
@@ -1314,6 +1344,12 @@ pub fn run_campaign<M: Measurer>(
             Some(acc.map_or(v, |a| a.max(v)))
         });
     let summary = CampaignSummary {
+        known_skips: log
+            .history
+            .iter()
+            .filter(|h| h.observation.skipped.is_some() && h.observation.failure.is_none())
+            .cloned()
+            .collect(),
         backend: label,
         scenario: config.scenario,
         evaluations: log.evaluations,

@@ -2,6 +2,7 @@ pub mod artifacts;
 pub mod cli;
 pub mod fake_worker;
 pub mod identity;
+pub mod known_issues;
 pub mod measure;
 pub mod report;
 pub mod run;

@@ -62,7 +62,7 @@ Example inside the x86_64 container (timing-tests/docker/run.sh):
 
 Exit status (same contract in run.json, results.json, summary.md and report.json):
   0  completed: all requested work finished; every verified candidate is a reproducible
-     signal or shows no signal within a sufficient dudect budget
+     signal, shows no signal within a sufficient dudect budget, or explicitly SKIPs a known case
   3  incomplete: inconclusive or mixed repeats, missing repeats, insufficient measurements,
      time limits, interruptions, unprocessed candidates, or a search whose campaign deadline
      cut a worker operation short
@@ -106,6 +106,12 @@ struct Cli {
     operation_timeout_s: f64,
     #[arg(long, global = true, hide = true)]
     worker_executable: Option<PathBuf>,
+    #[arg(
+        long,
+        global = true,
+        help = "Disable known-case skips and measure these cases too"
+    )]
+    disable_known_case_skips: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -424,6 +430,7 @@ struct ReportArgs {
 }
 
 struct Context {
+    disable_known_case_skips: bool,
     repo: PathBuf,
     work: PathBuf,
     worker_override: Option<PathBuf>,
@@ -446,6 +453,7 @@ impl Context {
             repo,
             work,
             worker_override: cli.worker_executable.clone(),
+            disable_known_case_skips: cli.disable_known_case_skips,
             limits,
         }
     }
@@ -678,6 +686,7 @@ fn cmd_self_test(ctx: &Context, args: &SelfTestArgs) -> Result<Outcome, String> 
         search_evaluations: args.search_evaluations,
         samples_per_class: args.samples_per_class,
         verify: VerifyConfig {
+            disable_known_case_skips: ctx.disable_known_case_skips,
             budget: args.verify_budget,
             batch: args.verify_batch,
             repeats: args.verify_repeats,
@@ -773,6 +782,7 @@ fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
     };
     let worker = ctx.worker(&args.backends.libtpms_include)?;
     let config = SearchConfig {
+        disable_known_case_skips: ctx.disable_known_case_skips,
         scenario: args.scenario,
         seed: args.seed,
         max_evaluations: args.max_evaluations,
@@ -939,11 +949,11 @@ fn search_evaluations(runs: &[PathBuf]) -> BTreeMap<String, usize> {
 
 fn checkpoint(results: &mut VerifyResults, requested: usize) {
     let (derived, detail) = aggregate_outcome(&results.results, requested, None);
-    results.all_candidates_processed = results.candidates_verified == requested;
+    results.all_candidates_processed = results.results.len() == requested;
     results.outcome = derived.worst(Outcome::Incomplete);
     results.outcome_detail = format!(
-        "checkpoint: {} of {requested} candidates verified, run not finished; {detail}",
-        results.candidates_verified
+        "checkpoint: {} of {requested} candidates processed, run not finished; {detail}",
+        results.results.len()
     );
     results.stop_reason = "in progress".into();
 }
@@ -1013,6 +1023,7 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
     };
     let worker = ctx.worker(&args.backends.libtpms_include)?;
     let config = VerifyConfig {
+        disable_known_case_skips: ctx.disable_known_case_skips,
         budget: args.budget,
         batch: args.batch,
         repeats: args.repeats,
@@ -1128,8 +1139,10 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
                     .runs
                     .iter()
                     .any(|r| r.status == crate::worker::DudectStatus::Interrupted);
+                if !result.runs.is_empty() {
+                    results.candidates_verified += 1;
+                }
                 results.results.push(result);
-                results.candidates_verified += 1;
                 checkpoint(&mut results, candidates.len());
                 run.write_json("results.json", &results)
                     .map_err(|e| e.to_string())?;
@@ -1147,7 +1160,7 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
             }
         }
     }
-    results.all_candidates_processed = results.candidates_verified == candidates.len();
+    results.all_candidates_processed = results.results.len() == candidates.len();
     let (outcome, detail) = aggregate_outcome(&results.results, candidates.len(), fatal.as_deref());
     results.outcome = outcome;
     results.outcome_detail = detail.clone();
@@ -1197,6 +1210,7 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
         "config.json",
         &json!({
             "candidate_file": args.candidate,
+            "disable_known_case_skips": ctx.disable_known_case_skips,
             "samples_per_class": args.samples_per_class,
             "batches": args.batches,
             "warmup": args.warmup,
@@ -1243,9 +1257,14 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
             let responses = measurer.execute_once(&loaded).map_err(|e| e.to_string())?;
             let functional_ok =
                 (0..2).all(|c| responses[c] == prepared.classes[c].expected_response);
+            let skipped = if functional_ok && !ctx.disable_known_case_skips {
+                crate::known_issues::timing_skip(candidate.scenario, pair, &label, &measurer.info())
+            } else {
+                None
+            };
             let mut batches = Vec::new();
             let mut rng = crate::scenario::SplitMix::new(args.seed);
-            for index in 0..args.batches {
+            for index in 0..if skipped.is_some() { 0 } else { args.batches } {
                 let raw = measurer
                     .measure(
                         &loaded,
@@ -1265,6 +1284,7 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
                 "functional_ok": functional_ok,
                 "responses": responses.iter().map(hex::encode).collect::<Vec<_>>(),
                 "batches": batches,
+                "skipped": skipped,
             }))
         })();
         match outcome {
@@ -1282,6 +1302,13 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
     let t_summary: Vec<String> = per_backend
         .iter()
         .map(|(label, v)| {
+            if let Some(issue) = v.get("skipped").filter(|v| !v.is_null()) {
+                return format!(
+                    "{label}: SKIP {}: {}",
+                    issue["id"].as_str().unwrap_or("?"),
+                    issue["reason"].as_str().unwrap_or("?")
+                );
+            }
             let ts: Vec<String> = v
                 .get("batches")
                 .and_then(|b| b.as_array())

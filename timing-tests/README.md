@@ -4,7 +4,7 @@ Timing-fuzzing prototype for `TPM2_ECDH_ZGen` on NIST P-521, driven through the 
 libtpms ABI of two shared libraries: this repository's Rust implementation and the pinned C
 libtpms reference (the `libtpms` submodule commit). LibAFL searches for scalar pairs whose
 execution time differs, and the original upstream dudect independently re-measures every
-selected pair in fresh worker processes.
+selected pair in fresh worker processes, except explicitly registered known timing cases.
 
 ## One command (native Linux x86_64)
 
@@ -27,6 +27,40 @@ runs, in order:
 No library paths, environment variables or run-directory names need to be supplied. Each
 invocation writes into its own new evidence directory and refuses to reuse an existing,
 non-empty one.
+
+## Known timing cases
+
+`search`, `verify` and the launcher's `replay` report **SKIP** for registered timing
+cases. The registry is in `src/known_issues.rs`; regression coverage is in
+`tests/known_issues.rs`. Skipped cases retain functional checks, their reason and
+backend identity. They are neither discoveries nor evidence of no timing signal.
+Search seeds remain in the corpus so mutations around them are still explored.
+
+The current exclusion is `openssl-p521-one-vs-order-minus-one`: P-521 scalars
+`1` and `n−1`, in either order, on the pinned C `reference` backend reporting
+`OpenSSL 3.0.13 30 Jan 2024`. VM measurements and a branch trace on 2026-10-24
+confirmed the explicit-curve `ossl_ec_GFp_simple_ladder_post` shortcut at
+`s->Z == 0` for `n−1`, bypassing field inversion. This is a timing difference,
+not a wrong ECDH result or evidence of an unknown-key recovery attack.
+
+The exclusion does not apply to the Rust backend, controls, neighboring scalars,
+BoringSSL, missing backend identity or other OpenSSL versions. The reference label
+means the repository's pinned C implementation with explicit curves; use the
+following override when substituting a modified reference implementation or
+rechecking a fix:
+
+```sh
+python3 timing-tests/run.py --disable-known-case-skips
+# The same flag is accepted by the Rust CLI's search, verify and replay commands.
+```
+
+The pair is also the first default boundary diagnostic in `verify`. Reports show
+`skipped-known-issue` per backend and **SKIP** with the reason in Markdown. A skip
+on the reference backend does not suppress Rust measurements or their verdict.
+Exit 0 means all requested work was processed, allowing explicit skips; any
+functional/infrastructure failure or incomplete unskipped verification still wins.
+`candidates_verified` counts candidates with timing runs; `results` includes all
+processed candidates, including those skipped on every backend.
 
 ## Prerequisites (Ubuntu 24.04, x86_64)
 
@@ -209,7 +243,7 @@ stage of `launcher-summary.json`.
 
 | Exit | Meaning |
 |---|---|
-| 0 | completed: every stage ran and every verified candidate has a definite result |
+| 0 | completed: every requested stage finished; timing checks have definite results or explicit known-case SKIPs |
 | 3 | incomplete: some verification was inconclusive (mixed or missing repeats, insufficient measurements, time limits) or the run was interrupted |
 | 4 | failed: a prerequisite, build, control, functional or infrastructure check failed; failure wins over incomplete |
 | 2 | invalid launcher arguments |

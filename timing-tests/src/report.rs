@@ -161,7 +161,8 @@ pub fn reconcile_verify(
                     outcome,
                     Some(format!(
                         "run never finished (state in-progress); checkpoint with {} of {} candidates reported as {outcome:?}",
-                        results.candidates_verified, results.candidates_requested
+                        results.results.len(),
+                        results.candidates_requested
                     )),
                 ))
             }
@@ -487,6 +488,22 @@ pub fn render_markdown(report: &Report) -> String {
                 m.stop_reason
             );
         }
+        let _ = writeln!(out, "\n### Known timing cases\n");
+        for s in &report.searches {
+            for entry in &s.summary.known_skips {
+                if let Some(issue) = &entry.observation.skipped {
+                    let _ = writeln!(
+                        out,
+                        "- **SKIP** {} / {} / evaluation {}: `{}` — {}",
+                        s.run_id,
+                        s.summary.backend,
+                        entry.observation.evaluation,
+                        issue.id,
+                        issue.reason
+                    );
+                }
+            }
+        }
     }
     for v in &report.verifications {
         let r = &v.results;
@@ -513,7 +530,7 @@ pub fn render_markdown(report: &Report) -> String {
         );
         let _ = writeln!(
             out,
-            "Candidates: {} loaded from search ({} adaptive), {} verified, {} seeded diagnostics{}. Search evaluations examined: {}. Stop: {}.\n",
+            "Candidates: {} loaded from search ({} adaptive), {} timing-verified, {} seeded diagnostics{}. Search evaluations examined: {}. Stop: {}.\n",
             r.candidates_loaded,
             r.adaptive_candidates,
             r.candidates_verified,
@@ -528,6 +545,12 @@ pub fn render_markdown(report: &Report) -> String {
                 .collect::<Vec<_>>()
                 .join(", "),
             r.stop_reason
+        );
+        let skipped = r.results.iter().map(|c| c.skipped.len()).sum::<usize>();
+        let _ = writeln!(
+            out,
+            "Processed {} candidates; **SKIP** on {skipped} backend/candidate checks. Skipped timings are not no-signal evidence.\n",
+            r.results.len()
         );
         let _ = writeln!(
             out,
@@ -552,7 +575,10 @@ pub fn render_markdown(report: &Report) -> String {
             let verdicts = c
                 .verdicts
                 .iter()
-                .map(|(b, v)| format!("{b}: {v:?}"))
+                .map(|(b, v)| match c.skipped.get(b) {
+                    Some(issue) => format!("{b}: **SKIP** `{}` — {}", issue.id, issue.reason),
+                    None => format!("{b}: {v:?}"),
+                })
                 .collect::<Vec<_>>()
                 .join("<br>");
             let functional = if crate::verify::functional_ok(c) {
@@ -588,6 +614,7 @@ pub fn render_markdown(report: &Report) -> String {
         let _ = writeln!(out, "\n## Outcome counts\n");
     }
     for category in [
+        Category::KnownIssueSkipped,
         Category::ReproducibleSignalBoth,
         Category::ReproducibleSignalRustOnly,
         Category::ReproducibleSignalReferenceOnly,

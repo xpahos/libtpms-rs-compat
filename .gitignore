@@ -1,4 +1,5 @@
 /target
+/timing-tests/target
 /build
 Cargo.lock
 !/Cargo.lock

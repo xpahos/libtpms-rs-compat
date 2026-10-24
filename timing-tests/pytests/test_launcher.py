@@ -94,6 +94,15 @@ class PipelineOutcomes(LauncherCase):
         run_dirs = [d for s in summary["stages"] for d in s["run_dirs"]]
         self.assertEqual(sorted(report["inputs"]), sorted(run_dirs))
 
+    def test_disable_known_case_skips_reaches_search_verify_and_replay(self):
+        self.scenario(verify={"exit": 0, "candidates": 1})
+        code, output, summary = self.launch("--disable-known-case-skips")
+        self.assertEqual(code, 0, output)
+        self.assertTrue(summary["parameters"]["disable_known_case_skips"])
+        stages = self.stages(summary)
+        for name in ["search-rust", "search-reference", "verify", "replay-01"]:
+            self.assertIn("--disable-known-case-skips", stages[name]["commands"][0]["argv"])
+
     def test_build_failure_stops_dependent_stages(self):
         self.scenario(build_fail="reference-library")
         code, output, summary = self.launch()

@@ -133,6 +133,7 @@ def build_parser():
         ),
     )
     add = parser.add_argument
+    add("--disable-known-case-skips", action="store_true", help="disable known-case skips and measure these cases too")
     add("--seed", type=non_negative_int, default=DEFAULTS["seed"], help="campaign seed for searches, controls and boundary diagnostics (default 42)")
     add("--max-evaluations", type=positive_int, default=DEFAULTS["max_evaluations"], help="maximum timed search evaluations per backend (default 400)")
     add("--search-duration-s", type=positive_int, default=DEFAULTS["search_duration_s"], help="maximum search duration per backend in seconds (default 1800)")
@@ -1330,6 +1331,8 @@ def tool_argv(launcher, *args):
         "--operation-timeout-s",
         launcher.args.operation_timeout_s,
     ]
+    if launcher.args.disable_known_case_skips:
+        common += ["--disable-known-case-skips"]
     tail = list(args)
     if launcher.fixture is None and include.is_dir():
         tail += ["--libtpms-include", include]
@@ -1393,6 +1396,7 @@ def pipeline(launcher):
     params = {
         "seed": args.seed,
         "max_evaluations": args.max_evaluations,
+        "disable_known_case_skips": args.disable_known_case_skips,
         "search_duration_s": args.search_duration_s,
         "search_samples": args.search_samples,
         "verify_budget": args.verify_budget,
