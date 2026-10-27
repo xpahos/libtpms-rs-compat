@@ -51,7 +51,8 @@ class LauncherCase(unittest.TestCase):
 
     def launch(self, *extra, run_py=RUN_PY, out=None):
         out = out or self.out
-        argv = [sys.executable, str(run_py), "--fixture", str(self.fixture), "--output-dir", str(out), *SMALL, *extra]
+        selection = [] if any(arg.split("=")[0] in ("--scenario", "--area", "--campaign") for arg in extra) else ["--scenario", "ecdh-p521"]
+        argv = [sys.executable, str(run_py), "--fixture", str(self.fixture), "--output-dir", str(out), *SMALL, *selection, *extra]
         result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
         summary_path = out / "launcher-summary.json"
         summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
@@ -76,14 +77,28 @@ class PipelineOutcomes(LauncherCase):
         self.assertEqual(summary["aggregate_outcome"], "completed")
         stages = self.stages(summary)
         expected = ["preflight", "build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test",
-                    "search-rust", "search-reference", "verify", "replay-01", "replay-02", "replay-03", "report"]
+                    "check", "search-rust", "search-reference", "verify", "replay-01", "replay-02", "replay-03", "report"]
         self.assertEqual([s["name"] for s in summary["stages"]], expected)
         self.assertTrue(all(stages[n]["status"] == "completed" for n in expected))
         self.assertEqual(summary["rust_report_overall_outcome"], "completed")
         self.assertTrue(summary["rust_report_consistent"])
         self.assertTrue(summary["exploratory"])
-        self.assertTrue(Path(summary["report"]["markdown"]).is_file())
+        rust_build = summary["artifacts"]["rust_library"]["build_configuration"]
+        self.assertEqual(rust_build["features"], ["tpm2", "timing-test-hooks"])
+        reference = stages["build-reference-library"]
+        stamp = json.loads((Path(reference["cache_entry"]) / "build-stamp.json").read_text())
+        self.assertEqual(stamp["fingerprint"]["source_features"], ["timing-test-hooks"])
+        self.assertEqual(set(stamp["fingerprint"]["timing_test_sources"]), {
+            "timing-tests/drbg_reference.py", "timing-tests/c/drbg_hook.c",
+        })
+        self.assertEqual(summary["artifacts"]["reference_library"]["build_fingerprint"], stamp["key"])
+        environment = json.loads((self.out / "environment.json").read_text())
+        self.assertEqual(environment["timing_test_hooks"]["symbol"], "TPMS_TIMING_DRBG_v1")
+        self.assertTrue(Path(summary["report"]["json"]).is_file())
         self.assertIn("overall outcome: COMPLETED", output)
+        # No generated Markdown anywhere in the evidence tree.
+        offenders = [str(p) for p in self.out.rglob("*.md")]
+        self.assertEqual(offenders, [], f"generated Markdown: {offenders}")
         self.assertIn("measurements marked exploratory", output)
         for stage in summary["stages"]:
             self.assertTrue(Path(stage["log"]).is_file(), stage["name"])
@@ -93,6 +108,42 @@ class PipelineOutcomes(LauncherCase):
         report = json.loads(Path(summary["report"]["json"]).read_text())
         run_dirs = [d for s in summary["stages"] for d in s["run_dirs"]]
         self.assertEqual(sorted(report["inputs"]), sorted(run_dirs))
+
+    def test_single_scenario_check_failure_skips_timing_stages(self):
+        self.scenario(check={"exit": 4}, check_failures=["ecdh-p521"])
+        code, output, summary = self.launch()
+        self.assertEqual(code, 4, output)
+        self.assert_skipped(summary, ["search-rust", "search-reference", "verify", "replay"], "functional check")
+        self.assertIn("report", self.stages(summary))
+
+    def test_campaign_runs_every_implemented_scenario_with_scenario_stage_names(self):
+        self.scenario(verify={"exit": 0, "candidates": 2})
+        code, output, summary = self.launch("--campaign", "--replay-limit", "1")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(summary["scenarios"], ["ecdh-p256", "mac-hmac-sha256", "drbg-getrandom"])
+        stages = self.stages(summary)
+        check_argv = stages["check"]["commands"][0]["argv"]
+        self.assertEqual([check_argv[i + 1] for i, a in enumerate(check_argv) if a == "--scenario"], summary["scenarios"])
+        for scenario in summary["scenarios"]:
+            for name in ("search-rust", "search-reference", "verify", "replay"):
+                key = f"{name}-{scenario}-01" if name == "replay" else f"{name}-{scenario}"
+                self.assertEqual(stages[key]["status"], "completed", key)
+            argv = stages[f"verify-{scenario}"]["commands"][0]["argv"]
+            self.assertEqual(argv[argv.index("--scenario") + 1], scenario)
+            self.assertNotIn(f"replay-{scenario}-02", stages)
+        self.assertNotIn("search-rust-control-positive", stages)
+
+    def test_campaign_area_selection_and_failures_stay_with_their_scenario(self):
+        self.scenario(**{"check_failures": ["mac-hmac-sha256"], "check": {"exit": 4},
+                         "search-reference-drbg-getrandom": {"exit": 4}, "verify": {"exit": 0, "candidates": 1}})
+        code, output, summary = self.launch("--area", "mac", "--area", "random", "--area", "ecdh")
+        self.assertEqual(code, 4, output)
+        stages = self.stages(summary)
+        self.assert_skipped(summary, ["search-rust-mac-hmac-sha256", "verify-mac-hmac-sha256"], "functional check of this scenario failed")
+        self.assert_skipped(summary, ["verify-drbg-getrandom", "replay-drbg-getrandom"], "adaptive search of this scenario failed")
+        self.assertEqual(stages["verify-ecdh-p256"]["status"], "completed")
+        self.assertEqual(stages["replay-ecdh-p256-01"]["status"], "completed")
+        self.assertIn("report", stages)
 
     def test_disable_known_case_skips_reaches_search_verify_and_replay(self):
         self.scenario(verify={"exit": 0, "candidates": 1})
@@ -153,6 +204,15 @@ class PipelineOutcomes(LauncherCase):
         verify_argv = stages["verify"]["commands"][0]["argv"]
         searched = [verify_argv[i + 1] for i, a in enumerate(verify_argv) if a == "--search-run"]
         self.assertEqual(searched, [stages["search-reference"]["run_dir"]])
+
+    def test_every_run_directory_reaches_the_report_including_failures(self):
+        self.scenario(**{"search-rust": {"exit": 4}, "verify": {"exit": 0, "candidates": 1}})
+        code, output, summary = self.launch()
+        self.assertEqual(code, 4, output)
+        stages = self.stages(summary)
+        report_argv = stages["report"]["commands"][0]["argv"]
+        for name in ("self-test", "check", "search-rust"):
+            self.assertIn(stages[name]["run_dir"], report_argv, name)
 
     def test_report_failure_is_a_failure_without_a_claimed_report(self):
         self.scenario(report={"exit": 4})
@@ -229,20 +289,43 @@ class Association(LauncherCase):
         repo = self.tmp / "repo with spaces"
         (repo / "timing-tests").mkdir(parents=True)
         shutil.copy(RUN_PY, repo / "timing-tests" / "run.py")
+        shutil.copy(HERE.parent / "drbg_reference.py", repo / "timing-tests" / "drbg_reference.py")
+        (repo / "timing-tests" / "c").mkdir()
+        shutil.copy(HERE.parent / "c" / "drbg_hook.c", repo / "timing-tests" / "c" / "drbg_hook.c")
         self.scenario()
         out = self.tmp / "out dir" / "evidence one"
-        argv = [sys.executable, str(repo / "timing-tests" / "run.py"), "--fixture", str(self.fixture), "--output-dir", str(out), *SMALL]
+        argv = [sys.executable, str(repo / "timing-tests" / "run.py"), "--fixture", str(self.fixture), "--output-dir", str(out), *SMALL, "--scenario", "ecdh-p521"]
         result = subprocess.run(argv, cwd=str(self.tmp), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout)
         summary = json.loads((out / "launcher-summary.json").read_text())
         self.assertEqual(summary["repository"], str(repo.resolve()))
-        self.assertTrue(Path(summary["report"]["markdown"]).is_file())
+        self.assertTrue(Path(summary["report"]["json"]).is_file())
+        offenders = [str(p) for p in self.out.rglob("*.md")]
+        self.assertEqual(offenders, [], f"generated Markdown: {offenders}")
 
 
 class Arguments(LauncherCase):
     def run_args(self, *extra):
         argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *extra]
         return subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+
+    def test_no_arguments_explain_selection_without_starting_work(self):
+        script = self.tmp / "repo" / "timing-tests" / "run.py"
+        script.parent.mkdir(parents=True)
+        shutil.copy2(RUN_PY, script)
+        result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        for example in ["--scenario ecdh-p521", "--area rsa", "--campaign"]:
+            self.assertIn(example, result.stderr)
+        self.assertIn("does not cover all cryptography", result.stderr)
+        self.assertIn("many hours", result.stderr)
+        self.assertFalse((script.parent.parent / "target").exists())
+
+    def test_budget_options_do_not_replace_explicit_selection(self):
+        result = self.run_args(*SMALL, "--seed", "7")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("Choose what to test", result.stdout)
+        self.assertFalse(self.out.exists())
 
     def test_invalid_arguments_exit_2_before_work(self):
         for extra, needle in [
@@ -270,10 +353,12 @@ class Arguments(LauncherCase):
                        "--cpu", "--output-dir"]:
             self.assertIn(option, result.stdout)
         self.assertNotIn("--fixture", result.stdout)
+        self.assertNotIn("default ecdh-p521", result.stdout)
+        self.assertIn("Choose what to test", result.stdout)
 
     @unittest.skipIf(sys.platform.startswith("linux") and platform.machine() == "x86_64", "native platform")
     def test_unsupported_platform_fails_actionably_before_building(self):
-        argv = [sys.executable, str(RUN_PY), "--output-dir", str(self.out), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--output-dir", str(self.out), *SMALL, "--scenario", "ecdh-p521"]
         result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
         self.assertEqual(result.returncode, 4, result.stdout)
         self.assertIn("native Linux x86_64 only", result.stdout)
@@ -298,7 +383,7 @@ class InternalErrors(LauncherCase):
             "launcher.build_stage_tool = boom\n"
             "sys.exit(launcher.main(sys.argv[1:]))\n"
         )
-        argv = [sys.executable, str(driver), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL]
+        argv = [sys.executable, str(driver), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL, "--scenario", "ecdh-p521"]
         result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
         self.assertEqual(result.returncode, 4, result.stdout)
         self.assertNotIn("Traceback", result.stdout)
@@ -308,7 +393,7 @@ class InternalErrors(LauncherCase):
         self.assert_skipped(summary, ["self-test", "verify"], "internal error")
         stages = self.stages(summary)
         self.assertEqual(stages["build-reference-library"]["status"], "completed")
-        self.assertEqual(stages["build-rust-library"]["commands"][0]["env"]["CARGO_TARGET_DIR"].endswith("rust-lib-target"), True)
+        self.assertEqual(stages["build-rust-library"]["commands"][0]["env"]["CARGO_TARGET_DIR"].endswith("rust-lib-timing-hooks-target"), True)
 
 
 def secrets_token():
@@ -352,7 +437,7 @@ class SharedCache(Finalized):
 
     def start(self, fixture, out, plan, env=None):
         (fixture / "scenario.json").write_text(json.dumps(plan))
-        argv = [sys.executable, str(RUN_PY), "--fixture", str(fixture), "--output-dir", str(out), "--build-cache", str(self.cache), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--fixture", str(fixture), "--output-dir", str(out), "--build-cache", str(self.cache), *SMALL, "--scenario", "ecdh-p521"]
         return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
 
     def finish(self, process, out):
@@ -378,7 +463,7 @@ class SharedCache(Finalized):
         code_b, output_b, summary_b = self.finish(run_b, out_b)
         self.assertEqual(code_b, 0, output_b)
         self.assertEqual(self.stages(summary_b)["build-reference-library"]["cache"], "rebuilt (library hash differs from its stamp)")
-        self.assertIn("build B", (self.cache / "rust-lib-target" / "release" / "libtpms.so").read_text())
+        self.assertIn("build B", (self.cache / "rust-lib-timing-hooks-target" / "release" / "libtpms.so").read_text())
         self.assertIn("build B", (self.cache / "cargo" / "release" / "tpms-timing-tests").read_text())
         self.assertIn("build B", cached_library.read_text())
         (self.fixture / "resume-artifacts-selected").write_text("go")
@@ -470,7 +555,7 @@ class CacheIdentity(Finalized):
             env["PATH"] = os.pathsep.join([*[str(p) for p in path_prefix], env["PATH"]])
         env.update({k: str(v) for k, v in env_overrides.items()})
         (self.fixture / "scenario.json").write_text(json.dumps({}))
-        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(out), "--build-cache", str(self.cache), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(out), "--build-cache", str(self.cache), *SMALL, "--scenario", "ecdh-p521"]
         result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300, env=env)
         self.assertEqual(result.returncode, expect, result.stdout)
         summary = json.loads((out / "launcher-summary.json").read_text())
@@ -728,7 +813,7 @@ class ReportFinalization(Finalized):
 
     def test_interrupting_an_active_report_command_cleans_up(self):
         self.scenario(hang="report")
-        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL, "--scenario", "ecdh-p521"]
         launcher = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         wait_for(lambda: (self.fixture / "hang.json").exists(), "the report command to block", launcher)
         pids = json.loads((self.fixture / "hang.json").read_text())
@@ -796,7 +881,7 @@ class SignalAfterCompletion(Finalized):
 
     def test_cancelled_search_is_incomplete_although_its_process_exits_nonzero(self):
         self.scenario(hang="search-rust")
-        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL, "--scenario", "ecdh-p521"]
         launcher = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         wait_for(lambda: (self.fixture / "hang.json").exists(), "the search to block", launcher)
         pids = json.loads((self.fixture / "hang.json").read_text())
@@ -930,7 +1015,7 @@ class CompilerExecution(Finalized):
         for name in ("cc-probe-rust-library.json", "cc-probe-timing-tool.json", "cc-probe-worker.json"):
             (self.fixture / name).unlink(missing_ok=True)
         self.scenario(reference_source="mini-libtpms", compile_probe=True)
-        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(out), "--build-cache", str(self.cache), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(out), "--build-cache", str(self.cache), *SMALL, "--scenario", "ecdh-p521"]
         result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600, env=env)
         summary = json.loads((out / "launcher-summary.json").read_text())
         stage = self.stages(summary)["build-reference-library"]
@@ -1014,7 +1099,7 @@ class CompilerExecution(Finalized):
 class Interruption(LauncherCase):
     def test_sigint_stops_children_and_preserves_partial_evidence(self):
         self.scenario(hang="verify")
-        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL, "--scenario", "ecdh-p521"]
         launcher = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         marker = self.fixture / "hang.json"
         deadline = time.monotonic() + 120
@@ -1044,7 +1129,7 @@ class Interruption(LauncherCase):
 
     def test_interruption_after_a_failure_stays_failed(self):
         self.scenario(**{"search-reference": {"exit": 4}}, hang="report")
-        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL]
+        argv = [sys.executable, str(RUN_PY), "--fixture", str(self.fixture), "--output-dir", str(self.out), *SMALL, "--scenario", "ecdh-p521"]
         launcher = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         marker = self.fixture / "hang.json"
         deadline = time.monotonic() + 120

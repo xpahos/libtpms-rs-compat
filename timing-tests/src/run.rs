@@ -25,6 +25,8 @@ pub struct RunInfo {
     pub finished_utc: Option<String>,
     pub detail: Option<String>,
     pub argv: Vec<String>,
+    #[serde(default)]
+    pub scenarios: Vec<String>,
 }
 
 pub fn utc_now() -> String {
@@ -89,6 +91,7 @@ impl Run {
                 started_utc: started,
                 finished_utc: None,
                 detail: None,
+                scenarios: Vec::new(),
                 argv: std::env::args().collect(),
             },
         };
@@ -101,6 +104,11 @@ impl Run {
             self.dir.join("run.json"),
             serde_json::to_vec_pretty(&self.info).unwrap(),
         )
+    }
+
+    pub fn set_scenarios(&mut self, scenarios: &[String]) -> std::io::Result<()> {
+        self.info.scenarios = scenarios.to_vec();
+        self.write_info()
     }
 
     pub fn write_json<T: Serialize>(&self, name: &str, value: &T) -> std::io::Result<()> {

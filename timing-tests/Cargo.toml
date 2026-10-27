@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.93.1"
 publish = false
-description = "Timing-fuzzing prototype for libtpms ECDH_ZGen with LibAFL search and upstream dudect verification"
+description = "Timing-fuzzing for libtpms cryptographic commands with LibAFL search and upstream dudect verification"
 license-file = "../LICENSE"
 build = "build.rs"
 
@@ -28,6 +28,14 @@ serde_json = "=1.0.151"
 sha2 = "=0.10.9"
 hex = "=0.4.3"
 libc = "=0.2.190"
+num-bigint = "=0.4.6"
+num-traits = "=0.2.19"
+num-integer = "=0.1.46"
+aes = "=0.8.4"
+camellia = "=0.1.0"
+des = "=0.8.1"
+hmac = "=0.12.1"
+sha1 = "0.10"
 
 [profile.release]
 debug = 1

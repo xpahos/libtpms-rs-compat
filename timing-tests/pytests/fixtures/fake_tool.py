@@ -54,9 +54,16 @@ def hang(key):
 
 def main():
     args = sys.argv[1:]
-    commands = [a for a in args if a in ("self-test", "search", "verify", "replay", "report")]
+    commands = [a for a in args if a in ("self-test", "search", "verify", "replay", "report", "check", "list-scenarios")]
     command = commands[0]
     plan = scenario()
+    if command == "list-scenarios":
+        catalog = plan.get("catalog", [["control-positive", "control"], ["ecdh-p256", "ecdh"], ["mac-hmac-sha256", "mac"], ["drbg-getrandom", "random"]])
+        areas = option(args, "--area")
+        for name, area in catalog:
+            if not areas or area in areas:
+                print(f"{name}\t{area}\timplemented")
+        return 0
     if command == "report":
         if plan.get("hang") == "report":
             hang("report")
@@ -86,7 +93,10 @@ def main():
         elif spec.get("malformed") == "list":
             text = json.dumps([body])
         (out / "report.json").write_text(text)
-        (out / "report.md").write_text(f"# fake report\n\noverall {overall}\n")
+        # The production reporting contract: plain-text summary on stdout,
+        # structured JSON on disk, and never a generated Markdown file.
+        print(f"fake report written to {out} (report.json)")
+        print(f"Overall outcome across all runs: {body['overall_outcome']}.")
         return 0
     if plan.get("compile_probe") and command == "self-test" and "CC" in os.environ:
         result = subprocess.run([os.environ["CC"], "-c", str(HERE / "cc_probe.c"), "-o", os.devnull], capture_output=True, text=True)
@@ -95,8 +105,11 @@ def main():
             print(f"worker compile with CC failed: {result.stderr}", file=sys.stderr)
             return 4
     key = command
+    scenario_name = (option(args, "--scenario") or [None])[0]
     if command == "search":
         key = f"search-{option(args, '--backend')[0]}"
+    if scenario_name and f"{key}-{scenario_name}" in plan:
+        key = f"{key}-{scenario_name}"
     spec = dict(plan.get(key, {}))
     if command == "replay":
         index = counter("replay")
@@ -110,6 +123,10 @@ def main():
         make_run(HERE / "shared-runs", "search", "completed")
     runs = [make_run(out, command, "in-progress" if plan.get("hang") == key else state, {"detail": spec.get("detail")}) for _ in range(spec.get("runs", 1))]
     run = runs[0] if runs else None
+    if command == "check" and run is not None:
+        failing = set(plan.get("check_failures", []))
+        rows = [{"scenario": name, "seed": "boundary", "ok": name not in failing} for name in option(args, "--scenario")]
+        (run / "check.json").write_text(json.dumps({"failures": sum(not r["ok"] for r in rows), "results": rows}))
     if command == "verify" and run is not None:
         candidates = run / "candidates"
         candidates.mkdir()

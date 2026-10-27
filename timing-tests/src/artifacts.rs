@@ -4,21 +4,32 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::scalar::ScalarPair;
-use crate::scenario::Scenario;
+use crate::scenario::{InputPair, Scenario};
 
-pub fn content_sha256(scenario: Scenario, pair: &ScalarPair) -> String {
+pub fn content_sha256(scenario: Scenario, pair: impl Into<InputPair>) -> String {
+    let pair = pair.into();
     let (low, high) = pair.unordered_key();
     let mut hasher = Sha256::new();
     hasher.update(b"tpms-timing-candidate-content/v2\0");
     hasher.update(scenario.name().as_bytes());
     hasher.update([0]);
-    hasher.update(low.bytes());
-    hasher.update(high.bytes());
+    hasher.update(low);
+    hasher.update(high);
+    // Identical RSAES bytes measured under different selector encodings are
+    // different candidates: the encoding is part of their identity. The legacy
+    // encoding has always hashed exactly these inputs, so every candidate
+    // recorded before the versioned encoding keeps its recorded content hash
+    // and artifact name unchanged; only inputs in the versioned encoding (the
+    // tagged space of the separator-boundary kinds) hash separately.
+    if scenario.selector_semantics_matter()
+        && pair.selector_space == crate::scenario::RsaesSelectorSpace::V2Tagged
+    {
+        hasher.update(b"rsaes-selectors/v2-tagged\0");
+    }
     hex::encode(hasher.finalize())
 }
 
-pub fn artifact_stem(scenario: Scenario, pair: &ScalarPair) -> String {
+pub fn artifact_stem(scenario: Scenario, pair: impl Into<InputPair>) -> String {
     format!(
         "{}-{}",
         scenario.name(),
@@ -88,7 +99,7 @@ pub fn create_new_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scalar::Scalar521;
+    use crate::scalar::{Scalar521, ScalarPair};
 
     #[test]
     fn identity_ignores_orientation_but_not_scenario_or_content() {
@@ -99,18 +110,18 @@ mod tests {
         let ba = ScalarPair { a: b, b: a };
         let ac = ScalarPair { a, b: c };
         assert_eq!(
-            artifact_stem(Scenario::EcdhP521, &ab),
-            artifact_stem(Scenario::EcdhP521, &ba)
+            artifact_stem(Scenario::EcdhP521, ab),
+            artifact_stem(Scenario::EcdhP521, ba)
         );
         assert_ne!(
-            artifact_stem(Scenario::EcdhP521, &ab),
-            artifact_stem(Scenario::EcdhP521, &ac)
+            artifact_stem(Scenario::EcdhP521, ab),
+            artifact_stem(Scenario::EcdhP521, ac)
         );
         assert_ne!(
-            artifact_stem(Scenario::EcdhP521, &ab),
-            artifact_stem(Scenario::ControlPositive, &ab)
+            artifact_stem(Scenario::EcdhP521, ab),
+            artifact_stem(Scenario::ControlPositive, ab)
         );
-        assert!(is_plain_label(&artifact_stem(Scenario::EcdhP521, &ab)));
+        assert!(is_plain_label(&artifact_stem(Scenario::EcdhP521, ab)));
     }
 
     #[test]

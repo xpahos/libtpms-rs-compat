@@ -42,7 +42,7 @@ Pipeline:
            found nothing) and runs the original upstream dudect (oreparaz/dudect, pinned and
            checksum-verified) in a fresh worker process per backend and per repeat.
   replay   Re-runs one saved candidate: a functional check plus fresh search-style batches.
-  report   Rebuilds report.json and report.md from saved artifacts without measuring.
+  report   Rebuilds report.json from saved artifacts without measuring and prints a plain-text summary.
   self-test
            Deterministic infrastructure checks, plus optional live positive and negative
            controls that use the same worker and dudect path.
@@ -60,7 +60,7 @@ Example inside the x86_64 container (timing-tests/docker/run.sh):
   tpms-timing-tests replay --rust-lib $RUST_LIB --reference-lib $REF_LIB --candidate <file.json>
   tpms-timing-tests report target/timing-tests/runs/<run> ...
 
-Exit status (same contract in run.json, results.json, summary.md and report.json):
+Exit status (same contract in run.json, results.json, summary.json and report.json):
   0  completed: all requested work finished; every verified candidate is a reproducible
      signal, shows no signal within a sufficient dudect budget, or explicitly SKIPs a known case
   3  incomplete: inconclusive or mixed repeats, missing repeats, insufficient measurements,
@@ -132,6 +132,12 @@ enum Command {
     Replay(ReplayArgs),
     #[command(about = "Summarize completed run directories without re-measuring")]
     Report(ReportArgs),
+    #[command(about = "List the scenario catalog and coverage matrix")]
+    ListScenarios(ListArgs),
+    #[command(
+        about = "Functional check of scenarios on the real libraries (no timing): every boundary seed, every backend, cross-backend comparison"
+    )]
+    Check(CheckArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -231,7 +237,7 @@ struct SelfTestArgs {
 struct SearchArgs {
     #[command(flatten)]
     backends: BackendArgs,
-    #[arg(long, value_enum, default_value = "ecdh-p521")]
+    #[arg(long, value_parser = Scenario::parse, default_value = "ecdh-p521", help = "Scenario to search (see list-scenarios)")]
     scenario: Scenario,
     #[arg(
         long,
@@ -338,9 +344,9 @@ struct VerifyArgs {
     candidate: Vec<PathBuf>,
     #[arg(
         long,
-        value_enum,
+        value_parser = Scenario::parse,
         default_value = "ecdh-p521",
-        help = "Scenario for seeded diagnostics"
+        help = "Scenario for seeded diagnostics (see list-scenarios)"
     )]
     scenario: Scenario,
     #[arg(
@@ -412,6 +418,41 @@ struct ReplayArgs {
     batches: usize,
     #[arg(long, default_value_t = 10)]
     warmup: usize,
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Args)]
+struct ListArgs {
+    #[arg(long, help = "Print the catalog as JSON")]
+    json: bool,
+    #[arg(
+        long,
+        help = "Only scenarios of this area (ecdh, ecc-signature, rsa, symmetric, mac, kdf, keygen, random, auth-integrity, control)"
+    )]
+    area: Option<String>,
+    #[arg(long, help = "Only implemented scenarios")]
+    implemented: bool,
+}
+
+#[derive(Args)]
+struct CheckArgs {
+    #[command(flatten)]
+    backends: BackendArgs,
+    #[arg(long, value_parser = Scenario::parse, help = "Scenario to check (repeatable)")]
+    scenario: Vec<Scenario>,
+    #[arg(long, help = "Check every implemented scenario of this area")]
+    area: Option<String>,
+    #[arg(long, help = "Check every implemented scenario")]
+    all: bool,
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Random seed pairs added to the boundary seeds"
+    )]
+    random_pairs: usize,
     #[arg(long, default_value_t = 1)]
     seed: u64,
     #[command(flatten)]
@@ -634,6 +675,13 @@ fn scenario_description(scenario: Scenario) -> serde_json::Value {
                 ],
             })
         }
+        _ if !scenario.is_control() => json!({
+            "name": scenario.name(),
+            "area": scenario.area(),
+            "status": crate::scenario::matrix::status(scenario),
+            "measurement_model": crate::scenario::doc(scenario),
+            "profile": "default-v1 via TPMLIB_SetProfile, then TPMLIB_MainInit and TPM2_Startup(CLEAR)",
+        }),
         _ => json!({
             "name": scenario.name(),
             "positive_control": "iterations = 20000 + 1000 * popcount(last 8 scalar bytes XOR a fixed hidden mask a53c960fe1782db4) of an LCG step guarded by an empty asm barrier; result returned and verified",
@@ -650,15 +698,42 @@ fn finish_with_report(
     run.finish(state, detail).map_err(|e| e.to_string())?;
     let report = build_report(std::slice::from_ref(&run.dir))?;
     write_report(&report, &run.dir).map_err(|e| e.to_string())?;
-    let md = run.dir.join("report.md");
     let json_path = run.dir.join("report.json");
-    fs::rename(&md, run.dir.join("summary.md")).map_err(|e| e.to_string())?;
     fs::rename(&json_path, run.dir.join("summary.json")).map_err(|e| e.to_string())?;
+    let outcome = match state {
+        RunState::Completed => Outcome::Completed,
+        RunState::Failed => Outcome::Failed,
+        RunState::Incomplete | RunState::InProgress => Outcome::Incomplete,
+    };
+    let command = match run.info.command.as_str() {
+        "verify" => "verification",
+        command => command,
+    };
+    emit(&format!(
+        "{command} outcome {outcome:?} (exit {}){}",
+        outcome.exit_code(),
+        run.info
+            .detail
+            .as_ref()
+            .map(|detail| format!(": {detail}"))
+            .unwrap_or_default()
+    ));
+    emit(&format!(
+        "summary: {}",
+        run.dir.join("summary.json").display()
+    ));
     Ok(())
 }
 
 fn say(message: &str) {
     eprintln!("[tpms-timing] {message}");
+}
+
+/// Final human-readable results of run commands go to stdout; operational
+/// diagnostics keep using `say` on stderr. Both streams are plain text; the
+/// structured record is always the JSON artifact next to the stdout summary.
+fn emit(message: &str) {
+    println!("{message}");
 }
 
 fn cmd_self_test(ctx: &Context, args: &SelfTestArgs) -> Result<Outcome, String> {
@@ -671,8 +746,8 @@ fn cmd_self_test(ctx: &Context, args: &SelfTestArgs) -> Result<Outcome, String> 
     say(&format!("run directory {}", run.dir.display()));
     let mut checks = selftest::run_deterministic(&run.dir.join("deterministic"));
     for check in &checks {
-        say(&format!(
-            "{}: {}",
+        emit(&format!(
+            "self-test {}: {}",
             if check.passed { "pass" } else { "FAIL" },
             check.name
         ));
@@ -733,8 +808,8 @@ fn cmd_self_test(ctx: &Context, args: &SelfTestArgs) -> Result<Outcome, String> 
                     &mut |m| say(m),
                 );
                 for check in &live {
-                    say(&format!(
-                        "{}: {} — {}",
+                    emit(&format!(
+                        "self-test {}: {} — {}",
                         if check.passed { "pass" } else { "FAIL" },
                         check.name,
                         check.detail
@@ -761,18 +836,16 @@ fn cmd_self_test(ctx: &Context, args: &SelfTestArgs) -> Result<Outcome, String> 
         },
         Some(format!("{} checks, all passed: {passed}", checks.len())),
     )?;
-    say(&format!(
-        "summary: {}",
-        run.dir.join("summary.md").display()
-    ));
-    Ok(if passed {
+    let outcome = if passed {
         Outcome::Completed
     } else {
         Outcome::Failed
-    })
+    };
+    Ok(outcome)
 }
 
 fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
+    require_implemented(args.scenario)?;
     let specs = if args.scenario.is_control() {
         vec![BackendSpec::Control {
             scenario: args.scenario,
@@ -808,6 +881,8 @@ fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
     )
     .map_err(|e| e.to_string())?;
     say(&format!("run directory {}", run.dir.display()));
+    run.set_scenarios(&[args.scenario.name().to_string()])
+        .map_err(|e| e.to_string())?;
     run.write_json(
         "config.json",
         &json!({
@@ -840,6 +915,7 @@ fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
     )
     .map_err(|e| e.to_string())?;
     let mut failure = None;
+    let mut functional = Vec::new();
     let mut incomplete = Vec::new();
     for spec in &specs {
         let label = spec.label();
@@ -870,8 +946,8 @@ fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
         match run_campaign(measurer, &config, &dir, &corpus, Some(&run.dir)) {
             Ok(output) => {
                 let s = &output.summary;
-                say(&format!(
-                    "{label}: {} evaluations, {} candidates, best {:?}, {} seeds meeting criteria, {} functional failures, stop: {}",
+                emit(&format!(
+                    "search {label}: {} evaluations, {} candidates, best {:?}, {} seeds meeting criteria, {} functional failures, stop: {}",
                     s.evaluations,
                     s.candidates.len(),
                     s.best_candidate_score,
@@ -879,6 +955,16 @@ fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
                     s.functional_failures,
                     s.stop_reason
                 ));
+                // Functional failures disqualify the run even when the
+                // search kept collecting candidates: only oracle-verified
+                // evaluations count, a timing signal alone never becomes a
+                // functional failure.
+                if s.functional_failures > 0 {
+                    functional.push(format!(
+                        "{label}: {} search evaluations failed their functional oracle",
+                        s.functional_failures
+                    ));
+                }
                 if let Some(interrupted) = &s.interrupted_operation {
                     incomplete.push(format!("{label}: {interrupted}"));
                 }
@@ -893,6 +979,10 @@ fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
             }
         }
     }
+    if !functional.is_empty() {
+        let text = functional.join("; ");
+        failure = Some(failure.map(|f| format!("{f}; {text}")).unwrap_or(text));
+    }
     let (state, outcome, detail) = match (&failure, incomplete.is_empty()) {
         (Some(f), _) => (RunState::Failed, Outcome::Failed, Some(f.clone())),
         (None, false) => (
@@ -903,11 +993,9 @@ fn cmd_search(ctx: &Context, args: &SearchArgs) -> Result<Outcome, String> {
         (None, true) => (RunState::Completed, Outcome::Completed, None),
     };
     finish_with_report(&mut run, state, detail.clone())?;
-    say(&format!(
-        "summary: {}",
-        run.dir.join("summary.md").display()
-    ));
     if let Some(detail) = detail {
+        // Operational failures keep their explanation on stderr as well as
+        // in the stdout result summary.
         say(&detail);
     }
     Ok(outcome)
@@ -983,6 +1071,7 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
     if candidates.iter().any(|c| c.scenario != scenario) {
         return Err("candidates of different scenarios cannot be verified in one run".into());
     }
+    require_implemented(scenario)?;
     let mut diagnostics_reason = None;
     if adaptive == 0 || args.include_seed_diagnostics {
         let seed = seeds.first().copied().unwrap_or(args.seed);
@@ -1041,6 +1130,8 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
     )
     .map_err(|e| e.to_string())?;
     say(&format!("run directory {}", run.dir.display()));
+    run.set_scenarios(&[scenario.name().to_string()])
+        .map_err(|e| e.to_string())?;
     run.write_json("config.json", &json!({
         "verify": config,
         "backends": specs,
@@ -1114,7 +1205,8 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
     ));
     let mut fatal = None;
     let mut stop = None;
-    for (candidate, (name, file)) in candidates.iter().zip(&saved) {
+    let candidate_total = candidates.len();
+    for (candidate, (name, file)) in candidates.iter_mut().zip(&saved) {
         match verify_candidate(
             &worker.path,
             CandidateArtifact {
@@ -1130,11 +1222,54 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
             &mut |m| say(m),
         ) {
             Ok(result) => {
-                say(&format!(
-                    "{name}: {} ({:?})",
+                // Record the freshly probed per-backend contracts of this
+                // candidate so replay can match provenance by backend instead
+                // of reporting missing provenance for freshly probed backends.
+                for (backend, classification) in &result.per_backend {
+                    if classification.rsaes_evidence.is_none()
+                        && classification.sym_evidence.is_none()
+                    {
+                        continue;
+                    }
+                    let entry = crate::search::Provenance {
+                        rsaes_evidence: classification.rsaes_evidence.clone(),
+                        sym_evidence: classification.sym_evidence.clone(),
+                        label: format!("verified-{backend}"),
+                        kind: candidate.kind,
+                        search_backend: Some(backend.clone()),
+                        search_run: Some(run.dir.clone()),
+                        campaign_seed: candidate.campaign_seed,
+                        evaluation: candidate.evaluation,
+                        origin: candidate.origin.clone(),
+                        retention_reason: candidate.retention_reason.clone(),
+                        search_score: None,
+                        config_sha256: None,
+                        source_file: Some(Path::new(file).to_path_buf()),
+                        source_sha256: None,
+                        orientation: crate::search::Orientation::AsRecorded,
+                    };
+                    if !candidate.provenance.contains(&entry) {
+                        candidate.provenance.push(entry);
+                    }
+                }
+                candidate.replace(file).map_err(|e| e.to_string())?;
+                emit(&format!(
+                    "verify {name}: {} ({:?})",
                     result.category.describe(),
                     result.outcome
                 ));
+                for (backend, issue) in &result.skipped {
+                    let kind = match issue.kind {
+                        crate::known_issues::KnownIssueKind::Timing => "timing",
+                        crate::known_issues::KnownIssueKind::FunctionalFailure => {
+                            "functional failure"
+                        }
+                    };
+                    emit(&format!(
+                        "verify {name} {backend}: SKIP {} ({kind}): {}",
+                        issue.id, issue.reason
+                    ));
+                }
                 let interrupted = result
                     .runs
                     .iter()
@@ -1143,7 +1278,7 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
                     results.candidates_verified += 1;
                 }
                 results.results.push(result);
-                checkpoint(&mut results, candidates.len());
+                checkpoint(&mut results, candidate_total);
                 run.write_json("results.json", &results)
                     .map_err(|e| e.to_string())?;
                 if interrupted {
@@ -1178,19 +1313,12 @@ fn cmd_verify(ctx: &Context, args: &VerifyArgs) -> Result<Outcome, String> {
         Outcome::Failed => RunState::Failed,
     };
     finish_with_report(&mut run, state, Some(detail.clone()))?;
-    say(&format!(
-        "verification outcome {outcome:?} (exit {}): {detail}",
-        outcome.exit_code()
-    ));
-    say(&format!(
-        "summary: {}",
-        run.dir.join("summary.md").display()
-    ));
     Ok(outcome)
 }
 
 fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
     let candidate = CandidateFile::load(&args.candidate)?;
+    require_implemented(candidate.scenario)?;
     let specs = if candidate.scenario.is_control() {
         vec![BackendSpec::Control {
             scenario: candidate.scenario,
@@ -1206,6 +1334,8 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
     )
     .map_err(|e| e.to_string())?;
     say(&format!("run directory {}", run.dir.display()));
+    run.set_scenarios(&[candidate.scenario.name().to_string()])
+        .map_err(|e| e.to_string())?;
     run.write_json(
         "config.json",
         &json!({
@@ -1235,13 +1365,49 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
         &manifest(ctx, Some(&worker), &probes, candidate.scenario),
     )
     .map_err(|e| e.to_string())?;
-    let pair = candidate.pair()?;
-    let prepared = PreparedPair::prepare(candidate.scenario, pair);
+    let pair = candidate.inputs()?;
+    // Offline metadata for reporting; each backend resolves its own expectations below.
+    let base = PreparedPair::try_prepare(candidate.scenario, pair.clone())?;
     let mut per_backend = BTreeMap::new();
     let mut responses_by_backend = Vec::new();
+    let mut prepared_metadata: Vec<crate::scenario::PublicMetadata> = Vec::new();
+    let mut rsaes_by_backend: BTreeMap<String, crate::expectation::RsaesEvidence> = BTreeMap::new();
+    let mut sym_by_backend: BTreeMap<String, crate::expectation::SymChainingEvidence> =
+        BTreeMap::new();
+    let mut sym_identity_changes: Vec<String> = Vec::new();
+    let mut identity_changes: Vec<String> = Vec::new();
     let mut failure = None;
     for spec in &specs {
         let label = spec.label();
+        if let Some(issue) = crate::known_issues::functional_skip(candidate.scenario, &label) {
+            if !ctx.disable_known_case_skips {
+                per_backend.insert(label,json!({"functional_ok":null,"functional_checked":false,"responses":[],"batches":[],"skipped":issue}));
+                continue;
+            }
+            let check = crate::verify::functional_check(
+                &worker.path,
+                spec,
+                pair.clone(),
+                candidate.scenario,
+                &run.dir.join(format!("replay-{label}-isolated-probe.log")),
+                ctx.limits,
+            );
+            run.write_json(&format!("replay-{label}-known-issue-probe.json"), &check)
+                .map_err(|e| e.to_string())?;
+            if !check.ok {
+                let detail = format!(
+                    "isolated known-failure probe (worker discarded): {}; no timing claim",
+                    check.detail
+                );
+                failure = Some(format!("{label}: {detail}"));
+                per_backend.insert(label,json!({"functional_ok":false,"functional_checked":true,"error":detail,"probe":check,"batches":[]}));
+                continue;
+            }
+            say(&format!(
+                "{label}: known functional failure {} not reproduced; isolated response validated; continuing normal replay gate",
+                issue.id
+            ));
+        }
         let outcome = (|| -> Result<serde_json::Value, String> {
             let mut measurer = WorkerMeasurer::start(
                 &worker.path,
@@ -1251,14 +1417,63 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
                 ctx.limits,
             )
             .map_err(|e| e.to_string())?;
+            // Fresh backend probing on every replay: the replayed contract is resolved
+            // against this library now, never inherited from the recorded provenance.
+            let prepared = measurer
+                .prepare(candidate.scenario, pair.clone())
+                .map_err(|error| match error {
+                    crate::measure::PrepareFailure::Backend(detail) => {
+                        format!("backend/infrastructure failure: {detail}")
+                    }
+                    crate::measure::PrepareFailure::Invalid(detail) => detail,
+                })?;
+            if let Some(evidence) = &prepared.metadata.rsaes_evidence {
+                let recorded: Vec<&crate::expectation::RsaesEvidence> = candidate
+                    .provenance
+                    .iter()
+                    .filter_map(|p| p.rsaes_evidence.as_ref())
+                    .collect();
+                // Provenance is compared per backend: only records produced by
+                // this very backend are upgrades; other backends' records and
+                // missing provenance are reported separately.
+                let changes = crate::expectation::identity_changes(&recorded, evidence, &label);
+                if !changes.is_empty() {
+                    say(&format!(
+                        "{label}: RSAES provenance changes: {}",
+                        changes.join("; ")
+                    ));
+                }
+                identity_changes.extend(changes);
+                rsaes_by_backend.insert(label.clone(), evidence.clone());
+            }
+            if let Some(evidence) = &prepared.metadata.sym_evidence {
+                let recorded: Vec<&crate::expectation::SymChainingEvidence> = candidate
+                    .provenance
+                    .iter()
+                    .filter_map(|p| p.sym_evidence.as_ref())
+                    .collect();
+                let changes = crate::expectation::identity_changes(&recorded, evidence, &label);
+                if !changes.is_empty() {
+                    say(&format!(
+                        "{label}: CFB chaining provenance changes: {}",
+                        changes.join("; ")
+                    ));
+                }
+                sym_identity_changes.extend(changes);
+                sym_by_backend.insert(label.clone(), evidence.clone());
+            }
             let loaded = measurer
                 .load(&prepared, LoadOrder::ClassAFirst)
                 .map_err(|e| e.to_string())?;
             let responses = measurer.execute_once(&loaded).map_err(|e| e.to_string())?;
-            let functional_ok =
-                (0..2).all(|c| responses[c] == prepared.classes[c].expected_response);
+            let functional_ok = (0..2).all(|c| prepared.classes[c].validate(&responses[c]).is_ok());
             let skipped = if functional_ok && !ctx.disable_known_case_skips {
-                crate::known_issues::timing_skip(candidate.scenario, pair, &label, &measurer.info())
+                crate::known_issues::timing_skip(
+                    candidate.scenario,
+                    &pair,
+                    &label,
+                    &measurer.info(),
+                )
             } else {
                 None
             };
@@ -1279,12 +1494,22 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
                 }));
             }
             measurer.close_checked().map_err(|e| e.to_string())?;
-            responses_by_backend.push(responses.clone());
+            responses_by_backend.push([
+                prepared.classes[0].masked(&responses[0]),
+                prepared.classes[1].masked(&responses[1]),
+            ]);
+            prepared_metadata.push(prepared.metadata.clone());
             Ok(json!({
                 "functional_ok": functional_ok,
                 "responses": responses.iter().map(hex::encode).collect::<Vec<_>>(),
                 "batches": batches,
                 "skipped": skipped,
+                "rsaes_evidence": prepared.metadata.rsaes_evidence,
+                "sym_evidence": prepared.metadata.sym_evidence,
+                // Classification exactly as validated on this backend.
+                "difference": prepared.metadata.difference,
+                "public_differences": prepared.metadata.public_differences,
+                "confounders": prepared.metadata.confounders,
             }))
         })();
         match outcome {
@@ -1293,10 +1518,19 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
             }
             Err(error) => {
                 failure = Some(format!("{label}: {error}"));
-                per_backend.insert(label, json!({"error": error}));
+                per_backend.insert(
+                    label,
+                    json!({
+                        "error": error,
+                        "backend_failure": error.starts_with("backend/infrastructure failure"),
+                    }),
+                );
             }
         }
     }
+    let metadata_refs: Vec<&crate::scenario::PublicMetadata> = prepared_metadata.iter().collect();
+    let expected_divergence =
+        crate::expectation::expected_divergence(candidate.scenario, &metadata_refs);
     let identical = (responses_by_backend.len() > 1)
         .then(|| responses_by_backend.windows(2).all(|w| w[0] == w[1]));
     let t_summary: Vec<String> = per_backend
@@ -1329,7 +1563,7 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
         })
         .collect();
     let summary = format!(
-        "replayed {} ({:?}, search score {:?}); {}; cross-backend identical responses: {:?}. Replay batches are exploratory ranking evidence, not verification.",
+        "replayed {} ({:?}, search score {:?}); {}; cross-backend identical responses: {:?}{}. Replay batches are exploratory ranking evidence, not verification.{}",
         candidate.id,
         candidate.kind,
         candidate
@@ -1337,9 +1571,43 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
             .as_ref()
             .map(|s| (s.ranking_value() * 100.0).round() / 100.0),
         t_summary.join("; "),
-        identical
+        identical,
+        if identical == Some(false) && expected_divergence {
+            " (expected: the backends resolved different, independently validated contracts for this input)"
+        } else {
+            ""
+        },
+        if identity_changes.is_empty() {
+            String::new()
+        } else {
+            format!(" Replay identity changes: {}.", identity_changes.join("; "))
+        }
     );
-    say(&summary);
+    emit(&summary);
+    if !rsaes_by_backend.is_empty() {
+        run.write_json(
+            "rsaes-evidence.json",
+            &json!({
+                "candidate": candidate.id,
+                "backends": rsaes_by_backend,
+                "identity_changes": identity_changes,
+                "note": "freshly probed during this replay; recorded provenance is never used to select the applied contract and is compared only against records of the same backend",
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if !sym_by_backend.is_empty() {
+        run.write_json(
+            "sym-chaining-evidence.json",
+            &json!({
+                "candidate": candidate.id,
+                "backends": sym_by_backend,
+                "identity_changes": sym_identity_changes,
+                "note": "CFB chaining contracts (partial final blocks) freshly probed during this replay; recorded provenance is never used to select the applied contract and is compared only against records of the same backend",
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+    }
     run.write_json(
         "replay.json",
         &json!({
@@ -1349,23 +1617,27 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
             "artifact": candidate.artifact_stem()?,
             "content_sha256": candidate.content_sha256()?,
             "scenario": candidate.scenario,
-            "scalar_a": hex::encode(pair.a.bytes()),
-            "scalar_b": hex::encode(pair.b.bytes()),
-            "measured_class_inputs": [hex::encode(prepared.pair.a.bytes()), hex::encode(prepared.pair.b.bytes())],
+            "scalar_a": hex::encode(&pair.a),
+            "scalar_b": hex::encode(&pair.b),
+            "measured_class_inputs": [hex::encode(&base.pair.a), hex::encode(&base.pair.b)],
             "provenance": candidate.provenance,
             "search_batches": candidate.search_batches,
             "backends": per_backend,
             "cross_backend_identical": identical,
+            "cross_backend_expected_divergence": expected_divergence,
+            "rsaes_identity_changes": identity_changes,
+            "sym_chaining_identity_changes": sym_identity_changes,
             "summary": summary,
         }),
     )
     .map_err(|e| e.to_string())?;
     let all_ok = failure.is_none()
-        && identical != Some(false)
+        && (expected_divergence || identical != Some(false))
         && per_backend.values().all(|v| {
-            v.get("functional_ok")
-                .and_then(|x| x.as_bool())
-                .unwrap_or(false)
+            v.get("skipped").is_some_and(|x| !x.is_null())
+                || v.get("functional_ok")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false)
         });
     let ok = failure.is_none() && all_ok;
     finish_with_report(
@@ -1378,11 +1650,270 @@ fn cmd_replay(ctx: &Context, args: &ReplayArgs) -> Result<Outcome, String> {
         failure.clone().or((!all_ok)
             .then(|| "functional check failed or responses differ across backends".to_string())),
     )?;
-    Ok(if ok {
+    let outcome = if ok {
         Outcome::Completed
     } else {
         Outcome::Failed
-    })
+    };
+    Ok(outcome)
+}
+
+fn selected_scenarios(area: Option<&str>, implemented: bool) -> Result<Vec<Scenario>, String> {
+    use crate::scenario::{Area, all_scenarios, matrix};
+    let area = match area {
+        Some(name) => Some(
+            Area::ALL
+                .into_iter()
+                .find(|a| a.name() == name)
+                .ok_or_else(|| format!("unknown area {name:?}"))?,
+        ),
+        None => None,
+    };
+    Ok(all_scenarios()
+        .into_iter()
+        .filter(|s| area.is_none_or(|a| s.area() == a))
+        .filter(|s| !implemented || matrix::implemented(*s))
+        .collect())
+}
+
+fn cmd_list(args: &ListArgs) -> Result<Outcome, String> {
+    use crate::scenario::matrix;
+    let scenarios = selected_scenarios(args.area.as_deref(), args.implemented)?;
+    if args.json {
+        let rows: Vec<serde_json::Value> = scenarios
+            .iter()
+            .map(|s| {
+                json!({
+                    "name": s.name(),
+                    "area": s.area(),
+                    "status": matrix::status(*s),
+                    "input_bytes": crate::scenario::input_width(*s),
+                    "measurement_model": crate::scenario::doc(*s),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &json!({"scenarios": rows, "exclusions": matrix::EXCLUSIONS})
+            )
+            .unwrap()
+        );
+        return Ok(Outcome::Completed);
+    }
+    for scenario in scenarios {
+        println!(
+            "{}\t{}\t{}",
+            scenario.name(),
+            scenario.area().name(),
+            if matrix::implemented(scenario) {
+                "implemented"
+            } else {
+                "outstanding"
+            }
+        );
+    }
+    Ok(Outcome::Completed)
+}
+
+fn cmd_check(ctx: &Context, args: &CheckArgs) -> Result<Outcome, String> {
+    let mut scenarios = args.scenario.clone();
+    if args.all || args.area.is_some() {
+        scenarios.extend(selected_scenarios(args.area.as_deref(), true)?);
+    }
+    if scenarios.is_empty() {
+        return Err("select scenarios with --scenario, --area or --all".into());
+    }
+    for scenario in &scenarios {
+        require_implemented(*scenario)?;
+    }
+    let specs = resolve_backends(&args.backends)?;
+    let worker = ctx.worker(&args.backends.libtpms_include)?;
+    let mut run = Run::create(
+        &ctx.out_dir(&args.output),
+        "check",
+        args.output.run_name.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    say(&format!("run directory {}", run.dir.display()));
+    run.set_scenarios(
+        &scenarios
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| e.to_string())?;
+    run.write_json(
+        "config.json",
+        &json!({"scenarios": scenarios, "backends": specs, "seed": args.seed, "random_pairs": args.random_pairs,"disable_known_case_skips":ctx.disable_known_case_skips}),
+    )
+    .map_err(|e| e.to_string())?;
+    let probes = match probe(&worker, &specs, args.backends.cpu, &run.dir, ctx.limits) {
+        Ok(p) => p,
+        Err(error) => {
+            run.write_json(
+                "manifest.json",
+                &manifest(ctx, Some(&worker), &[], scenarios[0]),
+            )
+            .map_err(|e| e.to_string())?;
+            finish_with_report(&mut run, RunState::Failed, Some(error.clone()))?;
+            return Err(error);
+        }
+    };
+    run.write_json(
+        "manifest.json",
+        &manifest(ctx, Some(&worker), &probes, scenarios[0]),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut rows = Vec::new();
+    let mut failures = 0usize;
+    for scenario in scenarios {
+        let control_specs = vec![BackendSpec::Control { scenario }];
+        let targets = if scenario.is_control() {
+            &control_specs
+        } else {
+            &specs
+        };
+        for seed in crate::scenario::scenario_seeds(scenario, args.seed, args.random_pairs) {
+            let mut checks = Vec::new();
+            let mut skipped = BTreeMap::new();
+            let mut prepared_metadata = Vec::new();
+            let mut classification = BTreeMap::new();
+            for spec in targets {
+                if !ctx.disable_known_case_skips
+                    && let Some(issue) =
+                        crate::known_issues::functional_skip(scenario, &spec.label())
+                {
+                    skipped.insert(spec.label(), issue);
+                    continue;
+                }
+                let stderr = run.dir.join(format!(
+                    "{}-{}-{}.stderr",
+                    scenario.name(),
+                    seed.name,
+                    spec.label()
+                ));
+                let outcome = crate::verify::functional_check_prepared(
+                    &worker.path,
+                    spec,
+                    seed.pair.clone(),
+                    scenario,
+                    &stderr,
+                    ctx.limits,
+                );
+                if let Ok(prepared) = &outcome.prepared {
+                    prepared_metadata.push(prepared.metadata.clone());
+                    // Classification exactly as validated on this backend.
+                    classification.insert(
+                        spec.label(),
+                        json!({
+                            "difference": prepared.metadata.difference,
+                            "public_differences": prepared.metadata.public_differences,
+                            "confounders": prepared.metadata.confounders,
+                            "rsaes_evidence": prepared.metadata.rsaes_evidence,
+                            "sym_evidence": prepared.metadata.sym_evidence,
+                        }),
+                    );
+                }
+                checks.push(outcome.check);
+            }
+            let all_ok = checks.iter().all(|c| c.ok);
+            let identical = (checks.len() > 1 && all_ok)
+                .then(|| checks.windows(2).all(|w| w[0].responses == w[1].responses));
+            let metadata_refs: Vec<&crate::scenario::PublicMetadata> =
+                prepared_metadata.iter().collect();
+            let expected_divergence =
+                crate::expectation::expected_divergence(scenario, &metadata_refs);
+            let functional_checked = !checks.is_empty();
+            let ok =
+                functional_checked && all_ok && (expected_divergence || identical != Some(false));
+            if functional_checked && !ok {
+                failures += 1;
+            }
+            emit(&format!(
+                "check {} {} {}: {}",
+                if !skipped.is_empty() && (!functional_checked || ok) {
+                    "SKIP"
+                } else if ok {
+                    "ok  "
+                } else {
+                    "FAIL"
+                },
+                scenario.name(),
+                seed.name,
+                checks
+                    .iter()
+                    .map(|c| format!(
+                        "{}={}",
+                        c.backend,
+                        if c.ok {
+                            "ok".to_string()
+                        } else {
+                            c.detail.clone()
+                        }
+                    ))
+                    .chain(skipped.iter().map(|(backend, issue)| format!(
+                        "{backend}=SKIP {}: {}",
+                        issue.id, issue.reason
+                    )))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+            rows.push(json!({
+                "scenario": scenario,
+                "seed": seed.name,
+                "ok": ok,
+                "functional_checked":functional_checked,
+                "skipped":skipped,
+                "cross_backend_identical": identical,
+                "cross_backend_expected_divergence": expected_divergence,
+                // Classification as validated on each backend, never a single
+                // backend's view applied to the whole combined row.
+                "classification": classification,
+                "checks": checks,
+            }));
+        }
+    }
+    run.write_json(
+        "check.json",
+        &json!({"failures": failures, "results": rows}),
+    )
+    .map_err(|e| e.to_string())?;
+    let state = if failures == 0 {
+        RunState::Completed
+    } else {
+        RunState::Failed
+    };
+    let executed = rows
+        .iter()
+        .filter(|row| row["functional_checked"] == true)
+        .count();
+    let skipped = rows
+        .iter()
+        .filter_map(|row| row["skipped"].as_object())
+        .map(|s| s.len())
+        .sum::<usize>();
+    let summary = format!(
+        "{} pairs: {executed} functionally checked, {skipped} backend skips, {failures} failed",
+        rows.len()
+    );
+    finish_with_report(&mut run, state, Some(summary))?;
+    let outcome = if failures == 0 {
+        Outcome::Completed
+    } else {
+        Outcome::Failed
+    };
+    Ok(outcome)
+}
+
+fn require_implemented(scenario: Scenario) -> Result<(), String> {
+    if crate::scenario::matrix::implemented(scenario) {
+        Ok(())
+    } else {
+        Err(format!(
+            "scenario {scenario} is outstanding (see list-scenarios); it cannot be measured until its family is implemented"
+        ))
+    }
 }
 
 fn cmd_report(ctx: &Context, args: &ReportArgs) -> Result<Outcome, String> {
@@ -1394,10 +1925,10 @@ fn cmd_report(ctx: &Context, args: &ReportArgs) -> Result<Outcome, String> {
     };
     write_report(&report, &output).map_err(|e| e.to_string())?;
     say(&format!(
-        "report written to {} (report.json, report.md)",
+        "report written to {} (report.json)",
         output.display()
     ));
-    print!("{}", crate::report::render_markdown(&report));
+    print!("{}", crate::report::render_summary(&report));
     Ok(Outcome::Completed)
 }
 
@@ -1414,6 +1945,8 @@ pub fn main() -> ExitCode {
         Command::Verify(args) => cmd_verify(&ctx, args),
         Command::Replay(args) => cmd_replay(&ctx, args),
         Command::Report(args) => cmd_report(&ctx, args),
+        Command::ListScenarios(args) => cmd_list(args),
+        Command::Check(args) => cmd_check(&ctx, args),
     };
     match result {
         Ok(outcome) => {

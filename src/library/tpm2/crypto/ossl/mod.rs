@@ -459,16 +459,24 @@ mod tests {
             unsafe_users,
             [
                 "library/tpm2/crypto/entropy.rs",
-                "library/tpm2/crypto/ossl/ffi.rs"
+                "library/tpm2/crypto/ossl/ffi.rs",
+                "library/tpm2/crypto/timing_drbg.rs"
             ]
         );
-        let externs: Vec<&str> = sources
+        let mut externs: Vec<&str> = sources
             .iter()
             .filter(|(_, source)| source.contains("extern \"C\""))
             .map(|(relative, _)| relative.as_str())
             .filter(|relative| relative.starts_with("library/tpm2/"))
             .collect();
-        assert_eq!(externs, ["library/tpm2/crypto/ossl/ffi.rs"]);
+        externs.sort_unstable();
+        assert_eq!(
+            externs,
+            [
+                "library/tpm2/crypto/ossl/ffi.rs",
+                "library/tpm2/crypto/timing_drbg.rs"
+            ]
+        );
     }
 
     #[test]

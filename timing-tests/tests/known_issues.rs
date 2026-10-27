@@ -105,10 +105,10 @@ fn fuzzing_skips_only_known_endpoints_and_can_reenable_them() {
         run.finish(tpms_timing_tests::run::RunState::Completed, None)
             .unwrap();
         let report = tpms_timing_tests::report::build_report(&[run.dir]).unwrap();
-        let markdown = tpms_timing_tests::report::render_markdown(&report);
-        assert_eq!(markdown.contains("**SKIP**"), !include);
+        let summary = tpms_timing_tests::report::render_summary(&report);
+        assert_eq!(summary.contains("SKIP"), !include);
         if !include {
-            assert!(markdown.contains("s->Z == 0"));
+            assert!(summary.contains("s->Z == 0"));
         }
         assert!(
             rows.iter()
@@ -125,27 +125,48 @@ fn fuzzing_skip_does_not_hide_a_functional_mismatch() {
     config.scenario = Scenario::EcdhP521;
     config.max_evaluations = 26;
     config.random_seed_pairs = 0;
+    let dir = sandbox.root.join("search");
     let result = run_campaign(
         ReferenceFixture(FixtureMeasurer::new("reference", no_effect), true),
         &config,
-        &sandbox.root.join("search"),
+        &dir,
         &sandbox.root.join("corpus"),
         None,
-    )
-    .unwrap();
-    assert_eq!(result.summary.functional_failures, 1);
-    assert!(result.summary.known_skips.is_empty());
-    let rows = history(&sandbox.root.join("search"));
+    );
+    if let Ok(output) = &result {
+        assert!(output.summary.known_skips.is_empty());
+        assert!(output.summary.functional_failures > 0);
+    } else {
+        let error = result.err().unwrap().to_string();
+        assert!(error.contains("corpus"), "{error}");
+    }
+    let rows = history(&dir);
+    let endpoint = hex::encode(
+        ScalarPair {
+            a: endpoints().b,
+            b: endpoints().a,
+        }
+        .to_bytes(),
+    );
     let failed = rows
         .iter()
-        .find(|r| r.observation.failure.is_some())
-        .unwrap();
+        .find(|r| r.observation.input_hex == endpoint)
+        .expect("the registered endpoint pair was evaluated");
+    assert!(
+        failed.observation.skipped.is_none(),
+        "a functional mismatch must never be reported as a known-case skip"
+    );
     assert!(matches!(
         failed.observation.failure,
         Some(MeasureFailure::Functional { class: Some(0), .. })
     ));
+    assert!(failed.observation.batches.is_empty());
     assert!(!failed.decision.candidate);
     assert!(!failed.decision.seed_met_criteria);
+    for row in rows.iter().filter(|r| r.observation.invalid.is_none()) {
+        assert!(row.observation.failure.is_some());
+        assert!(row.observation.skipped.is_none());
+    }
 }
 
 #[test]
@@ -303,7 +324,7 @@ fn verify_reports_skip_without_measuring_and_override_really_runs() {
         if include {
             args.push("--disable-known-case-skips");
         }
-        let (code, stderr, run) = sandbox.verify(std::slice::from_ref(&file), &args);
+        let (code, stdout, stderr, run) = sandbox.verify(std::slice::from_ref(&file), &args);
         assert_eq!(code, exit, "{name}: {stderr}");
         let result = common::json(&run.join("results.json"));
         let candidate = &result["results"][0];
@@ -316,9 +337,16 @@ fn verify_reports_skip_without_measuring_and_override_really_runs() {
         assert_eq!(measured.lines().count(), expected_runs);
         if expected_skips > 0 {
             assert_eq!(candidate["verdicts"]["reference"], "skipped-known-issue");
-            let summary = fs::read_to_string(run.join("summary.md")).unwrap();
-            assert!(summary.contains("**SKIP**"));
-            assert!(summary.contains("s->Z == 0"));
+            let issue = &candidate["skipped"]["reference"];
+            let line = stdout
+                .lines()
+                .find(|line| line.contains("reference") && line.contains("SKIP"))
+                .unwrap_or_else(|| panic!("missing backend skip in stdout: {stdout}"));
+            assert!(line.contains(issue["id"].as_str().unwrap()), "{line}");
+            assert!(line.contains(issue["reason"].as_str().unwrap()), "{line}");
+            assert!(line.contains("timing"), "{line}");
+            let summary = fs::read_to_string(run.join("summary.json")).unwrap();
+            assert!(summary.contains("skipped"));
             assert!(stderr.contains("SKIP"));
         }
         if backend == "both" && exit == 0 {
@@ -358,9 +386,10 @@ fn verify_reports_skip_without_measuring_and_override_really_runs() {
                 if disable {
                     args.push("--disable-known-case-skips");
                 }
-                let (code, stderr) = sandbox.run(&args);
+                let (code, stdout, stderr) = sandbox.run_with_stdout(&args);
                 assert_eq!(code, 0, "{stderr}");
-                assert_eq!(stderr.contains("SKIP"), !disable);
+                assert_eq!(stdout.contains("SKIP"), !disable);
+                assert!(stdout.contains("replayed "));
                 let dir = fs::read_dir(replay_out)
                     .unwrap()
                     .next()
@@ -394,5 +423,324 @@ fn verify_reports_skip_without_measuring_and_override_really_runs() {
             regenerated["verifications"][0]["results"]["results"][0]["skipped"],
             candidate["skipped"]
         );
+    }
+}
+
+#[test]
+fn ecmqv_default_skip_happens_before_any_tpm_command_and_never_claims_functional_success() {
+    struct NeverLoad;
+    impl Measurer for NeverLoad {
+        fn label(&self) -> String {
+            "reference".into()
+        }
+        fn info(&self) -> WorkerInfo {
+            WorkerInfo::new()
+        }
+        fn load(&mut self, _: &PreparedPair, _: LoadOrder) -> Result<LoadedPair, MeasureFailure> {
+            panic!("ECMQV default skip must precede TPM state changes")
+        }
+        fn measure(
+            &mut self,
+            _: &LoadedPair,
+            _: usize,
+            _: usize,
+            _: u64,
+        ) -> Result<RawBatch, MeasureFailure> {
+            panic!("known failed operation cannot have timings")
+        }
+        fn execute_once(&mut self, _: &LoadedPair) -> Result<[Vec<u8>; 2], MeasureFailure> {
+            panic!("known failed operation cannot execute on shared worker")
+        }
+    }
+    let sandbox = common::Sandbox::new("ecmqv-known-skip");
+    let mut config = fixture_config(7, true);
+    config.scenario = Scenario::parse("zgen-2phase-ecmqv-p256").unwrap();
+    config.max_evaluations = 2;
+    config.random_seed_pairs = 0;
+    let dir = sandbox.root.join("search");
+    let _ = run_campaign(NeverLoad, &config, &dir, &sandbox.root.join("corpus"), None);
+    let rows = history(&dir);
+    assert!(!rows.is_empty());
+    for row in rows {
+        assert!(row.observation.skipped.is_some());
+        assert!(!row.observation.functional_validated);
+        assert!(row.observation.failure.is_none());
+        assert!(row.observation.batches.is_empty());
+    }
+}
+
+#[test]
+fn ecmqv_verification_skip_has_no_fabricated_functional_check_or_worker() {
+    use tpms_timing_tests::{
+        scenario::scenario_seeds,
+        search::seeded_candidate,
+        verify::{BackendVerdict, CandidateArtifact, VerifyConfig, VerifyTarget, verify_candidate},
+        worker::{BackendName, BackendSpec, Limits},
+    };
+    let sandbox = common::Sandbox::new("ecmqv-verify-skip");
+    let scenario = Scenario::parse("zgen-2phase-ecmqv-p256").unwrap();
+    let candidate = seeded_candidate(
+        scenario,
+        "fixture",
+        scenario_seeds(scenario, 1, 0).remove(0).pair,
+        1,
+    );
+    let path = common::write_candidate(&sandbox.root, "candidate.json", &candidate);
+    let config = VerifyConfig {
+        disable_known_case_skips: false,
+        budget: 64,
+        batch: 32,
+        repeats: 1,
+        warmup: 0,
+        time_limit_s: 1.,
+        cpu: None,
+        max_candidates: 1,
+        seed_diagnostics: 0,
+        include_seed_diagnostics: false,
+    };
+    let targets = [BackendName::Rust, BackendName::Reference].map(|name| VerifyTarget {
+        spec: BackendSpec::Library {
+            name,
+            path: "/not-loaded".into(),
+        },
+    });
+    let result = verify_candidate(
+        Path::new("/worker-must-not-start"),
+        CandidateArtifact {
+            candidate: &candidate,
+            name: "fixture",
+            file: &path,
+        },
+        &targets,
+        &config,
+        &sandbox.root.join("verify"),
+        &Default::default(),
+        Limits::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(result.functional.is_empty());
+    assert!(result.runs.is_empty());
+    assert_eq!(result.skipped.len(), 2);
+    assert!(
+        result
+            .verdicts
+            .values()
+            .all(|v| *v == BackendVerdict::SkippedKnownIssue)
+    );
+}
+
+#[test]
+fn ecmqv_search_opt_out_calls_only_isolated_probe_and_records_failure() {
+    struct ProbeOnly;
+    impl Measurer for ProbeOnly {
+        fn label(&self) -> String {
+            "rust".into()
+        }
+        fn info(&self) -> WorkerInfo {
+            WorkerInfo::new()
+        }
+        fn isolated_functional_probe(&mut self, _: &PreparedPair) -> Result<(), MeasureFailure> {
+            Err(MeasureFailure::Functional {
+                class: Some(0),
+                detail: "isolated ECMQV failure fixture".into(),
+            })
+        }
+        fn load(&mut self, _: &PreparedPair, _: LoadOrder) -> Result<LoadedPair, MeasureFailure> {
+            panic!("shared worker cannot run ECMQV")
+        }
+        fn execute_once(&mut self, _: &LoadedPair) -> Result<[Vec<u8>; 2], MeasureFailure> {
+            panic!("shared worker cannot run ECMQV")
+        }
+        fn measure(
+            &mut self,
+            _: &LoadedPair,
+            _: usize,
+            _: usize,
+            _: u64,
+        ) -> Result<RawBatch, MeasureFailure> {
+            panic!("failed ECMQV cannot be timed")
+        }
+    }
+    let sandbox = common::Sandbox::new("ecmqv-isolated-optout");
+    let mut config = fixture_config(1, true);
+    config.scenario = Scenario::parse("zgen-2phase-ecmqv-p256").unwrap();
+    config.disable_known_case_skips = true;
+    config.max_evaluations = 2;
+    config.random_seed_pairs = 0;
+    let dir = sandbox.root.join("search");
+    let _ = run_campaign(ProbeOnly, &config, &dir, &sandbox.root.join("corpus"), None);
+    let rows = history(&dir);
+    assert!(!rows.is_empty());
+    for row in rows {
+        assert!(row.observation.skipped.is_none());
+        assert!(matches!(
+            row.observation.failure,
+            Some(MeasureFailure::Functional { .. })
+        ));
+        assert!(!row.observation.functional_validated);
+        assert!(row.observation.batches.is_empty());
+    }
+}
+
+#[test]
+fn sm2_large_curve_failure_skip_is_reference_only_and_exactly_two_curves() {
+    use tpms_timing_tests::{
+        known_issues::functional_skip, oracle::ec::CurveId, scenario::catalog::ExchangeScheme,
+    };
+    for curve in CurveId::ALL {
+        let scenario = Scenario::Zgen(curve, ExchangeScheme::Sm2);
+        assert_eq!(
+            functional_skip(scenario, "reference").is_some(),
+            matches!(curve, CurveId::NistP521 | CurveId::BnP638),
+            "{curve:?}"
+        );
+        assert!(functional_skip(scenario, "rust").is_none());
+        assert!(
+            functional_skip(Scenario::Zgen(curve, ExchangeScheme::Ecdh), "reference").is_none()
+        );
+        assert!(functional_skip(scenario, "unidentified").is_none());
+    }
+}
+
+#[test]
+fn check_report_keeps_unexecuted_known_functional_skips_out_of_success() {
+    let sandbox = common::Sandbox::new("check-skip-report");
+    let mut run = tpms_timing_tests::run::Run::create(&sandbox.out, "check", None).unwrap();
+    run.set_scenarios(&["zgen-2phase-ecmqv-p256".into()])
+        .unwrap();
+    run.write_json("manifest.json", &serde_json::json!({}))
+        .unwrap();
+    run.write_json("check.json",&serde_json::json!({"failures":0,"results":[{"scenario":"zgen-2phase-ecmqv-p256","seed":"fixture","ok":false,"functional_checked":false,"skipped":{"rust":{"id":"ecmqv-uninitialized-order-failure-mode","reason":"known functional failure; not executed"}}}]})).unwrap();
+    run.finish(tpms_timing_tests::run::RunState::Completed, None)
+        .unwrap();
+    let report = tpms_timing_tests::report::build_report(&[run.dir]).unwrap();
+    let row = report
+        .scenarios
+        .iter()
+        .find(|r| r.scenario == "zgen-2phase-ecmqv-p256")
+        .unwrap();
+    assert_eq!(row.functional_check, None);
+    assert_eq!(row.backends["rust"].skipped_known_issue, 1);
+    assert!(
+        tpms_timing_tests::report::render_summary(&report)
+            .contains("known functional failure; not executed")
+    );
+}
+
+#[test]
+fn isolated_probe_startup_obeys_the_parent_campaign_deadline() {
+    use std::time::{Duration, Instant};
+    use tpms_timing_tests::{
+        measure::WorkerMeasurer,
+        worker::{BackendSpec, Limits},
+    };
+    let sandbox = common::Sandbox::new("isolated-probe-startup-deadline");
+    let mut m = WorkerMeasurer::start(
+        &sandbox.wrapper,
+        BackendSpec::Control {
+            scenario: Scenario::ControlNegative,
+        },
+        None,
+        &sandbox.root.join("parent.log"),
+        Limits::new(Duration::from_secs(5)),
+    )
+    .unwrap();
+    // Only the newly launched disposable process stalls; the already running parent remains healthy.
+    fs::write(&sandbox.wrapper, "#!/bin/sh\nsleep 10\n").unwrap();
+    m.set_deadline(Some(Instant::now() + Duration::from_millis(50)));
+    let pair = PreparedPair::prepare(Scenario::ControlNegative, common::small_pair(2, 3));
+    let error = m.isolated_functional_probe(&pair).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            MeasureFailure::Timeout {
+                campaign_deadline: true,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    m.set_deadline(None);
+    m.close_checked().unwrap();
+}
+
+#[test]
+fn successful_isolated_probe_must_validate_responses_and_accept_a_passing_oracle() {
+    use tpms_timing_tests::{
+        measure::WorkerMeasurer,
+        worker::{BackendSpec, Limits},
+    };
+    let sandbox = common::Sandbox::new("isolated-probe-success");
+    let pair = PreparedPair::prepare(Scenario::ControlNegative, common::small_pair(2, 3));
+    let mut m = WorkerMeasurer::start(
+        &sandbox.wrapper,
+        BackendSpec::Control {
+            scenario: Scenario::ControlNegative,
+        },
+        None,
+        &sandbox.root.join("parent.log"),
+        Limits::default(),
+    )
+    .unwrap();
+    m.isolated_functional_probe(&pair).unwrap();
+    let mut bad = pair.clone();
+    bad.classes[0].expected_response[0] ^= 1;
+    assert!(matches!(
+        m.isolated_functional_probe(&bad),
+        Err(MeasureFailure::Functional { .. })
+    ));
+    let loaded = m.load(&pair, LoadOrder::ClassAFirst).unwrap();
+    assert!(m.execute_once(&loaded).is_ok());
+    m.close_checked().unwrap();
+}
+
+#[test]
+fn successful_known_failure_probe_continues_the_normal_functional_gate() {
+    struct ProbePass;
+    impl Measurer for ProbePass {
+        fn label(&self) -> String {
+            "reference".into()
+        }
+        fn info(&self) -> WorkerInfo {
+            WorkerInfo::new()
+        }
+        fn isolated_functional_probe(&mut self, _: &PreparedPair) -> Result<(), MeasureFailure> {
+            Ok(())
+        }
+        fn load(&mut self, _: &PreparedPair, _: LoadOrder) -> Result<LoadedPair, MeasureFailure> {
+            Err(MeasureFailure::Functional {
+                class: None,
+                detail: "normal functional gate reached after successful isolated probe".into(),
+            })
+        }
+        fn execute_once(&mut self, _: &LoadedPair) -> Result<[Vec<u8>; 2], MeasureFailure> {
+            unreachable!()
+        }
+        fn measure(
+            &mut self,
+            _: &LoadedPair,
+            _: usize,
+            _: usize,
+            _: u64,
+        ) -> Result<RawBatch, MeasureFailure> {
+            unreachable!()
+        }
+    }
+    let sandbox = common::Sandbox::new("known-probe-normal-gate");
+    let mut config = fixture_config(1, true);
+    config.scenario = Scenario::parse("zgen-2phase-sm2-p521").unwrap();
+    config.disable_known_case_skips = true;
+    config.max_evaluations = 2;
+    config.random_seed_pairs = 0;
+    let dir = sandbox.root.join("search");
+    let _ = run_campaign(ProbePass, &config, &dir, &sandbox.root.join("corpus"), None);
+    let rows = history(&dir);
+    assert!(!rows.is_empty());
+    for row in rows {
+        let Some(MeasureFailure::Functional { detail, .. }) = row.observation.failure else {
+            panic!("normal functional gate was bypassed");
+        };
+        assert!(detail.contains("normal functional gate reached"));
     }
 }

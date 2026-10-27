@@ -27,3 +27,4 @@ foreign-types = "0.3.2"
 default = ["tpm2"]
 tpm1 = []
 tpm2 = []
+timing-test-hooks = ["tpm2"]

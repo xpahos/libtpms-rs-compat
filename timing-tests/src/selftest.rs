@@ -444,7 +444,7 @@ pub fn candidates_round_trip(dir: &Path) -> Result<String, String> {
 }
 
 fn odd_tail_is_functional_failure(pair: &PreparedPair) -> Option<MeasureFailure> {
-    (pair.pair.a.bytes()[65] & 1 == 1).then(|| MeasureFailure::Functional {
+    (pair.pair.a[65] & 1 == 1).then(|| MeasureFailure::Functional {
         class: Some(0),
         detail: "fixture backend error".into(),
     })
@@ -581,7 +581,7 @@ pub fn explicit_worker_failures(dir: &Path) -> Result<String, String> {
         Err(other) => return Err(format!("unexpected error {other}")),
         Ok(_) => return Err("crashing worker accepted".into()),
     };
-    let pair = seeds(1, 1)[0].pair;
+    let pair = seeds(1, 1)[0].pair.clone();
     let prepared = PreparedPair::prepare(Scenario::ControlNegative, pair);
     let plan = dudect_plan(
         &control,
@@ -662,7 +662,7 @@ pub fn incomplete_not_success(_dir: &Path) -> Result<String, String> {
 }
 
 pub fn plans_have_no_search_samples(_dir: &Path) -> Result<String, String> {
-    let pair = seeds(3, 1)[0].pair;
+    let pair = seeds(3, 1)[0].pair.clone();
     let mut candidate = seeded_candidate(Scenario::ControlPositive, "x", pair, 3);
     candidate.kind = CandidateKind::AdaptiveDiscovery;
     candidate.search_raw = vec![crate::measure::RawBatch {
@@ -1178,7 +1178,15 @@ pub fn worker_deadlines_enforced(dir: &Path) -> Result<String, String> {
                     }
                     "stop-reading" => process.exec(&vec![0u8; 1 << 20]).map(|_| ()),
                     "hang-measure" => process
-                        .measure(10, 1, 0, [&[0u8; 66], &[1u8; 66]], [&[0u8; 16], &[0u8; 16]])
+                        .measure(
+                            10,
+                            1,
+                            0,
+                            [&[0u8; 66], &[1u8; 66]],
+                            [&[0u8; 16], &[0u8; 16]],
+                            [&[], &[]],
+                            [None, None],
+                        )
                         .map(|_| ()),
                     "ignore-shutdown" | "continuous-shutdown" => process.close().map(|_| ()),
                     _ => Ok(()),
@@ -1341,7 +1349,9 @@ pub fn campaign_deadline_interrupts_worker(dir: &Path) -> Result<String, String>
         .interrupted_operation
         .clone()
         .ok_or("campaign did not record the interrupted operation")?;
-    if !interrupted.contains("measure") {
+    if !interrupted.contains("campaign deadline")
+        || !(interrupted.contains("exec") || interrupted.contains("measure"))
+    {
         return Err(format!("unexpected interruption record {interrupted}"));
     }
     let history = read_history(&out)?;
@@ -1356,7 +1366,7 @@ pub fn campaign_deadline_interrupts_worker(dir: &Path) -> Result<String, String>
         return Err("hung campaign worker was not reaped".into());
     }
     Ok(format!(
-        "3 s campaign returned after {:.1}s although the worker never answered (operation limit 120 s): {interrupted}",
+        "3 s campaign returned after {:.1}s although the worker never answered the first request of the timed path (operation limit 120 s): {interrupted}",
         elapsed.as_secs_f64()
     ))
 }

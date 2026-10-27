@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifacts::{display_label, is_plain_label};
 use crate::measure::{LoadOrder, Measurer, WorkerMeasurer};
-use crate::scalar::ScalarPair;
-use crate::scenario::{PreparedPair, Scenario, boundary_seeds};
+use crate::scenario::{InputPair, PreparedPair, Scenario, diagnostic_order, scenario_seeds};
 use crate::search::{CandidateFile, CandidateKind, Provenance, seeded_candidate};
 use crate::tpm;
 use crate::worker::{BackendSpec, DudectOutcome, DudectPlan, DudectStatus, Limits, run_dudect};
@@ -96,7 +95,7 @@ pub enum Category {
 impl Category {
     pub fn describe(self) -> &'static str {
         match self {
-            Self::KnownIssueSkipped => "SKIP known timing issue (see per-backend results)",
+            Self::KnownIssueSkipped => "SKIP known issue (see per-backend results)",
             Self::ReproducibleSignalBoth => "reproducible timing signal in both backends",
             Self::ReproducibleSignalRustOnly => "reproducible signal in the Rust library only",
             Self::ReproducibleSignalReferenceOnly => {
@@ -217,13 +216,139 @@ impl RunRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionalCheck {
     #[serde(default)]
+    pub validations: Vec<crate::measure::ValidationRecord>,
+    #[serde(default)]
     pub worker_info: crate::worker::WorkerInfo,
     pub backend: String,
     pub ok: bool,
     pub detail: String,
     pub responses: Vec<String>,
+    /// True when the failure came from backend expectation resolution (for example a
+    /// failed or inconsistent RSAES capability probe), not from the measured response.
+    #[serde(default)]
+    pub backend_failure: bool,
+    /// Resolved backend evidence recorded as provenance whenever the backend probed
+    /// an RSAES contract for this check.
+    #[serde(default)]
+    pub rsaes_evidence: Option<crate::expectation::RsaesEvidence>,
 }
 
+/// A functional check together with the per-backend prepared pair it validated against.
+/// The prepared pair carries the backend-resolved expectations that the caller must use
+/// for any further measurement of this candidate on this backend.
+pub struct PreparedCheck {
+    pub check: FunctionalCheck,
+    pub prepared: Result<PreparedPair, String>,
+}
+
+type ProbeOutcome = Result<
+    (
+        PreparedPair,
+        [Vec<u8>; 2],
+        Vec<crate::measure::ValidationRecord>,
+    ),
+    (bool, String),
+>;
+
+#[allow(clippy::too_many_arguments)]
+pub fn functional_check_prepared(
+    worker: &Path,
+    backend: &BackendSpec,
+    pair: impl Into<InputPair>,
+    scenario: Scenario,
+    stderr: &Path,
+    limits: Limits,
+) -> PreparedCheck {
+    let label = backend.label();
+    let pair = pair.into();
+    let mut worker_info = crate::worker::WorkerInfo::new();
+    let mut rsaes_evidence = None;
+    let result = (|| -> ProbeOutcome {
+        let mut measurer = WorkerMeasurer::start(worker, backend.clone(), None, stderr, limits)
+            .map_err(|e| (true, e.to_string()))?;
+        worker_info = measurer.info();
+        let prepared = measurer.prepare(scenario, pair.clone()).map_err(|e| {
+            (
+                matches!(e, crate::measure::PrepareFailure::Backend(_)),
+                e.to_string(),
+            )
+        })?;
+        rsaes_evidence = prepared.metadata.rsaes_evidence.clone();
+        let loaded = measurer
+            .load(&prepared, LoadOrder::ClassAFirst)
+            .map_err(|e| (false, e.to_string()))?;
+        let responses = measurer.execute_once(&loaded);
+        let validations = measurer.validation_records();
+        let responses = responses.map_err(|e| (false, e.to_string()))?;
+        measurer
+            .close_checked()
+            .map_err(|e| (false, e.to_string()))?;
+        Ok((prepared, responses, validations))
+    })();
+    match result {
+        Ok((prepared, responses, validations)) => {
+            let failures: Vec<String> = (0..2)
+                .filter_map(|c| {
+                    prepared.classes[c]
+                        .validate(&responses[c])
+                        .err()
+                        .map(|e| format!("class {c}: {e}"))
+                })
+                .collect();
+            let mut check = FunctionalCheck {
+                validations,
+                worker_info,
+                backend: label,
+                ok: failures.is_empty(),
+                detail: if failures.is_empty() {
+                    "both classes matched the independently derived response (masked fields verified independently where randomized)".into()
+                } else {
+                    failures.join("; ")
+                },
+                responses: (0..2)
+                    .map(|c| hex::encode(prepared.classes[c].masked(&responses[c])))
+                    .collect(),
+                backend_failure: false,
+                rsaes_evidence,
+            };
+            if !check.ok {
+                check.detail = format!("functional failure: {}", check.detail);
+            }
+            PreparedCheck {
+                check,
+                prepared: Ok(prepared),
+            }
+        }
+        Err((backend_failure, detail)) => PreparedCheck {
+            check: FunctionalCheck {
+                validations: Vec::new(),
+                worker_info,
+                backend: label,
+                ok: false,
+                detail: if backend_failure {
+                    format!("backend/infrastructure failure: {detail}")
+                } else {
+                    detail.clone()
+                },
+                responses: Vec::new(),
+                backend_failure,
+                rsaes_evidence,
+            },
+            prepared: Err(detail),
+        },
+    }
+}
+
+pub fn functional_check(
+    worker: &Path,
+    backend: &BackendSpec,
+    pair: impl Into<InputPair>,
+    scenario: Scenario,
+    stderr: &Path,
+    limits: Limits,
+) -> FunctionalCheck {
+    functional_check_prepared(worker, backend, pair, scenario, stderr, limits).check
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VerificationOutcome {
@@ -307,8 +432,54 @@ pub fn aggregate_outcome(
     (outcome, detail)
 }
 
+/// The classification metadata of one backend's own expectations:
+/// difference kind, public differences and confounders exactly as validated on
+/// that backend, never a different backend's view of the same pair.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackendClassification {
+    #[serde(default)]
+    pub difference: Option<crate::scenario::DifferenceKind>,
+    #[serde(default)]
+    pub public_differences: Vec<String>,
+    #[serde(default)]
+    pub confounders: Vec<String>,
+    /// Backend-resolved capability evidence (RSAES profile and CFB chaining
+    /// contracts) as freshly probed while validating this classification.
+    #[serde(default)]
+    pub rsaes_evidence: Option<crate::expectation::RsaesEvidence>,
+    #[serde(default)]
+    pub sym_evidence: Option<crate::expectation::SymChainingEvidence>,
+}
+
+/// Agreement for the combined statement covers the classification triple only;
+/// the evidence fields identify the backend build and are never compared.
+impl PartialEq for BackendClassification {
+    fn eq(&self, other: &Self) -> bool {
+        self.difference == other.difference
+            && self.public_differences == other.public_differences
+            && self.confounders == other.confounders
+    }
+}
+impl Eq for BackendClassification {}
+
+impl BackendClassification {
+    pub fn of(metadata: &crate::scenario::PublicMetadata) -> Self {
+        Self {
+            difference: Some(metadata.difference),
+            public_differences: metadata.public_differences.clone(),
+            confounders: metadata.confounders.clone(),
+            rsaes_evidence: metadata.rsaes_evidence.clone(),
+            sym_evidence: metadata.sym_evidence.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateResult {
+    /// Per-backend validated classification, public differences and confounders;
+    /// a combined result must never silently borrow one backend's view.
+    #[serde(default)]
+    pub per_backend: BTreeMap<String, BackendClassification>,
     #[serde(default)]
     pub skipped: BTreeMap<String, crate::known_issues::KnownIssue>,
     #[serde(default)]
@@ -328,13 +499,77 @@ pub struct CandidateResult {
     pub retention_reason: String,
     pub functional: Vec<FunctionalCheck>,
     pub cross_backend_identical: Option<bool>,
+    /// True when every backend resolved an independently validated RSAES contract and the
+    /// resolved contracts differ: nonidentical cross-backend responses are then the
+    /// expected, visible outcome and not a functional failure.
+    #[serde(default)]
+    pub cross_backend_expected_divergence: bool,
     pub runs: Vec<RunRecord>,
     pub verdicts: BTreeMap<String, BackendVerdict>,
     pub category: Category,
+    #[serde(default)]
+    pub difference: Option<crate::scenario::DifferenceKind>,
+    #[serde(default)]
+    pub public_differences: Vec<String>,
+    #[serde(default)]
+    pub confounders: Vec<String>,
+    #[serde(default)]
+    pub control_check: Option<String>,
+}
+
+impl CandidateResult {
+    /// (difference kind, public differences, confounders) for a finding on one
+    /// backend: the classification actually validated on that backend; legacy
+    /// results without per-backend records fall back to the top-level fields.
+    pub fn finding_context(
+        &self,
+        backend: &str,
+    ) -> (crate::scenario::DifferenceKind, Vec<String>, Vec<String>) {
+        match self.per_backend.get(backend) {
+            Some(classification) => (
+                classification.difference.unwrap_or_default(),
+                classification.public_differences.clone(),
+                classification.confounders.clone(),
+            ),
+            None => (
+                self.difference.unwrap_or_default(),
+                self.public_differences.clone(),
+                self.confounders.clone(),
+            ),
+        }
+    }
+}
+
+pub fn apply_control_expectation(scenario: Scenario, result: &mut CandidateResult) {
+    let measured: Vec<(&String, &BackendVerdict)> = result
+        .verdicts
+        .iter()
+        .filter(|(_, v)| **v != BackendVerdict::SkippedKnownIssue)
+        .collect();
+    let problem = match scenario {
+        Scenario::TpmControlPositive => measured
+            .iter()
+            .find(|(_, v)| **v == BackendVerdict::NoSignalWithinBudget)
+            .map(|(b, _)| format!("positive control not detected on {b} within the budget: the command-level pipeline did not show its sensitivity")),
+        Scenario::TpmControlNegative => measured
+            .iter()
+            .find(|(_, v)| **v == BackendVerdict::ReproducibleSignal)
+            .map(|(b, _)| format!("negative control produced a reproducible signal on {b}: identical commands must not differ")),
+        _ => None,
+    };
+    if let Some(problem) = problem {
+        result.control_check = Some(problem);
+        result.category = Category::InfrastructureOrFunctionalFailure;
+        result.outcome = VerificationOutcome::Failed;
+    } else if scenario.is_tpm_control() {
+        result.control_check = Some("control expectation met or not yet decidable".into());
+    }
 }
 
 pub fn functional_ok(result: &CandidateResult) -> bool {
-    result.functional.iter().all(|f| f.ok) && result.cross_backend_identical != Some(false)
+    result.functional.iter().all(|f| f.ok)
+        && (result.cross_backend_expected_divergence
+            || result.cross_backend_identical != Some(false))
 }
 
 pub fn classify(result: &mut CandidateResult, repeats: usize) {
@@ -500,29 +735,17 @@ pub fn save_candidates(
     Ok(saved)
 }
 
-pub const DIAGNOSTIC_SEED_ORDER: &[&str] = &[
-    "order-minus-1-vs-small-1",
-    "small-1-vs-random",
-    "leading-zero-9-bytes-vs-full-width",
-    "order-minus-1-vs-random",
-    "limb-2^64-minus-1-vs-2^64",
-    "top-bit-2^520-vs-random",
-    "leading-zero-1-bytes-vs-full-width",
-    "small-2-vs-small-3",
-    "order-minus-2-vs-order-minus-1",
-];
-
 pub fn diagnostic_seeds(
     scenario: Scenario,
     campaign_seed: u64,
     count: usize,
 ) -> Vec<CandidateFile> {
-    let seeds = boundary_seeds(campaign_seed);
-    DIAGNOSTIC_SEED_ORDER
+    let seeds = scenario_seeds(scenario, campaign_seed, 0);
+    diagnostic_order(scenario)
         .iter()
         .filter_map(|name| seeds.iter().find(|s| s.name == *name))
         .take(count)
-        .map(|seed| seeded_candidate(scenario, &seed.name, seed.pair, campaign_seed))
+        .map(|seed| seeded_candidate(scenario, &seed.name, seed.pair.clone(), campaign_seed))
         .collect()
 }
 
@@ -532,94 +755,54 @@ pub fn dudect_plan(
     order: LoadOrder,
     config: &VerifyConfig,
 ) -> DudectPlan {
-    let (setup, commands) = match prepared.scenario {
-        Scenario::EcdhP521 => {
-            let mut setup = vec![tpm::startup_clear()];
-            let mut handles = [0u32; 2];
-            for (slot, class) in order.classes().into_iter().enumerate() {
-                setup.push(prepared.load_command(class).expect("ecdh loads objects"));
-                handles[class] = tpm::FIRST_TRANSIENT_HANDLE + slot as u32;
-            }
-            (
-                setup,
-                [
-                    prepared.measured_command(0, handles[0]),
-                    prepared.measured_command(1, handles[1]),
-                ],
-            )
-        }
-        _ => (
-            Vec::new(),
-            [
-                prepared.measured_command(0, 0),
-                prepared.measured_command(1, 0),
-            ],
-        ),
+    let resolved = prepared.resolve(order);
+    let setup = if prepared.has_tpm_state() {
+        let mut setup = vec![tpm::startup_clear()];
+        setup.extend(resolved.setup.iter().map(|s| s.command.clone()));
+        setup
+    } else {
+        Vec::new()
     };
+    let offset = usize::from(prepared.has_tpm_state());
+    let mut setup_patches = vec![Vec::new(); offset];
+    setup_patches.extend(resolved.setup.iter().map(|step| {
+        step.patches
+            .iter()
+            .cloned()
+            .map(|mut patch| {
+                patch.setup_index += offset;
+                patch
+            })
+            .collect()
+    }));
+    let patches = resolved.patches.clone().map(|list| {
+        list.into_iter()
+            .map(|mut p| {
+                p.setup_index += offset;
+                p
+            })
+            .collect()
+    });
     DudectPlan {
         backend: backend.clone(),
         cpu: config.cpu,
         setup,
-        class_commands: commands,
+        setup_patches,
+        class_commands: resolved.measured,
         expected: [
             prepared.classes[0].expected_response.clone(),
             prepared.classes[1].expected_response.clone(),
         ],
+        masks: [
+            prepared.classes[0].mask.clone(),
+            prepared.classes[1].mask.clone(),
+        ],
+        posts: resolved.post,
+        patches,
         warmup: config.warmup,
         batch: config.batch,
         budget: config.budget,
         time_limit_s: config.time_limit_s,
-    }
-}
-
-pub fn functional_check(
-    worker: &Path,
-    backend: &BackendSpec,
-    pair: ScalarPair,
-    scenario: Scenario,
-    stderr: &Path,
-    limits: Limits,
-) -> FunctionalCheck {
-    let label = backend.label();
-    let prepared = PreparedPair::prepare(scenario, pair);
-    let mut worker_info = crate::worker::WorkerInfo::new();
-    let result = (|| -> Result<[Vec<u8>; 2], String> {
-        let mut measurer = WorkerMeasurer::start(worker, backend.clone(), None, stderr, limits)
-            .map_err(|e| e.to_string())?;
-        worker_info = measurer.info();
-        let loaded = measurer
-            .load(&prepared, LoadOrder::ClassAFirst)
-            .map_err(|e| e.to_string())?;
-        let responses = measurer.execute_once(&loaded).map_err(|e| e.to_string())?;
-        measurer.close_checked().map_err(|e| e.to_string())?;
-        Ok(responses)
-    })();
-    match result {
-        Ok(responses) => {
-            let mismatched: Vec<usize> = (0..2)
-                .filter(|c| responses[*c] != prepared.classes[*c].expected_response)
-                .collect();
-            FunctionalCheck {
-                worker_info,
-                backend: label,
-                ok: mismatched.is_empty(),
-                detail: if mismatched.is_empty() {
-                    "both classes returned TPM_RC_SUCCESS and the shared point computed independently with the p521 crate".into()
-                } else {
-                    format!(
-                        "classes {mismatched:?} differ from the independently computed response"
-                    )
-                },
-                responses: responses.iter().map(hex::encode).collect(),
-            }
-        }
-        Err(detail) => FunctionalCheck {
-            worker_info,
-            backend: label,
-            ok: false,
-            detail,
-            responses: Vec::new(),
-        },
     }
 }
 
@@ -656,34 +839,18 @@ pub fn verify_candidate(
     progress: &mut dyn FnMut(&str),
 ) -> Result<CandidateResult, String> {
     let candidate = artifact.candidate;
-    let pair = candidate.pair()?;
+    let pair = candidate.inputs()?;
     crate::artifacts::create_new_dir(dir).map_err(|e| e.to_string())?;
-    let prepared = PreparedPair::prepare(candidate.scenario, pair);
+    // The pair must be reconstructible offline at all; the actual expectations
+    // used below are resolved per backend by fresh probes, never by this pass.
+    PreparedPair::try_prepare(candidate.scenario, pair.clone())?;
     let mut functional = Vec::new();
     let mut skipped = BTreeMap::new();
+    let mut prepared_by_backend: BTreeMap<String, PreparedPair> = BTreeMap::new();
     for target in targets {
-        let check = functional_check(
-            worker,
-            &target.spec,
-            pair,
-            candidate.scenario,
-            &dir.join(format!("functional-{}-stderr.log", target.spec.label())),
-            limits,
-        );
-        progress(&format!(
-            "functional check {} on {}: {}",
-            artifact.name,
-            target.spec.label(),
-            if check.ok { "ok" } else { "FAILED" }
-        ));
-        if check.ok
-            && !config.disable_known_case_skips
-            && let Some(issue) = crate::known_issues::timing_skip(
-                candidate.scenario,
-                pair,
-                &target.spec.label(),
-                &check.worker_info,
-            )
+        if !config.disable_known_case_skips
+            && let Some(issue) =
+                crate::known_issues::functional_skip(candidate.scenario, &target.spec.label())
         {
             progress(&format!(
                 "SKIP {} {} {}: {}",
@@ -693,6 +860,51 @@ pub fn verify_candidate(
                 issue.reason
             ));
             skipped.insert(target.spec.label(), issue);
+            continue; // Do not fabricate a successful FunctionalCheck for an unexecuted command.
+        }
+        let label = target.spec.label();
+        let outcome = functional_check_prepared(
+            worker,
+            &target.spec,
+            pair.clone(),
+            candidate.scenario,
+            &dir.join(format!("functional-{}-stderr.log", label)),
+            limits,
+        );
+        let check = outcome.check;
+        if check.backend_failure {
+            // A backend that could not resolve an independently validated contract is a
+            // failure of the measurement infrastructure, not of this candidate input.
+            progress(&format!(
+                "backend failure {} on {}: {}",
+                artifact.name, label, check.detail
+            ));
+            functional.push(check);
+            continue;
+        }
+        if let Ok(prepared) = &outcome.prepared {
+            prepared_by_backend.insert(label.clone(), prepared.clone());
+        }
+        progress(&format!(
+            "functional check {} on {}: {}",
+            artifact.name,
+            label,
+            if check.ok { "ok" } else { "FAILED" }
+        ));
+        if check.ok
+            && !config.disable_known_case_skips
+            && let Some(issue) = crate::known_issues::timing_skip(
+                candidate.scenario,
+                &pair,
+                &target.spec.label(),
+                &check.worker_info,
+            )
+        {
+            progress(&format!(
+                "SKIP {} {} {}: {}",
+                artifact.name, label, issue.id, issue.reason
+            ));
+            skipped.insert(label, issue);
         }
         functional.push(check);
     }
@@ -705,7 +917,41 @@ pub fn verify_candidate(
     } else {
         None
     };
+    // Only malformed RSAES padding with independently validated, different contracts on
+    // every backend may legitimately answer the same pair differently.
+    let prepared_metadata: Vec<&crate::scenario::PublicMetadata> =
+        prepared_by_backend.values().map(|p| &p.metadata).collect();
+    let expected_divergence =
+        crate::expectation::expected_divergence(candidate.scenario, &prepared_metadata);
+    let per_backend: BTreeMap<String, BackendClassification> = prepared_by_backend
+        .iter()
+        .map(|(backend, prepared)| {
+            (
+                backend.clone(),
+                BackendClassification::of(&prepared.metadata),
+            )
+        })
+        .collect();
+    // The top-level classification is a combined statement only when every
+    // backend's own validated classification agrees; a disagreement must stay
+    // visible per backend instead of silently borrowing one backend's view.
+    let agreed: Option<BackendClassification> = {
+        let mut iter = per_backend.values();
+        let first = iter.next();
+        first
+            .filter(|first| iter.all(|rest| rest == *first))
+            .cloned()
+    };
+    let (difference, public_differences, confounders) = match agreed {
+        Some(classification) => (
+            classification.difference,
+            classification.public_differences.clone(),
+            classification.confounders.clone(),
+        ),
+        None => (None, Vec::new(), Vec::new()),
+    };
     let mut result = CandidateResult {
+        per_backend,
         skipped,
         artifact: artifact.name.to_string(),
         content_sha256: candidate.content_sha256()?,
@@ -719,9 +965,14 @@ pub fn verify_candidate(
         retention_reason: candidate.retention_reason.clone(),
         functional,
         cross_backend_identical: cross,
+        cross_backend_expected_divergence: expected_divergence,
         runs: Vec::new(),
         verdicts: BTreeMap::new(),
         category: Category::InconclusiveOrIncomplete,
+        difference,
+        public_differences,
+        confounders,
+        control_check: None,
     };
     crate::artifacts::write_new(
         &dir.join("functional.json"),
@@ -738,7 +989,14 @@ pub fn verify_candidate(
                     continue;
                 }
                 let run_dir = dir.join(&label).join(format!("run-{repeat}"));
-                let plan = dudect_plan(&target.spec, &prepared, order, config);
+                let Some(prepared) = prepared_by_backend.get(&label) else {
+                    // Every non-skipped target with a passing functional check has a
+                    // prepared pair; if it is missing the check never ran or failed.
+                    return Err(format!(
+                        "{label}: no backend-resolved expectations for a candidate whose functional check passed"
+                    ));
+                };
+                let plan = dudect_plan(&target.spec, prepared, order, config);
                 let wall = Duration::from_secs_f64(config.time_limit_s + 120.0);
                 let outcome =
                     run_dudect(worker, &plan, &run_dir, wall).map_err(|e| e.to_string())?;
@@ -774,6 +1032,7 @@ pub fn verify_candidate(
         }
     }
     classify(&mut result, config.repeats);
+    apply_control_expectation(candidate.scenario, &mut result);
     crate::artifacts::write_new(
         &dir.join("result.json"),
         &serde_json::to_vec_pretty(&result).unwrap(),
@@ -788,6 +1047,7 @@ mod tests {
 
     fn result_with(runs: &[(&str, RunVerdict)], functional_ok: bool) -> CandidateResult {
         let mut result = CandidateResult {
+            per_backend: BTreeMap::new(),
             skipped: BTreeMap::new(),
             artifact: "x".into(),
             content_sha256: String::new(),
@@ -802,14 +1062,18 @@ mod tests {
             functional: ["rust", "reference"]
                 .iter()
                 .map(|b| FunctionalCheck {
+                    validations: Vec::new(),
                     worker_info: Default::default(),
                     backend: b.to_string(),
                     ok: functional_ok,
                     detail: String::new(),
                     responses: vec![],
+                    backend_failure: false,
+                    rsaes_evidence: None,
                 })
                 .collect(),
             cross_backend_identical: Some(true),
+            cross_backend_expected_divergence: false,
             runs: runs
                 .iter()
                 .enumerate()
@@ -832,6 +1096,10 @@ mod tests {
                 .collect(),
             verdicts: BTreeMap::new(),
             category: Category::InconclusiveOrIncomplete,
+            difference: None,
+            public_differences: Vec::new(),
+            confounders: Vec::new(),
+            control_check: None,
         };
         classify(&mut result, 2);
         result
@@ -973,9 +1241,67 @@ mod tests {
     }
 
     #[test]
+    fn classifications_are_kept_per_backend_and_never_borrowed() {
+        use crate::scenario::DifferenceKind;
+        let mut result = result_with(&[], true);
+        // Two backends validated different classifications for the same pair
+        // (explicit vs implicit RSAES rejection, for example).
+        let rust = BackendClassification {
+            difference: Some(DifferenceKind::Mixed),
+            public_differences: vec!["ciphertext".into()],
+            confounders: Vec::new(),
+            rsaes_evidence: None,
+            sym_evidence: None,
+        };
+        let reference = BackendClassification {
+            difference: Some(DifferenceKind::OutputSize),
+            public_differences: vec!["ciphertext".into()],
+            confounders: vec!["implicit rejection lengths".into()],
+            rsaes_evidence: None,
+            sym_evidence: None,
+        };
+        result.per_backend.insert("rust".into(), rust);
+        result.per_backend.insert("reference".into(), reference);
+        // The combined result must not silently borrow one backend's view.
+        assert_eq!(result.difference, None);
+        assert!(result.public_differences.is_empty());
+        assert!(result.confounders.is_empty());
+        // Each backend reads exactly its own validated classification.
+        assert_eq!(result.finding_context("rust").0, DifferenceKind::Mixed);
+        assert_eq!(result.finding_context("rust").1, vec!["ciphertext"]);
+        assert_eq!(
+            result.finding_context("reference").0,
+            DifferenceKind::OutputSize
+        );
+        assert_eq!(
+            result.finding_context("reference").2,
+            vec!["implicit rejection lengths"]
+        );
+        // A backend with no per-backend record (legacy result) falls back to
+        // the top-level fields.
+        let (kind, _, _) = result.finding_context("other");
+        assert_eq!(kind, DifferenceKind::Unclassified);
+        // When every backend agrees, the combined record states the shared
+        // classification instead of inventing one.
+        let mut agreeing = result.clone();
+        agreeing.per_backend.insert(
+            "reference".into(),
+            agreeing.per_backend.get("rust").cloned().unwrap(),
+        );
+        assert_eq!(
+            agreeing
+                .per_backend
+                .values()
+                .map(|c| c.difference)
+                .collect::<Vec<_>>(),
+            vec![Some(DifferenceKind::Mixed), Some(DifferenceKind::Mixed)]
+        );
+    }
+
+    #[test]
     fn verification_plans_carry_no_search_measurements() {
         let seed = &crate::scenario::seeds(3, 1)[0];
-        let mut candidate = seeded_candidate(Scenario::EcdhP521, "x", seed.pair, 3);
+        let mut candidate = seeded_candidate(Scenario::EcdhP521, "x", seed.pair.clone(), 3);
         candidate.search_raw = vec![crate::measure::RawBatch {
             seed: 0xdead_beef,
             order: "0101".into(),
@@ -1039,21 +1365,79 @@ mod tests {
     #[test]
     fn union_deduplicates_unordered_pairs() {
         let seed = &crate::scenario::seeds(5, 2)[0];
-        let a = seeded_candidate(Scenario::EcdhP521, "a", seed.pair, 5);
-        let swapped = ScalarPair {
-            a: seed.pair.b,
-            b: seed.pair.a,
-        };
+        let a = seeded_candidate(Scenario::EcdhP521, "a", seed.pair.clone(), 5);
+        let swapped = seed.pair.reversed();
         let b = seeded_candidate(Scenario::EcdhP521, "b", swapped, 5);
         let other = seeded_candidate(
             Scenario::EcdhP521,
             "c",
-            crate::scenario::seeds(5, 2)[1].pair,
+            crate::scenario::seeds(5, 2)[1].pair.clone(),
             5,
         );
         let (unique, total) = union_candidates(vec![a, b, other], 10).unwrap();
         assert_eq!(unique[0].provenance.len() + unique[1].provenance.len(), 3);
         assert_eq!(total, 2);
         assert_eq!(unique.len(), 2);
+    }
+
+    #[test]
+    fn tpm_controls_cannot_pass_on_functional_checks_alone() {
+        use RunVerdict::*;
+        let mut silent = result_with(
+            &[
+                ("rust", NoSignal),
+                ("reference", NoSignal),
+                ("rust", NoSignal),
+                ("reference", NoSignal),
+            ],
+            true,
+        );
+        apply_control_expectation(Scenario::TpmControlPositive, &mut silent);
+        assert_eq!(silent.outcome, VerificationOutcome::Failed);
+        assert!(silent.control_check.unwrap().contains("not detected"));
+        let mut detected = result_with(
+            &[
+                ("rust", Signal),
+                ("reference", Signal),
+                ("rust", Signal),
+                ("reference", Signal),
+            ],
+            true,
+        );
+        apply_control_expectation(Scenario::TpmControlPositive, &mut detected);
+        assert_eq!(detected.outcome, VerificationOutcome::Completed);
+        let mut noisy = result_with(
+            &[
+                ("rust", Signal),
+                ("reference", NoSignal),
+                ("rust", Signal),
+                ("reference", NoSignal),
+            ],
+            true,
+        );
+        apply_control_expectation(Scenario::TpmControlNegative, &mut noisy);
+        assert_eq!(noisy.outcome, VerificationOutcome::Failed);
+        let mut quiet = result_with(
+            &[
+                ("rust", NoSignal),
+                ("reference", NoSignal),
+                ("rust", NoSignal),
+                ("reference", NoSignal),
+            ],
+            true,
+        );
+        apply_control_expectation(Scenario::TpmControlNegative, &mut quiet);
+        assert_eq!(quiet.outcome, VerificationOutcome::Completed);
+        let mut other = result_with(
+            &[
+                ("rust", NoSignal),
+                ("reference", NoSignal),
+                ("rust", NoSignal),
+                ("reference", NoSignal),
+            ],
+            true,
+        );
+        apply_control_expectation(Scenario::EcdhP521, &mut other);
+        assert!(other.control_check.is_none());
     }
 }

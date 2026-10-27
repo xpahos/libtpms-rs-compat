@@ -32,10 +32,12 @@ use serde::{Deserialize, Serialize};
 use crate::artifacts::display_label;
 use crate::identity::sha256_bytes;
 use crate::measure::{LoadOrder, MeasureFailure, Measurer, RawBatch};
-use crate::scalar::{
-    PAIR_BYTES, SCALAR_BYTES, Scalar521, ScalarPair, offset, order_minus, power_of_two,
+use crate::scalar::ScalarPair;
+use crate::scenario::{
+    InputPair, PreparedPair, PublicMetadata, Scenario, SeedKind, SplitMix, boundary_mutation,
+    parse_pair, scenario_seeds,
 };
-use crate::scenario::{PreparedPair, PublicMetadata, Scenario, SeedKind, SplitMix, seeds};
+pub use crate::scenario::{LIMB_EXPONENTS, boundary_scalar, valid_scalar};
 use crate::stats::{BatchStats, Score, StatConfig, batch_stats, first_batch_passes, score};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +81,8 @@ pub enum Origin {
 pub struct Observation {
     #[serde(default)]
     pub skipped: Option<crate::known_issues::KnownIssue>,
+    #[serde(default)]
+    pub functional_validated: bool,
     pub evaluation: usize,
     pub origin: Origin,
     pub input_hex: String,
@@ -201,27 +205,30 @@ impl<M: Measurer> TimingExecutor<M> {
         prepared: &PreparedPair,
         observation: &mut Observation,
     ) -> Result<(), MeasureFailure> {
+        if let Some(issue) =
+            crate::known_issues::functional_skip(prepared.scenario, &self.measurer.label())
+        {
+            if self.config.disable_known_case_skips {
+                self.measurer.isolated_functional_probe(prepared)?;
+            } else {
+                observation.skipped = Some(issue);
+                return Ok(());
+            }
+        }
         let order = LoadOrder::from_bit(self.rng.next_u64() & 1 == 1);
         observation.load_order = Some(order);
         let loaded = self.measurer.load(prepared, order)?;
         observation.handles = loaded.handles;
+        functional_gate(&mut self.measurer, prepared, &loaded)?;
+        observation.functional_validated = true;
         if !self.config.disable_known_case_skips {
             observation.skipped = crate::known_issues::timing_skip(
                 prepared.scenario,
-                prepared.pair,
+                &prepared.pair,
                 &self.measurer.label(),
                 &self.measurer.info(),
             );
             if observation.skipped.is_some() {
-                let responses = self.measurer.execute_once(&loaded)?;
-                for (class, response) in responses.iter().enumerate() {
-                    if *response != prepared.classes[class].expected_response {
-                        return Err(MeasureFailure::Functional {
-                            class: Some(class),
-                            detail: "known-case functional response mismatch".into(),
-                        });
-                    }
-                }
                 return Ok(());
             }
         }
@@ -321,6 +328,7 @@ where
         let bytes = input.mutator_bytes();
         let mut observation = Observation {
             skipped: None,
+            functional_validated: false,
             evaluation,
             origin,
             input_hex: hex::encode(bytes),
@@ -338,10 +346,40 @@ where
             elapsed_s: 0.0,
         };
         let mut exit = ExitKind::Ok;
-        match ScalarPair::from_bytes(bytes) {
+        let prepared = parse_pair(self.config.scenario, bytes)
+            .map_err(crate::measure::PrepareFailure::Invalid)
+            .and_then(|pair| self.measurer.prepare(self.config.scenario, pair));
+        match prepared {
+            Err(error @ crate::measure::PrepareFailure::Backend(_)) => {
+                // A backend that cannot resolve an independently validated contract is an
+                // infrastructure failure for every later evaluation too; it must never be
+                // filed as one invalid candidate.
+                let detail = format!(
+                    "{}; campaign aborted, no further measurement on this backend",
+                    crate::measure::MeasureFailure::Infrastructure {
+                        detail: error.to_string()
+                    }
+                );
+                observation.failure = Some(MeasureFailure::Infrastructure {
+                    detail: detail.clone(),
+                });
+                observation.elapsed_s = started.elapsed().as_secs_f64();
+                let mut log = self.log.borrow_mut();
+                log.infrastructure_failure = Some(detail.clone());
+                log.history.push(HistoryEntry {
+                    observation,
+                    decision: Decision {
+                        candidate: false,
+                        seed_met_criteria: false,
+                        reason: format!(
+                            "backend/infrastructure failure during preparation; no timing result: {detail}"
+                        ),
+                    },
+                });
+                return Err(Error::illegal_state(detail));
+            }
             Err(error) => observation.invalid = Some(error.to_string()),
-            Ok(pair) => {
-                let prepared = PreparedPair::prepare(self.config.scenario, pair);
+            Ok(prepared) => {
                 observation.public_metadata = Some(prepared.metadata.clone());
                 if let Err(failure) = self.evaluate(&prepared, &mut observation) {
                     if let MeasureFailure::Timeout {
@@ -420,6 +458,22 @@ where
 pub struct FeedbackState {
     pub best: Option<f64>,
     pub retained: usize,
+}
+
+pub fn functional_gate<M: Measurer>(
+    measurer: &mut M,
+    prepared: &PreparedPair,
+    loaded: &crate::measure::LoadedPair,
+) -> Result<(), MeasureFailure> {
+    let responses = measurer.execute_once(loaded)?;
+    for (class, (prep, response)) in prepared.classes.iter().zip(&responses).enumerate() {
+        prep.validate(response)
+            .map_err(|detail| MeasureFailure::Functional {
+                class: Some(class),
+                detail,
+            })?;
+    }
+    Ok(())
 }
 
 pub fn decide(
@@ -698,12 +752,18 @@ fn nz(value: usize) -> NonZeroUsize {
 
 pub struct ScalarBoundaryMutator {
     name: Cow<'static, str>,
+    scenario: Scenario,
 }
 
 impl ScalarBoundaryMutator {
     pub fn new() -> Self {
+        Self::for_scenario(Scenario::EcdhP521)
+    }
+
+    pub fn for_scenario(scenario: Scenario) -> Self {
         Self {
             name: Cow::Borrowed("ScalarBoundaryMutator"),
+            scenario,
         }
     }
 }
@@ -720,67 +780,30 @@ impl Named for ScalarBoundaryMutator {
     }
 }
 
-pub const LIMB_EXPONENTS: [usize; 9] = [64, 128, 192, 256, 320, 384, 448, 512, 520];
-
-pub fn boundary_scalar(
-    op: usize,
-    r: u64,
-    current: &[u8; SCALAR_BYTES],
-    other: &[u8; SCALAR_BYTES],
-) -> [u8; SCALAR_BYTES] {
-    match op {
-        0 => {
-            let mut out = [0u8; SCALAR_BYTES];
-            out[SCALAR_BYTES - 2..].copy_from_slice(&((r % 0xffff) as u16 + 1).to_be_bytes());
-            out
-        }
-        1 => order_minus((r % 0xffff) as u128 + 1),
-        2 => {
-            let zeros = 1 + (r % 16) as usize;
-            let mut out = *current;
-            out[..zeros].fill(0);
-            out
-        }
-        3 => {
-            let exponent = LIMB_EXPONENTS[(r % LIMB_EXPONENTS.len() as u64) as usize];
-            let delta = ((r >> 8) % 3) as i64 - 1;
-            offset(power_of_two(exponent), delta)
-        }
-        4 => {
-            let mut out = *other;
-            let bit = (r % 521) as usize;
-            out[SCALAR_BYTES - 1 - bit / 8] ^= 1 << (bit % 8);
-            out
-        }
-        _ => {
-            let mut out = *current;
-            out[0] ^= 0x01;
-            out
-        }
-    }
-}
-
 impl<S> Mutator<BytesInput, S> for ScalarBoundaryMutator
 where
     S: HasRand,
 {
     fn mutate(&mut self, state: &mut S, input: &mut BytesInput) -> Result<MutationResult, Error> {
+        let width = crate::scenario::input_width(self.scenario);
         let bytes = input.mutator_bytes_mut();
-        if bytes.len() != PAIR_BYTES {
+        if bytes.len() != 2 * width {
             return Ok(MutationResult::Skipped);
         }
         let class = state.rand_mut().below(nz(2));
         let op = state.rand_mut().below(nz(6));
         let r = state.rand_mut().next();
-        let (first, second) = bytes.split_at_mut(SCALAR_BYTES);
+        let (first, second) = bytes.split_at_mut(width);
         let (target, other) = if class == 0 {
             (first, second)
         } else {
             (second, first)
         };
-        let current: [u8; SCALAR_BYTES] = (&*target).try_into().unwrap();
-        let other: [u8; SCALAR_BYTES] = (&*other).try_into().unwrap();
-        target.copy_from_slice(&boundary_scalar(op, r, &current, &other));
+        let mutated = boundary_mutation(self.scenario, op, r, target, other);
+        if mutated.len() != width {
+            return Ok(MutationResult::Skipped);
+        }
+        target.copy_from_slice(&mutated);
         Ok(MutationResult::Mutated)
     }
 
@@ -793,14 +816,20 @@ pub struct ValidPairMutator<M> {
     inner: M,
     log: SharedLog,
     name: Cow<'static, str>,
+    scenario: Scenario,
 }
 
 impl<M> ValidPairMutator<M> {
     pub fn new(inner: M, log: SharedLog) -> Self {
+        Self::for_scenario(inner, log, Scenario::EcdhP521)
+    }
+
+    pub fn for_scenario(inner: M, log: SharedLog, scenario: Scenario) -> Self {
         Self {
             inner,
             log,
             name: Cow::Borrowed("ValidPairMutator"),
+            scenario,
         }
     }
 }
@@ -825,7 +854,7 @@ where
             self.log.borrow_mut().unchanged_mutations += 1;
             return Ok(MutationResult::Skipped);
         }
-        if ScalarPair::from_bytes(mutated).is_err() {
+        if parse_pair(self.scenario, mutated).is_err() {
             self.log.borrow_mut().rejected_mutations += 1;
             *input = BytesInput::new(original);
             return Ok(MutationResult::Skipped);
@@ -857,6 +886,10 @@ pub enum Orientation {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Provenance {
+    #[serde(default)]
+    pub rsaes_evidence: Option<crate::expectation::RsaesEvidence>,
+    #[serde(default)]
+    pub sym_evidence: Option<crate::expectation::SymChainingEvidence>,
     pub label: String,
     pub kind: CandidateKind,
     pub search_backend: Option<String>,
@@ -897,10 +930,34 @@ pub struct CandidateFile {
     pub content_sha256: Option<String>,
     #[serde(default)]
     pub provenance: Vec<Provenance>,
+    /// The RSAES selector-encoding version these bytes are measured with;
+    /// a missing field (candidates saved before the versioned encoding)
+    /// decodes with the original `selector % 5` semantics for all 256 values.
+    /// Never inferred from a selector byte.
+    #[serde(default)]
+    pub selector_encoding: crate::scenario::RsaesSelectorSpace,
 }
 
 impl CandidateFile {
+    pub fn inputs(&self) -> Result<InputPair, String> {
+        self.check_format()?;
+        let mut bytes = self.scalar_a.clone();
+        bytes.extend_from_slice(&self.scalar_b);
+        let mut pair = parse_pair(self.scenario, &bytes)
+            .map_err(|e| format!("candidate {}: {e}", display_label(&self.id)))?;
+        pair.selector_space = self.selector_encoding;
+        Ok(pair)
+    }
+
     pub fn pair(&self) -> Result<ScalarPair, String> {
+        self.check_format()?;
+        let mut bytes = self.scalar_a.clone();
+        bytes.extend_from_slice(&self.scalar_b);
+        ScalarPair::from_bytes(&bytes)
+            .map_err(|e| format!("candidate {}: {e}", display_label(&self.id)))
+    }
+
+    fn check_format(&self) -> Result<(), String> {
         if self.format != CANDIDATE_FORMAT && self.format != LEGACY_CANDIDATE_FORMAT {
             return Err(format!(
                 "unsupported candidate format {:?} in candidate {}; this tool reads {CANDIDATE_FORMAT} and {LEGACY_CANDIDATE_FORMAT}; regenerate the candidate with `tpms-timing-tests search` or convert it to one of those formats",
@@ -908,23 +965,20 @@ impl CandidateFile {
                 display_label(&self.id)
             ));
         }
-        let mut bytes = self.scalar_a.clone();
-        bytes.extend_from_slice(&self.scalar_b);
-        ScalarPair::from_bytes(&bytes)
-            .map_err(|e| format!("candidate {}: {e}", display_label(&self.id)))
+        Ok(())
     }
 
     pub fn content_sha256(&self) -> Result<String, String> {
         Ok(crate::artifacts::content_sha256(
             self.scenario,
-            &self.pair()?,
+            self.inputs()?,
         ))
     }
 
     pub fn artifact_stem(&self) -> Result<String, String> {
         Ok(crate::artifacts::artifact_stem(
             self.scenario,
-            &self.pair()?,
+            self.inputs()?,
         ))
     }
 
@@ -943,6 +997,8 @@ impl CandidateFile {
 
     pub fn own_provenance(&self, source: Option<(&Path, String)>) -> Provenance {
         Provenance {
+            rsaes_evidence: self.public_metadata.rsaes_evidence.clone(),
+            sym_evidence: self.public_metadata.sym_evidence.clone(),
             label: self.id.clone(),
             kind: self.kind,
             search_backend: self.search_backend.clone(),
@@ -982,16 +1038,41 @@ impl CandidateFile {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        self.stored().map(|stored| {
+            crate::artifacts::write_new(path, &serde_json::to_vec_pretty(&stored).unwrap())
+        })?
+    }
+
+    /// Rewrites a candidate file that already exists, keeping its content
+    /// identity and only extending the recorded provenance.
+    pub fn replace(&self, path: &Path) -> std::io::Result<()> {
+        self.stored()
+            .and_then(|stored| std::fs::write(path, serde_json::to_vec_pretty(&stored).unwrap()))
+    }
+
+    fn stored(&self) -> std::io::Result<CandidateFile> {
         let mut stored = self.clone();
         stored.format = CANDIDATE_FORMAT.into();
         stored.content_sha256 = self.content_sha256().ok();
         if stored.provenance.is_empty() {
             stored.provenance.push(self.own_provenance(None));
         }
-        crate::artifacts::write_new(path, &serde_json::to_vec_pretty(&stored).unwrap())
+        Ok(stored)
     }
 
     pub fn merge(&mut self, other: &CandidateFile) -> Result<(), String> {
+        // Only RSAES-decoding scenarios read the selector encoding, so only
+        // there can identical bytes carry different meanings. Everywhere
+        // else the field is inert and legacy candidates must merge with
+        // current diagnostics unchanged.
+        if self.scenario.selector_semantics_matter()
+            && self.selector_encoding != other.selector_encoding
+        {
+            return Err(
+                "identical RSAES inputs recorded under different selector encodings cannot be merged; migrate them explicitly to one recorded encoding first"
+                    .into(),
+            );
+        }
         if self.scenario != other.scenario || self.content_sha256()? != other.content_sha256()? {
             return Err(
                 "only candidates with identical scenario and input content can be merged".into(),
@@ -1024,18 +1105,20 @@ impl CandidateFile {
 pub fn seeded_candidate(
     scenario: Scenario,
     name: &str,
-    pair: ScalarPair,
+    pair: impl Into<InputPair>,
     campaign_seed: u64,
 ) -> CandidateFile {
-    let prepared = PreparedPair::prepare(scenario, pair);
+    let pair = pair.into();
+    let prepared = PreparedPair::prepare(scenario, pair.clone());
     CandidateFile {
+        selector_encoding: pair.selector_space,
         format: CANDIDATE_FORMAT.into(),
         id: format!("seed-{name}"),
         scenario,
         kind: CandidateKind::SeededDiagnostic,
         search_backend: None,
-        scalar_a: pair.a.bytes().to_vec(),
-        scalar_b: pair.b.bytes().to_vec(),
+        scalar_a: pair.a.clone(),
+        scalar_b: pair.b.clone(),
         campaign_seed,
         evaluation: None,
         origin: Origin::Seed {
@@ -1157,7 +1240,7 @@ pub fn run_campaign<M: Measurer>(
     let scheduler = TimingWeightedScheduler::default();
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
     let mut manager = NopEventManager::new();
-    let seed_list = seeds(config.seed, config.random_seed_pairs);
+    let seed_list = scenario_seeds(config.scenario, config.seed, config.random_seed_pairs);
     let mut aborted: Option<String> = None;
     for seed in &seed_list {
         log.borrow_mut().next_origin = Some(Origin::Seed {
@@ -1181,7 +1264,7 @@ pub fn run_campaign<M: Measurer>(
     if state.corpus().count() == 0 && aborted.is_none() && log.borrow().stop_reason.is_none() {
         aborted = Some("no seed could be added to the corpus".into());
     }
-    let mutator = ValidPairMutator::new(
+    let mutator = ValidPairMutator::for_scenario(
         HavocScheduledMutator::with_max_stack_pow(
             tuple_list!(
                 BitFlipMutator::new(),
@@ -1194,12 +1277,13 @@ pub fn run_campaign<M: Measurer>(
                 QwordAddMutator::new(),
                 BytesCopyMutator::new(),
                 CrossoverReplaceMutator::new(),
-                ScalarBoundaryMutator::new(),
-                ScalarBoundaryMutator::new()
+                ScalarBoundaryMutator::for_scenario(config.scenario),
+                ScalarBoundaryMutator::for_scenario(config.scenario)
             ),
             config.mutation_stack_pow,
         ),
         log.clone(),
+        config.scenario,
     );
     let mut stages = tuple_list!(StdMutationalStage::with_max_iterations(
         mutator,
@@ -1266,7 +1350,7 @@ pub fn run_campaign<M: Measurer>(
         {
             seeds_meeting.push(name.clone());
             let bytes = hex::decode(&entry.observation.input_hex).expect("history input is hex");
-            let pair = ScalarPair::from_bytes(&bytes).expect("seed inputs are valid");
+            let pair = parse_pair(config.scenario, &bytes).expect("seed inputs are valid");
             let mut seeded = seeded_candidate(config.scenario, name, pair, config.seed);
             seeded.id = format!("{label}-seed-{name}");
             seeded.search_backend = Some(label.clone());
@@ -1280,6 +1364,12 @@ pub fn run_campaign<M: Measurer>(
             seeded.search_batches = entry.observation.batches.clone();
             seeded.search_run = search_run.map(Path::to_path_buf);
             seeded.config_sha256 = Some(config.sha256());
+            // The observation metadata is the per-backend pair actually validated
+            // (including a resolved RSAES contract and its evidence), not the
+            // contract-free metadata that seeded_candidate could compute offline.
+            if let Some(metadata) = &entry.observation.public_metadata {
+                seeded.public_metadata = metadata.clone();
+            }
             add(&mut seed_signals, seeded)?;
         }
         if !entry.decision.candidate {
@@ -1290,7 +1380,7 @@ pub fn run_campaign<M: Measurer>(
             entry.observation.score.ranking_value(),
         ));
         let bytes = hex::decode(&entry.observation.input_hex).expect("history input is hex");
-        let pair = ScalarPair::from_bytes(&bytes).expect("candidate inputs are valid");
+        let pair = parse_pair(config.scenario, &bytes).expect("candidate inputs are valid");
         let raw = log
             .raw
             .iter()
@@ -1303,8 +1393,8 @@ pub fn run_campaign<M: Measurer>(
             scenario: config.scenario,
             kind: CandidateKind::AdaptiveDiscovery,
             search_backend: Some(label.clone()),
-            scalar_a: pair.a.bytes().to_vec(),
-            scalar_b: pair.b.bytes().to_vec(),
+            scalar_a: pair.a.clone(),
+            scalar_b: pair.b.clone(),
             campaign_seed: config.seed,
             evaluation: Some(entry.observation.evaluation),
             origin: entry.observation.origin.clone(),
@@ -1321,6 +1411,7 @@ pub fn run_campaign<M: Measurer>(
                 .expect("valid inputs carry metadata"),
             content_sha256: None,
             provenance: Vec::new(),
+            selector_encoding: pair.selector_space,
         };
         add(&mut candidates, candidate)?;
     }
@@ -1392,8 +1483,4 @@ pub fn run_campaign<M: Measurer>(
         candidates,
         measurer,
     })
-}
-
-pub fn valid_scalar(bytes: &[u8]) -> bool {
-    Scalar521::from_slice(bytes).is_ok()
 }

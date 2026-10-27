@@ -1,8 +1,24 @@
 mod common;
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use common::*;
+
+fn crate_markdown_offender(dir: &Path) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in fs::read_dir(&current).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
 
 struct Case {
     name: &'static str,
@@ -28,7 +44,7 @@ fn check(case: &Case) {
             )
         })
         .collect();
-    let (code, stderr, run) = sandbox.verify(&files, case.args);
+    let (code, stdout, stderr, run) = sandbox.verify(&files, case.args);
     assert_eq!(
         code, case.exit,
         "{}: exit code; stderr:\n{stderr}",
@@ -47,22 +63,43 @@ fn check(case: &Case) {
     );
     let info = json(&run.join("run.json"));
     assert_eq!(info["state"], case.state, "{}: run state", case.name);
-    let summary = fs::read_to_string(run.join("summary.md")).unwrap();
+    // The per-run summary is the JSON artifact plus the plain-text stdout
+    // contract; no Markdown file is produced.
+    let summary = json(&run.join("summary.json"));
     let rendered = match case.outcome {
         "completed" => "Completed",
         "incomplete" => "Incomplete",
         _ => "Failed",
     };
-    assert!(
-        summary.contains(&format!("outcome {rendered}, exit {}", case.exit)),
-        "{}: summary does not state the outcome:\n{summary}",
+    assert_eq!(
+        summary["overall_outcome"], case.outcome,
+        "{}: summary outcome does not match",
         case.name
     );
+    assert!(
+        stdout.contains(&format!("verification outcome {rendered}")),
+        "{}: stdout does not state the outcome:\n{stdout}",
+        case.name
+    );
+    assert!(
+        !stdout.trim().is_empty(),
+        "{}: verify must emit final results on stdout",
+        case.name
+    );
+    assert!(
+        stdout.contains("summary: "),
+        "{}: stdout must point at the JSON artifact",
+        case.name
+    );
+    if let Some(offender) = crate_markdown_offender(&run) {
+        panic!("{}: generated Markdown: {}", case.name, offender.display());
+    }
     if case.outcome != "completed" {
         assert_ne!(results["all_candidates_processed"].as_bool(), None);
-        assert!(
-            !summary.contains("Overall verification outcome: **Completed**"),
-            "{}",
+        assert_ne!(
+            summary["overall_outcome"].as_str(),
+            Some("completed"),
+            "{}: incomplete work must not be presented as passing",
             case.name
         );
     }
@@ -139,7 +176,7 @@ fn inconsistent_v2_artifacts_are_rejected_and_legacy_v1_is_not_promoted() {
         "c.json",
         &candidate("rust-e00001", pair(5), "campaign"),
     );
-    let (code, _, run) = sandbox.verify(&[file], &[]);
+    let (code, _stdout, _stderr, run) = sandbox.verify(&[file], &[]);
     assert_eq!(code, 3);
 
     let mut results = json(&run.join("results.json"));
@@ -206,6 +243,6 @@ fn inconsistent_v2_artifacts_are_rejected_and_legacy_v1_is_not_promoted() {
             .unwrap()
             .contains("not as successful verification")
     );
-    let markdown = fs::read_to_string(out.join("report.md")).unwrap();
-    assert!(markdown.contains("Inconsistent legacy artifact"));
+    let report = fs::read_to_string(out.join("report.json")).unwrap();
+    assert!(report.contains("legacy_inconsistency"));
 }

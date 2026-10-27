@@ -2,7 +2,7 @@
 """Single-command native Linux launcher for the tpms-timing-tests pipeline.
 
 Usage from anywhere:  python3 timing-tests/run.py [options]
-See timing-tests/README.md for prerequisites, options and interpretation.
+Use --help for scenario selection, options and budgets.
 """
 
 import argparse
@@ -35,7 +35,9 @@ RANK = {"completed": 0, "incomplete": 1, "failed": 2}
 EXIT_USAGE = 2
 GRACE_SECONDS = 10.0
 REFERENCE_CONFIGURE = ["--with-tpm2", "--with-openssl", "--enable-shared", "--disable-static"]
-REFERENCE_RECIPE = 2
+REFERENCE_RECIPE = 3
+RUST_LIBRARY_FEATURES = ("tpm2", "timing-test-hooks")
+TIMING_TEST_SOURCES = ("timing-tests/drbg_reference.py", "timing-tests/c/drbg_hook.c")
 BUILD_SETTINGS = ("CC", "CFLAGS", "CPPFLAGS", "LDFLAGS", "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR")
 BASE_BUILD_ENV = ("PATH", "HOME", "TMPDIR")
 NORMALIZED_BUILD_ENV = (
@@ -122,15 +124,31 @@ def non_negative_int(text):
     return value
 
 
+SELECTION_HELP = """Choose what to test explicitly; there is no default scenario.
+A single scenario does not cover all cryptography. A full campaign can take
+many hours, especially RSA key generation, so it must be requested explicitly.
+Without a selection, no builds or measurements are started.
+
+Examples (run from the repository root):
+  python3 timing-tests/run.py --scenario ecdh-p521
+  python3 timing-tests/run.py --area rsa
+  python3 timing-tests/run.py --campaign
+
+Use --help to see budgets and other options."""
+
+
 def build_parser():
     parser = LauncherParser(
         prog="timing-tests/run.py",
         description=(
-            "Build both libtpms libraries and the timing-test tool, then run self-tests and live "
-            "controls, adaptive P-521 ECDH_ZGen searches on both libraries, independent dudect "
+            "Build isolated test copies of both libtpms libraries with controlled-state DRBG hooks "
+            "and the timing-test tool, then run self-tests and live "
+            "controls, adaptive searches of the selected scenarios on both libraries, independent dudect "
             "verification, replay of every verified candidate and the combined report. "
             "Exit status: 0 completed, 3 incomplete, 4 failed, 2 invalid launcher arguments."
         ),
+        epilog=SELECTION_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add = parser.add_argument
     add("--disable-known-case-skips", action="store_true", help="disable known-case skips and measure these cases too")
@@ -152,6 +170,10 @@ def build_parser():
     add("--output-dir", type=Path, default=None, help="new evidence directory; must not exist or must be empty (default: target/timing-tests/launcher/<timestamp>-<pid>)")
     add("--jobs", type=positive_int, default=None, help="parallel make jobs for the reference build (default: number of permitted CPUs)")
     add("--build-cache", type=Path, default=None, help="shared build cache directory (default: target/timing-tests/native); safe to share between concurrent invocations")
+    add("--scenario", action="append", default=[], help="scenario to measure (repeatable; see `tpms-timing-tests list-scenarios`); no default")
+    add("--area", action="append", default=[], help="measure every implemented scenario of this area (repeatable: ecdh, ecc-signature, rsa, symmetric, mac, kdf, keygen, random, auth-integrity, control)")
+    add("--campaign", action="store_true", help="measure every implemented scenario of the coverage matrix")
+    add("--replay-limit", type=non_negative_int, default=0, help="replay at most this many verified candidates per scenario (0 = all)")
     add("--fixture", type=Path, default=None, help=argparse.SUPPRESS)
     return parser
 
@@ -186,6 +208,9 @@ def validate(args, parser):
         for problem in problems:
             sys.stderr.write(f"{parser.prog}: error: {problem}\n")
         sys.exit(EXIT_USAGE)
+
+    if not (args.scenario or args.area or args.campaign):
+        parser.exit(EXIT_USAGE, f"{parser.prog}: {SELECTION_HELP}\n")
 
 
 def capture(argv, cwd=None, env=None):
@@ -335,6 +360,7 @@ class Launcher:
         self.interrupt_time = None
         self.cargo = ["cargo"]
         self.cpu = None
+        self.produced = []
         self.paths = {}
         self.compiler = None
         self.environment = {}
@@ -750,6 +776,12 @@ def record_environment(launcher):
             "rust_library": launcher.source_digest(repo, ["src", "Cargo.toml", "build.rs"]),
         },
         "root_cargo_lock_sha256": sha256_file(repo / "Cargo.lock") if (repo / "Cargo.lock").is_file() else None,
+        "timing_test_hooks": {
+            "rust_features": list(RUST_LIBRARY_FEATURES),
+            "reference_source_features": ["timing-test-hooks"],
+            "symbol": "TPMS_TIMING_DRBG_v1",
+            "drbg_measurement_scope": "fixed-size state restore, production DRBG generate and result serialization",
+        },
         "cpu": {"selected": launcher.cpu, "affinity": allowed_cpus()},
         "host_settings": "the launcher does not change CPU governors, turbo, scheduling policy or any other system setting",
     }
@@ -855,24 +887,28 @@ def publish_artifact(launcher, stage, name, source, destination, mode):
     return entry
 
 
-def build_cargo_artifact(launcher, name, title, manifest, target_name, product, key, artifact, mode, fixture_kind):
+def build_cargo_artifact(launcher, name, title, manifest, target_name, product, key, artifact, mode, fixture_kind, features=()):
     stage = launcher.new_stage(name, title)
     launcher.begin(stage)
     target = launcher.cache / target_name
     output = target / "release" / product
+    configuration = {"manifest": str(manifest), "target_dir": str(target), "profile": "release", "locked": True, "features": list(features)}
+    stage.record["build_configuration"] = configuration
     with CacheLock(launcher, stage, target_name):
         if launcher.fixture:
             launcher.run_checked(stage, [sys.executable, launcher.fixture / "fake_build.py", fixture_kind, output], env_extra={"CARGO_TARGET_DIR": target, **compiler_environment(launcher)})
         else:
-            launcher.run_checked(stage, [*launcher.cargo, "build", "--release", "--locked", "--manifest-path", manifest],
+            feature_args = ["--features", ",".join(features)] if features else []
+            launcher.run_checked(stage, [*launcher.cargo, "build", "--release", "--locked", "--manifest-path", manifest, *feature_args],
                                  env_extra={"CARGO_TARGET_DIR": target, **compiler_environment(launcher)})
-        publish_artifact(launcher, stage, key, output, launcher.artifacts / artifact, mode)
+        entry = publish_artifact(launcher, stage, key, output, launcher.artifacts / artifact, mode)
+        entry["build_configuration"] = configuration
     return stage
 
 
 def build_stage_rust(launcher):
-    stage = build_cargo_artifact(launcher, "build-rust-library", "build the Rust libtpms library (release, --locked) and take a private copy",
-                                 launcher.repo / "Cargo.toml", "rust-lib-target", "libtpms.so", "rust_library", "rust_library.so", 0o444, "rust-library")
+    stage = build_cargo_artifact(launcher, "build-rust-library", "build the test-only Rust libtpms library with controlled-state DRBG hooks and take a private copy",
+                                 launcher.repo / "Cargo.toml", "rust-lib-timing-hooks-target", "libtpms.so", "rust_library", "rust_library.so", 0o444, "rust-library", RUST_LIBRARY_FEATURES)
     launcher.finish(stage, "completed", exit_code=0)
 
 
@@ -1137,6 +1173,8 @@ def reference_fingerprint(launcher, commit, env, settings):
         "recipe": REFERENCE_RECIPE,
         "commit": commit,
         "configure": REFERENCE_CONFIGURE,
+        "source_features": ["timing-test-hooks"],
+        "timing_test_sources": {name: sha256_file(launcher.repo / name) for name in TIMING_TEST_SOURCES},
         "settings": settings,
         "compiler": compiler,
         "openssl": openssl,
@@ -1190,6 +1228,11 @@ def build_reference_into(launcher, stage, staging, commit, env):
                 else:
                     bundle.extractall(source)
             archive.unlink()
+            # Only the fresh archive is patched; the vendored checkout remains untouched.
+            # Synthetic fixture sources intentionally exercise only the build machinery.
+            from drbg_reference import prepare_reference
+
+            prepare_reference(source)
         alias = space_free(staging)
         launcher.run_checked(stage, ["sh", "./autogen.sh"], cwd=alias / "source", env_exact={**env, "NOCONFIGURE": "1"})
         launcher.run_checked(stage, [alias / "source" / "configure", *REFERENCE_CONFIGURE], cwd=alias / "build", env_exact=env)
@@ -1201,7 +1244,7 @@ def build_reference_into(launcher, stage, staging, commit, env):
 
 
 def build_stage_reference(launcher):
-    stage = launcher.new_stage("build-reference-library", "build (or reuse) the pinned C libtpms reference and take a private copy")
+    stage = launcher.new_stage("build-reference-library", "build (or reuse) a test-only pinned C libtpms reference with controlled-state DRBG hooks and take a private copy")
     launcher.begin(stage)
     commit = launcher.paths.get("reference_commit") or "fixture"
     env, settings, normalized = reference_build_environment(os.environ)
@@ -1256,7 +1299,9 @@ def build_stage_reference(launcher):
                     shutil.rmtree(staging, ignore_errors=True)
             if reference_entry_state(entry, key) != "valid":
                 raise StageFailure(f"published reference cache entry {entry} failed validation")
-        publish_artifact(launcher, stage, "reference_library", entry / "build" / "src" / ".libs" / "libtpms.so", launcher.artifacts / "reference_library.so", 0o444)
+        artifact = publish_artifact(launcher, stage, "reference_library", entry / "build" / "src" / ".libs" / "libtpms.so", launcher.artifacts / "reference_library.so", 0o444)
+        artifact["source_features"] = fingerprint["source_features"]
+        artifact["build_fingerprint"] = key
         include_copy = launcher.artifacts / "include"
         digest = copy_tree_immutable(entry / "source" / "include", include_copy)
         launcher.summary["artifacts"]["libtpms_include"] = {"path": str(include_copy), "sha256": digest, "cache_source": str(entry / "source" / "include")}
@@ -1349,6 +1394,9 @@ def rust_stage(launcher, name, title, args, expect_run=True):
     code = launcher.run(stage, tool_argv(launcher, *args, "--out-dir", out), env_extra=tool_environment(launcher))
     run_dirs = sorted(p for p in out.iterdir() if p.is_dir())
     stage.record["run_dirs"] = [str(p) for p in run_dirs]
+    for produced in run_dirs:
+        if (produced / "run.json").is_file() and produced not in launcher.produced:
+            launcher.produced.append(produced)
     stage.record["out_dir"] = str(out)
     if stage.record["commands"][-1].get("cancelled_by_signal"):
         launcher.finish(stage, "incomplete", f"cancelled by signal; partial evidence kept in {out}", exit_code=code)
@@ -1409,6 +1457,10 @@ def pipeline(launcher):
         "control_search_evaluations": args.control_search_evaluations,
         "control_verify_budget": args.control_verify_budget,
         "replay_batches": args.replay_batches,
+        "scenarios_requested": args.scenario,
+        "areas_requested": args.area,
+        "campaign": args.campaign,
+        "replay_limit": args.replay_limit,
         "operation_timeout_s": args.operation_timeout_s,
         "cpu": args.cpu,
         "jobs": args.jobs,
@@ -1487,7 +1539,7 @@ def pipeline(launcher):
             args.verify_time_limit_s,
         ],
     )
-    launcher.produced = [selftest_run] if selftest_run else []
+    _ = selftest_run
     try:
         published = publish_worker_dependencies(launcher)
         if published:
@@ -1496,14 +1548,84 @@ def pipeline(launcher):
         launcher.summary["explanations"].append(f"could not publish worker dependencies to the shared cache: {error}")
     if stage.record["outcome"] != "completed":
         return "controls"
+    try:
+        scenarios = resolve_scenarios(launcher)
+    except StageFailure as error:
+        # Record the selection failure as a real failed stage: earlier
+        # successful stages must not aggregate to a completed run with no
+        # selected scenarios. Dependent stages stay skipped for the record.
+        stage = launcher.new_stage("check", "functional check of the selected scenarios")
+        stage.record["log"] = None
+        detail = f"scenario selection failed: {error}"
+        launcher.summary["explanations"].append(detail)
+        launcher.finish(stage, "failed", detail)
+        return "selection"
+    launcher.summary["scenarios"] = scenarios
+    check_args = ["check", "--backend", "both", "--rust-lib", rust, "--reference-lib", reference, "--seed", args.seed]
+    for scenario in scenarios:
+        check_args += ["--scenario", scenario]
+    stage, check_run = rust_stage(launcher, "check", "functional check of every boundary seed of the selected scenarios on both libraries", check_args)
+    failed_checks = check_failures(check_run)
+    stage.record["failed_scenarios"] = sorted(failed_checks)
+    if stage.record["outcome"] != "completed" and not failed_checks:
+        return "check"
+    campaign = len(scenarios) > 1
+    stopped = None
+    for scenario in scenarios:
+        suffix = f"-{scenario}" if campaign else ""
+        if scenario in failed_checks:
+            for name in ("search-rust", "search-reference", "verify", "replay"):
+                launcher.skip(f"{name}{suffix}", f"{name} {scenario}", "not run because the functional check of this scenario failed")
+            if not campaign:
+                return "check-failed"
+            continue
+        result = scenario_pipeline(launcher, scenario, suffix, rust, reference)
+        if result is not None and not campaign:
+            return result
+        stopped = stopped or result
+    return None
+
+
+def resolve_scenarios(launcher):
+    args = launcher.args
+    if not (args.campaign or args.area):
+        return args.scenario
+    selected = list(args.scenario)
+    queries = [[]] if args.campaign else [["--area", area] for area in args.area]
+    for query in queries:
+        argv = [str(launcher.paths["tool"]), "list-scenarios", "--implemented", *query]
+        result = subprocess.run(argv, capture_output=True, text=True, env=tool_environment(launcher))
+        if result.returncode != 0:
+            raise StageFailure(f"{' '.join(argv)} failed: {result.stderr.strip()}")
+        for line in result.stdout.splitlines():
+            name = line.split("\t")[0]
+            if name and name not in ("control-positive", "control-negative") and name not in selected:
+                selected.append(name)
+    return selected
+
+
+def check_failures(run_dir):
+    if run_dir is None:
+        return set()
+    try:
+        data = json.loads((run_dir / "check.json").read_text())
+    except (OSError, ValueError):
+        return set()
+    return {row["scenario"] for row in data.get("results", []) if not row.get("ok")}
+
+
+def scenario_pipeline(launcher, scenario, suffix, rust, reference):
+    args = launcher.args
     search_runs = []
     for backend, library_flag, library in (("rust", "--rust-lib", rust), ("reference", "--reference-lib", reference)):
         stage, run_dir = rust_stage(
             launcher,
-            f"search-{backend}",
-            f"adaptive search on the {backend} library",
+            f"search-{backend}{suffix}",
+            f"adaptive search of {scenario} on the {backend} library",
             [
                 "search",
+                "--scenario",
+                scenario,
                 "--backend",
                 backend,
                 library_flag,
@@ -1518,16 +1640,19 @@ def pipeline(launcher):
                 args.search_samples,
             ],
         )
-        if run_dir:
-            launcher.produced.append(run_dir)
         if stage.record["outcome"] == "failed":
+            if suffix:
+                for name in ("verify", "replay"):
+                    launcher.skip(f"{name}{suffix}", f"{name} {scenario}", "not run because an adaptive search of this scenario failed")
             return "search"
         if stage.record["outcome"] == "completed":
             search_runs.append(run_dir)
         else:
-            launcher.summary["explanations"].append(f"search-{backend} was incomplete; its candidates are excluded from verification")
+            launcher.summary["explanations"].append(f"search-{backend}{suffix} was incomplete; its candidates are excluded from verification")
     verify_args = [
         "verify",
+        "--scenario",
+        scenario,
         "--backend",
         "both",
         "--rust-lib",
@@ -1552,25 +1677,30 @@ def pipeline(launcher):
     ]
     for run_dir in search_runs:
         verify_args += ["--search-run", run_dir]
-    stage, verify_run = rust_stage(launcher, "verify", "independent dudect verification of the search candidates and boundary diagnostics", verify_args)
-    if verify_run:
-        launcher.produced.append(verify_run)
+    stage, verify_run = rust_stage(launcher, f"verify{suffix}", f"independent dudect verification of the {scenario} search candidates and boundary diagnostics", verify_args)
     if stage.record["outcome"] == "failed":
+        if suffix:
+            launcher.skip(f"replay{suffix}", f"replay {scenario}", "not run because verification of this scenario failed")
         return "verify"
     results_path = verify_run / "results.json" if verify_run else None
     try:
         results = json.loads(results_path.read_text())
         candidates = [Path(entry["candidate_file"]) for entry in results["results"]]
     except (AttributeError, OSError, ValueError, KeyError, TypeError) as error:
-        launcher.skip("replay", "replay every verified candidate", f"verification results unavailable: {error}")
+        launcher.skip(f"replay{suffix}", "replay every verified candidate", f"verification results unavailable: {error}")
         return "replay-input"
     if not candidates:
-        launcher.skip("replay", "replay every verified candidate", "verification produced no candidate results")
+        launcher.skip(f"replay{suffix}", "replay every verified candidate", "verification produced no candidate results")
         return None
+    if args.replay_limit and len(candidates) > args.replay_limit:
+        launcher.summary["explanations"].append(
+            f"{scenario}: replayed {args.replay_limit} of {len(candidates)} verified candidates (--replay-limit)"
+        )
+        candidates = candidates[: args.replay_limit]
     for index, candidate in enumerate(candidates, 1):
         stage, run_dir = rust_stage(
             launcher,
-            f"replay-{index:02d}",
+            f"replay{suffix}-{index:02d}",
             f"replay {candidate.name}",
             [
                 "replay",
@@ -1591,12 +1721,11 @@ def pipeline(launcher):
             ],
         )
         stage.record["candidate"] = str(candidate)
-        if run_dir:
-            launcher.produced.append(run_dir)
+        _ = run_dir
     return None
 
 
-def validate_report(report_json, report_md):
+def validate_report(report_json):
     try:
         text = report_json.read_text()
     except OSError as error:
@@ -1613,10 +1742,6 @@ def validate_report(report_json, report_md):
     runs = report.get("runs", [])
     if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
         raise ValueError("report.json runs is not a list of objects")
-    try:
-        report_md.read_text()
-    except OSError as error:
-        raise ValueError(f"report.md is unreadable: {error}")
     return report
 
 
@@ -1628,10 +1753,9 @@ def report_stage(launcher):
         launcher.skip("report", "generate the combined report", reason)
         launcher.summary["explanations"].append(f"no Rust report was generated: {reason}")
         return
-    stage = launcher.new_stage("report", "generate the combined JSON and Markdown report from saved artifacts")
+    stage = launcher.new_stage("report", "generate the combined JSON report from saved artifacts")
     launcher.begin(stage)
     report_json = launcher.report_dir / "report.json"
-    report_md = launcher.report_dir / "report.md"
     launcher.summary["report"] = None
     try:
         code = launcher.run(stage, [tool, "report", *produced, "--output", launcher.report_dir])
@@ -1645,7 +1769,7 @@ def report_stage(launcher):
         launcher.finish(stage, "failed", f"report command exited with status {code}; no report is claimed", exit_code=code)
         return
     try:
-        report = validate_report(report_json, report_md)
+        report = validate_report(report_json)
         expected = None
         for run_dir in produced:
             state = json.loads((run_dir / "run.json").read_text()).get("state")
@@ -1663,18 +1787,21 @@ def report_stage(launcher):
     if launcher.interrupt_signal is not None:
         launcher.finish(stage, "incomplete", "interrupted after the report command completed; the report is not claimed", exit_code=code)
         return
-    launcher.summary["report"] = {"json": str(report_json), "markdown": str(report_md)}
+    launcher.summary["report"] = {"json": str(report_json)}
     launcher.finish(stage, "completed", exit_code=code)
 
 
 SKIP_AFTER = {
-    "prerequisites": ("prerequisites are missing", ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "search-rust", "search-reference", "verify", "replay"]),
-    "build": ("a build stage failed", ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "search-rust", "search-reference", "verify", "replay"]),
-    "controls": ("the self-test or live controls did not complete", ["search-rust", "search-reference", "verify", "replay"]),
+    "prerequisites": ("prerequisites are missing", ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "check", "search-rust", "search-reference", "verify", "replay"]),
+    "build": ("a build stage failed", ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "check", "search-rust", "search-reference", "verify", "replay"]),
+    "controls": ("the self-test or live controls did not complete", ["check", "search-rust", "search-reference", "verify", "replay"]),
     "search": ("an adaptive search failed", ["verify", "replay"]),
     "verify": ("verification failed", ["replay"]),
     "replay-input": (None, []),
-    "internal": ("the launcher hit an internal error", ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "search-rust", "search-reference", "verify", "replay"]),
+    "selection": ("the scenario selection failed", ["search-rust", "search-reference", "verify", "replay"]),
+    "check": ("the functional check failed", ["search-rust", "search-reference", "verify", "replay"]),
+    "check-failed": (None, []),
+    "internal": ("the launcher hit an internal error", ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "check", "search-rust", "search-reference", "verify", "replay"]),
 }
 
 
@@ -1737,7 +1864,7 @@ def main(argv=None):
             for stage in launcher.stages:
                 if stage.record["status"] == "running":
                     launcher.finish(stage, "incomplete", "interrupted")
-            for name in ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "search-rust", "search-reference", "verify", "replay", "report"]:
+            for name in ["build-rust-library", "build-reference-library", "build-timing-tool", "isolate-artifacts", "self-test", "check", "search-rust", "search-reference", "verify", "replay", "report"]:
                 if name not in names and not any(n.startswith(name) for n in names):
                     launcher.skip(name, name, f"not started: launcher interrupted by {sig}")
         else:
@@ -1758,7 +1885,7 @@ def main(argv=None):
     launcher.say(f"overall outcome: {outcome.upper()} (exit {EXIT_CODES[outcome]})")
     report = launcher.summary.get("report")
     if report:
-        launcher.say(f"report: {report['markdown']}")
+        launcher.say(f"report: {report['json']}")
         launcher.say(f"report outcome recorded by the timing tool: {launcher.summary['rust_report_overall_outcome']}")
     else:
         launcher.say("report: none generated (see explanations below)")

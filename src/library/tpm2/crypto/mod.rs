@@ -23,6 +23,8 @@ mod rand_state;
 mod rsa;
 mod sha_state;
 mod sym;
+#[cfg(feature = "timing-test-hooks")]
+mod timing_drbg;
 #[cfg(test)]
 pub(in crate::library::tpm2) mod work;
 

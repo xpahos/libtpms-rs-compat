@@ -141,6 +141,45 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), WorkerError> {
     Ok(())
 }
 
+// A private directory keeps every intermediate file off shared cache paths. The
+// destination parent also guarantees hard-link/rename publication stays on one filesystem.
+struct BuildStaging(PathBuf);
+
+impl BuildStaging {
+    fn new(parent: &Path) -> Result<Self, WorkerError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let path = parent.join(format!(
+                ".staging-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+impl Drop for BuildStaging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+// Keep the first completed artifact. Later callers never truncate or replace an
+// executable already returned to another caller (which could be running it).
+fn publish_cached_file(staged: &Path, destination: &Path) -> Result<(), WorkerError> {
+    match fs::hard_link(staged, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn download(url: &str, destination: &Path) -> Result<(), WorkerError> {
     let output = Command::new("curl")
         .args(["-fsSL", "--retry", "3", "-o"])
@@ -169,7 +208,8 @@ pub fn ensure_dudect(work: &Path) -> Result<DudectSource, WorkerError> {
         if path.exists() && verify_checksum(&path, expected).is_ok() {
             continue;
         }
-        let partial = dir.join(format!("{local}.partial"));
+        let staging = BuildStaging::new(&dir)?;
+        let partial = staging.0.join(local);
         let url =
             format!("https://raw.githubusercontent.com/oreparaz/dudect/{DUDECT_REVISION}/{remote}");
         download(&url, &partial)?;
@@ -191,10 +231,10 @@ pub fn ensure_dudect(work: &Path) -> Result<DudectSource, WorkerError> {
                 .into(),
         modified: false,
     };
-    fs::write(
-        dir.join("SOURCE.json"),
-        serde_json::to_vec_pretty(&source).unwrap(),
-    )?;
+    let staging = BuildStaging::new(&dir)?;
+    let manifest = staging.0.join("SOURCE.json");
+    fs::write(&manifest, serde_json::to_vec_pretty(&source).unwrap())?;
+    fs::rename(manifest, dir.join("SOURCE.json"))?;
     Ok(source)
 }
 
@@ -253,12 +293,26 @@ pub fn build_worker(work: &Path, libtpms_include: &Path) -> Result<WorkerBinary,
     }
     let compiler = std::env::var("CC").unwrap_or_else(|_| "cc".into());
     let compiler_version = compiler_version(&compiler);
+    build_worker_cached(work, libtpms_include, dudect, compiler, compiler_version)
+}
+
+fn build_worker_cached(
+    work: &Path,
+    libtpms_include: &Path,
+    dudect: DudectSource,
+    compiler: String,
+    compiler_version: String,
+) -> Result<WorkerBinary, WorkerError> {
     let build = work.join("build");
     fs::create_dir_all(&build)?;
-    let source_path = build.join("worker.c");
-    fs::write(&source_path, WORKER_SOURCE)?;
+    let source_hash = sha256_bytes(WORKER_SOURCE.as_bytes());
+    let source_path = build.join(format!("worker-{source_hash}.c"));
+    let staging = BuildStaging::new(&build)?;
+    let staged_source = staging.0.join("worker.c");
+    fs::write(&staged_source, WORKER_SOURCE)?;
+    publish_cached_file(&staged_source, &source_path)?;
     let key_material = format!(
-        "{}\n{}\n{}\n{:?}\n{}",
+        "atomic-publication-v1\n{}\n{}\n{}\n{:?}\n{}",
         sha256_bytes(WORKER_SOURCE.as_bytes()),
         DUDECT_HEADER_SHA256,
         compiler_version,
@@ -280,8 +334,14 @@ pub fn build_worker(work: &Path, libtpms_include: &Path) -> Result<WorkerBinary,
     }
     command.push("-lm".into());
     if !output.exists() {
-        let result = Command::new(&command[0])
-            .args(&command[1..])
+        let staged_output = staging.0.join("worker");
+        // Record reproducible cache-path arguments in metadata, while compiling
+        // into private staging so the cache only exposes a completed executable.
+        let mut build_command = command.clone();
+        let output_index = build_command.iter().position(|arg| arg == "-o").unwrap() + 1;
+        build_command[output_index] = staged_output.display().to_string();
+        let result = Command::new(&build_command[0])
+            .args(&build_command[1..])
             .output()
             .map_err(|e| WorkerError::Compile(format!("cannot run {compiler}: {e}")))?;
         if !result.status.success() {
@@ -289,6 +349,7 @@ pub fn build_worker(work: &Path, libtpms_include: &Path) -> Result<WorkerBinary,
                 String::from_utf8_lossy(&result.stderr).into_owned(),
             ));
         }
+        publish_cached_file(&staged_output, &output)?;
     }
     Ok(WorkerBinary {
         sha256: sha256_file(&output)?,
@@ -366,9 +427,9 @@ impl BackendSpec {
             Self::Control { scenario } => match scenario {
                 Scenario::ControlPositive => Ok(("control".into(), "positive".into())),
                 Scenario::ControlNegative => Ok(("control".into(), "negative".into())),
-                Scenario::EcdhP521 => Err(WorkerError::Protocol(
-                    "ecdh-p521 needs a library backend".into(),
-                )),
+                other => Err(WorkerError::Protocol(format!(
+                    "{other} needs a library backend"
+                ))),
             },
         }
     }
@@ -525,14 +586,44 @@ pub enum MeasureReply {
         order: String,
         nv_stores_warmup: u64,
         nv_stores_measured: u64,
+        cleanup: CleanupStatus,
     },
     Mismatch {
         class: usize,
         tpmlib_rc: u32,
         response: Vec<u8>,
         nv_stores_measured: u64,
+        cleanup: CleanupStatus,
     },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CleanupStatus {
+    NotNeeded,
+    Ok,
+    Failed,
+    NotReported,
+}
+
+impl CleanupStatus {
+    pub fn parse(value: Option<&String>) -> Self {
+        match value.map(String::as_str) {
+            Some("ok") => Self::Ok,
+            Some("failed") => Self::Failed,
+            Some("not-needed") => Self::NotNeeded,
+            _ => Self::NotReported,
+        }
+    }
+
+    pub fn recovered(self) -> bool {
+        matches!(self, Self::Ok | Self::NotNeeded)
+    }
+}
+
+pub const POST_FAILED_RC: u32 = 0xffff_fffe;
+/// Test-worker program failed; its one-shot TPM state cannot be reused.
+pub const PROGRAM_FAILED_RC: u32 = 0xffff_fffd;
 
 impl WorkerProcess {
     pub fn spawn(
@@ -833,6 +924,7 @@ impl WorkerProcess {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn measure(
         &mut self,
         rounds: usize,
@@ -840,11 +932,14 @@ impl WorkerProcess {
         warmup: usize,
         commands: [&[u8]; 2],
         expected: [&[u8]; 2],
+        masks: [&[u8]; 2],
+        posts: [Option<&(Vec<u8>, Vec<u8>)>; 2],
     ) -> Result<MeasureReply, WorkerError> {
-        let result = self.measure_inner(rounds, seed, warmup, commands, expected);
+        let result = self.measure_inner(rounds, seed, warmup, commands, expected, masks, posts);
         self.note_failure(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn measure_inner(
         &mut self,
         rounds: usize,
@@ -852,20 +947,41 @@ impl WorkerProcess {
         warmup: usize,
         commands: [&[u8]; 2],
         expected: [&[u8]; 2],
+        masks: [&[u8]; 2],
+        posts: [Option<&(Vec<u8>, Vec<u8>)>; 2],
     ) -> Result<MeasureReply, WorkerError> {
         let (deadline, bound) = self.limits.bound(self.limits.operation);
-        self.send(
-            "measure",
-            &format!(
-                "measure {rounds} {seed:016x} {warmup} {} {} {} {}",
-                hex::encode(commands[0]),
-                hex::encode(expected[0]),
-                hex::encode(commands[1]),
-                hex::encode(expected[1])
-            ),
-            deadline,
-            bound,
-        )?;
+        let mut request = format!(
+            "measure {rounds} {seed:016x} {warmup} {} {} {} {}",
+            hex::encode(commands[0]),
+            hex::encode(expected[0]),
+            hex::encode(commands[1]),
+            hex::encode(expected[1])
+        );
+        if masks.iter().any(|m| !m.is_empty()) || posts.iter().any(Option::is_some) {
+            let field = |bytes: &[u8]| {
+                if bytes.is_empty() {
+                    "-".to_string()
+                } else {
+                    hex::encode(bytes)
+                }
+            };
+            for class in 0..2 {
+                request.push(' ');
+                request.push_str(&field(masks[class]));
+                match posts[class] {
+                    Some((command, response)) => {
+                        request.push_str(&format!(
+                            " {} {}",
+                            hex::encode(command),
+                            hex::encode(response)
+                        ));
+                    }
+                    None => request.push_str(" - -"),
+                }
+            }
+        }
+        self.send("measure", &request, deadline, bound)?;
         let begin = self.read_line("measure", deadline, bound)?;
         if begin != "measure-begin" {
             return Err(WorkerError::Protocol(format!("unexpected {begin:?}")));
@@ -901,6 +1017,7 @@ impl WorkerProcess {
                 response: hex::decode(parts.get(2).copied().unwrap_or(""))
                     .map_err(|_| WorkerError::Protocol("bad response".into()))?,
                 nv_stores_measured,
+                cleanup: CleanupStatus::parse(fields.get("cleanup")),
             });
         }
         let parse_ticks = |key: &str| -> Result<Vec<u64>, WorkerError> {
@@ -931,6 +1048,7 @@ impl WorkerProcess {
             order: fields.get("order").cloned().unwrap_or_default(),
             nv_stores_warmup,
             nv_stores_measured,
+            cleanup: CleanupStatus::parse(fields.get("cleanup")),
         })
     }
 
@@ -1020,8 +1138,16 @@ pub struct DudectPlan {
     pub backend: BackendSpec,
     pub cpu: Option<usize>,
     pub setup: Vec<Vec<u8>>,
+    #[serde(default)]
+    pub setup_patches: Vec<Vec<crate::scenario::layout::ResolvedPatch>>,
     pub class_commands: [Vec<u8>; 2],
     pub expected: [Vec<u8>; 2],
+    #[serde(default)]
+    pub masks: [Vec<u8>; 2],
+    #[serde(default)]
+    pub posts: [Option<(Vec<u8>, Vec<u8>)>; 2],
+    #[serde(default)]
+    pub patches: [Vec<crate::scenario::layout::ResolvedPatch>; 2],
     pub warmup: usize,
     pub batch: usize,
     pub budget: usize,
@@ -1039,6 +1165,38 @@ impl DudectPlan {
         for command in &self.setup {
             out.push_str(&format!("setup {}\n", hex::encode(command)));
         }
+        if self.setup.len() > 64 || self.setup_patches.iter().map(Vec::len).sum::<usize>() > 64 * 16
+        {
+            return Err(WorkerError::Protocol(
+                "too many setup commands or patches".into(),
+            ));
+        }
+        for (target, patches) in self.setup_patches.iter().enumerate() {
+            for patch in patches {
+                if target >= self.setup.len()
+                    || patch.setup_index >= target
+                    || patch.len == 0
+                    || patch
+                        .at
+                        .checked_add(patch.len)
+                        .is_none_or(|end| end > self.setup[target].len())
+                    || patch.from.checked_add(patch.len).is_none()
+                    || patch.xor.len() != patch.len
+                {
+                    return Err(WorkerError::Protocol(
+                        "invalid setup patch dependency or bounds".into(),
+                    ));
+                }
+                out.push_str(&format!(
+                    "setup-patch {target} {} {} {} {} {}\n",
+                    patch.at,
+                    patch.setup_index,
+                    patch.from,
+                    patch.len,
+                    hex::encode(&patch.xor)
+                ));
+            }
+        }
         for class in 0..2 {
             out.push_str(&format!(
                 "class{class} {}\n",
@@ -1048,6 +1206,26 @@ impl DudectPlan {
                 "expect{class} {}\n",
                 hex::encode(&self.expected[class])
             ));
+            if !self.masks[class].is_empty() {
+                out.push_str(&format!(
+                    "mask{class} {}\n",
+                    hex::encode(&self.masks[class])
+                ));
+            }
+            if let Some((command, response)) = &self.posts[class] {
+                out.push_str(&format!("post{class} {}\n", hex::encode(command)));
+                out.push_str(&format!("postexpect{class} {}\n", hex::encode(response)));
+            }
+            for patch in &self.patches[class] {
+                out.push_str(&format!(
+                    "patch {class} {} {} {} {} {}\n",
+                    patch.at,
+                    patch.setup_index,
+                    patch.from,
+                    patch.len,
+                    hex::encode(&patch.xor)
+                ));
+            }
         }
         out.push_str(&format!("warmup {}\n", self.warmup));
         out.push_str(&format!("batch {}\n", self.batch));
@@ -1309,6 +1487,88 @@ mod tests {
     use super::*;
 
     #[test]
+    fn concurrent_cold_worker_builds_publish_only_complete_executables() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+
+        let root = std::env::temp_dir().join(format!("worker-cache-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("libtpms")).unwrap();
+        fs::write(root.join("libtpms/tpm_library.h"), "fixture").unwrap();
+        let compiler = root.join("compiler.sh");
+        fs::write(
+            &compiler,
+            r#"#!/bin/sh
+root=$(dirname "$0")
+while [ "$1" != "-o" ]; do shift; done
+shift
+out=$1
+shift
+source=$1
+# Simulate a linker creating its output before making it executable.
+printf 'partial' > "$out"
+printf '%s' "$source" > "$root/started"
+while [ ! -f "$root/release" ]; do sleep 0.01; done
+printf '#!/bin/sh\nprintf complete' > "$out"
+chmod 755 "$out"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).unwrap();
+        let dudect = DudectSource {
+            repository: "fixture".into(),
+            revision: "fixture".into(),
+            header: root.join("dudect.h"),
+            header_sha256: "fixture".into(),
+            license: root.join("LICENSE"),
+            license_sha256: "fixture".into(),
+            license_name: "fixture".into(),
+            modified: false,
+        };
+        let build = || {
+            let binary = build_worker_cached(
+                &root,
+                &root,
+                dudect.clone(),
+                compiler.display().to_string(),
+                "fixture".into(),
+            )
+            .unwrap();
+            let result = Command::new(&binary.path).output();
+            (binary, result)
+        };
+        std::thread::scope(|scope| {
+            let first = scope.spawn(build);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !root.join("started").exists() {
+                assert!(Instant::now() < deadline, "compiler did not start");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let (tx, rx) = mpsc::channel();
+            let second_build = &build;
+            let second = scope.spawn(move || {
+                tx.send(second_build()).unwrap();
+            });
+            // A caller must wait for publication instead of observing the partial linker output.
+            let premature = rx.recv_timeout(Duration::from_millis(150)).ok();
+            fs::write(root.join("release"), "go").unwrap();
+            let first = first.join().unwrap();
+            second.join().unwrap();
+            let second = premature.or_else(|| rx.recv().ok()).unwrap();
+            for (binary, result) in [&first, &second] {
+                let output = result
+                    .as_ref()
+                    .expect("cache returned an unfinished executable");
+                assert!(output.status.success());
+                assert_eq!(output.stdout, b"complete");
+                assert_eq!(binary.sha256, sha256_file(&binary.path).unwrap());
+            }
+            assert_eq!(first.0.path, second.0.path);
+        });
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn bounded_text_never_splits_characters_or_rejects_bytes() {
         assert_eq!(bounded_text(b"short", DIAGNOSTIC_BYTES), "short");
         assert_eq!(bounded_text(b"", DIAGNOSTIC_BYTES), "");
@@ -1438,8 +1698,12 @@ mod tests {
             backend: spec,
             cpu: None,
             setup: vec![],
+            setup_patches: vec![],
             class_commands: [vec![1; 66], vec![2; 66]],
             expected: [vec![0; 16], vec![0; 16]],
+            masks: Default::default(),
+            posts: Default::default(),
+            patches: Default::default(),
             warmup: 1,
             batch: 100,
             budget: 1000,

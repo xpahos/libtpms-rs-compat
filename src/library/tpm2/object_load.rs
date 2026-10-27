@@ -977,6 +977,49 @@ mod tests {
     }
 
     #[test]
+    fn keyed_hash_key_limit_records_null_scheme_long_key_reachability() {
+        use crate::library::tpm2::algorithm::{
+            TPM_ALG_SHA1, TPM_ALG_SHA256, TPM_ALG_SHA384, TPM_ALG_SHA512,
+        };
+        use crate::library::tpm2::persistent::{OwnedPublicId, OwnedTpmtPublic};
+        use crate::library::tpm2::public::Scheme;
+        let public = |scheme: u16, hash_alg: Option<u16>| OwnedTpmtPublic {
+            object_type: TPM_ALG_KEYEDHASH,
+            name_alg: TPM_ALG_SHA256,
+            object_attributes: 0,
+            auth_policy: Vec::new(),
+            parameters: super::PublicParms::KeyedHash(Scheme {
+                scheme,
+                hash_alg,
+                count: None,
+                kdf: None,
+            }),
+            unique: OwnedPublicId::KeyedHash(Vec::new()),
+        };
+        // Fixed HMAC schemes bound the key by the hash block size in this port.
+        for (hash, block) in [
+            (TPM_ALG_SHA1, 64),
+            (TPM_ALG_SHA256, 64),
+            (TPM_ALG_SHA384, 128),
+            (TPM_ALG_SHA512, 128),
+        ] {
+            assert_eq!(
+                keyed_hash_key_limit(&public(TPM_ALG_HMAC, Some(hash))).unwrap(),
+                block,
+                "hash {hash:#06x}"
+            );
+        }
+        // A NULL scheme (the long-key MAC construction) reaches the full
+        // MAX_SYM_DATA transport bound instead of the hash block size.
+        assert_eq!(
+            keyed_hash_key_limit(&public(TPM_ALG_NULL, None)).unwrap(),
+            128
+        );
+        assert!(keyed_hash_key_limit(&public(0x0014, None)).is_err());
+        assert!(keyed_hash_key_limit(&public(TPM_ALG_XOR, None)).is_err());
+    }
+
+    #[test]
     fn oversized_sensitive_field_size_errors() {
         for (sensitive_type, secret) in [
             (TPM_ALG_KEYEDHASH, vec![0u8; MAX_SYM_DATA + 1]),

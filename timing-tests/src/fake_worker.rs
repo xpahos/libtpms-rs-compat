@@ -123,7 +123,7 @@ fn serve() -> ExitCode {
                     }
                 }
             }
-            Some("measure") if parts.len() == 8 => {
+            Some("measure") if parts.len() == 8 || parts.len() == 14 => {
                 let rounds: usize = parts[1].parse().unwrap_or(0);
                 let seed = u64::from_str_radix(parts[2], 16).unwrap_or(1);
                 let commands = [

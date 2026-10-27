@@ -112,7 +112,7 @@ fn verification_and_replay_use_each_candidates_own_pair() {
             &second,
         ),
     ];
-    let (code, stderr, run) = sandbox.verify(&files, &[]);
+    let (code, _stdout, stderr, run) = sandbox.verify(&files, &[]);
     assert_eq!(code, 0, "{stderr}");
     let results = json(&run.join("results.json"));
     let entries = results["results"].as_array().unwrap();
@@ -221,7 +221,7 @@ fn identical_inputs_from_different_campaigns_merge_provenance() {
             &candidate("rust-e00002", reversed, "campaign-c"),
         ),
     ];
-    let (code, stderr, run) = sandbox.verify(&files, &[]);
+    let (code, _stdout, stderr, run) = sandbox.verify(&files, &[]);
     assert_eq!(code, 0, "{stderr}");
     let results = json(&run.join("results.json"));
     let entries = results["results"].as_array().unwrap();
@@ -255,7 +255,7 @@ fn unsafe_labels_never_become_paths() {
         "c.json",
         &candidate("../../../escape", pair(11), "campaign"),
     );
-    let (code, stderr, run) = sandbox.verify(&[file], &[]);
+    let (code, _stdout, stderr, run) = sandbox.verify(&[file], &[]);
     assert_eq!(code, 0, "{stderr}");
     assert!(!sandbox.root.join("escape").exists());
     let results = json(&run.join("results.json"));
@@ -280,7 +280,7 @@ fn generated_seed_diagnostics_carry_provenance() {
     let sandbox = Sandbox::new("diagnostic-provenance");
     sandbox.serve_mode("normal");
     sandbox.modes(&["nosignal"; 8]);
-    let (code, stderr, run) = sandbox.verify(
+    let (code, _stdout, stderr, run) = sandbox.verify(
         &[],
         &["--scenario", "control-positive", "--seed-diagnostics", "2"],
     );

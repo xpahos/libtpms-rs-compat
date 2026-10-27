@@ -47,12 +47,12 @@ fn report(sandbox: &Sandbox, runs: &[&Path], name: &str) -> (serde_json::Value, 
     args.extend(runs.iter().map(|r| r.display().to_string()));
     args.extend(["--output".into(), out.display().to_string()]);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (code, stderr) = sandbox.run(&refs);
+    let (code, stdout, stderr) = sandbox.run_with_stdout(&refs);
     assert_eq!(code, 0, "report failed: {stderr}");
-    (
-        json(&out.join("report.json")),
-        fs::read_to_string(out.join("report.md")).unwrap(),
-    )
+    // Plain-text stdout summary plus the JSON artifact, and never any
+    // generated Markdown.
+    sandbox.assert_no_markdown(&out);
+    (json(&out.join("report.json")), stdout)
 }
 
 fn assert_run(run: &Path, state: &str, summary_outcome: &str) {
@@ -81,7 +81,7 @@ fn search_worker_exiting_nonzero_after_valid_work_fails_the_run() {
     assert_run(&run, "failed", "failed");
     let (report, markdown) = report(&sandbox, &[&run], "r");
     assert_eq!(report["overall_outcome"], "failed");
-    assert!(markdown.contains("Overall outcome across all runs: **Failed**"));
+    assert!(markdown.contains("Overall outcome across all runs: Failed"));
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn verify_worker_failing_at_shutdown_or_vanishing_fails_the_run() {
             "c.json",
             &candidate("rust-e00001", pair(3), "campaign"),
         );
-        let (code, stderr, run) = sandbox.verify(&[file], &[]);
+        let (code, _stdout, stderr, run) = sandbox.verify(&[file], &[]);
         assert_eq!(code, 4, "{mode}: {stderr}");
         let results = json(&run.join("results.json"));
         assert_eq!(results["outcome"], "failed", "{mode}");
@@ -166,10 +166,10 @@ fn verification_failing_at_probe_is_aggregated_in_any_order() {
         "c.json",
         &candidate("rust-e00001", pair(6), "campaign"),
     );
-    let (code, stderr, completed) = sandbox.verify(std::slice::from_ref(&file), &[]);
+    let (code, _stdout, stderr, completed) = sandbox.verify(std::slice::from_ref(&file), &[]);
     assert_eq!(code, 0, "{stderr}");
     sandbox.serve_mode("exit9-on-quit");
-    let (code, stderr, failed) = sandbox.verify(&[file], &[]);
+    let (code, _stdout, stderr, failed) = sandbox.verify(&[file], &[]);
     assert_eq!(code, 4, "{stderr}");
     assert!(
         !failed.join("results.json").exists(),
@@ -189,15 +189,15 @@ fn verification_failing_at_probe_is_aggregated_in_any_order() {
         alone["verifications_without_results"][0]["outcome"],
         "failed"
     );
-    assert!(markdown.contains("Overall verification outcome: **Failed**"));
-    assert!(markdown.contains("contributes **Failed**") && markdown.contains("exit code 9"));
+    assert!(markdown.contains("Overall verification outcome: Failed"));
+    assert!(markdown.contains("contributes Failed") && markdown.contains("exit code 9"));
 
     for (name, order) in [("cf", [&completed, &failed]), ("fc", [&failed, &completed])] {
         let (combined, markdown) = report(&sandbox, &[order[0], order[1]], name);
         assert_eq!(combined["overall_outcome"], "failed", "{name}");
         assert_eq!(combined["overall_verification_outcome"], "failed", "{name}");
         assert!(
-            markdown.contains("Overall verification outcome: **Failed**"),
+            markdown.contains("Overall verification outcome: Failed"),
             "{name}"
         );
     }
@@ -218,7 +218,7 @@ fn verification_failing_at_probe_is_aggregated_in_any_order() {
         let (only, markdown) = report(&sandbox, &[&copy], &format!("r-{state}"));
         assert_eq!(only["overall_verification_outcome"], expected, "{state}");
         assert!(
-            markdown.contains("Overall verification outcome: **Incomplete**"),
+            markdown.contains("Overall verification outcome: Incomplete"),
             "{state}"
         );
         let (with_completed, _) = report(&sandbox, &[&completed, &copy], &format!("rc-{state}"));
@@ -335,7 +335,7 @@ fn interrupted_checkpoint(name: &str, first: [&str; 2], expected: &str) {
         "Incomplete"
     };
     assert!(
-        markdown.contains(&format!("Overall verification outcome: **{rendered}**")),
+        markdown.contains(&format!("Overall verification outcome: {rendered}")),
         "{markdown}"
     );
 }

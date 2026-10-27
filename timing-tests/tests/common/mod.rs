@@ -10,6 +10,26 @@ use tpms_timing_tests::search::{CandidateFile, CandidateKind, seeded_candidate};
 
 pub const BIN: &str = env!("CARGO_BIN_EXE_tpms-timing-tests");
 
+fn walkdir_markdown(dir: &Path) -> Vec<PathBuf> {
+    let mut offenders = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                offenders.push(path);
+            }
+        }
+    }
+    offenders
+}
+
 pub struct Sandbox {
     pub root: PathBuf,
     pub wrapper: PathBuf,
@@ -54,6 +74,11 @@ impl Sandbox {
     }
 
     pub fn run(&self, args: &[&str]) -> (i32, String) {
+        let (code, _, stderr) = self.run_with_stdout(args);
+        (code, stderr)
+    }
+
+    pub fn run_with_stdout(&self, args: &[&str]) -> (i32, String, String) {
         let output = Command::new(BIN)
             .arg("--worker-executable")
             .arg(&self.wrapper)
@@ -63,11 +88,23 @@ impl Sandbox {
             .unwrap();
         (
             output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
             String::from_utf8_lossy(&output.stderr).into_owned(),
         )
     }
 
-    pub fn verify(&self, candidates: &[PathBuf], extra: &[&str]) -> (i32, String, PathBuf) {
+    /// No generated Markdown may exist anywhere below this directory.
+    pub fn assert_no_markdown(&self, dir: &Path) {
+        let offenders: Vec<PathBuf> = walkdir_markdown(dir);
+        assert!(
+            offenders.is_empty(),
+            "generated Markdown must not be produced: {offenders:?}"
+        );
+    }
+
+    /// Runs `verify` and returns (exit code, stdout, stderr, run directory);
+    /// final results land on stdout and operational errors on stderr.
+    pub fn verify(&self, candidates: &[PathBuf], extra: &[&str]) -> (i32, String, String, PathBuf) {
         let before = self.run_dirs();
         let mut args: Vec<String> = vec![
             "verify".into(),
@@ -100,14 +137,14 @@ impl Sandbox {
         merged.extend(extra.iter().map(|s| s.to_string()));
         args.extend(merged);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let (code, stderr) = self.run(&refs);
+        let (code, stdout, stderr) = self.run_with_stdout(&refs);
         let after: Vec<PathBuf> = self
             .run_dirs()
             .into_iter()
             .filter(|d| !before.contains(d))
             .collect();
         assert_eq!(after.len(), 1, "expected one new run directory: {stderr}");
-        (code, stderr, after[0].clone())
+        (code, stdout, stderr, after[0].clone())
     }
 
     pub fn run_dirs(&self) -> Vec<PathBuf> {

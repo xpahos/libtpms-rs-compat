@@ -1219,6 +1219,7 @@ mod tests {
             "test_support.rs",
             "memcheck.rs",
             "crypto_outputs/findings.rs",
+            "crypto/timing_drbg.rs",
             "command/crypto/ecc/memcheck_flows.rs",
         ];
 
@@ -1277,6 +1278,12 @@ mod tests {
         }
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/library/tpm2");
+        let crypto_modules = std::fs::read_to_string(root.join("crypto/mod.rs"))
+            .expect("the crypto module declarations are readable");
+        assert!(
+            crypto_modules.contains("#[cfg(feature = \"timing-test-hooks\")]\nmod timing_drbg;"),
+            "the controlled-state timing adapter must remain gated from ordinary builds"
+        );
         let mut violations = Vec::new();
         visit(&root, &root, rules, &mut violations);
         assert!(
