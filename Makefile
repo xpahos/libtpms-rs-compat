@@ -29,6 +29,9 @@ ABI_GENERATOR   := scripts/generate_libtpms_abi.py
 ABI_OUTPUT      := src/generated/tpm_library_abi.rs
 TIS_HEADER      := libtpms/include/libtpms/tpm_tis.h
 TIS_ABI_OUTPUT  := src/generated/tpm_tis_abi.rs
+MEMORY_HEADER   := libtpms/include/libtpms/tpm_memory.h
+MEMORY_ABI_OUTPUT := src/generated/tpm_memory_abi.rs
+PUBLIC_SYMBOLS  := libtpms/src/libtpms.syms
 FFI_TYPES       := src/types/mod.rs
 
 PA_FIXTURE_GENERATOR := scripts/generate_pa_compile_constants_fixture.py
@@ -86,7 +89,7 @@ JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
 ########################## Build and validation ###################
 
-.PHONY: build generate-abi test-abi-tools test-abi test-rust check clean
+.PHONY: build generate-abi test-abi-tools test-abi test-rust test-exports check clean
 
 build:
 	$(CARGO) build $(CARGO_BUILD_FLAGS)
@@ -103,6 +106,9 @@ generate-abi:
 	$(PYTHON) $(ABI_GENERATOR) \
 		--header $(TIS_HEADER) \
 		--output $(TIS_ABI_OUTPUT)
+	$(PYTHON) $(ABI_GENERATOR) \
+		--header $(MEMORY_HEADER) \
+		--output $(MEMORY_ABI_OUTPUT)
 
 test-abi-tools:
 	$(PYTHON) -m unittest discover -s scripts/tests
@@ -125,6 +131,13 @@ test-abi: test-abi-tools
 		--output "$$tmp/tpm_tis_abi.rs" >/dev/null && \
 	if ! diff -u $(TIS_ABI_OUTPUT) "$$tmp/tpm_tis_abi.rs"; then \
 		echo "error: $(TIS_ABI_OUTPUT) is stale; run 'make generate-abi' and commit the result" >&2; \
+		exit 1; \
+	fi && \
+	$(PYTHON) $(ABI_GENERATOR) \
+		--header $(MEMORY_HEADER) \
+		--output "$$tmp/tpm_memory_abi.rs" >/dev/null && \
+	if ! diff -u $(MEMORY_ABI_OUTPUT) "$$tmp/tpm_memory_abi.rs"; then \
+		echo "error: $(MEMORY_ABI_OUTPUT) is stale; run 'make generate-abi' and commit the result" >&2; \
 		exit 1; \
 	fi && \
 	echo "check-generated-abi: OK"
@@ -167,7 +180,12 @@ test-rust:
 	$(CARGO) check
 	$(CARGO) test --all-features
 
-check: golden-audit test-abi test-rust
+test-exports: $(CARGO_BUILT_LIB)
+	$(PYTHON) scripts/verify_public_symbols.py \
+		--symbols $(PUBLIC_SYMBOLS) \
+		--library $(CARGO_BUILT_LIB)
+
+check: golden-audit test-abi test-rust test-exports
 
 clean:
 	$(CARGO) clean

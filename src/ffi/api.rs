@@ -590,6 +590,72 @@ pub(crate) fn tpm_io_tpm_established_reset() -> TpmResult {
     C_ABI_TPM.tis_established_reset()
 }
 
+pub(crate) const TPM_ALLOC_MAX: u32 = 0x20000;
+
+pub(crate) unsafe fn tpm_malloc(buffer: *mut *mut c_uchar, size: u32) -> TpmResult {
+    if buffer.is_null() {
+        return TPM_FAIL;
+    }
+    // SAFETY: `buffer` is non-null and, by the C API contract, points to a
+    // readable and writable `unsigned char *`.
+    let current = unsafe { buffer.read() };
+    if !current.is_null() {
+        let _ = crate::ffi::debug::log(format_args!(
+            "TPM_Malloc: Error (fatal), *buffer {current:p} should be NULL before malloc\n"
+        ));
+        return TPM_FAIL;
+    }
+    if size > TPM_ALLOC_MAX {
+        let _ = crate::ffi::debug::log(format_args!(
+            "TPM_Malloc: Error, size {size} greater than maximum allowed\n"
+        ));
+        return TPM_SIZE;
+    }
+    if size == 0 {
+        let _ = crate::ffi::debug::log(format_args!("TPM_Malloc: Error (fatal), size is zero\n"));
+        return TPM_FAIL;
+    }
+    // SAFETY: plain C allocation of a non-zero size.
+    let allocated = unsafe { libc::malloc(size as usize) }.cast::<c_uchar>();
+    // SAFETY: `buffer` is non-null and writable by the C API contract.
+    unsafe { buffer.write(allocated) };
+    if allocated.is_null() {
+        let _ = crate::ffi::debug::log(format_args!("TPM_Malloc: Error allocating {size} bytes\n"));
+        return TPM_SIZE;
+    }
+    TPM_SUCCESS
+}
+
+pub(crate) unsafe fn tpm_realloc(buffer: *mut *mut c_uchar, size: u32) -> TpmResult {
+    if size > TPM_ALLOC_MAX {
+        let _ = crate::ffi::debug::log(format_args!(
+            "TPM_Realloc: Error, size {size} greater than maximum allowed\n"
+        ));
+        return TPM_SIZE;
+    }
+    if buffer.is_null() {
+        return TPM_FAIL;
+    }
+    // SAFETY: `buffer` is non-null and, by the C API contract, points to a
+    // readable `unsigned char *` that is NULL or owned by the C allocator.
+    let reallocated = unsafe { libc::realloc(buffer.read().cast(), size as usize) };
+    if reallocated.is_null() {
+        let _ = crate::ffi::debug::log(format_args!(
+            "TPM_Realloc: Error reallocating {size} bytes\n"
+        ));
+        return TPM_SIZE;
+    }
+    // SAFETY: `buffer` is non-null and writable by the C API contract.
+    unsafe { buffer.write(reallocated.cast()) };
+    TPM_SUCCESS
+}
+
+pub(crate) unsafe fn tpm_free(buffer: *mut c_uchar) {
+    // SAFETY: by the C API contract `buffer` is NULL or a live allocation of
+    // the C allocator that the caller gives up.
+    unsafe { libc::free(buffer.cast()) };
+}
+
 fn tpm_version(value: TpmlibTpmVersion) -> Option<TpmVersion> {
     match value {
         TPMLIB_TPM_VERSION_1_2 => Some(TpmVersion::V1_2),
@@ -943,6 +1009,43 @@ mod tests {
             crate::tpm_tis_abi::TPM_IO_TpmEstablished_Get;
         let _: unsafe extern "C" fn() -> TpmResult =
             crate::tpm_tis_abi::TPM_IO_TpmEstablished_Reset;
+    }
+
+    #[test]
+    fn memory_abi_signature_exactness() {
+        let _: unsafe extern "C" fn(*mut *mut c_uchar, u32) -> TpmResult =
+            crate::tpm_memory_abi::TPM_Malloc;
+        let _: unsafe extern "C" fn(*mut *mut c_uchar, u32) -> TpmResult =
+            crate::tpm_memory_abi::TPM_Realloc;
+        let _: unsafe extern "C" fn(*mut c_uchar) = crate::tpm_memory_abi::TPM_Free;
+    }
+
+    #[test]
+    fn memory_null_outer_pointer_safe_failure() {
+        for size in [0, 1, TPM_ALLOC_MAX, TPM_ALLOC_MAX + 1, u32::MAX] {
+            // SAFETY: NULL is rejected before it is dereferenced.
+            assert_eq!(
+                unsafe { crate::tpm_memory_abi::TPM_Malloc(core::ptr::null_mut(), size) },
+                TPM_FAIL,
+                "TPM_Malloc size {size}"
+            );
+        }
+        for size in [0, 1, TPM_ALLOC_MAX] {
+            // SAFETY: NULL is rejected before it is dereferenced.
+            assert_eq!(
+                unsafe { crate::tpm_memory_abi::TPM_Realloc(core::ptr::null_mut(), size) },
+                TPM_FAIL,
+                "TPM_Realloc size {size}"
+            );
+        }
+        for size in [TPM_ALLOC_MAX + 1, u32::MAX] {
+            // SAFETY: the size check runs before `buffer` is touched, as in C.
+            assert_eq!(
+                unsafe { crate::tpm_memory_abi::TPM_Realloc(core::ptr::null_mut(), size) },
+                TPM_SIZE,
+                "TPM_Realloc size {size}"
+            );
+        }
     }
 
     #[test]

@@ -265,13 +265,19 @@ struct Symbols {
 /// # Safety
 ///
 /// `T` must be the function pointer type of the exported symbol `name`.
-unsafe fn symbol<T: Copy>(handle: *mut c_void, library: &str, name: &CStr) -> T {
+pub unsafe fn symbol<T: Copy>(handle: *mut c_void, library: &str, name: &CStr) -> T {
     assert_eq!(size_of::<T>(), size_of::<*mut c_void>());
     // SAFETY: `handle` is a live dlopen handle and `name` is NUL-terminated.
     let address = unsafe { libc::dlsym(handle, name.as_ptr()) };
     assert!(!address.is_null(), "{library} does not export {name:?}");
     // SAFETY: the caller guarantees the symbol has type `T`.
     unsafe { std::mem::transmute_copy(&address) }
+}
+
+pub fn library_path() -> PathBuf {
+    std::env::var_os(LIBRARY_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(default_library)
 }
 
 fn default_library() -> PathBuf {
@@ -400,9 +406,7 @@ pub struct Tpm {
 
 impl Tpm {
     fn load() -> Self {
-        let path = std::env::var_os(LIBRARY_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(default_library);
+        let path = library_path();
         let bytes = std::fs::read(&path).unwrap_or_else(|error| {
             panic!(
                 "cannot read the library under test {}: {error}",

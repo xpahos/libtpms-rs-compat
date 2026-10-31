@@ -16,3 +16,6 @@ pub mod tpm_library_abi;
 
 #[path = "generated/tpm_tis_abi.rs"]
 pub mod tpm_tis_abi;
+
+#[path = "generated/tpm_memory_abi.rs"]
+pub mod tpm_memory_abi;

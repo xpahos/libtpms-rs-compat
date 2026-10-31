@@ -1416,11 +1416,21 @@ class GoldenMakefileTest(unittest.TestCase):
         for forbidden in ("golden-audit", "generate-abi", "test-abi", "test-rust"):
             self.assertNotIn(forbidden, recipe)
 
-    def test_check_runs_the_three_validation_stages(self):
+    def test_check_runs_the_four_validation_stages(self):
         self.assertEqual(
             self.target_line("check").split(),
-            ["check:", "golden-audit", "test-abi", "test-rust"],
+            ["check:", "golden-audit", "test-abi", "test-rust", "test-exports"],
         )
+
+    def test_exports_check_inspects_the_built_library(self):
+        self.assertEqual(
+            self.target_line("test-exports").split(),
+            ["test-exports:", "$(CARGO_BUILT_LIB)"],
+        )
+        recipe = self.target_recipe("test-exports")
+        self.assertIn("scripts/verify_public_symbols.py", recipe)
+        self.assertIn("--symbols $(PUBLIC_SYMBOLS)", recipe)
+        self.assertIn("--library $(CARGO_BUILT_LIB)", recipe)
 
     def test_abi_tools_finish_before_the_abi_checks(self):
         self.assertEqual(

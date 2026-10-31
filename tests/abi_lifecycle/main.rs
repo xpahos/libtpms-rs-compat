@@ -10,6 +10,8 @@
 
 mod harness;
 mod layout;
+mod memory;
+mod memory_oom;
 mod replay;
 mod scenario;
 

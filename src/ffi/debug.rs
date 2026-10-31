@@ -8,39 +8,37 @@
 
 use core::ffi::{CStr, c_int, c_uint};
 use core::fmt;
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::ffi::CString;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::library::{TPM_FAIL, TPM_SUCCESS};
 use crate::types::TpmResult;
 
-struct DebugConfig {
-    fd: c_int,
-    level: c_uint,
-    prefix: Option<CString>,
-}
+const MESSAGE_MAX: usize = 255;
+const COMBINED_MAX: usize = 512;
 
-static CONFIG: Mutex<DebugConfig> = Mutex::new(DebugConfig {
-    fd: -1,
-    level: 0,
-    prefix: None,
-});
+static FD: AtomicI32 = AtomicI32::new(-1);
+static LEVEL: AtomicU32 = AtomicU32::new(0);
+static PREFIX: Mutex<Option<CString>> = Mutex::new(None);
 
-fn config() -> MutexGuard<'static, DebugConfig> {
-    CONFIG.lock().unwrap_or_else(PoisonError::into_inner)
+fn prefix_lock() -> MutexGuard<'static, Option<CString>> {
+    PREFIX.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(crate) fn set_fd(fd: c_int) {
-    config().fd = fd;
+    let _prefix = prefix_lock();
+    FD.store(fd, Ordering::Relaxed);
 }
 
 pub(crate) fn set_level(level: c_uint) {
-    config().level = level;
+    let _prefix = prefix_lock();
+    LEVEL.store(level, Ordering::Relaxed);
 }
 
 pub(crate) fn set_prefix(prefix: Option<&CStr>) -> TpmResult {
-    let mut config = config();
-    config.prefix = None;
+    let mut current = prefix_lock();
+    *current = None;
 
     let Some(prefix) = prefix else {
         return TPM_SUCCESS;
@@ -51,7 +49,7 @@ pub(crate) fn set_prefix(prefix: Option<&CStr>) -> TpmResult {
         return TPM_FAIL;
     }
     owned.extend_from_slice(bytes);
-    config.prefix = Some(CString::from_vec_with_nul(owned).expect("copied from CStr"));
+    *current = Some(CString::from_vec_with_nul(owned).expect("copied from CStr"));
     TPM_SUCCESS
 }
 
@@ -59,25 +57,12 @@ pub(crate) fn set_prefix(prefix: Option<&CStr>) -> TpmResult {
 pub(crate) enum LogError {
     Disabled,
     Filtered,
+    TooLong,
     Write,
 }
 
-struct Sink {
-    fd: c_int,
-    level: c_uint,
-    prefix: Option<CString>,
-}
-
-fn enabled_sink() -> Option<Sink> {
-    let config = config();
-    if config.fd == 0 || config.level == 0 {
-        return None;
-    }
-    Some(Sink {
-        fd: config.fd,
-        level: config.level,
-        prefix: config.prefix.clone(),
-    })
+fn enabled(fd: c_int, level: c_uint) -> bool {
+    fd != 0 && level != 0
 }
 
 fn accepted_indent(message: &[u8], level: c_uint) -> Option<usize> {
@@ -88,35 +73,71 @@ fn accepted_indent(message: &[u8], level: c_uint) -> Option<usize> {
     Some(indent)
 }
 
-impl Sink {
-    fn write(self, message: &[u8]) -> Result<usize, LogError> {
-        let indent = accepted_indent(message, self.level).ok_or(LogError::Filtered)?;
-        match &self.prefix {
-            None => write_all(self.fd, message)?,
-            Some(prefix) => {
-                let prefix = prefix.to_bytes();
-                let mut buffer = Vec::with_capacity(prefix.len() + message.len());
-                buffer.extend_from_slice(prefix);
-                buffer.extend_from_slice(message);
-                write_all(self.fd, &buffer)?;
-            }
+struct MessageBuffer {
+    bytes: [u8; MESSAGE_MAX],
+    len: usize,
+}
+
+impl MessageBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: [0; MESSAGE_MAX],
+            len: 0,
         }
-        Ok(indent)
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn log(message: fmt::Arguments<'_>) -> Result<usize, LogError> {
-    let sink = enabled_sink().ok_or(LogError::Disabled)?;
-    match message.as_str() {
-        Some(text) => sink.write(text.as_bytes()),
-        None => sink.write(message.to_string().as_bytes()),
+impl fmt::Write for MessageBuffer {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let end = self.len.checked_add(text.len()).ok_or(fmt::Error)?;
+        let target = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
+        target.copy_from_slice(text.as_bytes());
+        self.len = end;
+        Ok(())
     }
+}
+
+fn write_message(message: &[u8]) -> Result<usize, LogError> {
+    let prefix = prefix_lock();
+    let fd = FD.load(Ordering::Relaxed);
+    let level = LEVEL.load(Ordering::Relaxed);
+    if !enabled(fd, level) {
+        return Err(LogError::Disabled);
+    }
+    let indent = accepted_indent(message, level).ok_or(LogError::Filtered)?;
+    let prefix = prefix.as_deref().map_or(&[][..], CStr::to_bytes);
+    let mut combined = [0u8; COMBINED_MAX];
+    match combined.get_mut(..prefix.len() + message.len()) {
+        Some(target) => {
+            let (head, tail) = target.split_at_mut(prefix.len());
+            head.copy_from_slice(prefix);
+            tail.copy_from_slice(message);
+            write_all(fd, target)?;
+        }
+        None => {
+            write_all(fd, prefix)?;
+            write_all(fd, message)?;
+        }
+    }
+    Ok(indent)
+}
+
+pub(crate) fn log(message: fmt::Arguments<'_>) -> Result<usize, LogError> {
+    if !enabled(FD.load(Ordering::Relaxed), LEVEL.load(Ordering::Relaxed)) {
+        return Err(LogError::Disabled);
+    }
+    let mut buffer = MessageBuffer::new();
+    fmt::write(&mut buffer, message).map_err(|_| LogError::TooLong)?;
+    write_message(buffer.as_bytes())
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn log_bytes(message: &[u8]) -> Result<usize, LogError> {
-    enabled_sink().ok_or(LogError::Disabled)?.write(message)
+    write_message(message)
 }
 
 fn write_all(fd: c_int, mut buffer: &[u8]) -> Result<(), LogError> {
@@ -141,8 +162,7 @@ fn write_all(fd: c_int, mut buffer: &[u8]) -> Result<(), LogError> {
 
 #[cfg(test)]
 pub(crate) fn prefix() -> Option<Vec<u8>> {
-    config()
-        .prefix
+    prefix_lock()
         .as_deref()
         .map(CStr::to_bytes)
         .map(<[u8]>::to_vec)
@@ -150,8 +170,7 @@ pub(crate) fn prefix() -> Option<Vec<u8>> {
 
 #[cfg(test)]
 pub(crate) fn fd_and_level() -> (c_int, c_uint) {
-    let config = config();
-    (config.fd, config.level)
+    (FD.load(Ordering::Relaxed), LEVEL.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]
@@ -170,22 +189,22 @@ pub(crate) mod test_support {
     impl DebugStateGuard {
         pub(crate) fn hold() -> Self {
             let serial = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-            let config = config();
+            let prefix = prefix_lock();
             Self {
                 _serial: serial,
-                saved_fd: config.fd,
-                saved_level: config.level,
-                saved_prefix: config.prefix.clone(),
+                saved_fd: FD.load(Ordering::Relaxed),
+                saved_level: LEVEL.load(Ordering::Relaxed),
+                saved_prefix: prefix.clone(),
             }
         }
     }
 
     impl Drop for DebugStateGuard {
         fn drop(&mut self) {
-            let mut config = config();
-            config.fd = self.saved_fd;
-            config.level = self.saved_level;
-            config.prefix = self.saved_prefix.take();
+            let mut prefix = prefix_lock();
+            FD.store(self.saved_fd, Ordering::Relaxed);
+            LEVEL.store(self.saved_level, Ordering::Relaxed);
+            *prefix = self.saved_prefix.take();
         }
     }
 }
@@ -401,6 +420,55 @@ mod tests {
     }
 
     #[test]
+    fn formatted_message_reference_buffer_limit() {
+        let _state = DebugStateGuard::hold();
+        let pipe = Pipe::new();
+        set_fd(pipe.write_fd());
+        set_level(1);
+        assert_eq!(set_prefix(Some(c"tpm: ")), TPM_SUCCESS);
+
+        let fits = "x".repeat(MESSAGE_MAX - 1);
+        assert_eq!(log(format_args!("{fits}\n")), Ok(0));
+        assert_eq!(pipe.drain(), format!("tpm: {fits}\n").into_bytes());
+
+        assert_eq!(log(format_args!("{fits}x\n")), Err(LogError::TooLong));
+        assert_eq!(
+            log(format_args!("{}", "y".repeat(MESSAGE_MAX + 1))),
+            Err(LogError::TooLong)
+        );
+        assert_eq!(pipe.drain(), b"");
+    }
+
+    #[test]
+    fn long_prefix_separate_writes() {
+        let _state = DebugStateGuard::hold();
+        let pipe = Pipe::new();
+        set_fd(pipe.write_fd());
+        set_level(1);
+        let long = CString::new("p".repeat(COMBINED_MAX)).unwrap();
+        assert_eq!(set_prefix(Some(&long)), TPM_SUCCESS);
+
+        assert_eq!(log(format_args!("size {}\n", 12345)), Ok(0));
+        let mut expected = long.as_bytes().to_vec();
+        expected.extend_from_slice(b"size 12345\n");
+        assert_eq!(pipe.drain(), expected);
+    }
+
+    #[test]
+    fn disabled_logging_formats_nothing() {
+        struct Panics;
+        impl fmt::Display for Panics {
+            fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+                panic!("formatted while logging is disabled")
+            }
+        }
+        let _state = DebugStateGuard::hold();
+        set_fd(1);
+        set_level(0);
+        assert_eq!(log(format_args!("{}", Panics)), Err(LogError::Disabled));
+    }
+
+    #[test]
     fn closed_descriptor_failure_panic_safety() {
         let _state = DebugStateGuard::hold();
         let mut pipe = Pipe::new();
@@ -429,11 +497,11 @@ mod tests {
     fn poisoned_config_lock_recovery() {
         let _state = DebugStateGuard::hold();
         let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _config = CONFIG.lock().unwrap();
+            let _prefix = PREFIX.lock().unwrap();
             panic!("poison the debug configuration lock");
         }));
         assert!(poison.is_err());
-        assert!(CONFIG.is_poisoned());
+        assert!(PREFIX.is_poisoned());
 
         set_fd(5);
         set_level(3);
